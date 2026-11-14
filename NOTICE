@@ -1,0 +1,14 @@
+oxe (ox-llm engine)
+Copyright (c) 2026 Oscar Nordström (n0rpan)
+
+Our own code is licensed under the MIT License (see LICENSE).
+
+Vendored code keeps the licence of its source, with its licence text in its
+own directory. THIRD_PARTY_NOTICES lists each vendored component.
+
+No model weights, no prebuilt binaries and no Qualcomm SDK, firmware or
+runtime files are part of this repository.
+
+Flash binary tarballs additionally carry the Apache-2.0 licence of their pinned
+BigMoeOnEdge build source and the MIT licence of its pinned llama.cpp fork.
+See THIRD_PARTY_NOTICES and FLASH-SOURCE-LICENSES.json in those tarballs.

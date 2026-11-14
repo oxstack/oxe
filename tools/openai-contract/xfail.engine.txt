@@ -1,0 +1,3 @@
+# Expected failures in engine mode (oxe-server direct). Empty: the engine port serves the legacy
+# /v1/completions route, refuses n > 1 with a 400, sends x-request-id and maps reasoning_effort; a listed
+# test that passes fails the job.

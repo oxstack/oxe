@@ -1,0 +1,187 @@
+name: checks
+# Build, model-free tests, lint, lab tests and repository scans on every push to main and every
+# pull request. GitHub-hosted runners only (free for public repositories). No secrets.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: "1.99.1"
+
+jobs:
+  build:
+    # oxe-server, oxi, the Flash variant and oxa: build and model-free tests on ARM64 (build.yml)
+    uses: ./.github/workflows/build.yml
+    with:
+      version: dev-${{ github.sha }}
+      package: false
+
+  rustfmt:
+    # oxa only: the engine tree predates rustfmt enforcement (formatting it is a separate change).
+    name: rustfmt (oxa)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rustup is preinstalled on the hosted image)
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --no-self-update
+      - name: oxa
+        working-directory: oxa
+        run: cargo fmt --all -- --check
+
+  clippy:
+    # Compile errors fail the job; lint warnings are reported but do not fail it yet. Add
+    # "-- -D warnings" once the warning count is known to be zero.
+    name: clippy (engine, oxa; aarch64)
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          engine/tools/ci/setup_toolchain.sh "$RUST_VERSION"
+          rustup component add --toolchain "$RUST_VERSION" clippy
+      - name: engine (model-free workspace, all targets)
+        working-directory: engine
+        run: cargo clippy --locked --workspace --exclude qwen4exp --all-targets
+      - name: oxa (all targets)
+        working-directory: oxa
+        run: cargo clippy --locked --workspace --all-targets
+
+  x86-64-stub:
+    # oxe-server builds on x86_64 with the stub engine only (kernels-sys compiles its kernels on
+    # aarch64 only; the model engine refuses to load elsewhere). Its server tests that do not need
+    # the model engine run here. Uses the hosted image's rustup (setup_toolchain.sh installs the
+    # aarch64 rustup binary only).
+    name: oxe-server --engine stub on x86_64 (build + server tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rustup is preinstalled on the hosted image)
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Build oxe-server
+        working-directory: engine
+        run: cargo build --release --locked -p server --bin oxe-server
+      - name: Smoke (stub engine; the model engine refuses cleanly)
+        working-directory: engine
+        run: ./target/release/oxe-server --help > help.txt && head -n 3 help.txt
+      - name: Server tests (stub engine; model-engine tests are aarch64-only)
+        working-directory: engine
+        timeout-minutes: 30
+        run: |
+          ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
+          cargo test --release --locked -p server --lib
+
+  lab:
+    name: lab tests, CLI, receipt scrub (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: lab
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Unit tests (verbose, so skips are visible)
+        run: |
+          set -o pipefail
+          ./tools/run_lab_tests.sh discover -s tests -v 2>&1 | tee unittest.log
+      - name: Report skipped tests
+        if: always()
+        # every skip is surfaced as an annotation instead of a silent pass (e.g. tests that need
+        # a real engine and its model files)
+        run: |
+          grep -E ' \.\.\. skipped ' unittest.log | sed -E 's/^(.*) \.\.\. skipped (.*)$/::warning title=Skipped test::\1: \2/' || true
+          echo "skipped: $(grep -cE ' \.\.\. skipped ' unittest.log || true)" >> "$GITHUB_STEP_SUMMARY"
+      - name: CLI help (isolated HOME)
+        run: |
+          root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
+          HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_RUNTIME_DIR="$root/r" \
+            PYTHONPATH=src python3 -m snapdragon_ai_lab --help > /dev/null
+      - name: Receipt scrub check (benchmarks/, experiments/)
+        run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I tools/scrub_receipts.py --check
+
+  scans:
+    name: secret scan, SDK-material check, product isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Secret scan (tracked files)
+        run: |
+          pat='(ghp_[A-Za-z0-9]{30,}|gho_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|hf_[A-Za-z0-9]{30,}|sk-[A-Za-z0-9_-]{32,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+          # exclusions: synthetic fixtures; the report-issue scrubber test, whose INPUTS are fake key-shaped
+          # strings it asserts are removed (exact file, reviewed 2026-11-14; same entry in sanitize-scan.allow)
+          if git grep -nIE "$pat" -- . ':!lab/tests/fixtures' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs'; then echo "secret-like strings found"; exit 1; fi
+          echo "no secret-like strings in $(git ls-files | wc -l) tracked files"
+      - name: SDK-material check (file names, ELF objects, hexagon directories)
+        # Self-contained: the exporter's full scan (text notices included) runs at export time.
+        # Headers, IDL, stubs, skeletons, shared objects and ELF objects are refused everywhere.
+        run: |
+          python3 -I - <<'PY'
+          import pathlib, re, sys
+          root = pathlib.Path('.').resolve(); bad = []
+          name_rx = re.compile(r'^(HAP_.*\.h|qurt.*\.h|dspqueue\.h|remote(?:64)?\.h|AEEStd.*\.h|AEEatomic\.h|rpcmem\.h|adsprpc.*\.h|hexagon_.*\.h|hvx_hexagon_protos\.h|.*\.idl|.*skel.*\.so.*|.*\.so(\..*)?|.*_stub\.c|.*_skel\.c)$', re.I)
+          for d in root.rglob('*'):
+              rel = d.relative_to(root)
+              if '.git' in rel.parts:
+                  continue
+              if d.is_dir() and d.name == 'ggml-hexagon':
+                  bad.append(f'{rel}/ (directory)')
+              if d.is_file():
+                  if name_rx.match(d.name):
+                      bad.append(str(rel))
+                  elif d.stat().st_size > 52:
+                      with d.open('rb') as fh:
+                          if fh.read(4) == b'\x7fELF':
+                              bad.append(f'{rel} (ELF object)')
+          print('\n'.join(sorted(bad)) or 'no SDK-like files'); sys.exit(1 if bad else 0)
+          PY
+      - name: Product isolation (engine and oxa are separate workspaces)
+        run: |
+          python3 -I - <<'PY'
+          import pathlib, re, sys
+          root = pathlib.Path('.').resolve(); bad = []
+          for prod in ('engine', 'oxa'):
+              for toml in (root / prod).rglob('Cargo.toml'):
+                  if 'target' in toml.parts:
+                      continue
+                  for m in re.finditer(r'path\s*=\s*"([^"]+)"', toml.read_text()):
+                      dest = (toml.parent / m.group(1)).resolve()
+                      if not dest.is_relative_to(root / prod):
+                          bad.append(f'{toml.relative_to(root)}: path = "{m.group(1)}" leaves {prod}/')
+          for name in ('Cargo.toml', 'Cargo.lock'):
+              if (root / name).exists():
+                  bad.append(f'{name} at the root: engine/ and oxa/ are separate workspaces')
+          print('\n'.join(bad) or 'isolation ok'); sys.exit(1 if bad else 0)
+          PY

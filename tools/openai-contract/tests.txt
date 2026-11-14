@@ -1,0 +1,36 @@
+# The pinned OpenAI contract test list (run_contract.py fails closed against it).
+# <test name> <modes: engine,controller | controller | engine>
+test_models_list engine,controller
+test_models_limits engine,controller
+test_models_retrieve engine,controller
+test_chat_non_stream engine,controller
+test_chat_stream_include_usage engine,controller
+test_usage_details engine,controller
+test_length_fields engine,controller
+test_default_output_limit controller
+test_stop_and_seed engine,controller
+test_developer_role_and_trailing_assistant engine,controller
+test_image_part engine,controller
+test_reasoning_effort engine,controller
+test_logprobs engine,controller
+test_logit_bias_choice_and_logprobs engine,controller
+test_prompt_cache_key controller
+test_n_greater_than_one engine,controller
+test_response_format controller
+test_tools_round_trip engine,controller
+test_tool_choice_forms engine,controller
+test_tools_stream engine,controller
+test_error_shape engine,controller
+test_unknown_model controller
+test_context_overflow engine,controller
+test_request_id_header engine,controller
+test_request_id_on_mid_stream_error controller
+test_unsupported_endpoints engine,controller
+test_legacy_completions engine,controller
+test_legacy_completions_logprobs_zero engine,controller
+test_responses_basic controller
+test_responses_stream controller
+test_responses_tools controller
+test_responses_stateful_refused controller
+test_sdk_timeout_retry controller
+test_stream_replay_after_cut controller

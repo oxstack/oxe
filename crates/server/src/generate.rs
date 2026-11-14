@@ -1,0 +1,2764 @@
+//! The generation loop (llama-server `update_slots` + `process_token` for one slot):
+//! prefix-cache restore, prompt prefill, sampling, EOG / stop-string / length stops,
+//! UTF-8 hold-back, n_probs, timings.
+
+use crate::cache::PrefixCache;
+use crate::engine::{Engine, EngineError};
+use crate::sampling::{token_prob, top_probs, Sampler, SamplingParams};
+use std::time::Instant;
+use tokenizer::{StreamDecoder, Token, Tokenizer};
+
+#[derive(Clone, Debug)]
+pub struct GenParams {
+    /// -1 = until EOG or context full
+    pub n_predict: i64,
+    pub sampling: SamplingParams,
+    pub stop: Vec<String>,
+    pub n_probs: usize,
+    pub cache_prompt: bool,
+    /// render special (control) tokens in the text
+    pub special: bool,
+    pub ignore_eos: bool,
+    /// chat requests: token position of the first user message (the system prompt + tools
+    /// end there): anchor checkpoint / prefix-store entry below it
+    pub first_user: Option<usize>,
+    /// per-request speculation depth (`"speculative": false` = 0, `"spec_draft_n_max": n`);
+    /// None = the server's MTP tune table for this context, else the engine's depth
+    pub spec_depth: Option<usize>,
+    /// chat requests whose last message is a user message: query checkpoint before the
+    /// generation prompt (see `cache.rs`)
+    pub query_start: bool,
+    /// chat requests: token position of every message start (turn checkpoints, WP-P1)
+    pub msg_starts: Vec<usize>,
+    /// set when the client went away (service: drop guard / closed stream); checked between
+    /// prefill chunks and per decoded token
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// CACHE-PERFECT ECHO report of this request's prompt (`echo.rs`), copied into the ledger line
+    pub echo: Option<serde_json::Value>,
+    /// the session hint (`X-Oxe-Session`): the state store's prefill-progress manifests (P2b, M1)
+    pub session: Option<String>,
+    /// v0.1.3 pre-think point: the prompt position just before the generation prompt's `<think>`
+    /// (thinking on). A later request whose history drops this turn's reasoning (no think block in
+    /// the re-render) diverges exactly there; a RAM checkpoint (class pre-think) is taken at it.
+    pub pre_think: Option<usize>,
+    /// v0.2.0 H5 `X-Oxe-Turn-Kind`: a free label copied to the ledger only; it never places a
+    /// checkpoint or selects any arithmetic
+    pub turn_kind: Option<String>,
+    /// chat requests: token position of every user-message start (turn points in the last 16K,
+    /// the compaction cut = the last one of a compaction request)
+    pub user_starts: Vec<usize>,
+    /// LAN share (`X-Oxe-State-Policy: ephemeral`, set by the controller for a request from another
+    /// device): RAM-only, request-scoped state. No prefix reuse of any kind (live, parked, checkpoint
+    /// or disk: no prefix-timing oracle on this machine's conversations), no state-store, session or
+    /// prefix-store read or write, no warm-hint write; the local live session is held aside and the
+    /// request's own state is dropped when it ends (the held session is then live again).
+    pub ephemeral: bool,
+    /// LONG-APPEND (v0.1.3 #7): prefill progress of this request, read by the stream's SSE
+    /// keepalive (`service::spawn_keepalive`); None = nobody reads it
+    pub progress: Option<std::sync::Arc<Progress>>,
+    /// v0.2.0 H4 (`X-Oxe-Snapshot: keep`): the client asked for a snapshot point. The reply then
+    /// reports `timings.snap_pos` (null when none could be kept).
+    pub snap_keep: bool,
+    /// H4: the exact prompt position of that point (the end of the last message, see
+    /// `service::snapshot_point`); None = the server could not locate it (no snapshot).
+    pub snap_at: Option<usize>,
+    /// the request number `State::preempt_idle` gave this request (fair slicing decides with it
+    /// whether its post-reply jobs run, `fair.rs`); None = not known (the number current when the
+    /// generation starts is used)
+    pub req_no: Option<u64>,
+    /// request-path timings measured by the driver (reported in `timings`, the ledger):
+    /// `queue_ms` when the generation first holds the worker, `render_ms` / `tokenize_ms` of the
+    /// route before it (see [`Timings`])
+    pub queue_ms: f64,
+    pub render_ms: f64,
+    pub tokenize_ms: f64,
+}
+
+/// LONG-APPEND (v0.1.3 #7): how far a request's prompt is in the engine state. `total` is 0 until
+/// the worker takes the request; `done` moves after the cache restore and every prefill chunk
+/// (CANCEL_UBATCHES ubatches); `decoding` is set by the stream at its first decoded token.
+#[derive(Debug, Default)]
+pub struct Progress {
+    pub done: std::sync::atomic::AtomicUsize,
+    pub total: std::sync::atomic::AtomicUsize,
+    pub decoding: std::sync::atomic::AtomicBool,
+    /// fair slicing (`fair.rs`): the request runs under the turn queue (its stream keepalive then
+    /// stays on after the first token) and is suspended right now (the keepalive sends `: queued`)
+    pub fair: std::sync::atomic::AtomicBool,
+    pub suspended: std::sync::atomic::AtomicBool,
+}
+
+impl GenParams {
+    pub fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    fn note_progress(&self, done: usize, total: Option<usize>) {
+        if let Some(pr) = &self.progress {
+            if let Some(t) = total {
+                pr.total.store(t, std::sync::atomic::Ordering::Relaxed);
+            }
+            pr.done.store(done, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// Prefill calls are cut every this many ubatches (on the grid, so numerics are unchanged) to
+/// check for a cancel: ~3 s at ~180 tok/s; one extra logits row per cut (<0.5 %).
+pub const CANCEL_UBATCHES: usize = 2;
+
+/// Ubatches per engine call for a prompt segment with `left` tokens to go: CANCEL_UBATCHES, or,
+/// when the by-size prefill group has a second threshold T2 (`--pf-group-t2`, default never) and
+/// at least T2 tokens are left, enough for the engine to see a call of T2 tokens (it then runs 4
+/// ubatches per pass; the cancel check interval grows with it). Any multiple of the ubatch keeps
+/// the numerics: the engine chunks every call by the ubatch from its start.
+fn chunk_ubatches(left: usize, u: usize) -> usize {
+    let (_, t2) = model::engine::pf_group_thresholds();
+    if model::engine::pf_group() == 0 && t2 != 0 && left >= t2 {
+        t2.div_ceil(u.max(1)).max(4)
+    } else {
+        CANCEL_UBATCHES.max(1)
+    }
+}
+
+impl Default for GenParams {
+    fn default() -> Self {
+        GenParams {
+            n_predict: -1,
+            sampling: SamplingParams::default(),
+            stop: Vec::new(),
+            n_probs: 0,
+            cache_prompt: true,
+            special: false,
+            ignore_eos: false,
+            first_user: None,
+            query_start: false,
+            spec_depth: None,
+            msg_starts: Vec::new(),
+            cancel: None,
+            echo: None,
+            session: None,
+            pre_think: None,
+            turn_kind: None,
+            user_starts: Vec::new(),
+            ephemeral: false,
+            progress: None,
+            snap_keep: false,
+            snap_at: None,
+            req_no: None,
+            queue_ms: 0.0,
+            render_ms: 0.0,
+            tokenize_ms: 0.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopType {
+    None,
+    Eos,
+    Word,
+    Limit,
+}
+
+impl StopType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StopType::Eos => "eos",
+            StopType::Word => "word",
+            StopType::Limit => "limit",
+            StopType::None => "none",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ProbEntry {
+    pub id: Token,
+    pub piece: Vec<u8>,
+    pub prob: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct TokenProbs {
+    pub id: Token,
+    pub piece: Vec<u8>,
+    pub prob: f32,
+    pub top: Vec<ProbEntry>,
+}
+
+/// One streamed step.
+#[derive(Debug)]
+pub struct Partial {
+    pub text: String,
+    pub token: Token,
+    pub n_decoded: usize,
+    /// the probability rows of every token since the previous partial (a token whose text is an
+    /// incomplete UTF-8 sequence sends no partial; its row rides on the next one). Empty without
+    /// n_probs. Rows of tokens after the last partial are only in `GenResult::probs` (the caller
+    /// reconciles at the end: rows sent = the sum of these lengths).
+    pub probs: Vec<TokenProbs>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Timings {
+    pub cache_n: usize,
+    pub prompt_n: usize,
+    pub prompt_ms: f64,
+    pub predicted_n: usize,
+    pub predicted_ms: f64,
+    /// speculative decoding (MTP): draft tokens proposed / accepted in this request
+    pub draft_n: u64,
+    pub draft_n_accepted: u64,
+    /// P2b (design sec. 7): live | ram | disk | cold, and the restore time in ms
+    pub resume_src: &'static str,
+    pub resume_ms: f64,
+    /// the preload's ms, on the request that continued a preloaded state
+    pub preload_ms: Option<f64>,
+    /// v0.2.0 H4: the hint was given (`timings.snap_pos` is then present, null when no point is kept)
+    pub snap_keep: bool,
+    /// H4: the position of the snapshot point this request kept: the deepest boundary it processed on
+    /// at or before the end of its last message (not before that message's start)
+    pub snap_pos: Option<usize>,
+    /// H4: why no point was kept (`timings.snap_reason` when `snap_pos` is null)
+    pub snap_reason: Option<&'static str>,
+    /// fair slicing (`fair.rs`): how often the generation gave the engine to another one, and how
+    /// long it waited suspended in total (not in `predicted_ms`); reported only when > 0
+    pub fair_yields: u32,
+    pub fair_wait_ms: f64,
+    /// request-path measurements (ms; outside `prompt_ms` and `predicted_ms`, always reported):
+    /// time from entering the driver until the generation first holds the worker (the fair turn
+    /// included; later suspensions are `fair_wait_ms`)
+    pub queue_ms: f64,
+    /// chat: the template render (`prepare_chat`); 0 on the other routes
+    pub render_ms: f64,
+    /// the prompt's tokenisation (chat: the render's tokens and the echo splice)
+    pub tokenize_ms: f64,
+    /// the restore phase of `prefill_head`: from its start to the end of the cache / disk restore
+    pub restore_ms: f64,
+    /// the summed wall time of the checkpoints this request took on the request path
+    pub ckpt_ms: f64,
+}
+
+#[derive(Debug)]
+pub struct GenResult {
+    /// full generated text (stop word removed)
+    pub text: String,
+    pub tokens: Vec<Token>,
+    pub stop: StopType,
+    pub stopping_word: String,
+    pub truncated: bool,
+    pub n_prompt: usize,
+    pub n_decoded: usize,
+    pub timings: Timings,
+    pub probs: Vec<TokenProbs>,
+    /// generated tokens that are reasoning (`usage.completion_tokens_details.reasoning_tokens`);
+    /// set by the chat route, which knows the template's think markers (0 elsewhere)
+    pub reasoning_tokens: usize,
+}
+
+#[derive(Debug)]
+pub enum GenError {
+    /// prompt does not fit: (n_prompt, n_ctx)
+    ExceedContext(usize, usize),
+    Engine(EngineError),
+    Cancelled,
+}
+
+impl From<EngineError> for GenError {
+    fn from(e: EngineError) -> Self {
+        GenError::Engine(e)
+    }
+}
+
+/// Owns the engine and its prefix cache; one generation at a time.
+pub struct Worker<E: Engine> {
+    pub engine: E,
+    pub cache: PrefixCache<E::Snapshot>,
+    /// the engine's prefill ubatch (checkpoint grid; `--ubatch-size`)
+    pub ubatch: usize,
+    /// persistent prefix store (`--prefix-cache DIR`)
+    pub store: Option<crate::prefix_store::PrefixStore>,
+    /// turn checkpoints taken per request at most (the newest message starts win)
+    pub turn_checkpoints: usize,
+    /// on-disk session cache (`--session-cache DIR`): whole conversations, opt-in
+    pub sessions: Option<crate::prefix_store::PrefixStore>,
+    /// request ledger (`--ledger PATH`): one JSON line of numbers per generation
+    pub ledger: Option<std::fs::File>,
+    /// MTP auto-tune table (`--mtp-tune FILE`, tools/mtp_tune.py): depth per context bucket
+    pub spec_table: Option<SpecTable>,
+    /// F82: no speculation at or beyond this context position (`--mtp-max-ctx N`); combined with
+    /// the table (the smaller depth wins: 0 here)
+    pub mtp_max_ctx: Option<usize>,
+    /// MTP acceptance guard (`--mtp-guard`, `mtp_guard.rs`; None = off): each generation starts
+    /// from a fresh copy of it. Speed only: the output is identical at any draft depth.
+    pub mtp_guard: Option<crate::mtp_guard::MtpGuard>,
+    /// guard trips over all generations (tests, the ledger)
+    pub mtp_guard_trips: u64,
+    /// repetition-loop watchdog (`--repeat-watchdog N`, 0 = off): stop with finish_reason
+    /// "length" when the last N generated tokens end in a loop (see [`repeat_loop`])
+    pub repeat_watchdog: usize,
+    /// Message-boundary prefill schedule (`--prefill-split messages`, the Flash default): the
+    /// prefill is split at every message start of the prompt instead of on the ubatch grid
+    /// (see [`Worker::plan_messages`]).
+    pub msg_split: bool,
+    /// warm-up hint file (`--flash-hotset`), see [`WarmFile`]
+    pub warm: Option<WarmFile>,
+    /// CACHE-PERFECT P2 disk state store (`--state-cache DIR`), see state_store.rs
+    pub states: Option<crate::state_store::StateStore>,
+    /// blocks of the live state already on disk (chain hash, checksum), valid below `cache.low_water`
+    pub live_blocks: Vec<(String, String)>,
+    /// first user message of the last request (the anchor: session ids start past it)
+    pub last_first_user: Option<usize>,
+    /// P2b M1: during a long prefill the blocks and a head snapshot are written every this many
+    /// new tokens (design sec. 4: a kill loses at most this much prefill); 0 = off
+    pub persist_every: usize,
+    /// position of the last prefill-progress write (or the resume point) of the running request
+    progress_mark: usize,
+    /// the live state changed since the last complete write (a request, an idle prefill)
+    state_dirty: bool,
+    /// head snapshot key of the last complete write (nothing new to write while it is still the head)
+    persisted_head: Option<String>,
+    /// P2b preload: a state loaded from the store before any request (`/state-cache/preload`); the
+    /// first request whose prompt continues it adopts it (resume_src ram), any other drops it
+    pub preloaded: Option<Preloaded>,
+    /// where the last request's reused prefix came from and how long the restore took
+    pub last_resume: (&'static str, f64),
+    /// v0.2.0 H4: the snapshot point the last request chose (a boundary it processes on anyway), or
+    /// why none (`snap_reason`)
+    snap_chosen: Option<usize>,
+    snap_why: Option<&'static str>,
+    /// timings (`restore_ms`, `ckpt_ms`) of the request whose prefill ran last: reset by
+    /// `prefill_head`, read into its run by `gen_begin`
+    req_restore_ms: f64,
+    req_ckpt_ms: f64,
+    /// tests: when Some, every logits row the sampler reads is appended (the greedy fast path reads
+    /// none: set `n_probs` > 0 to trace a request)
+    pub trace_logits: Option<Vec<Vec<f32>>>,
+    /// preload ms reported once, on the request that used the preloaded state
+    last_preload_ms: Option<f64>,
+    /// restore throughput in bytes/s of (the segmented store, the legacy whole-state stores) for
+    /// [`Worker::plan_restore`]; defaults from the v0.1.2 Qwen 82K gate (78,876 positions in
+    /// 1.95 s, 82,716 in 2.66 s at 20,480 B/position)
+    pub restore_bps: (f64, f64),
+    /// disk restores attempted (tests: one per request)
+    pub restores: u64,
+    /// the legacy disk stores (prefix store, session cache) while the disk budget is 0: off
+    /// means off for every conversation store (Codex P2/P3 review 2); back when it rises again
+    pub legacy_off: Option<(Option<crate::prefix_store::PrefixStore>, Option<crate::prefix_store::PrefixStore>)>,
+    /// v0.1.3: user-message starts within this many tokens of the prompt end come first among the
+    /// turn checkpoints (`--turn-user-window`, 0 = off: the newest message starts, as before)
+    pub user_window: usize,
+    /// v0.1.3: before a request cuts the live session back, its unwritten state and RAM checkpoints
+    /// go to the state store (`--state-park-write on|off`): a disk-parked session keeps them
+    pub park_write: bool,
+    /// v0.1.3: the post-reply write copies the head snapshot and the new blocks under the worker lock
+    /// and writes them without it (`--state-write-offlock on|off`)
+    pub offlock: bool,
+    /// the optional RAM checkpoints of the live state are not all on disk yet
+    snaps_pending: bool,
+    /// v0.2.0 EG5: the session hint of the request that last advanced the live state (None: it sent
+    /// none); a write without a request of its own (shutdown, the park write of a session being
+    /// left) records the live state's owner with it
+    live_hint: Option<String>,
+    /// v0.1.3 store-depth: the legacy whole-state session cache is written (`--session-cache-writes
+    /// auto|on|off`; auto = off while the state cache and its park write are on: the segmented store
+    /// then holds every state the legacy park / spill / shutdown would write, so the legacy cache is
+    /// read-only, its existing entries still restore). Default true (as before) outside main.rs.
+    pub legacy_writes: bool,
+    /// test hook (usize::MAX in production): the optional snapshot writes of one persist stop after
+    /// this many files, as when a request arrives between them
+    pub opt_write_limit: usize,
+    /// audit v0.1.2 N2: how far past the shutdown deadline a snapshot file already started may run
+    /// before it is cut inside the file (5 s: the 2.5 s deadline + 5 s stays inside the
+    /// controller's 10 s unload grace); a test hook too
+    pub shutdown_file_grace: std::time::Duration,
+    /// fair slicing: RAM of the sessions of suspended generations (held outside the parked list);
+    /// a generation only yields while this plus its own state fits the park budget
+    held_bytes: usize,
+}
+
+/// The local live session and its write bookkeeping, held across one ephemeral request.
+struct HeldLocal<S> {
+    held: Option<crate::cache::Held<S>>,
+    live_blocks: Vec<(String, String)>,
+    progress_mark: usize,
+    state_dirty: bool,
+    snaps_pending: bool,
+    last_first_user: Option<usize>,
+    live_hint: Option<String>,
+}
+
+/// A disk restore source (see [`Worker::plan_restore`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestoreSrc {
+    /// the CACHE-PERFECT segmented state store
+    State,
+    /// the legacy whole-state session cache (`--session-cache`)
+    Session,
+    /// the legacy prefix store (`--prefix-cache`)
+    Prefix,
+}
+
+/// A state the preload put into the engine (see [`Worker::preloaded`]).
+#[derive(Clone, Debug)]
+pub struct Preloaded {
+    pub plan: crate::state_store::Plan,
+    pub ms: f64,
+}
+
+/// `--session-cache-writes auto|on|off` (v0.1.3 store-depth): whether the legacy whole-state
+/// session cache is written (park to disk, RAM-park spill, SIGTERM). `auto` (the default) = off
+/// while the state cache and its park write (`--state-park-write on`) are on: the segmented store
+/// then holds the deepest state of every session at least as deep as the legacy park did (the head
+/// after every reply, its RAM points deepest first, the park write when a session is left, the
+/// shutdown write). Existing legacy entries are still read. None: not one of the three words.
+pub fn legacy_session_writes(mode: &str, state_cache: bool, park_write: bool) -> Option<bool> {
+    match mode {
+        "auto" => Some(!(state_cache && park_write)),
+        "on" | "1" | "true" => Some(true),
+        "off" | "0" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// How [`Worker::persist`] runs (P2b).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PersistMode {
+    /// after a reply, off the request path: blocks, the head, the RAM checkpoints worth keeping,
+    /// the manifest, then the budget; a newer request cuts it between files
+    Reply,
+    /// during a long prefill (M1): new blocks, the head at the prefill position, the manifest
+    Progress,
+    /// SIGTERM (M2): only what is not on disk yet (new blocks, the head) and the manifest, then the
+    /// optional RAM checkpoints a cut post-reply write left (deepest first), file by file until
+    /// `deadline`; no eviction pass (start-up runs it)
+    Shutdown(Instant),
+}
+
+/// What a [`Worker::persist`] call wrote (logged at shutdown).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PersistReport {
+    pub blocks: usize,
+    pub snaps: usize,
+    pub bytes: u64,
+    /// the manifest written names a head at this position
+    pub head: Option<usize>,
+    /// the session (manifest) written
+    pub sid: Option<String>,
+    /// why it stopped early or wrote nothing
+    pub note: Option<String>,
+}
+
+impl PersistReport {
+    pub fn files(&self) -> usize {
+        self.blocks + self.snaps + self.head.is_some() as usize
+    }
+    pub fn line(&self) -> String {
+        let mut s = match self.head {
+            Some(p) => format!("{} blocks + head at {p} tokens ({} MiB)", self.blocks, self.bytes >> 20),
+            None => format!("{} blocks, no head ({} MiB)", self.blocks, self.bytes >> 20),
+        };
+        if self.snaps > 0 {
+            s.push_str(&format!(" + {} snapshots", self.snaps));
+        }
+        if let Some(n) = &self.note {
+            s.push_str(&format!("; {n}"));
+        }
+        s
+    }
+}
+
+/// MTP auto-tune result: the measured best depth per context bucket (0 = speculation off there,
+/// a valid result: on a MoE speculation can lose). JSON: {"buckets":[{"max_ctx":N,"depth":d},..]},
+/// written by tools/mtp_tune.py from `oxe bench` arms on this machine.
+#[derive(Clone, Debug, Default)]
+pub struct SpecTable {
+    /// (context positions up to, depth), ascending; contexts beyond the last bucket use the last
+    pub buckets: Vec<(usize, usize)>,
+}
+
+impl SpecTable {
+    pub fn load(path: &std::path::Path) -> Result<SpecTable, String> {
+        let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut b: Vec<(usize, usize)> = j["buckets"]
+            .as_array()
+            .ok_or("mtp tune table: no buckets")?
+            .iter()
+            .map(|x| Some((x["max_ctx"].as_u64()? as usize, x["depth"].as_u64()? as usize)))
+            .collect::<Option<_>>()
+            .ok_or("mtp tune table: bucket needs max_ctx and depth")?;
+        b.sort();
+        if b.is_empty() {
+            return Err("mtp tune table: empty".into());
+        }
+        Ok(SpecTable { buckets: b })
+    }
+    pub fn depth_for(&self, n_past: usize) -> usize {
+        self.buckets.iter().find(|&&(m, _)| n_past <= m).or(self.buckets.last()).map(|b| b.1).unwrap_or(0)
+    }
+}
+
+/// The engine's warm-up hint ([`Engine::warm_hint`]) on disk: magic `OXEWRM01`, u32 identity
+/// length, identity (the model), the hint. Written to `<path>.pending` and renamed; mode 0600.
+/// It names cache contents (Flash: expert ids), never prompt or generated text.
+pub struct WarmFile {
+    pub path: std::path::PathBuf,
+    pub identity: String,
+    /// seconds between writes after requests (a forced write ignores it)
+    pub min_interval_s: u64,
+    last: Option<Instant>,
+}
+
+const WARM_MAGIC: &[u8; 8] = b"OXEWRM01";
+
+impl WarmFile {
+    pub fn new(path: std::path::PathBuf, identity: String) -> WarmFile {
+        WarmFile { path, identity, min_interval_s: 60, last: None }
+    }
+
+    /// The stored hint, if the file belongs to this identity.
+    pub fn read(&self) -> Option<Vec<u8>> {
+        // a hot list is <= 8 + 4 * 48 * 512 bytes: refuse anything far larger before reading it (FLASH-PREFIX-1 sweep)
+        if std::fs::metadata(&self.path).ok()?.len() > 1 << 20 {
+            return None;
+        }
+        let b = std::fs::read(&self.path).ok()?;
+        let id = self.identity.as_bytes();
+        let head = 12 + id.len();
+        if b.len() < head || &b[..8] != WARM_MAGIC || u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize != id.len() || &b[12..head] != id {
+            return None;
+        }
+        Some(b[head..].to_vec())
+    }
+
+    fn write(&mut self, hint: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        if let Some(d) = self.path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        let mut pending = self.path.clone().into_os_string();
+        pending.push(".pending");
+        let mut f = std::fs::File::options().write(true).create(true).truncate(true).mode(0o600).open(&pending)?;
+        f.write_all(WARM_MAGIC)?;
+        f.write_all(&(self.identity.len() as u32).to_le_bytes())?;
+        f.write_all(self.identity.as_bytes())?;
+        f.write_all(hint)?;
+        f.sync_all()?;
+        std::fs::rename(&pending, &self.path)?;
+        self.last = Some(Instant::now());
+        Ok(())
+    }
+}
+
+/// The period of a loop at the end of `toks` within the last `window` tokens: some period L
+/// (1 <= L <= window/4) whose last 4 repetitions are identical (4L tokens), and at least 16
+/// tokens long in total, so short legitimate repeats (`}}}}`, a blank line) do not trigger.
+pub fn repeat_loop(toks: &[u32], window: usize) -> Option<usize> {
+    let n = toks.len();
+    if window < 16 || n < 16 {
+        return None;
+    }
+    for l in 1..=window / 4 {
+        let span = (4 * l).max(16);
+        if span > window || span > n {
+            break;
+        }
+        let tail = &toks[n - span..];
+        if tail.iter().enumerate().all(|(i, &t)| i < l || t == tail[i - l]) {
+            return Some(l);
+        }
+    }
+    None
+}
+
+/// Deepest grid position `base + k*step` that is `<= bound` and `> lo`.
+fn grid_floor(base: usize, step: usize, lo: usize, bound: usize) -> Option<usize> {
+    if bound <= lo || bound < base {
+        return None;
+    }
+    let p = base + (bound - base) / step * step;
+    (p > lo).then_some(p)
+}
+
+fn find_stop_full(text: &str, from: usize, stops: &[String]) -> Option<(usize, String)> {
+    let mut best: Option<(usize, String)> = None;
+    for s in stops {
+        if s.is_empty() {
+            continue;
+        }
+        if let Some(i) = text[from..].find(s.as_str()) {
+            let p = from + i;
+            if best.as_ref().map(|b| p < b.0).unwrap_or(true) {
+                best = Some((p, s.clone()));
+            }
+        }
+    }
+    best
+}
+
+/// The disk class of a RAM checkpoint priority; None = not written (pre-think points are RAM only).
+fn snap_class(prio: u8) -> Option<&'static str> {
+    match prio {
+        crate::cache::PRIO_ANCHOR => Some("anchor"),
+        crate::cache::PRIO_QUERY => Some("query"),
+        // v0.1.4: a user-message start is stored as a turn point (no new disk class)
+        crate::cache::PRIO_TURN | crate::cache::PRIO_USER => Some("turn"),
+        // v0.2.0 H4: a client snapshot point is kept on disk like a compaction cut (no new class)
+        crate::cache::PRIO_CUT | crate::cache::PRIO_SNAP => Some("cut"),
+        crate::cache::PRIO_PRETHINK => None,
+        _ => Some("tail"),
+    }
+}
+
+/// Snapshot classes thinning always keeps (with the head): the anchor and the compaction cut.
+fn must_keep(class: &str) -> bool {
+    class == "anchor" || class == "cut"
+}
+
+/// The lineage of a live state of `tokens` (chain `hs`, blocks `live` on disk) in the store (P2b):
+/// the manifest it continues (the deepest whose whole content is a prefix of it), the other such
+/// ancestors it absorbs, that manifest, and the snapshots of those manifests still consistent with
+/// `live` and `tokens` (positions <= n). Without an ancestor a new manifest starts under the
+/// lineage's session id or, when a sibling holds that id (a fork, a retry, an edit), under an id of
+/// its own: a sibling's head is never replaced.
+type Lineage = (String, Vec<String>, Option<crate::state_store::Manifest>, Vec<crate::state_store::SnapRef>);
+
+fn lineage(st: &crate::state_store::StateStore, hs: &[String], tokens: &[u32], live: &[(String, String)], first_user: Option<usize>) -> Lineage {
+    use crate::state_store::{session_id, snap_key, Manifest, SnapRef, BLOCK};
+    let n = tokens.len();
+    let head_key = snap_key(&st.ident.hash, hs, tokens, n);
+    let is_ancestor = |o: &Manifest| {
+        o.n_tokens <= n && o.blocks.len() <= live.len() && live.starts_with(&o.blocks) && o.snaps.iter().any(|x| x.pos == o.n_tokens && snap_key(&st.ident.hash, hs, tokens, x.pos) == x.key)
+    };
+    let mut ancestors: Vec<&Manifest> = st.manifests.values().filter(|o| is_ancestor(o)).collect();
+    ancestors.sort_by_key(|o| (std::cmp::Reverse(o.n_tokens), std::cmp::Reverse(o.atime), o.sid.clone()));
+    let absorbed: Vec<String> = ancestors.iter().skip(1).map(|o| o.sid.clone()).collect();
+    let sid = match ancestors.first() {
+        Some(p) => p.sid.clone(),
+        None => {
+            let base = session_id(&st.ident.hash, tokens, first_user.unwrap_or(0));
+            if st.manifests.contains_key(&base) {
+                crate::prefix_store::sha256_hex(format!("{base}/{head_key}").as_bytes())[..32].to_string()
+            } else {
+                base
+            }
+        }
+    };
+    let prev = st.manifest(&sid).cloned();
+    let consistent = |s: &SnapRef, blocks: &[(String, String)]| {
+        let k = s.pos / BLOCK;
+        s.pos <= n && k <= live.len() && blocks.len() >= k && blocks[..k] == live[..k] && snap_key(&st.ident.hash, hs, tokens, s.pos) == s.key
+    };
+    let mut kept: Vec<SnapRef> = Vec::new();
+    for m in prev.iter().chain(absorbed.iter().filter_map(|a| st.manifests.get(a))) {
+        for s in &m.snaps {
+            if consistent(s, &m.blocks) && !kept.iter().any(|c| c.pos == s.pos) {
+                kept.push(s.clone());
+            }
+        }
+    }
+    (sid, absorbed, prev, kept)
+}
+
+/// What the decode loop holds for the next position: the logits row, or (greedy fast path)
+/// only its argmax.
+enum NextRow {
+    Logits(Vec<f32>),
+    Argmax(u32),
+}
+
+/// OXE_TIMING_DIAG per-request split of the decode loop (ms).
+#[derive(Default)]
+struct DiagSplit {
+    /// engine calls before the warm-up cut (`oxe bench --warmup`, OXE_TIMING_DIAG_WARMUP, default 16)
+    warmup: usize,
+    /// after the cut: engine ms, engine calls, tokens, and the loop's start time
+    engine_ms_warm: f64,
+    n_engine_warm: usize,
+    warm_at: Option<(Instant, usize)>,
+    engine_ms: f64,
+    copy_ms: f64,
+    sample_ms: f64,
+    probs_ms: f64,
+    text_ms: f64,
+    emit_ms: f64,
+    n_engine: usize,
+    n_emit: usize,
+}
+
+impl DiagSplit {
+    fn engine(&mut self, ms: f64, n_decoded: usize) {
+        self.engine_ms += ms;
+        self.n_engine += 1;
+        if self.n_engine > self.warmup {
+            self.engine_ms_warm += ms;
+            self.n_engine_warm += 1;
+        }
+        if self.n_engine == self.warmup {
+            self.warm_at = Some((Instant::now(), n_decoded));
+        }
+    }
+}
+
+/// ms since `t`.
+pub(crate) fn ms_since(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1e3
+}
+
+/// ms since `*t`, and restart `*t`.
+fn lap(t: &mut Instant) -> f64 {
+    let now = Instant::now();
+    let d = now.duration_since(*t).as_secs_f64() * 1e3;
+    *t = now;
+    d
+}
+
+/// does `text` end with a proper prefix of a stop string?
+fn ends_with_partial_stop(text: &str, stops: &[String]) -> bool {
+    stops.iter().any(|s| {
+        let sb = s.as_bytes();
+        let tb = text.as_bytes();
+        (1..sb.len()).any(|k| k <= tb.len() && tb.ends_with(&sb[..k]))
+    })
+}
+
+impl<E: Engine> Worker<E> {
+    pub fn new(engine: E, max_snapshots: usize) -> Self {
+        // turn checkpoints use only the slots beyond the 4 anchor/query/tail checkpoints need
+        let turns = 4.min(max_snapshots.saturating_sub(4));
+        let mut cache = PrefixCache::new(max_snapshots);
+        cache.max_turn = turns;
+        Worker {
+            engine,
+            cache,
+            ubatch: model::engine::UBATCH,
+            store: None,
+            turn_checkpoints: turns,
+            sessions: None,
+            ledger: None,
+            repeat_watchdog: 0,
+            spec_table: None,
+            mtp_max_ctx: None,
+            mtp_guard: None,
+            mtp_guard_trips: 0,
+            msg_split: false,
+            warm: None,
+            states: None,
+            live_blocks: Vec::new(),
+            last_first_user: None,
+            persist_every: 4096,
+            progress_mark: 0,
+            state_dirty: true,
+            persisted_head: None,
+            preloaded: None,
+            last_resume: ("cold", 0.0),
+            snap_chosen: None,
+            snap_why: None,
+            req_restore_ms: 0.0,
+            req_ckpt_ms: 0.0,
+            trace_logits: None,
+            last_preload_ms: None,
+            legacy_off: None,
+            user_window: 16 << 10,
+            park_write: true,
+            offlock: true,
+            snaps_pending: true,
+            live_hint: None,
+            legacy_writes: true,
+            opt_write_limit: usize::MAX,
+            shutdown_file_grace: std::time::Duration::from_secs(5),
+            held_bytes: 0,
+            restore_bps: (0.83e9, 0.64e9),
+            restores: 0,
+        }
+    }
+
+    /// Process start: hand the stored warm-up hint to the engine (it queues the reads and
+    /// returns). Returns the engine's log line, None without a usable file.
+    pub fn load_warm(&mut self) -> Option<String> {
+        let hint = self.warm.as_ref()?.read()?;
+        match self.engine.apply_warm_hint(&hint) {
+            Ok(line) => Some(line),
+            Err(e) => {
+                eprintln!("oxe-server: warm file ignored: {}", e.0);
+                None
+            }
+        }
+    }
+
+    /// Write the engine's warm-up hint (after a request: at most every `min_interval_s`;
+    /// `force`: shutdown). Returns whether a file was written.
+    pub fn save_warm(&mut self, force: bool) -> bool {
+        let Some(wf) = &mut self.warm else { return false };
+        if !force && wf.last.is_some_and(|t| t.elapsed().as_secs() < wf.min_interval_s) {
+            return false;
+        }
+        let Some(hint) = self.engine.warm_hint() else { return false };
+        match wf.write(&hint) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("oxe-server: warm file write failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Message-boundary schedule (`msg_split`): where the prefill of `prompt[n_cached..n-1]`
+    /// is split and which splits get a checkpoint.
+    ///
+    /// The splits are every message start of the prompt (`msg_starts` and `first_user`), a
+    /// function of the prompt alone: a cold server, a resident one resuming at the anchor and
+    /// a process that loaded the anchor from the prefix store all evaluate the same ubatches
+    /// (each message in ubatch-sized chunks from its start), so they compute the same bits.
+    /// The anchor is exactly the first user message (not its ubatch-grid floor, which with
+    /// Flash's 4096-token ubatch would be 0 for most system prompts), the query checkpoint is
+    /// the generation prompt's message start, turn checkpoints are the newest
+    /// `turn_checkpoints` other message starts. Returns (canonical, splits): `canonical` =
+    /// the state at `n_cached` is itself on this schedule (position 0 or a message start of
+    /// a clean state), so everything computed from it is too.
+    fn plan_messages(&self, p: &GenParams, n_cached: usize, n: usize) -> (bool, Vec<(usize, Option<u8>)>) {
+        let mut b: Vec<usize> = p.msg_starts.iter().copied().chain(p.first_user).filter(|&x| x > 0 && x < n - 1).collect();
+        b.sort_unstable();
+        b.dedup();
+        let canonical = self.cache.clean && (n_cached == 0 || b.binary_search(&n_cached).is_ok());
+        let query = if p.query_start { b.last().copied() } else { None };
+        let new: Vec<usize> = b.into_iter().filter(|&x| x > n_cached).collect();
+        let is_turn = |x: usize| Some(x) != p.first_user && Some(x) != query;
+        let n_turn = new.iter().filter(|&&x| is_turn(x)).count();
+        let mut skip = n_turn.saturating_sub(self.turn_checkpoints);
+        let splits = new
+            .into_iter()
+            .map(|x| {
+                let prio = if Some(x) == p.first_user {
+                    Some(crate::cache::PRIO_ANCHOR)
+                } else if Some(x) == query {
+                    Some(crate::cache::PRIO_QUERY)
+                } else if skip > 0 {
+                    skip -= 1;
+                    None
+                } else {
+                    Some(crate::cache::PRIO_TURN)
+                };
+                (x, prio)
+            })
+            .collect();
+        (canonical, splits)
+    }
+
+    /// Ubatch-grid schedule (the default): checkpoints only at grid positions, so the split
+    /// changes no ubatch boundary (see cache.rs).
+    fn plan_grid(&self, p: &GenParams, n_cached: usize, n: usize) -> (bool, Vec<(usize, Option<u8>)>) {
+        let u = self.ubatch.max(1);
+        let aligned = self.cache.clean && n_cached % u == 0;
+        let base = if aligned { 0 } else { n_cached };
+        let anchor = p.first_user.and_then(|f| grid_floor(base, u, n_cached, f.min(n - 1)));
+        let query = if p.query_start { grid_floor(base, u, n_cached, n.saturating_sub(4).min(n - 1)) } else { None };
+        // turn checkpoints: grid floors of the message starts after the anchor, newest first
+        let mut turns: Vec<usize> = p.msg_starts.iter().filter(|&&m| p.first_user.map_or(true, |f| m > f)).filter_map(|&m| grid_floor(base, u, n_cached, m.min(n - 1))).collect();
+        turns.sort_unstable();
+        turns.dedup();
+        let skip = turns.len().saturating_sub(self.turn_checkpoints);
+        let mut chosen: Vec<usize> = turns[skip..].to_vec();
+        // v0.1.4: the newest `max_user` user-message starts of the last `user_window` tokens get a
+        // class of their own (PRIO_USER, cache.rs), so the turn points of the next tool hops no
+        // longer evict them; the turn points are the newest other message starts, up to their cap.
+        // A user start's point is its grid floor in the new part of the prompt, or, when no grid
+        // position lies between the reused prefix and the start (the usual agentic case: a user
+        // message right after the previous reply), the reused prefix's end `n_cached` itself: the
+        // prefill starts there anyway, so that point is no new split (and often the reply's own
+        // end-of-generation checkpoint, which then is kept instead of evicted first). Either way no
+        // ubatch boundary moves: the numerics are those of v0.1.3.
+        let mut user_pts: Vec<usize> = Vec::new();
+        if self.user_window > 0 && self.cache.max_user > 0 && !p.user_starts.is_empty() {
+            let lo = n.saturating_sub(self.user_window);
+            let mut users: Vec<usize> = p
+                .user_starts
+                .iter()
+                .filter(|&&m| m >= lo && m >= n_cached && p.first_user.map_or(true, |f| m > f))
+                .map(|&m| grid_floor(base, u, n_cached, m.min(n - 1)).unwrap_or(n_cached))
+                .filter(|&x| x > 0)
+                .collect();
+            users.sort_unstable();
+            users.dedup();
+            user_pts = users.iter().rev().copied().take(self.cache.max_user).collect();
+            user_pts.sort_unstable();
+            let others: Vec<usize> = turns.iter().copied().filter(|t| !user_pts.contains(t)).collect();
+            let skip = others.len().saturating_sub(self.turn_checkpoints);
+            chosen = others[skip..].to_vec();
+        }
+        // v0.1.3: the user-message starts of the last `user_window` tokens come first (an edit, a
+        // retry or a compaction cuts there), then the newest other message starts, up to the cap
+        else if self.user_window > 0 && self.turn_checkpoints > 0 && !p.user_starts.is_empty() {
+            let lo = n.saturating_sub(self.user_window);
+            let mut users: Vec<usize> = p.user_starts.iter().filter(|&&m| m >= lo && p.first_user.map_or(true, |f| m > f)).filter_map(|&m| grid_floor(base, u, n_cached, m.min(n - 1))).collect();
+            users.sort_unstable();
+            users.dedup();
+            if !users.is_empty() {
+                let mut pick: Vec<usize> = users.iter().rev().copied().take(self.turn_checkpoints).collect();
+                for &t in turns.iter().rev() {
+                    if pick.len() >= self.turn_checkpoints {
+                        break;
+                    }
+                    if !pick.contains(&t) {
+                        pick.push(t);
+                    }
+                }
+                pick.sort_unstable();
+                chosen = pick;
+            }
+        }
+        let mut splits: Vec<(usize, u8)> = anchor
+            .map(|a| (a, crate::cache::PRIO_ANCHOR))
+            .into_iter()
+            .chain(query.map(|q| (q, crate::cache::PRIO_QUERY)))
+            .chain(chosen.iter().map(|&t| (t, crate::cache::PRIO_TURN)))
+            .chain(user_pts.iter().map(|&t| (t, crate::cache::PRIO_USER)))
+            .filter(|&(x, _)| x < n - 1)
+            .collect();
+        splits.sort();
+        splits.dedup_by(|b, a| {
+            if a.0 == b.0 {
+                if crate::cache::rank(b.1) > crate::cache::rank(a.1) {
+                    a.1 = b.1;
+                }
+                true
+            } else {
+                false
+            }
+        });
+        (aligned, splits.into_iter().map(|(x, pr)| (x, Some(pr))).collect())
+    }
+
+    /// Load the longest entry of the session cache (`sessions`) or the prefix store that
+    /// beats `n_cached`; returns the new n_cached.
+    fn load_stored(&mut self, sessions: bool, prompt: &[Token], n_cached: usize) -> usize {
+        let st = if sessions { self.sessions.as_ref() } else { self.store.as_ref() };
+        let Some(st) = st else { return n_cached };
+        let Some(n) = st.best(prompt, prompt.len() - 1).filter(|&n| n > n_cached) else { return n_cached };
+        let what = if sessions { "session cache" } else { "prefix store" };
+        match st.load(&mut self.engine, prompt, n) {
+            Ok(l) => {
+                eprintln!("oxe-server: {what}: loaded {} tokens in {:.0} ms", l.n, l.ms);
+                self.cache.last_src = if sessions { "session" } else { "store" };
+                // prefix-store entries are on the ubatch grid of a cold prefill; sessions are not
+                self.cache.adopt(&prompt[..n], !sessions);
+                n
+            }
+            Err(e) => {
+                eprintln!("oxe-server: {e}");
+                self.cache.reset(&mut self.engine);
+                0
+            }
+        }
+    }
+
+    /// The disk restores worth trying for `prompt`, in order: the DEEPEST usable state first (any
+    /// source; a deeper exact state is never traded for a shallower one plus a re-prefill, whose
+    /// batched numerics differ from the decoded state: v0.1.2 thinking-restart identity); among
+    /// sources of equal depth the cheapest estimated restore (bytes at the source's throughput),
+    /// then the segmented store. Only sources deeper than `n_cached` (what the live / RAM state
+    /// gives) are listed. Pure: no engine or store state changes.
+    pub(crate) fn plan_restore(&self, prompt: &[Token], n_cached: usize) -> Vec<RestoreSrc> {
+        let lim = prompt.len() - 1;
+        let rb = self.engine.kv_row_bytes().max(1) as f64;
+        let restore = |pos: usize, fixed: u64, bps: f64| ((pos as f64) * rb + fixed as f64) / bps * 1e3;
+        let mut c: Vec<(usize, f64, u8, RestoreSrc)> = Vec::new();
+        if let Some(st) = self.states.as_ref().filter(|s| s.budget > 0 && self.engine.kv_row_bytes() > 0) {
+            if let Some(pl) = st.lookup(prompt, lim, n_cached) {
+                c.push((pl.snap.pos, restore(pl.snap.pos, pl.snap.bytes, self.restore_bps.0), 0, RestoreSrc::State));
+            }
+        }
+        for (src, store, rank) in [(RestoreSrc::Session, self.sessions.as_ref(), 1u8), (RestoreSrc::Prefix, self.store.as_ref(), 2)] {
+            if let Some(pos) = store.and_then(|s| s.best(prompt, lim)).filter(|&p| p > n_cached) {
+                c.push((pos, restore(pos, 0, self.restore_bps.1), rank, src));
+            }
+        }
+        c.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+        c.into_iter().map(|x| x.3).collect()
+    }
+
+    /// CACHE-PERFECT P2: restore the deepest stored snapshot of `prompt` that beats `n_cached`
+    /// (blocks + snapshot, verified); returns the new n_cached. A bad file is dropped and the next
+    /// best one is tried once; after a failed load the engine starts cold (never a wrong state).
+    fn load_states(&mut self, prompt: &[Token], mut n_cached: usize) -> usize {
+        if self.engine.kv_row_bytes() == 0 || self.states.as_ref().is_none_or(|s| s.budget == 0) {
+            return n_cached;
+        }
+        let lim = prompt.len() - 1;
+        for _ in 0..2 {
+            let st = self.states.as_mut().unwrap();
+            let Some(plan) = st.lookup(prompt, lim, n_cached) else { return n_cached };
+            match st.load(&mut self.engine, &plan) {
+                Ok(ms) => {
+                    let pos = plan.snap.pos;
+                    eprintln!("oxe-server: state cache: resumed {pos} tokens ({} blocks + {} snapshot) in {ms:.0} ms", plan.blocks.len(), plan.snap.class);
+                    self.cache.adopt(&prompt[..pos], plan.snap.clean);
+                    self.cache.last_src = "state";
+                    self.live_blocks = plan.blocks.clone();
+                    self.cache.low_water = pos;
+                    return pos;
+                }
+                Err(e) => {
+                    eprintln!("oxe-server: {e}");
+                    self.cache.reset(&mut self.engine);
+                    self.live_blocks.clear();
+                    n_cached = 0;
+                }
+            }
+        }
+        n_cached
+    }
+
+    /// CACHE-PERFECT P2: write the live state to the state store (off the request path, after
+    /// the reply). `hint`: the session hint (`X-Oxe-Session`, stored hashed). Stops between files
+    /// when `cancel` rises (a request arrived; what is written stays valid). Returns files written.
+    pub fn persist_states(&mut self, hint: Option<&str>, cancel: Option<&std::sync::atomic::AtomicBool>) -> usize {
+        self.persist(hint, PersistMode::Reply, cancel).files()
+    }
+
+    /// Write the live state to the state store: the blocks not yet on disk, the head snapshot (the
+    /// resume point), in `Reply` mode the RAM checkpoints worth keeping (`state_store::thin`), then
+    /// the session manifest (written last), then the budget. See [`PersistMode`].
+    ///
+    /// Lineage (P2b): the manifest continued is the deepest one whose whole content is a prefix of
+    /// the live state (its blocks, and its head key at its length); other such ancestors are
+    /// absorbed (their consistent snapshots move over, their manifests go). Without an ancestor a
+    /// new manifest starts, under `session_id` or, when that id is a sibling's (a fork, a retry, an
+    /// edit), under an id of its own: a sibling's head is never replaced.
+    pub fn persist(&mut self, hint: Option<&str>, mode: PersistMode, cancel: Option<&std::sync::atomic::AtomicBool>) -> PersistReport {
+        use crate::state_store::{chain, snap_key, thin_max, Manifest, SnapRef, BLOCK};
+        let mut rep = PersistReport::default();
+        let rb = self.engine.kv_row_bytes();
+        let Some(st) = self.states.as_mut() else { return rep };
+        let n = self.cache.tokens.len();
+        if rb == 0 || st.budget == 0 || n < st.min_tokens || self.engine.n_past() != n {
+            rep.note = Some("nothing to write".into());
+            return rep;
+        }
+        let deadline = match mode {
+            PersistMode::Shutdown(d) => Some(d),
+            _ => None,
+        };
+        let stop = || cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) || deadline.is_some_and(|d| Instant::now() >= d);
+        // audit v0.1.2 N2: a snapshot file started before the shutdown deadline may finish past it,
+        // but never past this hard bound (inside the controller's 10 s unload grace)
+        let file_deadline = deadline.map(|d| d + self.shutdown_file_grace);
+        let tokens = self.cache.tokens.clone();
+        let hs = chain(&st.ident.hash, &tokens);
+        let head_key = snap_key(&st.ident.hash, &hs, &tokens, n);
+        // nothing changed since the last complete write and its head is still listed: done (the
+        // shutdown after a finished post-reply write costs a lookup, not a 63 MiB re-hash); a reply
+        // write still has the optional checkpoints to do when an earlier one was cut (v0.1.3)
+        let listed = st.manifests.values().any(|m| m.snaps.iter().any(|x| x.key == head_key && x.pos == n));
+        // v0.1.3 store-depth: a shutdown too (a SIGTERM right after a reply cut its optional writes;
+        // the restart then resumed at an older point than the legacy park had kept)
+        if !self.state_dirty && self.persisted_head.as_deref() == Some(head_key.as_str()) && listed && (mode == PersistMode::Progress || !self.snaps_pending) {
+            rep.note = Some("already on disk".into());
+            return rep;
+        }
+        let lw = self.cache.low_water.min(n) / BLOCK;
+        // still on disk: a sweep removes blocks no manifest names yet (a write a request cut short)
+        let valid = (0..self.live_blocks.len().min(lw).min(hs.len())).take_while(|&i| self.live_blocks[i].0 == hs[i] && st.has_block(&self.live_blocks[i].0, &self.live_blocks[i].1)).count();
+        self.live_blocks.truncate(valid);
+        let mut buf = Vec::with_capacity(BLOCK * rb);
+        for i in valid..hs.len() {
+            if stop() {
+                rep.note = Some(format!("stopped after {} of {} new blocks", rep.blocks, hs.len() - valid));
+                return rep;
+            }
+            let before = st.stats.bytes_written;
+            match st.write_block(&mut self.engine, &hs[i], i, &mut buf) {
+                Ok(c) => {
+                    self.live_blocks.push((hs[i].clone(), c));
+                    rep.blocks += 1;
+                    rep.bytes += st.stats.bytes_written - before;
+                }
+                Err(e) => {
+                    eprintln!("oxe-server: state cache: block not written: {e}");
+                    rep.note = Some(format!("block not written: {e}"));
+                    return rep;
+                }
+            }
+        }
+        self.cache.low_water = n;
+        let now = crate::state_store::now_s();
+        let (sid, absorbed, prev, kept0) = lineage(st, &hs, &tokens, &self.live_blocks, self.last_first_user);
+        // snapshots: the ones of the ancestors still consistent with our blocks and tokens, the
+        // head (live state), the live RAM checkpoints
+        let mut cands: Vec<(SnapRef, Option<usize>)> = kept0.into_iter().map(|r| (r, None)).collect(); // (ref, index into checkpoints to write)
+        let cps = self.cache.checkpoints();
+        let optional = mode != PersistMode::Progress;
+        if optional {
+            for (i, &(pos, prio, clean, _)) in cps.iter().enumerate() {
+                // pre-think points stay in RAM (v0.1.3: RAM only, design)
+                let Some(class) = snap_class(prio) else { continue };
+                if pos < n && pos >= BLOCK.min(n) && !cands.iter().any(|c| c.0.pos == pos) {
+                    let key = snap_key(&st.ident.hash, &hs, &tokens, pos);
+                    cands.push((SnapRef { pos, class: class.into(), key, c: String::new(), clean, bytes: 0 }, Some(i)));
+                }
+            }
+        }
+        cands.retain(|c| c.0.pos != n);
+        let keep = thin_max(cands.iter().map(|c| (c.0.pos, must_keep(&c.0.class))).chain([(n, true)]).collect(), n, st.max_snaps);
+        // P2 review: the head and the manifest first, the other checkpoints after. A cut (a new
+        // request, a kill inside the SIGTERM grace) then costs the optional points, not the resume.
+        let (kept, mut todo): (Vec<_>, Vec<_>) = cands.into_iter().filter(|c| keep.contains(&c.0.pos)).partition(|c| c.1.is_none());
+        // v0.1.3 store-depth: deepest first. A request arriving between files cuts the rest; the deep
+        // points (the prompt's last token, the compaction cut, the last user turn) save the most
+        // re-prefill and are the ones a retry, a warm restart or an edit of the last turn resumes
+        // at. Shallowest first, the v0.1.2 gate kept a 74K turn point and lost the 82.7K one.
+        todo.sort_by(|a, b| b.0.pos.cmp(&a.0.pos));
+        let mut snaps: Vec<SnapRef> = kept.into_iter().map(|c| c.0).collect();
+        if stop() {
+            rep.note = Some("stopped before the head snapshot".into());
+            return rep;
+        }
+        // the head is on disk already (an off-lock write committed it): reuse it (v0.1.3)
+        let existing = prev.as_ref().and_then(|m| m.snaps.iter().find(|x| x.pos == n && x.key == head_key)).filter(|x| st.has_snap(&x.key, &x.c)).cloned();
+        match existing {
+            Some(h) => snaps.push(SnapRef { class: "head".into(), clean: self.cache.clean, ..h }),
+            None => match st.write_snap_until(&mut self.engine, &head_key, n, None, cancel, file_deadline) {
+                Ok((c, bytes)) => {
+                    snaps.push(SnapRef { pos: n, class: "head".into(), key: head_key.clone(), c, clean: self.cache.clean, bytes });
+                    rep.bytes += bytes;
+                }
+                Err(e) => {
+                    eprintln!("oxe-server: state cache: head snapshot not written: {e}");
+                    rep.note = Some(format!("head snapshot not written: {e}"));
+                    return rep;
+                }
+            },
+        }
+        snaps.sort_by_key(|s| s.pos);
+        let old_hint = prev.as_ref().and_then(|m| m.hint.clone()).or_else(|| absorbed.iter().find_map(|a| st.manifests.get(a).and_then(|m| m.hint.clone())));
+        let owners = crate::state_store::merge_owners(prev.iter().chain(absorbed.iter().filter_map(|a| st.manifests.get(a))), Some(hint.map(crate::state_store::hint_hash)));
+        let mut m = Manifest {
+            sid: sid.clone(),
+            hint: hint.map(crate::state_store::hint_hash).or(old_hint),
+            owners,
+            created: prev.as_ref().map_or(now, |m| m.created),
+            atime: now,
+            n_tokens: n,
+            blocks: self.live_blocks.clone(),
+            snaps,
+        };
+        // the manifest is written even past the deadline: it is one small file, and without it
+        // the blocks and head just written would be swept at the next start
+        if let Err(e) = st.put_manifest(m.clone()) {
+            eprintln!("oxe-server: state cache: manifest not written: {e}");
+            rep.note = Some(format!("manifest not written: {e}"));
+            return rep;
+        }
+        rep.head = Some(n);
+        rep.sid = Some(sid.clone());
+        self.persisted_head = Some(head_key);
+        self.state_dirty = false;
+        for a in &absorbed {
+            st.drop_session(a);
+        }
+        if !optional {
+            st.enforce(Some(&sid));
+            return rep;
+        }
+        let mut added = false;
+        let mut cut = false;
+        // a shutdown starts an optional file only while one fits before its deadline
+        let late = || deadline.is_some_and(|d| Instant::now() + std::time::Duration::from_millis(250) >= d);
+        for (k, (r, idx)) in todo.into_iter().enumerate() {
+            if stop() || late() || k >= self.opt_write_limit {
+                rep.note = Some("optional snapshots cut by a request".into());
+                cut = true;
+                break;
+            }
+            // v0.1.3: a request that arrives inside a snapshot file stops it within one buffer
+            match st.write_snap_until(&mut self.engine, &r.key, r.pos, Some(cps[idx.unwrap()].3), cancel, file_deadline) {
+                Ok((c, bytes)) => {
+                    m.snaps.push(SnapRef { c, bytes, ..r });
+                    rep.snaps += 1;
+                    rep.bytes += bytes;
+                    added = true;
+                }
+                Err(e) => {
+                    if stop() {
+                        rep.note = Some("optional snapshots cut by a request".into());
+                        cut = true;
+                        break;
+                    }
+                    eprintln!("oxe-server: state cache: snapshot at {} not written: {e}", r.pos)
+                }
+            }
+        }
+        self.snaps_pending = cut;
+        if added {
+            m.snaps.sort_by_key(|s| s.pos);
+            if let Err(e) = st.put_manifest(m) {
+                eprintln!("oxe-server: state cache: manifest not written: {e}");
+                return rep;
+            }
+        }
+        if stop() || mode != PersistMode::Reply {
+            return rep;
+        }
+        let freed = st.enforce(Some(&sid));
+        if freed > 0 {
+            eprintln!("oxe-server: state cache: evicted {} MiB (budget {} MiB)", freed >> 20, st.budget >> 20);
+        }
+        rep
+    }
+
+    /// v0.1.3 (lane B item 6), phase 1 of the off-lock post-reply write, under the worker lock: copy
+    /// the new blocks and the head snapshot to RAM and build the manifest that names them. Phase 2
+    /// ([`crate::state_store::Staged::write`]) needs no lock: a request that arrives meanwhile runs
+    /// at once instead of waiting for the head file. Phase 3 is [`Worker::commit_staged`]. None:
+    /// nothing to stage; the caller then runs [`Worker::persist_states`] on the lock (nothing new,
+    /// only optional snapshots left, more than `STAGE_MAX_BLOCKS` new blocks, a refused write).
+    pub fn stage_persist(&mut self, hint: Option<&str>) -> Option<crate::state_store::Staged> {
+        use crate::state_store::{chain, snap_key, thin_max, Manifest, SnapRef, Staged, BLOCK, STAGE_MAX_BLOCKS};
+        if !self.offlock {
+            return None;
+        }
+        let rb = self.engine.kv_row_bytes();
+        let st = self.states.as_ref()?;
+        let n = self.cache.tokens.len();
+        if rb == 0 || st.budget == 0 || n < st.min_tokens || self.engine.n_past() != n || st.write_allowed().is_err() {
+            return None;
+        }
+        let tokens = self.cache.tokens.clone();
+        let hs = chain(&st.ident.hash, &tokens);
+        let head_key = snap_key(&st.ident.hash, &hs, &tokens, n);
+        if st.manifests.values().any(|m| m.snaps.iter().any(|x| x.key == head_key && x.pos == n)) {
+            return None;
+        }
+        let lw = self.cache.low_water.min(n) / BLOCK;
+        let valid = (0..self.live_blocks.len().min(lw).min(hs.len())).take_while(|&i| self.live_blocks[i].0 == hs[i] && st.has_block(&self.live_blocks[i].0, &self.live_blocks[i].1)).count();
+        if hs.len() - valid > STAGE_MAX_BLOCKS {
+            return None;
+        }
+        let mut blocks = Vec::with_capacity(hs.len() - valid);
+        for (i, h) in hs.iter().enumerate().skip(valid) {
+            match st.stage_block(&mut self.engine, h, i) {
+                Ok((c, data)) => blocks.push((h.clone(), i, c, data)),
+                Err(e) => {
+                    eprintln!("oxe-server: state cache: block not staged: {e}");
+                    return None;
+                }
+            }
+        }
+        let (head_c, head_payload) = match st.stage_snap(&mut self.engine, n) {
+            Ok(x) => x,
+            Err(e) => {
+                eprintln!("oxe-server: state cache: head snapshot not staged: {e}");
+                return None;
+            }
+        };
+        let mut live: Vec<(String, String)> = self.live_blocks[..valid].to_vec();
+        live.extend(blocks.iter().map(|b| (b.0.clone(), b.2.clone())));
+        let (sid, absorbed, prev, kept0) = lineage(st, &hs, &tokens, &live, self.last_first_user);
+        let keep = thin_max(kept0.iter().filter(|r| r.pos != n).map(|r| (r.pos, must_keep(&r.class))).chain([(n, true)]).collect(), n, st.max_snaps);
+        let mut snaps: Vec<SnapRef> = kept0.into_iter().filter(|r| r.pos != n && keep.contains(&r.pos)).collect();
+        snaps.push(SnapRef { pos: n, class: "head".into(), key: head_key.clone(), c: head_c.clone(), clean: self.cache.clean, bytes: crate::state_store::HDR_BYTES + head_payload.len() as u64 });
+        snaps.sort_by_key(|s| s.pos);
+        let now = crate::state_store::now_s();
+        let old_hint = prev.as_ref().and_then(|m| m.hint.clone()).or_else(|| absorbed.iter().find_map(|a| st.manifests.get(a).and_then(|m| m.hint.clone())));
+        let owners = crate::state_store::merge_owners(prev.iter().chain(absorbed.iter().filter_map(|a| st.manifests.get(a))), Some(hint.map(crate::state_store::hint_hash)));
+        let m = Manifest {
+            sid,
+            hint: hint.map(crate::state_store::hint_hash).or(old_hint),
+            owners,
+            created: prev.as_ref().map_or(now, |m| m.created),
+            atime: now,
+            n_tokens: n,
+            blocks: live,
+            snaps,
+        };
+        Some(Staged::new(st, blocks, head_key, head_c, head_payload, m, absorbed, n, self.cache.epoch))
+    }
+
+    /// v0.1.3 phase 3 (worker lock again): commit what [`Worker::stage_persist`] staged and phase 2
+    /// wrote (`written`). The manifest goes in unless a newer write of the same lineage landed
+    /// meanwhile; when the live state is still the staged one, the optional RAM checkpoints and the
+    /// budget follow on the lock (cut by `cancel` between and inside files).
+    pub fn commit_staged(&mut self, s: crate::state_store::Staged, written: Result<u64, String>, hint: Option<&str>, cancel: Option<&std::sync::atomic::AtomicBool>) -> PersistReport {
+        let mut rep = PersistReport::default();
+        let Some(st) = self.states.as_mut() else {
+            s.release();
+            return rep;
+        };
+        let bytes = match written {
+            Ok(b) => b,
+            Err(e) => {
+                s.release();
+                eprintln!("oxe-server: state cache: off-lock write failed: {e}");
+                rep.note = Some(format!("off-lock write failed: {e}"));
+                return rep;
+            }
+        };
+        if st.manifests.get(&s.manifest.sid).is_some_and(|m| m.n_tokens > s.n) {
+            // a newer write of this lineage landed while ours was on its way; ours is older (its
+            // files are swept at the next enforce)
+            s.release();
+            rep.note = Some("superseded by a newer write".into());
+            return rep;
+        }
+        // EG5: owners recorded since the stage (another hint wrote this lineage) are kept
+        let mut man = s.manifest.clone();
+        if let Some(cur) = st.manifests.get(&man.sid) {
+            man.owners = crate::state_store::merge_owners([cur, &s.manifest].into_iter(), None);
+        }
+        let r = st.put_manifest(man);
+        s.release();
+        if let Err(e) = r {
+            eprintln!("oxe-server: state cache: manifest not written: {e}");
+            rep.note = Some(format!("manifest not written: {e}"));
+            return rep;
+        }
+        for a in &s.absorbed {
+            st.drop_session(a);
+        }
+        let new_blocks = s.blocks.iter().filter(|b| b.3.is_some()).count();
+        st.stats.blocks_written += new_blocks as u64;
+        st.stats.snaps_written += 1;
+        st.stats.bytes_written += bytes;
+        rep.blocks = new_blocks;
+        rep.bytes = bytes;
+        rep.head = Some(s.n);
+        rep.sid = Some(s.manifest.sid.clone());
+        if self.cache.epoch == s.epoch && self.cache.tokens.len() == s.n {
+            self.live_blocks = s.manifest.blocks.clone();
+            self.cache.low_water = s.n;
+            self.persisted_head = Some(s.head_key.clone());
+            self.state_dirty = false;
+            let r2 = self.persist(hint, PersistMode::Reply, cancel);
+            rep.snaps = r2.snaps;
+            rep.bytes += r2.bytes;
+            rep.note = r2.note;
+        } else if let Some(st) = self.states.as_mut() {
+            st.enforce(Some(&s.manifest.sid));
+        }
+        rep
+    }
+
+    /// The SIGTERM write sequence (P2b M2; Codex review of 63eac16). With the state cache on, its
+    /// deadline-bounded write is the ONLY conversation writer: the legacy whole-state session cache
+    /// (`legacy`, main.rs passes `persist_sessions`) is skipped, because it streams whole states
+    /// with no bound (a clock check before it does not bound it) and the segmented store already
+    /// holds the durable state (progress + post-reply + this write). The warm file (a small hint)
+    /// is written only while time is left. Without the state cache the legacy sequence is as
+    /// before (warm file, then `legacy`; the controller's unload grace bounds it). Returns the log
+    /// lines (without the "oxe-server: " prefix).
+    pub fn shutdown_writes(&mut self, state_cache: bool, session_cache: bool, t0: Instant, deadline: Instant, legacy: &mut dyn FnMut(&mut Self) -> usize) -> Vec<String> {
+        let mut log = Vec::new();
+        let ms = |t0: Instant| t0.elapsed().as_secs_f64() * 1e3;
+        if state_cache {
+            let live = self.live_hint.clone();
+            let r = self.persist(live.as_deref(), PersistMode::Shutdown(deadline), None);
+            log.push(format!("state cache: shutdown write: {} in {:.0} ms", r.line(), ms(t0)));
+            if Instant::now() < deadline && self.save_warm(true) {
+                log.push("warm file written".into());
+            }
+            if session_cache {
+                log.push("session cache: not written at shutdown (the state cache holds the durable state; the legacy writer is unbounded)".into());
+            }
+            return log;
+        }
+        if self.save_warm(true) {
+            log.push("warm file written".into());
+        }
+        if session_cache {
+            let n = legacy(self);
+            log.push(format!("session cache: wrote {n} sessions in {:.0} ms", ms(t0)));
+        }
+        log
+    }
+
+    /// M1: inside a long prefill, write the progress every `persist_every` new tokens (called
+    /// between prefill chunks, where the engine and the cache agree). Never fails the request.
+    fn persist_progress(&mut self, p: &GenParams) {
+        if p.ephemeral || self.persist_every == 0 || self.states.as_ref().is_none_or(|s| s.budget == 0) || self.engine.kv_row_bytes() == 0 {
+            return;
+        }
+        let n = self.cache.tokens.len();
+        if n < self.progress_mark + self.persist_every {
+            return;
+        }
+        let t0 = Instant::now();
+        let r = self.persist(p.session.as_deref(), PersistMode::Progress, None);
+        self.progress_mark = n;
+        if r.head.is_some() {
+            eprintln!("oxe-server: state cache: prefill progress saved at {n} tokens ({}) in {:.0} ms", r.line(), t0.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+
+    /// Prefill `seg` (which starts on the checkpoint grid `base + k*u`) in calls cut at grid
+    /// points every CANCEL_UBATCHES ubatches, checking for a cancel before each call. The
+    /// engine chunks each call by `u` from its start, so the ubatch boundaries, and therefore
+    /// the numerics, are those of one unsplit call. On a cancel the engine and the cache hold
+    /// a consistent prefix of the prompt (a retry resumes from it).
+    fn prefill_chunks(&mut self, seg: &[Token], base: usize, u: usize, p: &GenParams) -> Result<(), GenError> {
+        let mut i = 0;
+        p.note_progress(self.cache.tokens.len(), None);
+        while i < seg.len() {
+            if p.cancelled() {
+                return Err(GenError::Cancelled);
+            }
+            let step = u * chunk_ubatches(seg.len() - i, u);
+            let cur = self.cache.tokens.len();
+            let next = base + ((cur.saturating_sub(base)) / step + 1) * step;
+            let take = (next - cur).min(seg.len() - i);
+            let chunk = &seg[i..i + take];
+            // nobody reads these logits: the last prompt token is evaluated on its own below
+            match self.engine.prefill_quiet(chunk) {
+                Ok(()) => {}
+                // F4: the engine stopped inside this call and rolled back to its start: nothing of the chunk is in
+                // the state, so the cache (not yet advanced) and the engine agree
+                Err(e) if e.0.starts_with(crate::engine::CANCELLED_MARK) => return Err(GenError::Cancelled),
+                Err(e) => return Err(e.into()),
+            }
+            self.cache.appended(chunk);
+            // everything in the state is prompt so far: a cancel here leaves a session that
+            // parking keeps (P1), so a retry after another request still resumes it
+            self.cache.prompt_len = self.cache.tokens.len();
+            i += take;
+            p.note_progress(self.cache.tokens.len(), None);
+            self.persist_progress(p);
+        }
+        Ok(())
+    }
+
+    /// Write parked sessions evicted from RAM to the session cache.
+    fn spill_sessions(&mut self) {
+        let out = std::mem::take(&mut self.cache.spilled);
+        if !self.legacy_writes {
+            return; // store-depth: the state store holds them (the park write put them there)
+        }
+        if let Some(st) = &mut self.sessions {
+            for (t, b) in out {
+                if !st.contains(&t) {
+                    st.save_async(t, b);
+                }
+            }
+        }
+    }
+
+    /// LONG-CTX disk park: when `prepare(prompt)` would park the live session and its state is at
+    /// least `cache.park_disk_min` bytes, stream it to the session cache instead of copying it
+    /// into RAM (no full-state copy in memory: 2.75 GiB at 128K f16), together with its deepest
+    /// checkpoints beyond the kept prefix (at most 2, as at shutdown: a retry or the next user
+    /// message resumes there). The next `prepare` then does not park; a later request finds the
+    /// session through the session-cache lookup. Off unless `--park-disk-min-bytes` and
+    /// `--session-cache` are set. Returns the number of entries written.
+    pub(crate) fn park_large(&mut self, prompt: &[Token]) -> usize {
+        if self.cache.park_disk_min == 0 || self.sessions.is_none() || !self.legacy_writes {
+            return 0;
+        }
+        let Some(keep) = self.cache.park_keep(prompt) else { return 0 };
+        if self.engine.state_size_hint() < self.cache.park_disk_min {
+            return 0;
+        }
+        let t0 = std::time::Instant::now();
+        let tokens = self.cache.tokens.clone();
+        let mut n = 0;
+        if self.stream_session(&tokens) {
+            n += 1;
+        }
+        // checkpoints of the dropped part: restore each (KV below it is unchanged) and stream it,
+        // deepest first; the cache follows the engine down (consistent for the prepare below)
+        for (pos, snap) in self.cache.take_points_above(keep, 2) {
+            if self.engine.restore(&snap).is_ok() {
+                self.cache.tokens.truncate(pos);
+                self.cache.epoch += 1;
+                self.cache.low_water = self.cache.low_water.min(pos);
+                self.cache.prompt_len = self.cache.prompt_len.min(pos);
+                self.cache.clean = false;
+                if self.stream_session(&tokens[..pos]) {
+                    n += 1;
+                }
+            }
+        }
+        if self.engine.n_past() != self.cache.tokens.len() {
+            // a failed restore: start the request from the kept prefix's checkpoint
+            let _ = self.cache.rewind_to(&mut self.engine, 0);
+        }
+        self.cache.skip_park_once = true;
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
+        self.cache.stats.disk_parks += 1;
+        self.cache.stats.disk_park_ms += ms;
+        eprintln!("oxe-server: parked a session of {} tokens to the session cache ({n} entries) in {ms:.0} ms", tokens.len());
+        n
+    }
+
+    /// Stream the engine's current state to the session cache as the entry for `tokens`
+    /// (skipped below the store's minimum or when present). True when written.
+    fn stream_session(&mut self, tokens: &[Token]) -> bool {
+        let Some(st) = self.sessions.as_mut() else { return false };
+        if tokens.len() < st.min_tokens || st.contains(tokens) {
+            return false;
+        }
+        let eng = &mut self.engine;
+        match st.save_stream(tokens, &mut |w| eng.save_state(w).map_err(|e| e.0)) {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("oxe-server: session cache: {e}");
+                false
+            }
+        }
+    }
+
+    /// Shutdown (SIGTERM: unload, model switch): write the live session and every parked one
+    /// to the session cache and wait for the writes. Besides each session's full state, its
+    /// deepest query and turn checkpoints are written as entries of their own (state at that
+    /// position, made by the engine: load/restore + save_state), so a prompt that diverges
+    /// inside the session (a new user message re-renders the previous query) still resumes
+    /// after a reload. Writes one entry at a time (bounded memory). Leaves the engine reset.
+    /// Returns the number of entries written.
+    pub fn persist_sessions(&mut self) -> usize {
+        if self.sessions.is_none() {
+            return 0;
+        }
+        let min = self.sessions.as_ref().unwrap().min_tokens;
+        let mut n = 0;
+        let mut streamed = 0;
+        let mut put = |w: &mut Self, t: Vec<u32>, b: Vec<u8>| {
+            let st = w.sessions.as_mut().unwrap();
+            if t.len() >= min && !st.contains(&t) {
+                st.save_async(t, b);
+                st.flush();
+                n += 1;
+            }
+        };
+        let err = |e: crate::engine::EngineError| eprintln!("oxe-server: session cache: {}", e.0);
+        // the live session: full state, then its checkpoints from the engine as it is
+        // (LONG-CTX: streamed into the files, no full-state buffer in RAM)
+        if self.cache.prompt_len >= self.cache.park_min.max(1) {
+            let tokens = self.cache.tokens.clone();
+            let points = self.cache.take_live_points();
+            if self.stream_session(&tokens) {
+                streamed += 1;
+            }
+            for (pos, s) in points {
+                if pos < min {
+                    continue;
+                }
+                match self.engine.restore(&s) {
+                    Ok(()) => {
+                        if self.stream_session(&tokens[..pos]) {
+                            streamed += 1;
+                        }
+                    }
+                    Err(e) => err(e),
+                }
+            }
+        }
+        // parked sessions: load each, then its checkpoints
+        for (tokens, state, points) in self.cache.drain_parked() {
+            let want: Vec<_> = points.into_iter().filter(|p| p.0 >= min).collect();
+            if !want.is_empty() {
+                match self.engine.load_state(&mut &state[..], tokens.len()) {
+                    Ok(()) => {
+                        for (pos, s) in want {
+                            match self.engine.restore(&s) {
+                                Ok(()) => {
+                                    if self.stream_session(&tokens[..pos]) {
+                                        streamed += 1;
+                                    }
+                                }
+                                Err(e) => err(e),
+                            }
+                        }
+                    }
+                    Err(e) => err(e),
+                }
+            }
+            put(self, tokens, state);
+        }
+        for (t, b) in std::mem::take(&mut self.cache.spilled) {
+            put(self, t, b);
+        }
+        self.cache.reset(&mut self.engine);
+        n + streamed
+    }
+
+    /// P2b preload: if a preloaded state waits in the engine, adopt it when `prompt` continues it
+    /// (its chain and snapshot key match: the same check a disk lookup makes) so `prepare` sees it
+    /// as the live session; otherwise drop it (reset). Returns the preload's ms when adopted.
+    fn adopt_preloaded(&mut self, prompt: &[Token], cache_prompt: bool) -> Option<f64> {
+        let pre = self.preloaded.take()?;
+        let st = self.states.as_ref();
+        let pos = pre.plan.snap.pos;
+        let ok = cache_prompt
+            && self.cache.tokens.is_empty()
+            && self.engine.n_past() == pos
+            && pos < prompt.len()
+            && st.is_some_and(|st| {
+                let hs = crate::state_store::chain(&st.ident.hash, &prompt[..pos]);
+                hs.len() >= pre.plan.blocks.len()
+                    && pre.plan.blocks.iter().zip(&hs).all(|((h, _), x)| h == x)
+                    && crate::state_store::snap_key(&st.ident.hash, &hs, prompt, pos) == pre.plan.snap.key
+            });
+        if !ok {
+            self.cache.reset(&mut self.engine);
+            return None;
+        }
+        self.cache.adopt(&prompt[..pos], pre.plan.snap.clean);
+        self.live_blocks = pre.plan.blocks.clone();
+        self.cache.low_water = pos;
+        eprintln!("oxe-server: state cache: the preloaded state ({pos} tokens) continues in this request");
+        Some(pre.ms)
+    }
+
+    /// P2b preload (`POST /state-cache/preload`): load the newest session's deepest snapshot (or
+    /// the newest of `hint`'s sessions) into the idle engine, checking `cancel` between blocks.
+    /// Whole snapshots only: a cancelled or failed preload leaves the engine reset. Never runs over
+    /// a live conversation. Returns (status, position, ms).
+    pub fn preload(&mut self, hint: Option<&str>, cancel: &std::sync::atomic::AtomicBool) -> (&'static str, usize, f64) {
+        if !self.cache.tokens.is_empty() || self.preloaded.is_some() {
+            return ("live", self.cache.tokens.len(), 0.0);
+        }
+        let Some(st) = self.states.as_mut() else { return ("off", 0, 0.0) };
+        if st.budget == 0 {
+            // budget 0: the disk tier is off (as in load_states), a preload reads nothing either
+            return ("off", 0, 0.0);
+        }
+        let want = hint.map(crate::state_store::hint_hash);
+        let Some(plan) = st.newest_plan(want.as_deref()) else { return ("none", 0, 0.0) };
+        match st.load_cancellable(&mut self.engine, &plan, Some(cancel)) {
+            Ok(ms) => {
+                let pos = plan.snap.pos;
+                eprintln!("oxe-server: state cache: preloaded {pos} tokens ({} blocks + {} snapshot) in {ms:.0} ms", plan.blocks.len(), plan.snap.class);
+                self.preloaded = Some(Preloaded { plan, ms });
+                ("done", pos, ms)
+            }
+            Err(e) => {
+                self.engine.reset();
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("oxe-server: state cache: preload cancelled by a request");
+                    ("cancelled", 0, 0.0)
+                } else {
+                    eprintln!("oxe-server: {e}");
+                    ("failed", 0, 0.0)
+                }
+            }
+        }
+    }
+
+    /// H4: where the snapshot for the end of the last message `m` goes, without a new split: the
+    /// deepest of (a) the prompt end `n` or `n-1` when `m` is there (the request stops there anyway),
+    /// (b) the boundaries of this request's schedule in `(n_cached, m]` (ubatch grid points on the
+    /// grid schedule, the message starts of the message schedule: the same floor rule as the turn
+    /// checkpoints), (c) `n_cached` itself (the prefill starts there), (d) inside the reused prefix,
+    /// an existing checkpoint. It must not lie before the last message's start (the deepest message
+    /// start below `m`): such a point is not this message's. Err = the reason none is taken.
+    fn snap_choice(&self, p: &GenParams, m: usize, n_cached: usize, n: usize, aligned: bool, splits: &[(usize, Option<u8>)]) -> Result<usize, &'static str> {
+        if m >= n - 1 {
+            return Ok(m.min(n));
+        }
+        let lo = p.msg_starts.iter().copied().chain(p.first_user).filter(|&x| x < m).max().unwrap_or(0);
+        let pick = if m < n_cached {
+            let c = self.cache.snapshot_positions().into_iter().filter(|&x| x >= lo && x <= m).max();
+            return c.filter(|&c| c > 0).ok_or("inside_reused_prefix");
+        } else if self.msg_split {
+            // every new message start is a split of the message schedule already
+            splits.iter().map(|x| x.0).filter(|&x| x > n_cached && x <= m).max()
+        } else {
+            let u = self.ubatch.max(1);
+            grid_floor(if aligned { 0 } else { n_cached }, u, n_cached, m)
+        };
+        let c = pick.unwrap_or(n_cached);
+        if c == 0 || c < lo {
+            return Err("no_boundary_in_last_message");
+        }
+        Ok(c)
+    }
+
+    /// A checkpoint taken on the request path: its wall time joins `req_ckpt_ms` (`timings.ckpt_ms`).
+    fn timed_checkpoint(&mut self, prio: u8, clean: bool) -> Result<(), GenError> {
+        let t = Instant::now();
+        let r = self.cache.checkpoint_with(&mut self.engine, prio, clean);
+        self.req_ckpt_ms += t.elapsed().as_secs_f64() * 1e3;
+        r?;
+        Ok(())
+    }
+
+    /// Bring the engine to `prompt[..n-1]` (prefix cache, disk stores, grid checkpoints, cancel
+    /// checks); returns n_cached. The caller evaluates the last token.
+    fn prefill_head(&mut self, prompt: &[Token], p: &GenParams) -> Result<usize, GenError> {
+        self.park_to_states(prompt, p);
+        self.live_hint = p.session.clone();
+        self.state_dirty = true;
+        self.snaps_pending = true;
+        let t_resume = Instant::now();
+        self.req_ckpt_ms = 0.0;
+        let unpark0 = self.cache.stats.unpark_ms;
+        // P2b preload: the state the preload loaded is adopted when this prompt continues it
+        let pre = self.adopt_preloaded(prompt, p.cache_prompt);
+        if p.cache_prompt {
+            self.park_large(prompt);
+        }
+        let mut n_cached = self.cache.prepare(&mut self.engine, prompt, p.cache_prompt)?;
+        self.last_first_user = p.first_user;
+        if pre.is_some() && n_cached > 0 {
+            self.cache.last_src = "preload";
+        }
+        // the CACHE-PERFECT state store, the on-disk session cache, then the persistent prefix
+        // store: a longer stored prefix than the in-memory cache offers
+        let mut disk_ms = 0.0;
+        if p.cache_prompt {
+            let t = Instant::now();
+            let n0 = n_cached;
+            // ONE restore per request, chosen BEFORE the engine is touched (v0.1.2 gate, Qwen 82K:
+            // the segmented store resumed 78,876 tokens in 1.9 s, then the legacy session cache
+            // loaded 82,716 in 2.7 s on top). Every candidate (stay with what RAM gave, the
+            // segmented store's deepest snapshot, the legacy session cache, the prefix store) is
+            // priced as restore time + recompute of what is left; the cheapest one is restored. A
+            // failed restore falls back to the next candidate.
+            let order = self.plan_restore(prompt, n_cached);
+            for src in order {
+                let before = n_cached;
+                n_cached = match src {
+                    RestoreSrc::State => self.load_states(prompt, n_cached),
+                    RestoreSrc::Session => self.load_stored(true, prompt, n_cached),
+                    RestoreSrc::Prefix => self.load_stored(false, prompt, n_cached),
+                };
+                self.restores += 1;
+                if n_cached > before {
+                    break; // restored: no second restore on top
+                }
+            }
+            if n_cached != n0 {
+                disk_ms = t.elapsed().as_secs_f64() * 1e3;
+            }
+            self.spill_sessions();
+        }
+        self.req_restore_ms = t_resume.elapsed().as_secs_f64() * 1e3;
+        // P2b: resume_src (design sec. 7): where the reused prefix came from
+        let src = if n_cached == 0 {
+            "cold"
+        } else {
+            match self.cache.last_src {
+                "live" => "live",
+                "state" | "session" | "store" => "disk",
+                "none" => "cold",
+                _ => "ram", // parked, parked-checkpoint, checkpoint, preload
+            }
+        };
+        let ms = match src {
+            "disk" => disk_ms,
+            "ram" => self.cache.stats.unpark_ms - unpark0 + pre.filter(|_| self.cache.last_src == "preload").map_or(0.0, |_| 0.0),
+            _ => 0.0,
+        };
+        self.last_resume = (src, ms);
+        self.last_preload_ms = pre.filter(|_| self.cache.last_src == "preload");
+        self.progress_mark = n_cached;
+        let n = prompt.len();
+        // checkpoint plan for the head prompt[n_cached..n-1] (see cache.rs)
+        let (aligned, mut splits) = if self.msg_split { self.plan_messages(p, n_cached, n) } else { self.plan_grid(p, n_cached, n) };
+        // v0.1.3 exact points (grid schedule only): the pre-think point and a compaction request's cut.
+        // Off the ubatch grid: the state AT such a point is still that of a cold grid prefill (the
+        // segment up to it starts on the grid), the positions after it are not (`clean` false).
+        // Both are functions of the prompt, so the request's numerics are deterministic.
+        if !self.msg_split {
+            let ok = |x: usize| x > n_cached && x < n - 1;
+            if let Some(pt) = p.pre_think.filter(|&x| ok(x) && self.cache.max_pre > 0) {
+                splits.push((pt, Some(crate::cache::PRIO_PRETHINK)));
+            }
+            // v0.2.0 H5: `X-Oxe-Turn-Kind` is a ledger label only and places no checkpoint (it used to
+            // place the compaction cut here); a client marks a point it will cut back to with H4
+        }
+        // v0.2.0 H4: the client's snapshot point. A hint never changes the arithmetic, so no split is
+        // added off the request's own schedule: the point is the deepest boundary this request
+        // processes on anyway, at or before the end of the last message (`p.snap_at`) and not before
+        // that message's start; reported as `snap_pos`, none (with a reason) when no such boundary
+        // exists. See `snap_choice`.
+        self.snap_chosen = None;
+        self.snap_why = None;
+        if let Some(m) = p.snap_at {
+            match self.snap_choice(p, m, n_cached, n, aligned, &splits) {
+                Ok(c) if c == n_cached => {
+                    self.snap_chosen = Some(c);
+                    let clean = self.cache.clean;
+                    self.timed_checkpoint(crate::cache::PRIO_SNAP, clean)?;
+                }
+                Ok(c) if c >= n - 1 => self.snap_chosen = Some(c), // taken at n-1 below / at n in generate_inner
+                Ok(c) if c > n_cached => {
+                    self.snap_chosen = Some(c);
+                    splits.push((c, Some(crate::cache::PRIO_SNAP)));
+                }
+                Ok(c) => {
+                    // inside the reused prefix: an existing checkpoint there takes the class
+                    self.snap_chosen = Some(c);
+                    self.cache.promote_snap(c);
+                }
+                Err(why) => self.snap_why = Some(why),
+            }
+        }
+        splits.sort_by_key(|x| x.0);
+        splits.dedup_by(|b, a| {
+            if a.0 == b.0 {
+                if b.1.map_or(0, |x| crate::cache::rank(x) + 1) > a.1.map_or(0, |x| crate::cache::rank(x) + 1) {
+                    a.1 = b.1;
+                }
+                true
+            } else {
+                false
+            }
+        });
+        // cancel cuts (prefill_chunks): on the grid schedule the checkpoint grid `base + k*u`; on the
+        // message schedule each segment's own start (segments start at message starts and the
+        // engine chunks a call by `u` from its start), so a cut never moves a ubatch boundary
+        let u = self.ubatch.max(1);
+        let grid_base = if self.cache.clean && n_cached % u == 0 { 0 } else { n_cached };
+        let msg_split = self.msg_split;
+        // past an exact point off the lattice the state is no longer that of a cold grid prefill
+        let mut off_grid = false;
+        for (pos, prio) in splits {
+            let start = self.cache.tokens.len();
+            let seg = &prompt[start..pos];
+            if !seg.is_empty() {
+                self.prefill_chunks(seg, if msg_split { start } else { grid_base }, u, p)?;
+            }
+            let clean = aligned && !off_grid;
+            self.cache.clean = clean;
+            if !msg_split && (pos.saturating_sub(grid_base)) % u != 0 {
+                off_grid = true;
+            }
+            let Some(prio) = prio else { continue };
+            self.timed_checkpoint(prio, clean)?;
+            if prio == crate::cache::PRIO_ANCHOR && clean && !p.ephemeral {
+                if let Some(st) = &mut self.store {
+                    if pos >= st.min_tokens && !st.contains(&prompt[..pos]) {
+                        // FLASH-PREFIX-2: no state buffer while memory is short (checked BEFORE it is built)
+                        let hint = self.engine.state_size_hint() as u64;
+                        if let Err(why) = st.save_allowed(hint) {
+                            eprintln!("oxe-server: prefix store: save of {pos} tokens skipped: {why}");
+                        } else {
+                            // v0.1.3 (lane G ask): streamed into the entry file, no state-sized
+                            // buffer (285 MB for a Flash anchor); written here, on the request path
+                            let eng = &mut self.engine;
+                            if let Err(e) = st.save_stream(&prompt[..pos], &mut |w| eng.save_state(w).map_err(|e| e.0)) {
+                                eprintln!("oxe-server: prefix store: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // evaluate up to the last prompt token, checkpoint at len-1, then the last token
+        let start = self.cache.tokens.len();
+        let head = &prompt[start..n - 1];
+        if !head.is_empty() {
+            self.prefill_chunks(head, if msg_split { start } else { grid_base }, u, p)?;
+            self.cache.clean = aligned && !off_grid;
+            // H4: the end of the last message is the prompt's last-but-one position (a 1-token opener)
+            let prio = if self.snap_chosen == Some(n - 1) { crate::cache::PRIO_SNAP } else { crate::cache::PRIO_TAIL };
+            self.timed_checkpoint(prio, aligned && !off_grid)?;
+        }
+        Ok(n_cached)
+    }
+
+    /// v0.1.3 (lane B item 3): this request is about to cut the live session back (its prompt does
+    /// not continue it): put what of it is not on disk yet (blocks, head, RAM checkpoints worth
+    /// keeping, at most `--state-snaps`) into the state store first, on the request path, so the
+    /// parked session keeps its resume points (a post-reply write a request cut short, an idle
+    /// gap too short for the checkpoints). Nothing to do after a complete post-reply write.
+    fn park_to_states(&mut self, prompt: &[Token], p: &GenParams) {
+        if !self.park_write || !p.cache_prompt || !(self.state_dirty || self.snaps_pending) || self.engine.kv_row_bytes() == 0 {
+            return;
+        }
+        let Some(st) = self.states.as_ref() else { return };
+        let n = self.cache.tokens.len();
+        if st.budget == 0 || n < st.min_tokens || self.preloaded.is_some() {
+            return;
+        }
+        let lcp = self.cache.tokens.iter().zip(prompt).take_while(|(a, b)| a == b).count();
+        if lcp >= n {
+            return;
+        }
+        let t0 = Instant::now();
+        let live = self.live_hint.clone();
+        let r = self.persist(live.as_deref(), PersistMode::Reply, p.cancel.as_deref());
+        if r.head.is_some() || r.snaps > 0 {
+            eprintln!("oxe-server: state cache: the session being left was written first ({}, {} snapshots) in {:.0} ms", r.line(), r.snaps, t0.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+
+    /// SX-2 idle re-prefill: prefill `hist` (the conversation in the form the next request will
+    /// render it, cut before the next user message) while no request is running, up to the
+    /// deepest ubatch-grid point of the request's own prefill (restore point + k*ubatch) at or
+    /// below its end, where a grid checkpoint is taken. The next request continues from there
+    /// with exactly the ubatch boundaries an on-demand prefill would use, so its state is
+    /// bit-identical to the no-idle path (lossless); at most ubatch-1 tokens stay on the
+    /// critical path. The raw session is parked by `prepare` as usual (a retry still finds it).
+    /// Stops at a chunk boundary when `p.cancel` is raised (a request arrived). Returns the
+    /// tokens newly evaluated.
+    pub fn prefill_idle(&mut self, hist: &[Token], p: &GenParams) -> Result<usize, GenError> {
+        // grid schedule only: the message schedule (Flash) splits at message starts, not on this lattice
+        if self.msg_split || hist.len() < 2 || hist.len() >= self.engine.n_ctx() {
+            return Ok(0);
+        }
+        let mut n0 = self.cache.prepare(&mut self.engine, hist, p.cache_prompt)?;
+        if p.cache_prompt {
+            n0 = self.load_stored(true, hist, n0);
+            n0 = self.load_stored(false, hist, n0);
+        }
+        let u = self.ubatch.max(1);
+        // the lattice the request would prefill on: from the restore point (or 0 when aligned)
+        let base = if self.cache.clean && n0 % u == 0 { 0 } else { n0 };
+        // the last grid point strictly inside `hist` (prefill_head needs g + 1 tokens): an exactly
+        // aligned history used to give g == len and slice past the end (abort in release)
+        let g = base + (hist.len() - 1).saturating_sub(base) / u * u;
+        if g <= n0 + u {
+            return Ok(0); // less than one ubatch to gain
+        }
+        // prefill_head stops at its prompt's len-1 and checkpoints there (a grid point)
+        let n_cached = self.prefill_head(&hist[..g + 1], p)?;
+        Ok(g - n_cached)
+    }
+
+    /// Run one generation. `on_partial` returns false to cancel (client went away).
+    ///
+    /// An engine error (a failed prefill, decode, checkpoint or state load) can leave the engine
+    /// ahead of the cache's token list: the failing call may have advanced its position over a
+    /// chunk whose results are invalid (Flash: an expert read that failed twice or timed out).
+    /// The state is then dropped (engine and cache reset; parked sessions stay), so a retry of
+    /// the same prompt starts from an empty engine instead of continuing on the invalid chunk.
+    /// A cancel is not an error: it leaves a consistent prefix (see `prefill_chunks`).
+    pub fn generate(
+        &mut self,
+        tok: &Tokenizer,
+        prompt: &[Token],
+        p: &GenParams,
+        on_partial: &mut dyn FnMut(Partial) -> bool,
+    ) -> Result<GenResult, GenError> {
+        let n_ctx = self.engine.n_ctx();
+        if prompt.is_empty() {
+            return Err(GenError::Engine(EngineError("empty prompt".into())));
+        }
+        if prompt.len() >= n_ctx {
+            return Err(GenError::ExceedContext(prompt.len(), n_ctx));
+        }
+        p.note_progress(0, Some(prompt.len()));
+        // F4: the engine may stop inside a prefill call on this flag; cleared again whatever happens
+        self.engine.set_cancel(p.cancel.clone());
+        if p.ephemeral {
+            let local = self.enter_ephemeral();
+            // nothing of the request may name or find a stored conversation
+            let q = GenParams { cache_prompt: false, session: None, turn_kind: None, echo: None, snap_at: None, ..p.clone() };
+            let r = self.generate_inner(tok, prompt, &q, on_partial);
+            self.engine.set_cancel(None);
+            // whatever happened (an engine error too), its state is dropped here
+            self.leave_ephemeral(local);
+            return r;
+        }
+        let r = self.generate_inner(tok, prompt, p, on_partial);
+        self.engine.set_cancel(None);
+        if let Err(GenError::Engine(e)) = &r {
+            eprintln!("oxe-server: engine error, sequence state dropped ({} tokens): {}", self.cache.tokens.len(), e.0);
+            self.cache.reset(&mut self.engine);
+        }
+        r
+    }
+
+    /// Fair slicing (`fair.rs`): [`Worker::generate`] in slices. Starts the generation (checks,
+    /// prefill, the loop's state); [`Worker::generate_slice`] then decodes. Same invariants as
+    /// `generate`: the engine's cancel flag is cleared on every exit (an error here, the end or a
+    /// suspension of a slice), an engine error drops the sequence state. Ephemeral (LAN share)
+    /// requests are not sliced (they hold the local session aside themselves): use `generate`.
+    pub fn generate_start(&mut self, prompt: &[Token], p: &GenParams) -> Result<SlicedRun<E::Snapshot>, GenError> {
+        let n_ctx = self.engine.n_ctx();
+        if prompt.is_empty() {
+            return Err(GenError::Engine(EngineError("empty prompt".into())));
+        }
+        if prompt.len() >= n_ctx {
+            return Err(GenError::ExceedContext(prompt.len(), n_ctx));
+        }
+        if p.ephemeral {
+            return Err(GenError::Engine(EngineError("an ephemeral request is not sliced".into())));
+        }
+        p.note_progress(0, Some(prompt.len()));
+        self.engine.set_cancel(p.cancel.clone());
+        match self.gen_begin(prompt, p) {
+            Ok(run) => Ok(SlicedRun { run: Some(run), held: None }),
+            Err(e) => Err(self.gen_failed(e)),
+        }
+    }
+
+    /// Decode one slice of a [`Worker::generate_start`]ed generation: resume it first when it is
+    /// suspended (the live session, if any, is put away as a session switch does), then decode
+    /// until it ends (`Some(result)`) or `want_yield` asks for the engine at a yield point (see
+    /// `gen_steps`) and the whole session could be held aside (`None`: suspended; call again to
+    /// continue). A run whose state cannot be held (no park budget, too large, or other suspended
+    /// runs already hold that RAM) does not yield: it decodes on, exact.
+    pub fn generate_slice(
+        &mut self,
+        tok: &Tokenizer,
+        prompt: &[Token],
+        p: &GenParams,
+        sr: &mut SlicedRun<E::Snapshot>,
+        on_partial: &mut dyn FnMut(Partial) -> bool,
+        want_yield: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<GenResult>, GenError> {
+        let Some(mut run) = sr.run.take() else {
+            return Err(GenError::Engine(EngineError("generation already finished".into())));
+        };
+        if let Some(s) = sr.held.take() {
+            if let Err(e) = self.resume(p, &mut run, s) {
+                return Err(self.gen_failed(e));
+            }
+        }
+        loop {
+            let can = !run.no_yield && self.can_hold();
+            let done = match self.gen_steps(tok, p, &mut run, on_partial, &mut || can && want_yield()) {
+                Ok(d) => d,
+                Err(e) => return Err(self.gen_failed(e)),
+            };
+            if done {
+                let r = self.gen_end(prompt, p, run);
+                self.engine.set_cancel(None);
+                return r.map(Some).map_err(|e| self.gen_failed(e));
+            }
+            // the session grew during the slice: the budget is checked again on what is held now
+            // (the size the engine reports for its state, as every park trusts it)
+            if !self.can_hold() {
+                run.no_yield = true;
+                continue;
+            }
+            match self.suspend(&mut run) {
+                Some(s) => {
+                    sr.held = Some(s);
+                    sr.run = Some(run);
+                    return Ok(None);
+                }
+                // the state could not be copied (the engine said why): no more yields, exact
+                None => run.no_yield = true,
+            }
+        }
+    }
+
+    /// A suspended generation that will not continue (its client left, SIGTERM): its session
+    /// joins the parked sessions in RAM (budget permitting) like the consistent prefix a cancel
+    /// leaves live, so the next turn of that conversation can reuse it.
+    pub fn generate_abort(&mut self, sr: SlicedRun<E::Snapshot>) {
+        if let Some(s) = sr.held {
+            self.held_bytes = self.held_bytes.saturating_sub(s.bytes);
+            self.cache.reserved = self.held_bytes;
+            if let Some(h) = s.local.held {
+                self.cache.park_held(h);
+            }
+        }
+    }
+
+    /// generate()'s exit rule for an error: the cancel flag cleared; an engine error drops the
+    /// sequence state (engine and cache reset), a cancel keeps its consistent prefix.
+    fn gen_failed(&mut self, e: GenError) -> GenError {
+        self.engine.set_cancel(None);
+        if let GenError::Engine(x) = &e {
+            eprintln!("oxe-server: engine error, sequence state dropped ({} tokens): {}", self.cache.tokens.len(), x.0);
+            self.cache.reset(&mut self.engine);
+        }
+        e
+    }
+
+    /// Whether the live session could be held aside now (the conditions of `hold_live`, with the
+    /// sessions other suspended runs hold counted against the same park budget).
+    fn can_hold(&self) -> bool {
+        let b = self.cache.park_budget;
+        // one budget: what the suspended runs already hold + this session's state copy + its live
+        // checkpoints (they move with it); the parked sessions give way (`make_room` in `suspend`)
+        let need = self.engine.state_size_hint().saturating_add(self.cache.live_snap_bytes());
+        b > 0 && self.engine.state_id().is_some() && self.held_bytes.saturating_add(need) <= b
+    }
+
+    /// Take the live session (this run's) out whole, with the worker fields that describe it, and
+    /// leave an empty engine. None: the copy failed; nothing changed.
+    fn suspend(&mut self, run: &mut GenRun) -> Option<Suspended<E::Snapshot>> {
+        let t = Instant::now();
+        let held = self.cache.hold_live(&mut self.engine)?;
+        let bytes = held.bytes();
+        self.held_bytes += bytes;
+        // the held session counts against the park budget: parked sessions make room for it
+        self.cache.reserved = self.held_bytes;
+        self.cache.make_room();
+        let local = HeldLocal {
+            held: Some(held),
+            live_blocks: std::mem::take(&mut self.live_blocks),
+            progress_mark: self.progress_mark,
+            state_dirty: self.state_dirty,
+            snaps_pending: self.snaps_pending,
+            last_first_user: self.last_first_user,
+            live_hint: self.live_hint.take(),
+        };
+        let persisted_head = self.persisted_head.take();
+        self.cache.reset(&mut self.engine);
+        self.progress_mark = 0;
+        self.state_dirty = false;
+        self.snaps_pending = false;
+        self.last_first_user = None;
+        self.engine.set_cancel(None);
+        let c = self.engine.spec_counters();
+        run.draft_acc.0 += c.0.saturating_sub(run.spec0.0);
+        run.draft_acc.1 += c.1.saturating_sub(run.spec0.1);
+        run.fair_yields += 1;
+        run.switch_ms = t.elapsed().as_secs_f64() * 1e3;
+        Some(Suspended { local, persisted_head, at: Instant::now(), stats: self.cache.stats.clone(), bytes })
+    }
+
+    /// Bring a suspended run back: whatever is live now is put away as a session switch does (its
+    /// unwritten state to the state store, then the whole session to the RAM park), the held
+    /// session is loaded back bit for bit with its worker fields, the engine gets the request's
+    /// cancel flag and the MTP depth is set again at the next verify.
+    fn resume(&mut self, p: &GenParams, run: &mut GenRun, s: Suspended<E::Snapshot>) -> Result<(), GenError> {
+        let t = Instant::now();
+        run.fair_wait_ms += t.duration_since(s.at).as_secs_f64() * 1e3;
+        self.held_bytes = self.held_bytes.saturating_sub(s.bytes);
+        self.cache.reserved = self.held_bytes;
+        // the cache's park counters moved for other requests meanwhile: not this one's
+        let now = &self.cache.stats;
+        run.stats0.parks += now.parks - s.stats.parks;
+        run.stats0.unparks += now.unparks - s.stats.unparks;
+        run.stats0.park_evictions += now.park_evictions - s.stats.park_evictions;
+        run.stats0.park_ms += now.park_ms - s.stats.park_ms;
+        run.stats0.unpark_ms += now.unpark_ms - s.stats.unpark_ms;
+        if !self.cache.tokens.is_empty() {
+            let local = GenParams { cache_prompt: true, ..Default::default() };
+            self.park_to_states(&[], &local);
+            self.cache.park_whole(&mut self.engine)?;
+        }
+        // nothing a preload put into the engine survives the load below
+        self.preloaded = None;
+        let mut l = s.local;
+        let h = l.held.take().expect("a suspended run holds its session");
+        let n = h.len();
+        if self.cache.restore_held(&mut self.engine, h)? != n {
+            return Err(GenError::Engine(EngineError("a suspended generation could not be loaded back".into())));
+        }
+        self.live_blocks = l.live_blocks;
+        self.progress_mark = l.progress_mark;
+        self.state_dirty = l.state_dirty;
+        self.snaps_pending = l.snaps_pending;
+        self.last_first_user = l.last_first_user;
+        self.live_hint = l.live_hint;
+        self.persisted_head = s.persisted_head;
+        // the worker's view of "the last request" is this one again
+        self.snap_chosen = run.snap_chosen;
+        self.snap_why = run.snap_why;
+        self.last_resume = run.last_resume;
+        self.last_preload_ms = run.last_preload_ms;
+        self.req_restore_ms = run.restore_ms;
+        self.req_ckpt_ms = run.ckpt_ms;
+        self.engine.set_cancel(p.cancel.clone());
+        run.cur_depth = usize::MAX;
+        run.spec0 = self.engine.spec_counters();
+        run.switch_ms += t.elapsed().as_secs_f64() * 1e3;
+        run.tk = Instant::now();
+        Ok(())
+    }
+
+    /// LAN share, before an ephemeral request: the local live session is taken out of the engine
+    /// whole (RAM copy, within the park budget; the parked sessions are not touched) and comes back
+    /// after it. When it cannot be held, its unwritten state goes to the state store first (the park
+    /// write a session switch makes; local content only). The ephemeral request then starts from an
+    /// empty engine (`cache_prompt` off: no lookup anywhere).
+    fn enter_ephemeral(&mut self) -> Option<HeldLocal<E::Snapshot>> {
+        if self.cache.tokens.is_empty() {
+            return None;
+        }
+        let held = self.cache.hold_live(&mut self.engine);
+        if held.is_none() {
+            let local = GenParams { cache_prompt: true, ..Default::default() };
+            self.park_to_states(&[], &local);
+            return None;
+        }
+        Some(HeldLocal {
+            held,
+            live_blocks: std::mem::take(&mut self.live_blocks),
+            progress_mark: self.progress_mark,
+            state_dirty: self.state_dirty,
+            snaps_pending: self.snaps_pending,
+            last_first_user: self.last_first_user,
+            live_hint: self.live_hint.clone(),
+        })
+    }
+
+    /// LAN share, after an ephemeral request (also after an error or a cancel): its state is dropped
+    /// (engine and cache reset: nothing of it to write, resume from or match a prefix against) and
+    /// the held local session, if any, is live again exactly as it was.
+    fn leave_ephemeral(&mut self, local: Option<HeldLocal<E::Snapshot>>) {
+        self.cache.reset(&mut self.engine);
+        self.live_blocks.clear();
+        self.progress_mark = 0;
+        self.state_dirty = false;
+        self.snaps_pending = false;
+        self.last_first_user = None;
+        let Some(mut l) = local else { return };
+        let Some(h) = l.held.take() else { return };
+        match self.cache.restore_held(&mut self.engine, h) {
+            Ok(n) if n > 0 => {
+                self.live_blocks = l.live_blocks;
+                self.progress_mark = l.progress_mark;
+                self.state_dirty = l.state_dirty;
+                self.snaps_pending = l.snaps_pending;
+                self.last_first_user = l.last_first_user;
+                self.live_hint = l.live_hint;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("oxe-server: the local session could not be restored after a shared request: {}", e.0);
+                self.cache.reset(&mut self.engine);
+            }
+        }
+    }
+
+    /// One generation: [`Worker::gen_begin`] (prefill, sampler set-up), [`Worker::gen_steps`] (the
+    /// decode loop, never yielding here) and [`Worker::gen_end`] (final checkpoint, ledger, result).
+    fn generate_inner(
+        &mut self,
+        tok: &Tokenizer,
+        prompt: &[Token],
+        p: &GenParams,
+        on_partial: &mut dyn FnMut(Partial) -> bool,
+    ) -> Result<GenResult, GenError> {
+        let mut run = self.gen_begin(prompt, p)?;
+        let done = self.gen_steps(tok, p, &mut run, on_partial, &mut || false)?;
+        debug_assert!(done, "a loop that may not yield runs to its end");
+        self.gen_end(prompt, p, run)
+    }
+
+    /// Everything before the decode loop: the prompt into the engine (cache restore, prefill,
+    /// checkpoints), the last prompt token's logits, and the loop's state.
+    fn gen_begin(&mut self, prompt: &[Token], p: &GenParams) -> Result<GenRun, GenError> {
+        let t0 = Instant::now();
+        let stats0 = self.cache.stats.clone();
+        let n_cached = self.prefill_head(prompt, p)?;
+        self.state_dirty = true;
+        self.snaps_pending = true;
+        let n = prompt.len();
+        let last = &prompt[n - 1..];
+        let logits = self.engine.prefill(last)?.to_vec();
+        self.cache.appended(last);
+        self.cache.prompt_len = n;
+        // a single token goes through the decode step, not the batched prefill
+        self.cache.clean = false;
+        // H4 at the prompt end (an H6 prefill, a prompt without a generation opener, /completion):
+        // the state now, before anything is decoded
+        if self.snap_chosen == Some(n) {
+            self.timed_checkpoint(crate::cache::PRIO_SNAP, false)?;
+        }
+        let prompt_ms = t0.elapsed().as_secs_f64() * 1e3;
+        // v0.2.0 H6 (`max_tokens: 0`): prefill only. The prompt is in the state (and checkpointed at
+        // the end below); nothing is sampled or decoded, no token is generated, the reply is empty
+        // with stop = length (the limit of 0 tokens).
+        let prefill_only = p.n_predict == 0;
+
+        let t1 = Instant::now();
+        let spec0 = self.engine.spec_counters();
+        // MTP speculation (greedy only): rows the engine already computed for tokens it
+        // appended speculatively, consumed one by one as the loop reaches them
+        let greedy = p.sampling.temperature <= 0.0;
+        // greedy fast path: nothing reads the logits row (no n_probs), so take the engine's own
+        // argmax (same lowest-id tie-break as sampling::argmax) instead of copying the row
+        // and scanning it again
+        // OXE_SERVER_LEGACY=1 (A/B diagnostic only): the pre-fast-path loop (row copy + host argmax)
+        let legacy = std::env::var_os("OXE_SERVER_LEGACY").is_some();
+        // penalties / logit_bias read an adjusted row: the sampler path (no engine argmax, no MTP)
+        let fast = greedy && p.n_probs == 0 && !legacy && !p.sampling.adjusts_logits();
+        // speculation depth for this request (MTP auto-tune): see [`GenRun::depth_at`]
+        let max_d = self.engine.spec_max_depth();
+        // OXE_TIMING_DIAG=1: per-request split of the decode loop (ms): engine calls, logits
+        // copies, sampler, text (piece, UTF-8, stop strings), emit (on_partial: JSON + SSE send)
+        let diag = std::env::var_os("OXE_TIMING_DIAG").is_some();
+        let dg = DiagSplit {
+            warmup: std::env::var("OXE_TIMING_DIAG_WARMUP").ok().and_then(|v| v.parse().ok()).unwrap_or(16),
+            ..Default::default()
+        };
+        Ok(GenRun {
+            t0,
+            stats0,
+            n_cached,
+            prompt_ms,
+            prefill_only,
+            t1,
+            spec0,
+            greedy,
+            legacy,
+            fast,
+            max_d,
+            spec_table: self.spec_table.clone(),
+            mtp_max_ctx: self.mtp_max_ctx,
+            cur_depth: usize::MAX, // depth last set on the engine
+            next_tok: None,
+            logits,
+            spec_q: Default::default(),
+            spec_used: 0,
+            sampler: Sampler::new(p.sampling.clone()),
+            dec: StreamDecoder::default(),
+            generated: String::new(),
+            n_sent: 0,
+            tokens: Vec::new(),
+            probs_all: Vec::new(),
+            probs_sent: 0, // rows of probs_all already handed to a partial
+            stop: if prefill_only { StopType::Limit } else { StopType::None },
+            stopping_word: String::new(),
+            truncated: false,
+            n_decoded: 0,
+            diag,
+            dg,
+            tk: Instant::now(),
+            snap_chosen: self.snap_chosen,
+            snap_why: self.snap_why,
+            last_resume: self.last_resume,
+            last_preload_ms: self.last_preload_ms,
+            restore_ms: self.req_restore_ms,
+            ckpt_ms: self.req_ckpt_ms,
+            cache_src: self.cache.last_src,
+            last_drafted: 0,
+            guard: self.mtp_guard.clone(),
+            draft_acc: (0, 0),
+            fair_yields: 0,
+            fair_wait_ms: 0.0,
+            switch_ms: 0.0,
+            no_yield: false,
+        })
+    }
+
+    /// The decode loop from where `run` stands. Returns true when the generation ended (stop, EOG,
+    /// limit), false when it stopped because `want_yield` said so: that is asked only at the end of
+    /// an iteration, after the token is in the cache's list, and only while no speculative token is
+    /// in the engine beyond that list (`spec_q` empty), so the engine state is then exactly that of
+    /// `cache.tokens` and the loop's own state is all in `run`.
+    fn gen_steps(
+        &mut self,
+        tok: &Tokenizer,
+        p: &GenParams,
+        run: &mut GenRun,
+        on_partial: &mut dyn FnMut(Partial) -> bool,
+        want_yield: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, GenError> {
+        let n_ctx = self.engine.n_ctx();
+        let diag = run.diag;
+        loop {
+            if run.prefill_only {
+                return Ok(true);
+            }
+            if run.next_tok.is_none() {
+                if let Some(tr) = self.trace_logits.as_mut() {
+                    tr.push(run.logits.clone());
+                }
+            }
+            let t = match run.next_tok.take() {
+                Some(t) => t,
+                None => run.sampler.sample(&run.logits),
+            };
+            run.n_decoded += 1;
+            if diag {
+                run.dg.sample_ms += lap(&mut run.tk);
+            }
+            // from the row the token was drawn from (penalties / logit_bias applied), before accept
+            let row = run.sampler.effective_row(&run.logits);
+            let probs = (p.n_probs > 0).then(|| TokenProbs {
+                id: t,
+                piece: tok.piece(t, p.special),
+                prob: token_prob(row, t),
+                top: top_probs(row, p.n_probs)
+                    .into_iter()
+                    .map(|(id, prob)| ProbEntry { id, piece: tok.piece(id, p.special), prob })
+                    .collect(),
+            });
+            run.sampler.accept(t);
+            let is_eog = tok.is_eog(t) && !p.ignore_eos;
+            run.tokens.push(t);
+            if let Some(pp) = probs {
+                run.probs_all.push(pp);
+            }
+            if diag {
+                run.dg.probs_ms += lap(&mut run.tk);
+            }
+            // process_token: append text, stop strings, send the partial
+            let piece = tok.piece(t, p.special);
+            run.generated.push_str(&run.dec.push(&piece));
+            let incomplete = run.dec.has_pending();
+            let mut has_next = true;
+            if !incomplete {
+                let mut send = true;
+                if let Some((pos, w)) = find_stop_full(&run.generated, run.n_sent.min(run.generated.len()), &p.stop) {
+                    run.generated.truncate(pos);
+                    run.stop = StopType::Word;
+                    run.stopping_word = w;
+                    has_next = false;
+                } else if !is_eog && ends_with_partial_stop(&run.generated[run.n_sent..], &p.stop) {
+                    send = false;
+                }
+                let text = if send {
+                    let s = run.generated[run.n_sent.min(run.generated.len())..].to_string();
+                    run.n_sent = run.generated.len();
+                    s
+                } else {
+                    String::new()
+                };
+                if diag {
+                    run.dg.text_ms += lap(&mut run.tk);
+                }
+                let rows = run.probs_all[run.probs_sent..].to_vec();
+                run.probs_sent = run.probs_all.len();
+                let go = on_partial(Partial { text, token: t, n_decoded: run.n_decoded, probs: rows });
+                if diag {
+                    run.dg.emit_ms += lap(&mut run.tk);
+                    run.dg.n_emit += 1;
+                }
+                if !go || p.cancelled() {
+                    // keep the engine state equal to the cache's token list (MTP: drop the
+                    // speculative tokens the client never received)
+                    if !run.spec_q.is_empty() {
+                        self.engine.spec_rewind(1 + run.spec_used)?;
+                    }
+                    return Err(GenError::Cancelled);
+                }
+            }
+            if has_next && self.engine.n_past() - run.spec_q.len() + 1 >= n_ctx {
+                run.stop = StopType::Limit;
+                run.truncated = true;
+                has_next = false;
+            }
+            if has_next && is_eog {
+                run.stop = StopType::Eos;
+                has_next = false;
+            }
+            if has_next && self.repeat_watchdog > 0 {
+                if let Some(l) = repeat_loop(&run.tokens, self.repeat_watchdog) {
+                    eprintln!("oxe-server: repetition watchdog: period-{l} loop over the last {} tokens at {} generated; stopping (finish_reason length)", (4 * l).max(16), run.n_decoded);
+                    run.stop = StopType::Limit;
+                    has_next = false;
+                }
+            }
+            if has_next && p.n_predict >= 0 && run.n_decoded as i64 >= p.n_predict {
+                run.stop = StopType::Limit;
+                has_next = false;
+            }
+            if !has_next {
+                return Ok(true);
+            }
+            if diag {
+                run.dg.text_ms += lap(&mut run.tk);
+            }
+            match run.spec_q.pop_front() {
+                Some((want, row)) if want == t => {
+                    run.spec_used += 1;
+                    match row {
+                        NextRow::Logits(r) => run.logits = r,
+                        NextRow::Argmax(g) => run.next_tok = Some(g),
+                    }
+                }
+                popped => {
+                    // MTP guard: the last verify is over here (all of its drafts consumed, or the rest
+                    // dropped just below): it drafted `last_drafted` tokens, the loop used `spec_used`
+                    if run.last_drafted > 0 {
+                        if let Some(g) = run.guard.as_mut() {
+                            let before = g.trips();
+                            g.record(run.last_drafted as usize, run.spec_used);
+                            self.mtp_guard_trips += g.trips() - before;
+                        }
+                        run.last_drafted = 0;
+                    }
+                    if popped.is_some() {
+                        // the sampler left the greedy path: drop the unused speculation
+                        self.engine.spec_rewind(1 + run.spec_used)?;
+                        run.spec_q.clear();
+                    }
+                    let mut depth = run.depth_at(p, self.engine.n_past());
+                    // MTP guard: while it refuses, this token is decoded without speculation (`decode`
+                    // keeps the MTP state following every token, so drafting can come back)
+                    if depth > 0 && run.greedy && popped.is_none() {
+                        if let Some(g) = run.guard.as_mut() {
+                            if !g.allow() {
+                                depth = 0;
+                            }
+                        }
+                    }
+                    if depth > 0 && depth != run.cur_depth {
+                        self.engine.spec_set_depth(depth);
+                        run.cur_depth = depth;
+                    }
+                    let drafted0 = self.engine.spec_counters().0;
+                    let spec = if run.greedy && popped.is_none() && depth > 0 {
+                        if run.fast {
+                            self.engine.decode_spec_argmax(t)?.map(|(e, g)| (e, g.into_iter().map(NextRow::Argmax).collect::<Vec<_>>()))
+                        } else {
+                            self.engine.decode_spec(t)?.map(|(e, r)| (e, r.into_iter().map(NextRow::Logits).collect::<Vec<_>>()))
+                        }
+                    } else {
+                        None
+                    };
+                    match spec {
+                        Some((extra, rows)) => {
+                            let mut rows = rows.into_iter();
+                            match rows.next().expect("decode_spec returned no rows") {
+                                NextRow::Logits(r) => run.logits = r,
+                                NextRow::Argmax(g) => run.next_tok = Some(g),
+                            }
+                            run.spec_q = extra.into_iter().zip(rows).collect();
+                            run.spec_used = 0;
+                            run.last_drafted = self.engine.spec_counters().0.saturating_sub(drafted0);
+                            if diag {
+                                run.dg.engine(lap(&mut run.tk), run.n_decoded);
+                            }
+                        }
+                        None if run.fast => {
+                            run.next_tok = Some(self.engine.decode_argmax(t)?);
+                            if diag {
+                                run.dg.engine(lap(&mut run.tk), run.n_decoded);
+                            }
+                        }
+                        None => {
+                            let row = self.engine.decode(t)?;
+                            if diag {
+                                run.dg.engine(lap(&mut run.tk), run.n_decoded);
+                            }
+                            run.logits = row.to_vec();
+                            if diag {
+                                run.dg.copy_ms += lap(&mut run.tk);
+                            }
+                        }
+                    }
+                }
+            }
+            self.cache.appended(&[t]);
+            if diag {
+                run.dg.text_ms += lap(&mut run.tk);
+            }
+            // the only yield point: a token boundary with no speculative token beyond the cache's list
+            if run.spec_q.is_empty() && want_yield() {
+                return Ok(false);
+            }
+        }
+    }
+
+    /// Everything after the decode loop: drop unused speculation, flush the UTF-8 tail, checkpoint
+    /// the end state for the next turn, the ledger line and the result.
+    fn gen_end(&mut self, prompt: &[Token], p: &GenParams, mut run: GenRun) -> Result<GenResult, GenError> {
+        if !run.spec_q.is_empty() {
+            self.engine.spec_rewind(1 + run.spec_used)?;
+        }
+        // the counters of earlier slices are in draft_acc (the spec0 base moves at every resume)
+        let spec0 = (run.spec0.0.wrapping_sub(run.draft_acc.0), run.spec0.1.wrapping_sub(run.draft_acc.1));
+        let spec1 = self.engine.spec_counters();
+        let n_cached = run.n_cached;
+        let n_decoded = run.n_decoded;
+        let stop = run.stop;
+        let tail = run.dec.finish();
+        if stop != StopType::Word {
+            run.generated.push_str(&tail);
+        }
+        // active time only: the time suspended is fair_wait_ms
+        let loop_ms = run.t1.elapsed().as_secs_f64() * 1e3 - run.fair_wait_ms;
+        // after the warm-up cut, like `oxe bench`: loop ms per engine call and per produced token
+        let (loop_ms_warm, tokens_warm) = run.dg.warm_at.map(|(t, n)| (t.elapsed().as_secs_f64() * 1e3, n_decoded - n)).unwrap_or((0.0, 0));
+        // the state now holds prompt + all decoded tokens: checkpoint for the next turn
+        let tc = Instant::now();
+        self.cache.checkpoint(&mut self.engine)?;
+        let checkpoint_ms = tc.elapsed().as_secs_f64() * 1e3;
+        let ckpt_ms = run.ckpt_ms + checkpoint_ms;
+        let predicted_ms = run.t1.elapsed().as_secs_f64() * 1e3 - run.fair_wait_ms;
+        let prompt_ms = run.prompt_ms;
+        let stats0 = &run.stats0;
+        if !p.ephemeral {
+            self.save_warm(false);
+        }
+        if let Some(f) = &mut self.ledger {
+            use std::io::Write;
+            let s = &self.cache.stats;
+            let mut line = serde_json::json!({
+                "t": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0),
+                "n_prompt": prompt.len(), "cache_n": n_cached, "cache_src": run.cache_src,
+                "resume_src": run.last_resume.0, "resume_ms": run.last_resume.1,
+                "prompt_n": prompt.len() - n_cached, "prompt_ms": prompt_ms,
+                "predicted_n": n_decoded, "predicted_ms": predicted_ms, "stop": stop.as_str(),
+                "draft_n": spec1.0 - spec0.0, "draft_n_accepted": spec1.1 - spec0.1,
+                "parks": s.parks - stats0.parks, "unparks": s.unparks - stats0.unparks,
+                "park_ms": s.park_ms - stats0.park_ms, "unpark_ms": s.unpark_ms - stats0.unpark_ms,
+                "park_evictions": s.park_evictions - stats0.park_evictions,
+                "checkpoints": self.cache.snapshot_positions().len(), "parked": self.cache.parked_lengths().len(),
+                "parked_mib": self.cache.parked_bytes() >> 20,
+                "turn_kind": p.turn_kind, "pre_think": p.pre_think.is_some(),
+                "snap_pos": run.snap_chosen.filter(|&c| self.cache.holds_point(c)),
+                "queue_ms": p.queue_ms, "render_ms": p.render_ms, "tokenize_ms": p.tokenize_ms,
+                "restore_ms": run.restore_ms, "ckpt_ms": ckpt_ms,
+            });
+            if run.fair_yields > 0 {
+                line["fair_yields"] = serde_json::json!(run.fair_yields);
+                line["fair_wait_ms"] = serde_json::json!(run.fair_wait_ms);
+            }
+            if let (Some(serde_json::Value::Object(e)), serde_json::Value::Object(l)) = (&p.echo, &mut line) {
+                for (k, v) in e {
+                    l.insert(k.clone(), v.clone());
+                }
+            }
+            let _ = writeln!(f, "{line}");
+        }
+        if run.diag {
+            let dg = &run.dg;
+            eprintln!(
+                "OXE_DIAG {}",
+                serde_json::json!({"phase": "request", "prompt_n": prompt.len() - n_cached, "cache_n": n_cached,
+                    "generated_n": n_decoded, "prompt_ms": prompt_ms, "decode_ms": predicted_ms, "loop_ms": loop_ms,
+                    "checkpoint_ms": checkpoint_ms, "engine_ms": dg.engine_ms, "engine_calls": dg.n_engine,
+                    "warmup_calls": dg.warmup, "loop_ms_warm": loop_ms_warm, "engine_ms_warm": dg.engine_ms_warm,
+                    "engine_calls_warm": dg.n_engine_warm, "tokens_warm": tokens_warm, "legacy": run.legacy,
+                    "copy_ms": dg.copy_ms, "sample_ms": dg.sample_ms, "probs_ms": dg.probs_ms, "text_ms": dg.text_ms,
+                    "emit_ms": dg.emit_ms, "emits": dg.n_emit, "greedy": run.greedy,
+                    "draft_n": self.engine.spec_counters().0 - spec0.0,
+                    "request_ms": run.t0.elapsed().as_secs_f64() * 1e3})
+            );
+        }
+        // H4 report: the point actually kept (it can sit below the end of the last message), or why none
+        let snap_pos = run.snap_chosen.filter(|&c| self.cache.holds_point(c));
+        let snap_reason = match (p.snap_at, run.snap_why, run.snap_chosen) {
+            (None, _, _) => "end_of_message_not_found",
+            (_, Some(why), _) => why,
+            _ => "no_slot",
+        };
+        Ok(GenResult {
+            text: run.generated,
+            tokens: run.tokens,
+            stop,
+            stopping_word: run.stopping_word,
+            truncated: run.truncated,
+            n_prompt: prompt.len(),
+            n_decoded,
+            timings: Timings {
+                cache_n: n_cached,
+                prompt_n: prompt.len() - n_cached,
+                prompt_ms,
+                predicted_n: n_decoded,
+                predicted_ms,
+                draft_n: spec1.0 - spec0.0,
+                draft_n_accepted: spec1.1 - spec0.1,
+                resume_src: run.last_resume.0,
+                resume_ms: run.last_resume.1,
+                preload_ms: run.last_preload_ms,
+                snap_keep: p.snap_keep,
+                snap_pos,
+                snap_reason: if p.snap_keep && snap_pos.is_none() { Some(snap_reason) } else { None },
+                fair_yields: run.fair_yields,
+                fair_wait_ms: run.fair_wait_ms,
+                queue_ms: p.queue_ms,
+                render_ms: p.render_ms,
+                tokenize_ms: p.tokenize_ms,
+                restore_ms: run.restore_ms,
+                ckpt_ms,
+            },
+            probs: run.probs_all,
+            reasoning_tokens: 0,
+        })
+    }
+}
+
+/// One generation between its prefill and its end: every local of the decode loop, so the loop can
+/// stop at a token boundary and go on later with exactly the state an uninterrupted loop has.
+pub struct GenRun {
+    t0: Instant,
+    stats0: crate::cache::CacheStats,
+    n_cached: usize,
+    prompt_ms: f64,
+    prefill_only: bool,
+    /// start of the decode loop (predicted_ms)
+    t1: Instant,
+    /// the engine's (drafted, accepted) counters at the loop start
+    spec0: (u64, u64),
+    greedy: bool,
+    legacy: bool,
+    fast: bool,
+    max_d: usize,
+    spec_table: Option<SpecTable>,
+    mtp_max_ctx: Option<usize>,
+    /// depth last set on the engine
+    cur_depth: usize,
+    next_tok: Option<u32>,
+    logits: Vec<f32>,
+    spec_q: std::collections::VecDeque<(u32, NextRow)>,
+    spec_used: usize,
+    sampler: Sampler,
+    dec: StreamDecoder,
+    generated: String,
+    n_sent: usize,
+    tokens: Vec<Token>,
+    probs_all: Vec<TokenProbs>,
+    probs_sent: usize,
+    stop: StopType,
+    stopping_word: String,
+    truncated: bool,
+    n_decoded: usize,
+    diag: bool,
+    dg: DiagSplit,
+    tk: Instant,
+    /// what the prefill decided (worker fields written in `prefill_head`, read at the end)
+    snap_chosen: Option<usize>,
+    snap_why: Option<&'static str>,
+    last_resume: (&'static str, f64),
+    last_preload_ms: Option<f64>,
+    cache_src: &'static str,
+    /// tokens the last verify drafted (engine counter delta; 0 = no verify yet): with `spec_used`
+    /// (its drafts the loop consumed) what an acceptance guard reads
+    last_drafted: u64,
+    /// this generation's MTP acceptance guard (a copy of `Worker::mtp_guard`)
+    guard: Option<crate::mtp_guard::MtpGuard>,
+    /// fair slicing: (drafted, accepted) of the slices before the current one (the engine's
+    /// counters are global, other generations move them while this one is suspended)
+    draft_acc: (u64, u64),
+    fair_yields: u32,
+    fair_wait_ms: f64,
+    /// the request's restore phase and the checkpoints it took before the loop (`timings`)
+    restore_ms: f64,
+    ckpt_ms: f64,
+    /// the last suspend + resume took this long (ms)
+    switch_ms: f64,
+    /// a hold failed (engine error): this run does not yield again
+    no_yield: bool,
+}
+
+impl GenRun {
+    /// F82 context-adaptive MTP: the depth is decided at every new verify from the context the
+    /// verify starts at (request override, else the tune table's bucket, else the engine's depth;
+    /// 0 at or beyond --mtp-max-ctx). Drafts only: the output is identical at any depth, and with
+    /// depth 0 the token goes through `decode`, which keeps the MTP state following every token,
+    /// so speculation can switch off and on inside one reply.
+    fn depth_at(&self, p: &GenParams, n_past: usize) -> usize {
+        if self.mtp_max_ctx.is_some_and(|m| n_past >= m) {
+            return 0;
+        }
+        p.spec_depth.or_else(|| self.spec_table.as_ref().map(|t| t.depth_for(n_past))).unwrap_or(self.max_d).min(self.max_d)
+    }
+}
+
+/// A generation that runs in slices (fair slicing, `fair.rs`): [`Worker::generate_start`],
+/// [`Worker::generate_slice`] until it returns a result, or [`Worker::generate_abort`].
+pub struct SlicedRun<S> {
+    run: Option<GenRun>,
+    held: Option<Suspended<S>>,
+}
+
+impl<S> SlicedRun<S> {
+    /// Suspended: its session is held outside the engine.
+    pub fn suspended(&self) -> bool {
+        self.held.is_some()
+    }
+    /// Times it yielded so far.
+    pub fn yields(&self) -> u32 {
+        self.run.as_ref().map_or(0, |r| r.fair_yields)
+    }
+    /// The last suspend + resume took this long (ms; 0 before the first).
+    pub fn switch_ms(&self) -> f64 {
+        self.run.as_ref().map_or(0.0, |r| r.switch_ms)
+    }
+}
+
+/// A suspended run's session: the held state with the worker fields that describe it.
+struct Suspended<S> {
+    local: HeldLocal<S>,
+    persisted_head: Option<String>,
+    /// when it was suspended (fair_wait_ms)
+    at: Instant,
+    /// the cache's counters then
+    stats: crate::cache::CacheStats,
+    bytes: usize,
+}
