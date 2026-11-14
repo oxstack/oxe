@@ -4,12 +4,17 @@
 # The dnf packages are not pinned to exact builds: Fedora mirrors keep only the newest update, so
 # a pinned build would stop resolving. The versions are printed here and written to every
 # tarball's README.txt instead.
-#   tools/ci/setup_toolchain.sh RUST_VERSION
+#   tools/ci/setup_toolchain.sh RUST_VERSION [COMPONENT...]   (e.g. clippy)
+# Extra rustup components are installed here: the PATH export below reaches only later steps
+# (GITHUB_PATH), so a `rustup ...` line after this script in the same step would not find rustup.
 set -euo pipefail
-RUST_VERSION=${1:?usage: setup_toolchain.sh RUST_VERSION}
+RUST_VERSION=${1:?usage: setup_toolchain.sh RUST_VERSION [COMPONENT...]}
+shift
+components=()
+for c in "$@"; do components+=(--component "$c"); done
 dnf -y -q install --setopt=install_weak_deps=False \
   gcc gcc-c++ binutils make cmake ninja-build git-core python3 \
-  tar gzip findutils which diffutils curl ca-certificates
+  tar gzip findutils which diffutils procps-ng curl ca-certificates
 # rustup-init pinned by version and SHA-256 (no curl | sh). The Rust toolchain itself is pinned by
 # version; rustup checks its components against the signed channel manifest.
 RUSTUP_VERSION=1.29.2
@@ -21,7 +26,7 @@ echo "$RUSTUP_SHA256  $tmp/rustup-init" | sha256sum -c -
 chmod +x "$tmp/rustup-init"
 # rustup warns that the container's HOME (/github/home) is not root's passwd home: expected here.
 RUSTUP_INIT_SKIP_PATH_CHECK=yes "$tmp/rustup-init" -y -q --no-modify-path --profile minimal \
-  --default-toolchain "$RUST_VERSION"
+  --default-toolchain "$RUST_VERSION" "${components[@]}"
 rm -rf "$tmp"
 echo "$HOME/.cargo/bin" >> "${GITHUB_PATH:-/dev/null}"
 export PATH="$HOME/.cargo/bin:$PATH"

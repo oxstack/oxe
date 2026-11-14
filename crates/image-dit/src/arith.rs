@@ -163,7 +163,7 @@ mod tests {
         // 1 + 2^-8 is halfway between bf16 1.0 and 1 + 2^-7: even -> 1.0
         assert_eq!(f32_to_bf16_bits(1.0 + 1.0 / 256.0), 0x3f80);
         assert_eq!(f32_to_bf16_bits(1.0 + 3.0 / 256.0), 0x3f82);
-        let mut x = [3.141_592_7f32, -0.1];
+        let mut x = [std::f32::consts::PI, -0.1];
         round_bf16(&mut x);
         assert_eq!(x, [3.140625, -0.10009765625]);
     }

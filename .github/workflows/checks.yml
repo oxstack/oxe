@@ -55,9 +55,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Toolchain
-        run: |
-          engine/tools/ci/setup_toolchain.sh "$RUST_VERSION"
-          rustup component add --toolchain "$RUST_VERSION" clippy
+        run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION" clippy
       - name: engine (model-free workspace, all targets)
         working-directory: engine
         run: cargo clippy --locked --workspace --exclude qwen4exp --all-targets
@@ -107,9 +105,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.12'
+      # No setup-python here: the synthetic screen (tools/run_synthetic_screen.py) runs generated code
+      # in bwrap with only /usr mounted, so the interpreter must live under /usr. The image's system
+      # python3 is used and checked below.
+      - name: System python3 under /usr
+        run: |
+          python3 -c 'import sys; print(sys.executable, sys.version)
+          assert sys.version_info >= (3, 12), "python3 >= 3.12 required"
+          assert sys.executable.startswith("/usr/"), "python3 must live under /usr (bwrap screen)"'
+      - name: bubblewrap + unprivileged user namespaces
+        # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor
+        # (kernel.apparmor_restrict_unprivileged_userns=1); bwrap needs them. Lifted for this
+        # ephemeral runner VM only.
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-all --ro-bind / / true || { echo "::error::bwrap cannot create a sandbox on this runner"; exit 1; }
       - name: Unit tests (verbose, so skips are visible)
         run: |
           set -o pipefail
@@ -127,7 +139,10 @@ jobs:
           HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_RUNTIME_DIR="$root/r" \
             PYTHONPATH=src python3 -m snapdragon_ai_lab --help > /dev/null
       - name: Receipt scrub check (benchmarks/, experiments/)
-        run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I tools/scrub_receipts.py --check
+        # --user '': the user-name rule matches the account that RUNS the scrub (the maintainer's,
+        # when receipts are scrubbed locally). Here that is the hosted runner's account, `runner`,
+        # which only matches the English word "runner" in receipts. The other rules still run.
+        run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I tools/scrub_receipts.py --check --user ''
 
   scans:
     name: secret scan, SDK-material check, product isolation
