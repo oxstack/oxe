@@ -20,6 +20,14 @@ on:
         description: Package tarballs and upload them as the "dist-*" artifacts
         type: boolean
         default: false
+      heavy:
+        description: Run engine builds and mandatory-sandbox workspace tests
+        type: boolean
+        default: true
+      build_oxa:
+        description: Run the oxa build (disabled only for draft PR checks)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -35,6 +43,7 @@ defaults:
 
 jobs:
   engine:
+    if: inputs.heavy
     name: oxe-server (MoE) + oxi
     runs-on: ubuntu-24.04-arm
     container:
@@ -49,6 +58,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-
       - name: Toolchain
         run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
       - name: Build oxe-server and oxi
@@ -84,6 +101,7 @@ jobs:
           retention-days: 7
 
   flash:
+    if: inputs.heavy
     name: oxe-server --features flash
     runs-on: ubuntu-24.04-arm
     container:
@@ -101,6 +119,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ runner.os }}-${{ runner.arch }}-flash-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-flash-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-
       - name: Toolchain
         run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
       - name: Model-free Flash package licence fixtures (also without packaging)
@@ -136,6 +162,7 @@ jobs:
           retention-days: 7
 
   oxa-tests:
+    if: inputs.heavy
     # oxa's tests with its bwrap sandbox REQUIRED: on the runner itself, not in a container (Docker's
     # default seccomp/AppArmor profiles refuse the user namespaces bwrap needs). The bwrap tests print
     # "skipped: ... bwrap ..." and return early when no sandbox can be created; here such a notice
@@ -164,6 +191,14 @@ jobs:
           command -v bwrap || { echo "::error::bwrap is not installed"; exit 1; }
           bwrap --unshare-all --ro-bind / / true || { echo "::error::bwrap cannot create a sandbox on this runner"; exit 1; }
           echo "bwrap: --unshare-all OK"
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ runner.os }}-${{ runner.arch }}-oxa-tests-${{ env.RUST_VERSION }}-${{ hashFiles('oxa/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-oxa-tests-${{ env.RUST_VERSION }}-${{ hashFiles('oxa/Cargo.lock') }}-
       - name: Toolchain (rustup-init pinned by version and SHA-256)
         run: |
           tmp=$(mktemp -d)
@@ -213,6 +248,7 @@ jobs:
           echo "PARITY profile local passed; skip notices: 0"
 
   oxa:
+    if: inputs.build_oxa
     # oxa (the coding agent) is its own cargo workspace at oxa/. No model, no engine build: oxa
     # talks to the engine over HTTP only. Generic aarch64 code (no target-cpu flag).
     name: oxa
@@ -224,6 +260,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ runner.os }}-${{ runner.arch }}-oxa-${{ env.RUST_VERSION }}-${{ hashFiles('oxa/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-oxa-${{ env.RUST_VERSION }}-${{ hashFiles('oxa/Cargo.lock') }}-
       - name: Toolchain
         run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION"
       - name: Build oxa

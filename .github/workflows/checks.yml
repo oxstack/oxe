@@ -1,30 +1,69 @@
 name: checks
-# Build, model-free tests, lint, lab tests and repository scans on every push to main and every
-# pull request. GitHub-hosted runners only (free for public repositories). No secrets.
+# Hosted CI: cheap drafts, fast PR checks, full merge-queue/main/manual/nightly gate.
+# Security scans always run, including docs-only changes. No secrets.
 on:
   push:
-    branches: [main]
+    branches: ["main"]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group:
   workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: checks-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   RUST_VERSION: "1.99.1"
 
 jobs:
+  changes:
+    name: classify changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.paths.outputs.full }}
+      docs: ${{ steps.paths.outputs.docs }}
+      engine: ${{ steps.paths.outputs.engine }}
+      oxa: ${{ steps.paths.outputs.oxa }}
+      lab: ${{ steps.paths.outputs.lab }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: paths
+        run: python3 -I tools/ci/paths.py
+      - name: Path filter controls
+        run: python3 -I -m unittest discover -s tools/ci/tests
+
+  links:
+    name: documentation links
+    needs: changes
+    if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.docs == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: python3 tools/ci/links.py
+
   build:
+    # Always call the reusable workflow so each required child check reports, even when skipped.
     # oxe-server, oxi, the Flash variant and oxa: build and model-free tests on ARM64 (build.yml)
     uses: ./.github/workflows/build.yml
     with:
       version: dev-${{ github.sha }}
       package: false
+      heavy: ${{ github.event_name != 'pull_request' }}
+      build_oxa: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
   rustfmt:
     # oxa only: the engine tree predates rustfmt enforcement (formatting it is a separate change).
@@ -44,6 +83,7 @@ jobs:
         run: cargo fmt --all -- --check
 
   clippy:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Compile errors fail the job; lint warnings are reported but do not fail it yet. Add
     # "-- -D warnings" once the warning count is known to be zero.
     name: clippy (engine, oxa; aarch64)
@@ -65,6 +105,7 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets
 
   x86-64-stub:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # oxe-server builds on x86_64 with the stub engine only (kernels-sys compiles its kernels on
     # aarch64 only; the model engine refuses to load elsewhere). Its server tests that do not need
     # the model engine run here. Uses the hosted image's rustup (setup_toolchain.sh installs the
@@ -81,6 +122,18 @@ jobs:
           persist-credentials: false
       - name: Toolchain (rustup is preinstalled on the hosted image)
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('lab/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
       - name: Build oxe-server
         working-directory: engine
         run: cargo build --release --locked -p server --bin oxe-server
@@ -94,7 +147,16 @@ jobs:
           ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
           cargo test --release --locked -p server --lib
 
+      - name: OpenAI contract (engine and controller over loopback)
+        working-directory: ${{ github.workspace }}
+        run: |
+          root=$(mktemp -d)
+          mkdir -p "$root/home"
+          env -i PATH="$PATH" HOME="$root/home" PIP_CACHE_DIR="$HOME/.cache/pip" \
+            tools/openai-contract/run.sh --mode both --server "$PWD/engine/target/release/oxe-server" --work "$root/work"
+
   lab:
+    if: github.event_name != 'pull_request'
     name: lab tests, CLI, receipt scrub (x86_64)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -106,6 +168,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('lab/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
       # No setup-python here: the synthetic screen (tools/run_synthetic_screen.py) runs generated code
       # in bwrap with only /usr mounted, so the interpreter must live under /usr. The image's system
       # python3 is used and checked below.
@@ -139,11 +205,6 @@ jobs:
           root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
           HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_RUNTIME_DIR="$root/r" \
             PYTHONPATH=src python3 -m snapdragon_ai_lab --help > /dev/null
-      - name: Receipt scrub check (benchmarks/, experiments/)
-        # --user '': the user-name rule matches the account that RUNS the scrub (the maintainer's,
-        # when receipts are scrubbed locally). Here that is the hosted runner's account, `runner`,
-        # which only matches the English word "runner" in receipts. The other rules still run.
-        run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I tools/scrub_receipts.py --check --user ''
 
   scans:
     name: secret scan, SDK-material check, product isolation
@@ -201,3 +262,10 @@ jobs:
                   bad.append(f'{name} at the root: engine/ and oxa/ are separate workspaces')
           print('\n'.join(bad) or 'isolation ok'); sys.exit(1 if bad else 0)
           PY
+
+      - name: Receipt scrub check (benchmarks/, experiments/)
+        working-directory: lab
+        # --user '': the user-name rule matches the account that RUNS the scrub (the maintainer's,
+        # when receipts are scrubbed locally). Here that is the hosted runner's account, `runner`,
+        # which only matches the English word "runner" in receipts. The other rules still run.
+        run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I tools/scrub_receipts.py --check --user ''
