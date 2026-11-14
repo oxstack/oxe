@@ -1,6 +1,6 @@
 # M3.1: MTP speculative decoding (exact)
 
-> **Historical working note.** The branches and worktrees named here were merged into `main` and then deleted; the commit hashes cited still resolve in `main`'s history. Current state: [README](README.md).
+> **Historical working note.** The branches and worktrees named here were merged into `main` and then deleted; the commit hashes cited still resolve in `main`'s history. Current state: [README](../../README.md).
 
 **Update, 2026-11-10: rebased on M3.2 (batched prefill, 9833695, plus `prefill-mmid-pad`
 267bb7c/04c1667) and merged to main.**
