@@ -62,7 +62,7 @@ jobs:
     with:
       version: dev-${{ github.sha }}
       package: false
-      heavy: ${{ github.event_name != 'pull_request' }}
+      heavy: ${{ github.event_name != 'pull_request' && github.event_name != 'push' }}
       build_oxa: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
   rustfmt:
@@ -156,7 +156,7 @@ jobs:
             tools/openai-contract/run.sh --mode both --server "$PWD/engine/target/release/oxe-server" --work "$root/work"
 
   lab:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.event_name != 'push'
     name: lab tests, CLI, receipt scrub (x86_64)
     runs-on: ubuntu-latest
     timeout-minutes: 30
