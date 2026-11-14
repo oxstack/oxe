@@ -60,9 +60,6 @@ fn env1(k: &str, v: &str) -> crate::startup_check::EnvReport {
 #[test]
 fn known_l1_knobs_accept_the_values_their_readers_accept() {
     let ok: &[(&str, &[&str])] = &[
-        ("OXE_PF_PFG_SPLIT", &["balanced", "fixed", " fixed ", ""]),
-        ("OXE_SPIN_WAIT", &["spin", "wfe", " wfe"]),
-        ("OXE_UCLAMP_MIN", &["0", "1024", "off", " 512 ", ""]),
         ("OXE_MTP_GUARD", &["off", "0", "0.45", "1", "0.5:128:64", " 0.5:16:0 ", ""]),
     ];
     for (k, vs) in ok {
@@ -78,9 +75,6 @@ fn known_l1_knobs_accept_the_values_their_readers_accept() {
 fn known_l1_knobs_refuse_what_their_readers_refuse_and_name_the_variable() {
     // the readers match exactly (trimmed): case and near-miss words are refused, as the engine would ignore them
     let bad: &[(&str, &[&str])] = &[
-        ("OXE_PF_PFG_SPLIT", &["fixd", "Fixed", "grid", "balanced,fixed"]),
-        ("OXE_SPIN_WAIT", &["WFE", "park", "spin|wfe"]),
-        ("OXE_UCLAMP_MIN", &["1025", "-1", "OFF", "0x10", "half", "1.5"]),
         ("OXE_MTP_GUARD", &["1.5", "x", "0.5:0:1", "0.5:8:1:9", "0.5:8:-1", "nan"]),
     ];
     for (k, vs) in bad {
@@ -95,7 +89,7 @@ fn known_l1_knobs_refuse_what_their_readers_refuse_and_name_the_variable() {
 
 #[test]
 fn known_l1_knobs_read_an_empty_value_as_unset() {
-    for k in ["OXE_PF_PFG_SPLIT", "OXE_SPIN_WAIT", "OXE_UCLAMP_MIN", "OXE_MTP_GUARD"] {
+    for k in ["OXE_MTP_GUARD"] {
         assert!(env1(k, "").errors.is_empty(), "{k}= (empty) is read as the default");
     }
 }

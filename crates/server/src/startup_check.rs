@@ -145,10 +145,6 @@ enum Kind {
     Bool01,
     /// one of these words (trimmed, lower case)
     Word(&'static [&'static str]),
-    /// one of these words, matched exactly after trimming (the reader is case-sensitive)
-    WordExact(&'static [&'static str]),
-    /// unsigned integer in [lo, hi], or the word `off` (exact)
-    UintOrOff(u64, u64),
     /// checked by a function (the engine's own parser); the error text is the function's reason
     Check(fn(&str) -> Result<(), String>),
     /// a positive finite number
@@ -177,10 +173,6 @@ const KNOWN: &[(&str, Kind)] = &[
     ("OXE_PF_PFG_TB", Kind::Word(&["8", "16", "32"])),
     ("OXE_PF_PFG_MK", Kind::Word(&["ld1r", "elem"])),
     ("OXE_PF_ATTN_AUTO_MIN_KV", Kind::Any),
-    // v0.2.0 knobs: the readers trim and match exactly (an unknown value warns in the engine and keeps the default)
-    ("OXE_PF_PFG_SPLIT", Kind::WordExact(&["balanced", "fixed"])),
-    ("OXE_SPIN_WAIT", Kind::WordExact(&["spin", "wfe"])),
-    ("OXE_UCLAMP_MIN", Kind::UintOrOff(0, 1024)),
     // v0.2.0: the MTP acceptance guard (`mtp_guard::parse`)
     ("OXE_MTP_GUARD", Kind::Check(check_mtp_guard)),
     ("OXE_SMALL_PREFILL", Kind::Uint(0, u64::MAX)),
@@ -297,23 +289,6 @@ fn check_one(name: &str, kind: Kind, v: &str) -> Result<serde_json::Value, Strin
                 Ok(J::String(l))
             } else {
                 Err(format!("{name}={v:?}: one of {}", ws.join("|")))
-            }
-        }
-        Kind::WordExact(ws) => {
-            if ws.contains(&t) {
-                Ok(J::String(t.to_string()))
-            } else {
-                Err(format!("{name}={v:?}: one of {}", ws.join("|")))
-            }
-        }
-        Kind::UintOrOff(lo, hi) => {
-            if t == "off" {
-                return Ok(J::String("off".into()));
-            }
-            match t.parse::<u64>() {
-                Ok(n) if (lo..=hi).contains(&n) => Ok(J::from(n)),
-                Ok(n) => Err(format!("{name}={v:?}: {n} is outside {lo}..={hi} (or off)")),
-                Err(_) => Err(format!("{name}={v:?}: not a decimal integer or off")),
             }
         }
         Kind::Check(f) => f(t).map(|()| J::String(t.to_string())).map_err(|e| format!("{name}={v:?}: {e}")),
