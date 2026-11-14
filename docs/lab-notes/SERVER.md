@@ -160,7 +160,11 @@ false here; an explicit value from the client is kept), so the next request (the
 the same messages plus any further message) continues it exactly: its `cache_n` equals this
 request's `prompt_tokens`, and it returns what it would have returned without the prefill. The
 conversation may end with an assistant message here (prefill after a reply): it is rendered as a
-finished turn (with `<|im_end|>`).
+finished turn (with `<|im_end|>`). The conversation may also hold no user message at all (a
+client preloading its system + tools prefix before the first prompt): a template that requires a
+user query (Qwen3.5, Ornith: `No user query found in messages.`) is then rendered with a
+placeholder user turn and the prompt is cut right before that turn's `<|im_start|>user`, so it is
+exactly the prefix of the first real request (only with `add_generation_prompt` false).
 
 **Trailing assistant message (v0.2.0 F9, OpenAI v1 behaviour).** A generating request whose last
 message is an assistant message treats it as history: it is rendered as a finished turn and the

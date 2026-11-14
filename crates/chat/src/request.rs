@@ -76,6 +76,9 @@ pub struct ChatInputs {
     /// restore its own reasoning, O-96), an explicit string, the empty one included, is the
     /// client's edit and must match.
     pub reasoning_sent: Vec<Option<String>>,
+    /// v0.2.0 H6: the request only prefills (`max_tokens: 0`), it generates nothing. Such a request
+    /// may carry no user turn (a client preloading its system + tools prefix); see [`apply`].
+    pub prefill_only: bool,
 }
 
 /// Result of applying the template.
@@ -359,6 +362,7 @@ pub fn chat_inputs(body: &Json, opt: &ServerChatOptions, tmpl: &ChatTemplate) ->
         reasoning_format,
         extra,
         reasoning_sent,
+        prefill_only: limit == Some(0),
     })
 }
 
@@ -378,9 +382,50 @@ fn context(inp: &ChatInputs, add_generation_prompt: bool) -> Json {
     Json::Object(ctx)
 }
 
+/// Placeholder user turn of [`prefix_only_render`] (never part of the returned prompt).
+const PREFIX_PLACEHOLDER: [&str; 2] = ["prefix placeholder A", "prefix placeholder B"];
+
+/// v0.2.0 H6 prefix preload: a prefill-only request without a generation prompt and without any
+/// user message (a client warming its frozen system + tools prefix before the first prompt).
+/// Templates that look for the last user query (Qwen3.5, Ornith: `No user query found in
+/// messages.`) refuse to render such a conversation. The prefix is then rendered with one
+/// placeholder user turn appended and cut at that turn's opener (`<|im_start|>user`), which is
+/// exactly where the real first request (the same messages + the user's prompt) first differs:
+/// the cut is a byte prefix of it, at a special token, so the tokens match too. Checked with two
+/// different placeholders (the cut must not depend on the user text). None when the request does
+/// not qualify or the template is not ChatML-shaped.
+fn prefix_only_render(tmpl: &ChatTemplate, inp: &ChatInputs) -> Option<String> {
+    let msgs = inp.messages.as_array()?;
+    if !inp.prefill_only || inp.add_generation_prompt || msgs.iter().any(|m| m.get("role").and_then(Json::as_str) == Some("user")) {
+        return None;
+    }
+    let opener = format!("{IM_START}user");
+    let cut = |text: &str| -> Option<String> {
+        let mut with = inp.clone();
+        let mut m = msgs.clone();
+        m.push(json!({"role": "user", "content": text}));
+        with.messages = Json::Array(m);
+        let full = tmpl.render_ctx(&context(&with, false)).ok()?;
+        let at = full.rfind(&opener)?;
+        full[at..].contains(text).then(|| full[..at].to_string())
+    };
+    let a = cut(PREFIX_PLACEHOLDER[0])?;
+    (cut(PREFIX_PLACEHOLDER[1])? == a).then_some(a)
+}
+
 /// `common_chat_templates_apply` for the supported formats.
 pub fn apply(tmpl: &ChatTemplate, inp: &ChatInputs) -> Result<Applied, minijinja::Error> {
-    let prompt = tmpl.render_ctx(&context(inp, inp.add_generation_prompt))?;
+    let prompt = match tmpl.render_ctx(&context(inp, inp.add_generation_prompt)) {
+        Ok(p) => p,
+        Err(e) => match prefix_only_render(tmpl, inp) {
+            // nothing is generated, so there is no generation prompt to parse
+            Some(prefix) => {
+                let (thinking_start, thinking_end) = thinking_marks(tmpl);
+                return Ok(Applied { prompt: prefix, generation_prompt: String::new(), format: tmpl.format, thinking_start, thinking_end });
+            }
+            None => return Err(e),
+        },
+    };
     let no_gen = tmpl.render_ctx(&context(inp, false))?;
     let gen = if inp.add_generation_prompt { prompt.clone() } else { tmpl.render_ctx(&context(inp, true))? };
     let p = no_gen.bytes().zip(gen.bytes()).take_while(|(a, b)| a == b).count();
@@ -389,14 +434,18 @@ pub fn apply(tmpl: &ChatTemplate, inp: &ChatInputs) -> Result<Applied, minijinja
         p -= 1;
     }
     let generation_prompt = gen[p..].to_string();
-    let (thinking_start, thinking_end) = if tmpl.format == Format::Qwen3Coder && tmpl.supports_thinking {
+    let (thinking_start, thinking_end) = thinking_marks(tmpl);
+    Ok(Applied { prompt, generation_prompt, format: tmpl.format, thinking_start, thinking_end })
+}
+
+fn thinking_marks(tmpl: &ChatTemplate) -> (Option<String>, Vec<String>) {
+    if tmpl.format == Format::Qwen3Coder && tmpl.supports_thinking {
         (Some("<think>".to_string()), vec!["\n</think>".to_string(), "</think>".to_string(), "<tool_call>".to_string()])
     } else if tmpl.supports_thinking {
         (Some("<think>".to_string()), vec!["</think>".to_string()])
     } else {
         (None, vec![])
-    };
-    Ok(Applied { prompt, generation_prompt, format: tmpl.format, thinking_start, thinking_end })
+    }
 }
 
 /// Turn delimiters of ChatML templates (Qwen3.x, Ornith).

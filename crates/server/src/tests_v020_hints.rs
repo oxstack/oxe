@@ -555,3 +555,64 @@ async fn no_hint_no_change() {
     h.insert("x-oxe-snapshot", " Keep ".parse().unwrap());
     assert!(crate::http::snapshot_keep(&h));
 }
+
+/// A Qwen3.5 / Ornith-shaped template: the flash fixture plus the check that refuses a
+/// conversation without a user query (`No user query found in messages.`).
+fn raising_template() -> String {
+    const FLASH: &str = include_str!("../../chat/src/fixtures/qwen38-flash-next.jinja");
+    let at = "{%- for message in messages %}\n    {%- if loop.index0 >= num_sys %}";
+    assert!(FLASH.contains(at), "fixture layout changed");
+    FLASH.replacen(at, &format!("{{%- if ns.multi_step_tool %}}\n    {{{{- raise_exception('No user query found in messages.') }}}}\n{{%- endif %}}\n{at}"), 1)
+}
+
+fn srv_raising(scripts: &[&str]) -> Arc<State<StubEngine>> {
+    let tok = crate::tests_echo::synth_tokenizer_with(0, &raising_template());
+    let mut eng = StubEngine::new(1 << 16, tok.n_vocab(), tok.eos.unwrap(), tok.encode("x", false, true));
+    for s in scripts {
+        eng.scripts.push_back(tok.encode(s, false, true));
+    }
+    let cfg = crate::service::Config {
+        model_name: "synth".into(),
+        model_path: "/synth.gguf".into(),
+        chat_opts: chat::ServerChatOptions { enable_thinking: true, ..Default::default() },
+        fingerprint: "oxe-test".into(),
+        slots: false,
+        idle_reprefill: false,
+        engine_status: None,
+    };
+    let mut w = Worker::new(eng, 8);
+    w.ubatch = 16;
+    Arc::new(State::new(cfg, tok, w).unwrap())
+}
+
+/// The harness boot preload (oxa O-152): system + tools, no user turn, `max_tokens: 0`, the
+/// snapshot hint. On a template that requires a user query it used to answer HTTP 400 ("chat
+/// template error: ... No user query found in messages."). It now prefills exactly the stable
+/// prefix, and the first real request (the same system + tools + the user's prompt) resumes at
+/// its end (`cache_n` = the preload's `prompt_tokens`) with the same reply and the same fed
+/// tokens as a server that never saw the preload.
+#[tokio::test(flavor = "multi_thread")]
+async fn h6_prefix_preload_without_a_user_turn_on_a_user_query_template() {
+    let tools = json!([{"type": "function", "function": {"name": "read", "description": "Read a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}]);
+    let pre = json!([{"role": "system", "content": SYS}]);
+    let first = json!([{"role": "system", "content": SYS}, {"role": "user", "content": "hi"}]);
+    let s = srv_raising(&["Hello there."]);
+    let r0 = chat(&s, &req(&pre, true, &[("max_tokens", json!(0)), ("tools", tools.clone())]), true).await;
+    assert_eq!(u(&r0, "/usage/completion_tokens"), 0, "{r0}");
+    let p = u(&r0, "/usage/prompt_tokens");
+    assert!(p > 0);
+    let live = kv(&s);
+    assert_eq!(live.len(), p, "the prefix stays live, nothing after it");
+    let user = s.tok.encode("<|im_start|>user", false, true);
+    assert!(!live.windows(user.len()).any(|w| w == &user[..]), "no placeholder user turn was fed");
+    assert_eq!(u(&r0, "/timings/snap_pos"), p, "H4: the prefix end is checkpointed");
+
+    let r1 = chat(&s, &req(&first, true, &[("tools", tools.clone())]), true).await;
+    assert_eq!(u(&r1, "/timings/cache_n"), p, "C3: the first request reuses the whole preloaded prefix");
+    let cold = srv_raising(&["Hello there."]);
+    let rc = chat(&cold, &req(&first, true, &[("tools", tools)]), true).await;
+    assert_eq!(r1["choices"][0]["message"], rc["choices"][0]["message"]);
+    assert_eq!(u(&r1, "/usage/prompt_tokens"), u(&rc, "/usage/prompt_tokens"));
+    assert_eq!(kv(&s), kv(&cold), "the same prompt was fed and the same tokens generated");
+    assert_eq!(&kv(&cold)[..p], &live[..], "the preload is the token prefix of the first request");
+}

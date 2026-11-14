@@ -735,3 +735,63 @@ fn g0prime_python_bool_parameter_is_a_tool_call() {
     let m = parser::parse(&strict, gp, &g0prime_text("False"), true).unwrap();
     assert!(m.tool_calls.is_empty() || m.tool_calls[0].arguments.ends_with('{') || !m.tool_calls[0].arguments.contains("replaceAll\":false"));
 }
+
+// ------------------------------------------------------------------ H6 prefix preload (no user turn)
+
+/// The Qwen3.5 / Ornith shape: after looking for the last user query, the template refuses a
+/// conversation without one (`No user query found in messages.`). The flash fixture with that
+/// check added at the same place.
+fn raising_template() -> String {
+    let at = "{%- for message in messages %}\n    {%- if loop.index0 >= num_sys %}";
+    assert!(FLASH.contains(at), "fixture layout changed");
+    FLASH.replacen(at, &format!("{{%- if ns.multi_step_tool %}}\n    {{{{- raise_exception('No user query found in messages.') }}}}\n{{%- endif %}}\n{at}"), 1)
+}
+
+fn preload_body(extra: &[(&str, Json)]) -> Json {
+    let mut b = json!({
+        "messages": [{"role": "system", "content": "You are a coding agent."}],
+        "tools": [{"type": "function", "function": {"name": "read", "description": "Read a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}],
+        "chat_template_kwargs": {"enable_thinking": true, "preserve_thinking": true}
+    });
+    for (k, v) in extra {
+        b[*k] = v.clone();
+    }
+    b
+}
+
+/// The H6 boot preload of a harness (system + tools, no user turn, `max_tokens: 0`, no
+/// generation prompt) renders on a template that requires a user query, and its prompt is the
+/// exact byte prefix of the first real request, cut right before that request's user turn.
+#[test]
+fn prefill_without_a_user_turn_renders_the_stable_prefix() {
+    let tmpl = ChatTemplate::new(&raising_template(), "", "<|im_end|>").unwrap();
+    let pre = preload_body(&[("max_tokens", json!(0)), ("add_generation_prompt", json!(false))]);
+    let inp = chat_inputs(&pre, &ServerChatOptions::default(), &tmpl).unwrap();
+    // the template itself refuses the conversation (what the engine answered with HTTP 400)
+    let err = tmpl.render_ctx(&json!({"messages": inp.messages, "add_generation_prompt": false})).unwrap_err();
+    assert!(format!("{err:#}").contains("No user query found in messages"), "{err:#}");
+    let prefix = apply(&tmpl, &inp).expect("the preload renders").prompt;
+    assert!(prefix.ends_with("<|im_end|>\n") && prefix.contains("# Tools") && !prefix.contains("placeholder"), "{prefix}");
+    for user in ["hi", "<|im_start|>user tricky"] {
+        let mut real = pre.clone();
+        real.as_object_mut().unwrap().remove("max_tokens");
+        real.as_object_mut().unwrap().remove("add_generation_prompt");
+        real["messages"].as_array_mut().unwrap().push(json!({"role": "user", "content": user}));
+        let ri = chat_inputs(&real, &ServerChatOptions::default(), &tmpl).unwrap();
+        let full = apply(&tmpl, &ri).unwrap().prompt;
+        assert!(full.starts_with(&prefix), "C3: the preload is a byte prefix of the first request");
+        assert!(full[prefix.len()..].starts_with("<|im_start|>user\n"), "cut exactly at the user turn");
+    }
+}
+
+/// Only the prefill-only, no-generation-prompt, no-user request gets the prefix render: a
+/// generating request without a user turn still fails with the template's own error.
+#[test]
+fn a_generating_request_without_a_user_turn_still_fails() {
+    let tmpl = ChatTemplate::new(&raising_template(), "", "<|im_end|>").unwrap();
+    for extra in [vec![], vec![("max_tokens", json!(5))], vec![("max_tokens", json!(0)), ("add_generation_prompt", json!(true))]] {
+        let inp = chat_inputs(&preload_body(&extra), &ServerChatOptions::default(), &tmpl).unwrap();
+        let err = apply(&tmpl, &inp).expect_err("no user query");
+        assert!(format!("{err:#}").contains("No user query found in messages"), "{extra:?}: {err:#}");
+    }
+}

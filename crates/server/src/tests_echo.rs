@@ -31,6 +31,11 @@ pub(crate) fn synth_tokenizer() -> Tokenizer {
 /// [`synth_tokenizer`] with `pad` extra plain tokens after the specials (a model whose vocabulary
 /// must be a multiple of 8 can then generate every id).
 pub(crate) fn synth_tokenizer_padded(pad: usize) -> Tokenizer {
+    synth_tokenizer_with(pad, TEMPLATE)
+}
+
+/// [`synth_tokenizer_padded`] with another chat template.
+pub(crate) fn synth_tokenizer_with(pad: usize, template: &str) -> Tokenizer {
     let table = tokenizer::unicode::byte_to_cpt_table();
     let mut toks: Vec<Meta> = table.iter().map(|c| Meta::Str(c.to_string())).collect();
     let mut types: Vec<Meta> = vec![Meta::Int(1); 256];
@@ -53,7 +58,7 @@ pub(crate) fn synth_tokenizer_padded(pad: usize) -> Tokenizer {
     md.insert("tokenizer.ggml.merges".to_string(), Meta::Array(vec![Meta::Str("a b".into())]));
     md.insert("tokenizer.ggml.eos_token_id".to_string(), Meta::Int(id("<|im_end|>")));
     md.insert("tokenizer.ggml.padding_token_id".to_string(), Meta::Int(id("<|endoftext|>")));
-    md.insert("tokenizer.chat_template".to_string(), Meta::Str(TEMPLATE.into()));
+    md.insert("tokenizer.chat_template".to_string(), Meta::Str(template.into()));
     Tokenizer::from_metadata(&md).unwrap()
 }
 
