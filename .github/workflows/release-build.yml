@@ -1,0 +1,144 @@
+name: release-build
+# Artifact-only qualification. No tags, schedules, credentials, or publication jobs.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/release-build.yml'
+      - 'packaging/**'
+      - 'docs/RELEASE.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_HOME: /opt/cargo
+  RUSTUP_HOME: /opt/rustup
+  CARGO_BUILD_JOBS: '2'
+
+jobs:
+  binaries:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    name: CPU artifacts (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - arch: x86_64
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+    timeout-minutes: 180
+    outputs:
+      source_commit: ${{ steps.source.outputs.commit }}
+      source_epoch: ${{ steps.source.outputs.epoch }}
+    steps:
+      - name: Git before checkout (prevent REST archive fallback)
+        run: dnf -y -q install --setopt=install_weak_deps=False git-core
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: GCC 16 and pinned Rust 1.99.1
+        run: packaging/release/setup.sh
+      - name: Immutable source archive
+        id: source
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          commit=$(git rev-parse HEAD)
+          epoch=$(git show -s --format=%ct HEAD)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
+          mkdir -p /build/first /build/second dist
+          git archive --format=tar --prefix="ox-llm-$commit/" HEAD | gzip -n -9 > "dist/ox-llm-$commit.tar.gz"
+          git archive HEAD | tar -xf - -C /build/first
+          git archive HEAD | tar -xf - -C /build/second
+      - name: Build twice in different directories; compare complete payload hashes
+        run: |
+          for build in first second; do
+            cd "/build/$build"
+            packaging/release/build.sh
+            python3 -B packaging/release/stage.py /build/payload
+            packaging/release/archive.sh /build/payload "/build/$build.tar.gz"
+            rm -rf /build/payload
+          done
+          cmp /build/first.tar.gz /build/second.tar.gz
+          arch=$(uname -m)
+          cp /build/first.tar.gz "$GITHUB_WORKSPACE/dist/ox-llm-0.2.0-linux-$arch.tar.gz"
+          echo 'PASS: two clean builds in different source/target directories produced identical payload tarballs.' \
+            > "$GITHUB_WORKSPACE/dist/REPRODUCIBILITY.txt"
+          { rustc --version; cargo --version; cc --version; c++ --version; ld --version; rpm -q glibc libstdc++; } \
+            > "$GITHUB_WORKSPACE/dist/TOOLCHAIN.txt"
+      - name: Model-free source tests
+        working-directory: /build/first
+        run: packaging/release/check.sh
+      - name: CycloneDX SBOM and checksums
+        run: |
+          cd /build/first
+          mkdir -p /build/payload
+          tar -xzf "$GITHUB_WORKSPACE/dist/ox-llm-0.2.0-linux-$(uname -m).tar.gz" -C /build/payload
+          python3 -B packaging/release/sbom.py /build/payload "$GITHUB_WORKSPACE/dist/SBOM.cdx.json"
+          python3 -B - <<'PY'
+          import os, pathlib, re
+          payload = pathlib.Path('/build/payload')
+          prefixes = [b'/build/first', b'/build/second', os.fsencode(os.environ['HOME']), b'/opt/cargo', b'/opt/rustup']
+          for binary in (payload / 'usr/bin').iterdir():
+              data = binary.read_bytes()
+              assert not any(prefix in data for prefix in prefixes), binary.name
+              assert not re.search(rb'/home/[^/\x00\s]+/', data), binary.name
+          PY
+          cd "$GITHUB_WORKSPACE/dist"
+          sha256sum -- * > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-build-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  arch-clean-install:
+    name: Arch source + binary packages, namcap, clean install and removal
+    needs: binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.binaries.outputs.source_epoch }}
+      OX_SOURCE_COMMIT: ${{ needs.binaries.outputs.source_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-build-x86_64
+          path: artifacts
+      - name: Fresh Arch container (official image is x86_64 only)
+        run: |
+          mkdir packages
+          docker run --rm \
+            -e SOURCE_DATE_EPOCH -e OX_SOURCE_COMMIT \
+            -v "$GITHUB_WORKSPACE/artifacts:/artifacts:ro" \
+            -v "$GITHUB_WORKSPACE/packages:/packages" \
+            -v "$GITHUB_WORKSPACE/packaging/arch:/recipes:ro" \
+            -v "$GITHUB_WORKSPACE/packaging/release/smoke.py:/smoke.py:ro" \
+            -v "$GITHUB_WORKSPACE/packaging/release/arch-test.sh:/arch-test.sh:ro" \
+            archlinux:latest bash /arch-test.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arch-packages-x86_64
+          path: packages/
+          if-no-files-found: error
+          retention-days: 7

@@ -2430,6 +2430,10 @@ fn cmd_npu_prefill_check(a:&Args){
 
 fn main() {
     sched::cli::exit_zero_on_epipe(); // F-CI9: `| head` ends with status 0, not a core dump
+    if std::env::args().skip(1).collect::<Vec<_>>() == ["--version"] {
+        println!("oxe {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let a = Args::parse();
     if let Some(mode)=a.get("shared-experts") {
         if a.cmd != "bench" || mode != "dma" { die("experimental --shared-experts dma is limited to bench"); }
