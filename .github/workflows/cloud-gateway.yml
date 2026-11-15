@@ -39,6 +39,7 @@ jobs:
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --no-self-update
       - run: cargo check --locked --manifest-path oxc-gateway/Cargo.toml --no-default-features
       - run: cargo clippy --locked --manifest-path oxc-gateway/Cargo.toml --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --manifest-path oxc-gateway/Cargo.toml --all-features
       - run: cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
       - run: /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
-      - run: OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxc-gateway/target/debug/examples/secrets_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
+      - run: OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxc-gateway/target/debug/examples/secrets_contract" OXC_PRICING_CONTRACT="$PWD/oxc-gateway/target/debug/examples/pricing_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
