@@ -46,7 +46,7 @@ Not implemented: --taus-json. The la_net JSON stores tuned taus only per (score,
 not as an unambiguous per-layer tau vector, so export takes one probability threshold via --tau.
 
 Usage (numpy only; wrapped in the memory limit; the build slot is held for the whole run):
-  ( exec 9>"${LOCAL_AI_BUILD_LOCK:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/build2.lock}"; flock -n 9 || flock -w 600 9 || exit 99
+  ( exec 9>"${OXC_BUILD_LOCK:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/build2.lock}"; flock -n 9 || flock -w 600 9 || exit 99
     systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0 env OPENBLAS_NUM_THREADS=4 \
       OMP_NUM_THREADS=4 nice -n 19 ~/.cache/local-ai/venv-lookahead/bin/python -I tools/la_table.py \
       --selftest )

@@ -7,7 +7,7 @@
 set -uo pipefail
 MODELS="${OXE_MODEL_DIR:-$HOME/.local/share/ai-stack/models/llm}"
 O="${OXE_ORACLE_DIR:-$HOME/.cache/local-ai/snapdragon-engine/oracle}"
-L="${LOCAL_AI_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/inference.lock}"
+L="${OXC_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/inference.lock}"
 D=${DUMP_REF:-$(dirname "$0")/oracle/bin/dump_ref}
 SRC=${PROMPT:-$O/lc8k-src/prompt.txt}
 for f in qwen36 ornith; do

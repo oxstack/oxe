@@ -100,7 +100,7 @@ split, order or thread count gives the same bits; the R4 gemv is bitwise equal t
 cd <engine checkout>
 CARGO_BUILD_JOBS=2 nice -n 19 cargo build --release -p qwen4exp -j 2
 # reference (mapped experts; ~2.2 s/token, ~16 min): tokens vs the production oracle
-flock -n -E 75 ${LOCAL_AI_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/inference.lock} systemd-run --user --scope --quiet -p MemoryMax=28G -p MemorySwapMax=0 -- \
+flock -n -E 75 ${OXC_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/inference.lock} systemd-run --user --scope --quiet -p MemoryMax=28G -p MemorySwapMax=0 -- \
   ./target/release/flash-m1 ref --oracle <BigMoeOnEdge checkout>/.bench-oracle/run1/dump --threads 4 --out results/m1/full-t4.json
 # streaming (prefill mapped, 3 in-process check steps vs a mapped-expert context, snapshot test, then streaming)
 tools/run_flash_m1.sh --cache-gib 16 --threads 4

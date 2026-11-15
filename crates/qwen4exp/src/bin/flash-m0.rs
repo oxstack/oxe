@@ -5,7 +5,7 @@
 //!   flash-m0 run [options]                                        timing run (loads ~4.5 GB dense + cache)
 //!
 //! Every command that reads model bytes must run under the inference lease, e.g.
-//!   flock -n -E 75 "$LOCAL_AI_LEASE" ./target/release/flash-m0 run ...
+//!   flock -n -E 75 "$OXC_LEASE" ./target/release/flash-m0 run ...
 
 use qwen4exp::cache::Cache;
 use qwen4exp::dense::{Dense, DenseMode};

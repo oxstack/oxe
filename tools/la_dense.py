@@ -67,7 +67,7 @@ at layer T-d of one decode token; 0xFFFF x 10 when T-d < 0); u32 n_out (<= 8); n
 experts with score >= thr[T], score descending then expert id ascending, residency ignored.
 
 Usage (numpy only; run under the lookahead venv; wrapped in the memory cap; PY = venv python):
-  flock -w 900 "${LOCAL_AI_BUILD_LOCK:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/build3.lock}" systemd-run --user --scope -q -p MemoryMax=4G \
+  flock -w 900 "${OXC_BUILD_LOCK:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/build3.lock}" systemd-run --user --scope -q -p MemoryMax=4G \
     -p MemorySwapMax=0 env OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 nice -n 19 $PY -I tools/la_dense.py --selftest
   ... -I tools/la_dense.py --mode score --routes ROUTES.csv [--extra-routes X.csv] --sim SIM.npz \
       --out-prefix results/la/score-NAME- [--per-layer-w] [--own-feats]

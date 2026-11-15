@@ -1,6 +1,6 @@
 # v0.1.2 — chat and agentic sessions
 
-Fast is the default OpenCode preset: 65,536 input tokens with compaction around 49.5K. The engine context cap for Ornith and Qwen3.6 is 131,072 tokens. Select Deep with `LOCAL_AI_OPENCODE_MODE=deep`; long tool appends at depth cost substantially more.
+Fast is the default OpenCode preset: 65,536 input tokens with compaction around 49.5K. The engine context cap for Ornith and Qwen3.6 is 131,072 tokens. Select Deep with `OXC_OPENCODE_MODE=deep`; long tool appends at depth cost substantially more.
 
 Turn checkpoints and a segmented KV/recurrent state cache preserve chat sessions across model switches and process restarts. Restore selects the deepest exact usable checkpoint before comparing equal-depth costs. Thinking history is retained until compaction. The disk cache is identity-keyed, bounded, and configurable; treat its contents as sensitive conversation data.
 

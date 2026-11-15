@@ -1,12 +1,12 @@
 name: Help wanted — claim or discuss a task
-description: Pick up one of the tasks in lab/docs/HELP-WANTED.md, or propose a new scoped task.
+description: Pick up one of the tasks in oxc/docs/HELP-WANTED.md, or propose a new scoped task.
 title: "[Help wanted] "
 labels: ["help wanted"]
 body:
   - type: markdown
     attributes:
       value: |
-        See lab/docs/HELP-WANTED.md for context and acceptance criteria. Claiming a task here avoids duplicate work;
+        See oxc/docs/HELP-WANTED.md for context and acceptance criteria. Claiming a task here avoids duplicate work;
         it is fine to claim only the first step.
   - type: dropdown
     id: task

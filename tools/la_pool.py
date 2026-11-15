@@ -46,7 +46,7 @@ subsumes a top-32 window with fallback). Candidates are filtered by residency an
 that selects no candidate anywhere in a layer reuses the tau=inf run (identical by construction).
 
 Usage (wrap every run; PY = ~/.cache/local-ai/venv-lookahead/bin/python):
-  flock -w 600 "${LOCAL_AI_BUILD_LOCK:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/build.lock}" systemd-run --user --scope -q -p MemoryMax=4G \
+  flock -w 600 "${OXC_BUILD_LOCK:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/build.lock}" systemd-run --user --scope -q -p MemoryMax=4G \
       -p MemorySwapMax=0 env OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 nice -n 19 $PY -I tools/la_pool.py \
       --routes CSV --cache-gib 20 --quota builtin --score A.npz [--score B.npz ...] [--max-spec 2] \
       [--decode-ms 90] [--stall-ms 0.66,0.5] [--wasted-ms 0.02,0.10,0.20] [--json OUT]

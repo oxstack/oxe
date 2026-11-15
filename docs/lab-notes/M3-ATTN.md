@@ -224,7 +224,7 @@ cd <repo> && git pull && CARGO_BUILD_JOBS=2 nice -n 19 cargo build --release
 mkdir -p results
 QW=$MODELS/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf
 OR=$MODELS/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf
-L=${LOCAL_AI_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/inference.lock}
+L=${OXC_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/inference.lock}
 # decode tok/s at context 1K / 4K / 8K / 16K (prompt prefilled batched, then 64 timed tokens)
 for M in QW OR; do for C in 1024 4096 8192 16384; do for A in tiled legacy; do
   OXE_ATTN=$A flock -n $L ./target/release/oxe bench --model ${!M} --cpu-list 0,1,2,4,5,6,8,9 \

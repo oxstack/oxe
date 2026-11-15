@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 CPUS=0-7
 if [ "${1:-}" = "--cpu-list" ]; then CPUS=$2; shift 2; fi
 O="${OXE_ORACLE_DIR:-$HOME/.cache/local-ai/snapdragon-engine/oracle}"
-LOCK="${LOCAL_AI_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/inference.lock}"
+LOCK="${OXC_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/inference.lock}"
 FIX=("$@")
 [ ${#FIX[@]} -eq 0 ] && FIX=(ornith-pf64 ornith-pf512 ornith-pf2048 qwen36-pf64 qwen36-pf512 qwen36-pf2048)
 mkdir -p results

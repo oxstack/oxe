@@ -1,6 +1,6 @@
 # Contributing
 
-The project's contribution guide, measurement rules and task list live in the `lab/` directory of ox-llm (<https://github.com/n0rpan/ox-llm/tree/main/lab>): `lab/CONTRIBUTING.md` and `lab/docs/HELP-WANTED.md`. In short:
+The project's contribution guide, measurement rules and task list live in the `oxc/` directory of ox-llm (<https://github.com/n0rpan/ox-llm/tree/main/oxc>): `oxc/CONTRIBUTING.md` and `oxc/docs/HELP-WANTED.md`. In short:
 
 1. **Declare the class** of a change before measuring it: lossless (bit-identical against the reference), reorder (within measured noise) or lossy (opt-in only).
 2. **Interleave arms** (A B B A), drop the warm-up, compare medians; changes under 3% are noise for a decision. This laptop class throttles within ~30 s of all-core load.

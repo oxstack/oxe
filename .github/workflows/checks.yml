@@ -228,7 +228,7 @@ jobs:
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('lab/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
       - name: Build oxe-server
         working-directory: engine
         run: cargo build --release --locked -p server --bin oxe-server
@@ -259,7 +259,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: lab
+        working-directory: oxc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -267,7 +267,7 @@ jobs:
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('lab/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
       # No setup-python here: the synthetic screen (tools/run_synthetic_screen.py) runs generated code
       # in bwrap with only /usr mounted, so the interpreter must live under /usr. The image's system
       # python3 is used and checked below.
@@ -305,7 +305,7 @@ jobs:
         run: |
           root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
           HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_RUNTIME_DIR="$root/r" \
-            PYTHONPATH=src python3 -m snapdragon_ai_lab --help > /dev/null
+            PYTHONPATH=src python3 -m oxc --help > /dev/null
 
   scans:
     name: secret scan, SDK-material check, product isolation
@@ -320,7 +320,7 @@ jobs:
           pat='(ghp_[A-Za-z0-9]{30,}|gho_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|hf_[A-Za-z0-9]{30,}|sk-[A-Za-z0-9_-]{32,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
           # exclusions: synthetic fixtures; the report-issue scrubber test, whose INPUTS are fake key-shaped
           # strings it asserts are removed (exact file, reviewed 2026-11-14; same entry in sanitize-scan.allow)
-          if git grep -nIE "$pat" -- . ':!lab/tests/fixtures' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs'; then echo "secret-like strings found"; exit 1; fi
+          if git grep -nIE "$pat" -- . ':!oxc/tests/fixtures' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs'; then echo "secret-like strings found"; exit 1; fi
           echo "no secret-like strings in $(git ls-files | wc -l) tracked files"
       - name: SDK-material check (file names, ELF objects, hexagon directories)
         # Self-contained: the exporter's full scan (text notices included) runs at export time.
@@ -365,7 +365,7 @@ jobs:
           PY
 
       - name: Receipt scrub check (benchmarks/, experiments/)
-        working-directory: lab
+        working-directory: oxc
         # --user '': the user-name rule matches the account that RUNS the scrub (the maintainer's,
         # when receipts are scrubbed locally). Here that is the hosted runner's account, `runner`,
         # which only matches the English word "runner" in receipts. The other rules still run.

@@ -1,6 +1,6 @@
 //! Persistent prefix store: engine states of prompt prefixes on disk, reused across server
 //! restarts and conversations (the Rust counterpart of the controller's llama.cpp
-//! PrefixStore, `snapdragon_ai_lab/runtime/prefix_store.py`).
+//! PrefixStore, `oxc/runtime/prefix_store.py`).
 //!
 //! What is stored: only the system prompt + tool definitions ("anchor" prefix, the tokens
 //! before the first user message, cut down to the prefill ubatch grid). No user turns, tool

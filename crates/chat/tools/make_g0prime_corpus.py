@@ -40,7 +40,7 @@ for path in sys.argv[2:]:
         if text in seen:
             continue
         seen.add(text)
-        out.append({"kind": "output", "source": "%s turn %d" % (path.split("local-ai/")[-1], turn), "output": text})
+        out.append({"kind": "output", "source": "%s turn %d" % (path.split("oxc/")[-1], turn), "output": text})
 with open(sys.argv[1], "w") as f:
     f.write(json.dumps({"kind": "tools", "source": "agent-client tool schemas from the G0' request captures (descriptions stripped)", "tools": tools}, ensure_ascii=False) + "\n")
     for o in out:

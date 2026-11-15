@@ -14,13 +14,13 @@ Measured on a Lenovo Yoga Slim 7x (X1E80100, 32 GB), CPU only. Stock means the s
 
 | Workload | Stock (day one) | Installed today | Same conditions? | Receipt |
 |---|---|---|---|---|
-| CPU memory reads, 2 GiB | 48.88 GB/s | 115.85 GB/s (2.37×), best recorded median, MEMLAT overlay | yes, median of 3 | [RAM-MEMLAT](https://github.com/n0rpan/ox-llm/blob/main/lab/benchmarks/results/public/RAM-MEMLAT.json) |
-| Flash 125B MoE decode, experts from SSD | 356.49 ms/token (2.8 tok/s), BigMoeOnEdge, 12 GiB cache | **81.13 ms/token** (12.3 tok/s), 14 GiB cache, measured before the 18 GiB prefix-store install | no: cache differs. Same metric at 16 GiB: 84.90 ms/token (4.2×) | [G3](https://github.com/n0rpan/ox-llm/blob/main/lab/benchmarks/results/public/G3.json) · [063](https://github.com/n0rpan/ox-llm/blob/main/lab/benchmarks/results/public/063.json) · [G3-prime](https://github.com/n0rpan/ox-llm/blob/main/lab/benchmarks/results/public/G3-prime.json) |
-| Image 512 px, whole request in Studio | 77.85 s, stable-diffusion.cpp | **51.53 s** matched A/B (−34%); **24.89 s** installed VAE fix (one live smoke) | yes for 51.53 s; 24.89 s is not a matched comparison | [IMG-SHIP-1](https://github.com/n0rpan/ox-llm/blob/main/lab/benchmarks/results/public/IMG-SHIP-1.json) · [VAE-1](https://github.com/n0rpan/ox-llm/blob/main/lab/benchmarks/results/public/VAE-1.json) |
+| CPU memory reads, 2 GiB | 48.88 GB/s | 115.85 GB/s (2.37×), best recorded median, MEMLAT overlay | yes, median of 3 | [RAM-MEMLAT](https://github.com/n0rpan/ox-llm/blob/main/oxc/benchmarks/results/public/RAM-MEMLAT.json) |
+| Flash 125B MoE decode, experts from SSD | 356.49 ms/token (2.8 tok/s), BigMoeOnEdge, 12 GiB cache | **81.13 ms/token** (12.3 tok/s), 14 GiB cache, measured before the 18 GiB prefix-store install | no: cache differs. Same metric at 16 GiB: 84.90 ms/token (4.2×) | [G3](https://github.com/n0rpan/ox-llm/blob/main/oxc/benchmarks/results/public/G3.json) · [063](https://github.com/n0rpan/ox-llm/blob/main/oxc/benchmarks/results/public/063.json) · [G3-prime](https://github.com/n0rpan/ox-llm/blob/main/oxc/benchmarks/results/public/G3-prime.json) |
+| Image 512 px, whole request in Studio | 77.85 s, stable-diffusion.cpp | **51.53 s** matched A/B (−34%); **24.89 s** installed VAE fix (one live smoke) | yes for 51.53 s; 24.89 s is not a matched comparison | [IMG-SHIP-1](https://github.com/n0rpan/ox-llm/blob/main/oxc/benchmarks/results/public/IMG-SHIP-1.json) · [VAE-1](https://github.com/n0rpan/ox-llm/blob/main/oxc/benchmarks/results/public/VAE-1.json) |
 
-The Ornith 35B-A3B decode row is not in this table yet, because no like-for-like day-one receipt is public. The one matched pair that is public is memlat off → on, same harness: 12.73 → 17.18 tok/s (+35%, receipt [docs/MEMLAT.md:11](https://github.com/n0rpan/ox-llm/blob/main/lab/docs/MEMLAT.md#current-evidence)). The installed `oxe` figure of 54.4 tok/s is the mean of two VL15 runs with a 53-token prompt ([G1-prime](https://github.com/n0rpan/ox-llm/blob/main/lab/benchmarks/results/public/G1-prime.json)). It was measured under different conditions from that pair; the two do not combine into a speedup.
+The Ornith 35B-A3B decode row is not in this table yet, because no like-for-like day-one receipt is public. The one matched pair that is public is memlat off → on, same harness: 12.73 → 17.18 tok/s (+35%, receipt [docs/MEMLAT.md:11](https://github.com/n0rpan/ox-llm/blob/main/oxc/docs/MEMLAT.md#current-evidence)). The installed `oxe` figure of 54.4 tok/s is the mean of two VL15 runs with a 53-token prompt ([G1-prime](https://github.com/n0rpan/ox-llm/blob/main/oxc/benchmarks/results/public/G1-prime.json)). It was measured under different conditions from that pair; the two do not combine into a speedup.
 
-CPU only; no Adreno GPU or NPU is used in any number. The MEMLAT overlay applies to the installed cells only. The full tables, prompt lengths, cache states and the rows that do not match are in the `lab/` directory of ox-llm: [docs/RESULTS.md](https://github.com/n0rpan/ox-llm/blob/main/lab/docs/RESULTS.md).
+CPU only; no Adreno GPU or NPU is used in any number. The MEMLAT overlay applies to the installed cells only. The full tables, prompt lengths, cache states and the rows that do not match are in the `oxc/` directory of ox-llm: [docs/RESULTS.md](https://github.com/n0rpan/ox-llm/blob/main/oxc/docs/RESULTS.md).
 
 ## Why purpose-built
 
@@ -37,11 +37,11 @@ Honest limits:
 
 ## The memory discovery
 
-The memlat driver is built into the `linux-omarchy` kernel. The Yoga's device tree lacked the SCMI `protocol@80` node, so the firmware's memory-latency and bandwidth scaling was never enabled, and CPU memory reads were capped at about **49 GB/s**. A one-node device-tree overlay adds the node. It is installed as a separate boot entry and made the default in `/boot/limine.conf`; the stock entry is kept. The same read benchmark then reaches a median of **115.85 GB/s** ([RAM-MEMLAT](https://github.com/n0rpan/ox-llm/blob/main/lab/benchmarks/results/public/RAM-MEMLAT.json)). After two deep suspend and resume cycles the same benchmark measured 108.63 GB/s, so 115.85 GB/s is the best recorded median, not a typical one.
+The memlat driver is built into the `linux-omarchy` kernel. The Yoga's device tree lacked the SCMI `protocol@80` node, so the firmware's memory-latency and bandwidth scaling was never enabled, and CPU memory reads were capped at about **49 GB/s**. A one-node device-tree overlay adds the node. It is installed as a separate boot entry and made the default in `/boot/limine.conf`; the stock entry is kept. The same read benchmark then reaches a median of **115.85 GB/s** ([RAM-MEMLAT](https://github.com/n0rpan/ox-llm/blob/main/oxc/benchmarks/results/public/RAM-MEMLAT.json)). After two deep suspend and resume cycles the same benchmark measured 108.63 GB/s, so 115.85 GB/s is the best recorded median, not a typical one.
 
 Limits, stated plainly:
 
-- The fix is firmware- and laptop-specific. Read [docs/MEMLAT.md](https://github.com/n0rpan/ox-llm/blob/main/lab/docs/MEMLAT.md) before trying it elsewhere.
+- The fix is firmware- and laptop-specific. Read [docs/MEMLAT.md](https://github.com/n0rpan/ox-llm/blob/main/oxc/docs/MEMLAT.md) before trying it elsewhere.
 - Stability under GPU load is not settled and has no public receipt yet. Upstream discussion: [Omarchy issue #18254](https://github.com/omacom/omarchy/issues/18254).
 
 ## Download
@@ -92,7 +92,7 @@ curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/jso
   -d '{"messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-The pinned revisions and SHA-256 of every model are listed in [`lab/dependencies/model-artifacts.json`](https://github.com/n0rpan/ox-llm/blob/main/lab/dependencies/model-artifacts.json). The server speaks the llama-server / OpenAI wire format. It answers local clients only. Set `--api-key-file` to require a bearer key from other local users too.
+The pinned revisions and SHA-256 of every model are listed in [`oxc/dependencies/model-artifacts.json`](https://github.com/n0rpan/ox-llm/blob/main/oxc/dependencies/model-artifacts.json). The server speaks the llama-server / OpenAI wire format. It answers local clients only. Set `--api-key-file` to require a bearer key from other local users too.
 
 ## Build from source
 
@@ -113,7 +113,7 @@ cargo test --release -p kernels-sys -p model -p sched -p tokenizer -p chat -p se
 ## How the two repositories fit together
 
 - **This repository** holds the engines, their correctness rules and their milestone write-ups. The write-ups are in [docs/lab-notes/](docs/lab-notes/); the index is [docs/lab-notes/INDEX.md](docs/lab-notes/INDEX.md).
-- **[lab](https://github.com/n0rpan/ox-llm/tree/main/lab)** is the controller. It serves these engines behind one OpenAI-compatible endpoint on port 8092, with Studio for images, harness configs (OpenCode, pi, dsh), memory guards, benchmarks and every receipt cited above. Start there to use the models, reproduce numbers, or read the history.
+- **[lab](https://github.com/n0rpan/ox-llm/tree/main/oxc)** is the controller. It serves these engines behind one OpenAI-compatible endpoint on port 8092, with Studio for images, harness configs (OpenCode, pi, dsh), memory guards, benchmarks and every receipt cited above. Start there to use the models, reproduce numbers, or read the history.
 
 ## Layout
 
@@ -143,7 +143,7 @@ Every change declares a class before it is measured: **lossless** (bit-identical
 - Fuzzing the tool-call parser.
 - Numbers from other Snapdragon X laptops, with the receipt.
 
-Each task has context and acceptance criteria in the lab's [lab/docs/HELP-WANTED.md](https://github.com/n0rpan/ox-llm/blob/main/lab/docs/HELP-WANTED.md). Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Declare the class of a change before you measure it.
+Each task has context and acceptance criteria in the lab's [oxc/docs/HELP-WANTED.md](https://github.com/n0rpan/ox-llm/blob/main/oxc/docs/HELP-WANTED.md). Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Declare the class of a change before you measure it.
 
 ## Licence
 

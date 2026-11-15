@@ -28,7 +28,7 @@ Kernel provenance and the standalone kernel test: `vendor/ggml-flash/PROVENANCE.
 One 4 KiB-aligned record per (layer, expert): `gate | up | down`, gate/up already in R4 layout for IQ2_S / IQ3_XXS
 layers, stride = record rounded to 4 KiB (1,974,272 B IQ2_S layers, 1,511,424 B Q2_0-down layers, 2,179,072 B
 IQ3_XXS layers, 2,662,400 B layer 47 IQ4_XS). A miss is one O_DIRECT read straight into the cache slot.
-Rebuild (heavy I/O, hold the lease): `flock -n -E 75 ${LOCAL_AI_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/inference.lock} ./target/release/flash-m0 sidecar`;
+Rebuild (heavy I/O, hold the lease): `flock -n -E 75 ${OXC_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/inference.lock} ./target/release/flash-m0 sidecar`;
 re-check: `flash-m0 verify-sidecar --n 256` (re-reads records, compares with records rebuilt from the shards).
 
 ## The command for Codex (authoritative timing)

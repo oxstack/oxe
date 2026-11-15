@@ -2,7 +2,7 @@
 # OpenAI v1 contract job (v0.2.0 M3): the real openai-python SDK (pinned in requirements.txt,
 # installed into a private venv, never system-wide) against the REAL `oxe-server --engine stub`
 # (synthetic GGUF + the committed Qwen3.6 tokenizer fixture; no weights) and against the real lab
-# controller in front of it with the queue ON (LOCAL_AI_QUEUE=1, LOCAL_AI_REPLAY=1).
+# controller in front of it with the queue ON (OXC_QUEUE=1, OXC_REPLAY=1).
 #
 # usage: tools/openai-contract/run.sh --mode engine|controller|both [--server BIN] [--work DIR]
 #                                     [--venv DIR] [--strict] [--keep] [--fake]
@@ -65,7 +65,7 @@ venv=${venv:-$work/venv}
 "$venv/bin/python" -c 'import openai, sys; print("openai-python", openai.__version__)'
 
 N_CTX=32768
-ALIAS=ornith-35b-a3b-local     # the controller stack's selected alias (lab/tests/openai_api_stack.py)
+ALIAS=ornith-35b-a3b-local     # the controller stack's selected alias (oxc/tests/openai_api_stack.py)
 LIMITED=qwen3.6-35b-a3b-local  # its output default is 4 tokens on C1
 TOOL_REPLY=$'Checking both.\n\n<tool_call>\n<function=get_weather>\n<parameter=city>\nOslo\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=get_time>\n<parameter=zone>\nUTC\n</parameter>\n</function>\n</tool_call>'
 mkdir -p "$work/home" "$work/logs"
@@ -86,8 +86,8 @@ start_controller() { # name, backend port or "fake", extra stack args...
   port=$(free_port)
   local args=(--port "$port")
   if [ "$backend" != fake ]; then args+=(--backend-port "$backend"); fi
-  HOME="$work/home" LOCAL_AI_QUEUE=1 LOCAL_AI_REPLAY=1 LOCAL_AI_LEDGER_DIR="$work/ledger-$name" \
-    PYTHONPATH="$repo/lab/src:$repo/lab/tests" python3 "$repo/lab/tests/openai_api_stack.py" "${args[@]}" "$@" \
+  HOME="$work/home" OXC_QUEUE=1 OXC_REPLAY=1 OXC_LEDGER_DIR="$work/ledger-$name" \
+    PYTHONPATH="$repo/oxc/src:$repo/oxc/tests" python3 "$repo/oxc/tests/openai_api_stack.py" "${args[@]}" "$@" \
     >"$work/logs/controller-$name.log" 2>&1 &
   pids+=($!)
   wait_http "http://127.0.0.1:$port/v1/models" 60

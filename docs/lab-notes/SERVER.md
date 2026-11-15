@@ -382,7 +382,7 @@ logprobs, cache state. Code: `fair.rs` (queue, driver, lock order), `Worker::gen
 ## 3. Tests (all with the stub engine; no model weights are read)
 
 ```sh
-flock -n ${LOCAL_AI_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/inference.lock} true &&   # don't build while Codex holds the lease
+flock -n ${OXC_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/inference.lock} true &&   # don't build while Codex holds the lease
 CARGO_BUILD_JOBS=1 nice -n 19 cargo test --release -p tokenizer -p chat -p server
 ```
 

@@ -1561,7 +1561,7 @@ mod real_native_reader_tests {
     fn native_expert_tiles_match_real_original_gguf() {
         let home = PathBuf::from(std::env::var("HOME").unwrap());
         assert!(
-            !crate::load::lease_free(&home.join(".local/state/local-ai/inference.lock")),
+            !crate::load::lease_free(&home.join(".local/state/oxc/inference.lock")),
             "hold canonical inference lease before touching real weights"
         );
         let path =

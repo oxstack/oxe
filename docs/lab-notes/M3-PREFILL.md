@@ -17,7 +17,7 @@ The reference is llama.cpp's *batched* path, not our decode: the two differ on O
 Oracle: `dump_ref --batch --ubatch 256 --last-only --state F --logits --gen 8` (llama.cpp's
 batched prefill with production ubatch 256 and logits for the last token only, as
 llama-server requests them; 6 threads), prompt = the first N tokens of
-`lab/benchmarks/roofline/quality-corpus.txt`. oxe: `oxe prefill-verify`
+`oxc/benchmarks/roofline/quality-corpus.txt`. oxe: `oxe prefill-verify`
 (8 threads, cpus 0-7). The state comparison parses llama.cpp's `llama_state_seq_get_data`
 (every f16 K row and V^T element of the 10 attention layers, conv state and delta-net S of the
 30 recurrent layers) and compares bit for bit. After the prefill both engines decode the
@@ -180,7 +180,7 @@ one model) and memory.
 cd <repo> && git pull && CARGO_BUILD_JOBS=2 cargo build --release
 OR=$MODELS/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf
 QW=$MODELS/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf
-L=${LOCAL_AI_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/inference.lock}
+L=${OXC_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/inference.lock}
 for M in OR QW; do for C in 0-9 0-11; do for P in 512 4096; do
   flock -n $L ./target/release/oxe prefill-bench --model ${!M} --cpu-list $C --prompt-len $P --ctx 8192 \
       --ubatch 256 --reps 3 --out results/prefill-bench-$M-pp$P-cpus$C.json
