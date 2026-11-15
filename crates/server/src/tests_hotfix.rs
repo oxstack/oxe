@@ -69,7 +69,7 @@ fn chat_body(extra: Json) -> Json {
     b
 }
 
-async fn status_of(st: &Arc<State<StubEngine>>, path: &str, body: Json) -> u16 {
+async fn status_of<E: crate::engine::Engine>(st: &Arc<State<E>>, path: &str, body: Json) -> u16 {
     let b = serde_json::to_vec(&body).unwrap();
     match tokio::time::timeout(
         Duration::from_secs(30),
@@ -551,4 +551,164 @@ fn access_rules_unit() {
     let mut h = HeaderMap::new();
     h.insert("host", HeaderValue::from_static("localhost"));
     assert!(a80.check("GET", "/", &h).is_ok());
+}
+
+// ------------------------------------------------------------------------------- issue #205
+
+use crate::engine::Engine;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// Stub engine with injected faults: the `fail_at`-th prefill fails AFTER it advanced its state
+/// (like the Flash adapter), and `panic_decode` makes a decode panic.
+struct FaultEngine {
+    inner: StubEngine,
+    prefills: usize,
+    fail_at: usize,
+    panic_decode: Arc<AtomicBool>,
+    resets: Arc<AtomicUsize>,
+}
+
+impl FaultEngine {
+    fn new(inner: StubEngine, fail_at: usize) -> Self {
+        Self {
+            inner,
+            prefills: 0,
+            fail_at,
+            panic_decode: Arc::new(AtomicBool::new(false)),
+            resets: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl Engine for FaultEngine {
+    type Snapshot = <StubEngine as Engine>::Snapshot;
+    fn n_ctx(&self) -> usize {
+        self.inner.n_ctx()
+    }
+    fn n_vocab(&self) -> usize {
+        self.inner.n_vocab()
+    }
+    fn n_past(&self) -> usize {
+        self.inner.n_past()
+    }
+    fn reset(&mut self) {
+        self.resets.fetch_add(1, Ordering::SeqCst);
+        self.inner.reset()
+    }
+    fn prefill(&mut self, t: &[u32]) -> crate::engine::Result<&[f32]> {
+        self.prefills += 1;
+        if self.prefills == self.fail_at {
+            self.inner.prefill(t)?;
+            return Err(crate::engine::EngineError(
+                "injected prefill failure".into(),
+            ));
+        }
+        self.inner.prefill(t)
+    }
+    fn decode(&mut self, t: u32) -> crate::engine::Result<&[f32]> {
+        if self.panic_decode.swap(false, Ordering::SeqCst) {
+            panic!("injected decode panic");
+        }
+        self.inner.decode(t)
+    }
+    fn snapshot(&mut self) -> crate::engine::Result<Self::Snapshot> {
+        self.inner.snapshot()
+    }
+    fn restore(&mut self, s: &Self::Snapshot) -> crate::engine::Result<()> {
+        self.inner.restore(s)
+    }
+}
+
+/// An engine error during idle re-prefill must drop the state like `generate()` does: the
+/// cache is empty (and in step with the engine) and the next request is correct.
+#[test]
+fn idle_reprefill_engine_error_resets_the_cache() {
+    let tok = synthetic_tokenizer();
+    let script = tok.encode("ok", false, false);
+    let mk = |fail_at| {
+        let e = FaultEngine::new(
+            StubEngine::new(1000, tok.n_vocab(), 257, script.clone()),
+            fail_at,
+        );
+        let mut w = Worker::new(e, 4);
+        w.ubatch = 4;
+        w
+    };
+    let hist: Vec<u32> = (0..16).collect();
+    let mut w = mk(2);
+    let r = w.prefill_idle(&hist, &GenParams::default());
+    assert!(
+        matches!(r, Err(crate::generate::GenError::Engine(_))),
+        "{r:?}"
+    );
+    assert!(
+        w.cache.tokens.is_empty(),
+        "cache kept {} tokens",
+        w.cache.tokens.len()
+    );
+    assert_eq!(w.engine.n_past(), 0, "engine not reset");
+    let gp = GenParams::default();
+    let got = w.generate(&tok, &hist, &gp, &mut |_| true).unwrap();
+    let want = mk(0).generate(&tok, &hist, &gp, &mut |_| true).unwrap();
+    assert_eq!(got.tokens, want.tokens);
+}
+
+/// A panic inside `generate` leaves `running` clear and the next request works from a reset cache.
+#[tokio::test(flavor = "multi_thread")]
+async fn panic_in_generate_clears_running_and_resets_the_cache() {
+    let tok = synthetic_tokenizer();
+    let eng = FaultEngine::new(
+        StubEngine::new(
+            4096,
+            tok.n_vocab(),
+            tok.eos.unwrap(),
+            tok.encode("ok", false, false),
+        ),
+        0,
+    );
+    let (panic_flag, resets) = (eng.panic_decode.clone(), eng.resets.clone());
+    let cfg = Config {
+        model_name: "synthetic".into(),
+        model_path: "/m.gguf".into(),
+        chat_opts: Default::default(),
+        fingerprint: "oxe-test".into(),
+        slots: true,
+        idle_reprefill: false,
+        engine_status: None,
+    };
+    let st = Arc::new(State::new(cfg, tok, Worker::new(eng, 4)).unwrap());
+    let b = chat_body(json!({"temperature": 0, "n_predict": 4}));
+    assert_eq!(status_of(&st, "/v1/chat/completions", b.clone()).await, 200);
+    panic_flag.store(true, Ordering::SeqCst);
+    assert_eq!(status_of(&st, "/v1/chat/completions", b.clone()).await, 500);
+    assert!(
+        st.running.lock().unwrap().is_none(),
+        "running left set after the panic"
+    );
+    assert!(
+        st.worker.is_poisoned(),
+        "test premise: the worker lock is poisoned"
+    );
+    let before = resets.load(Ordering::SeqCst);
+    assert_eq!(status_of(&st, "/v1/chat/completions", b).await, 200);
+    assert!(
+        resets.load(Ordering::SeqCst) > before,
+        "cache not reset after the poisoned lock"
+    );
+    assert!(!st.worker.is_poisoned(), "poison flag not cleared");
+    let after = resets.load(Ordering::SeqCst);
+    assert_eq!(
+        status_of(
+            &st,
+            "/v1/chat/completions",
+            chat_body(json!({"temperature": 0, "n_predict": 4}))
+        )
+        .await,
+        200
+    );
+    assert_eq!(
+        resets.load(Ordering::SeqCst),
+        after,
+        "healthy request reset the cache again"
+    );
 }

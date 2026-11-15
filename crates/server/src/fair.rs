@@ -275,7 +275,7 @@ pub(crate) fn run_sliced<E: Engine>(
     if !fair.wait_turn(&ticket, &flag) {
         return Err(GenError::Cancelled); // the client left while queued
     }
-    let mut w = st.worker.lock().unwrap_or_else(|p| p.into_inner());
+    let mut w = st.lock_worker();
     if gp.cancelled() {
         return Err(GenError::Cancelled);
     }
@@ -324,7 +324,7 @@ pub(crate) fn run_sliced<E: Engine>(
             // as a starting request does (not the request counter: no newer request came)
             st.preempt_jobs();
         }
-        w = st.worker.lock().unwrap_or_else(|p| p.into_inner());
+        w = st.lock_worker();
         fair.note_resume();
         if let Some(pr) = &gp.progress {
             pr.suspended.store(false, Ordering::Relaxed);

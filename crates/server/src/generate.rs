@@ -2325,6 +2325,20 @@ impl<E: Engine> Worker<E> {
     /// Stops at a chunk boundary when `p.cancel` is raised (a request arrived). Returns the
     /// tokens newly evaluated.
     pub fn prefill_idle(&mut self, hist: &[Token], p: &GenParams) -> Result<usize, GenError> {
+        let r = self.prefill_idle_inner(hist, p);
+        if let Err(GenError::Engine(e)) = &r {
+            // same as `generate`: a failed call may have left the engine ahead of the cache
+            eprintln!(
+                "oxe-server: engine error in idle re-prefill, sequence state dropped ({} tokens): {}",
+                self.cache.tokens.len(),
+                e.0
+            );
+            self.cache.reset(&mut self.engine);
+        }
+        r
+    }
+
+    fn prefill_idle_inner(&mut self, hist: &[Token], p: &GenParams) -> Result<usize, GenError> {
         // grid schedule only: the message schedule (Flash) splits at message starts, not on this lattice
         if self.msg_split || hist.len() < 2 || hist.len() >= self.engine.n_ctx() {
             return Ok(0);

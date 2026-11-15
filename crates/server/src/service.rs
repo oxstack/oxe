@@ -202,6 +202,18 @@ impl<E: Engine> State<E> {
         }
     }
 
+    /// Lock the worker. After a panic in an earlier holder the engine and the cache may disagree:
+    /// reset them once and clear the poison flag so later holders reuse the cache normally.
+    pub fn lock_worker(&self) -> std::sync::MutexGuard<'_, Worker<E>> {
+        self.worker.lock().unwrap_or_else(|p| {
+            let mut g = p.into_inner();
+            let w = &mut *g;
+            w.cache.reset(&mut w.engine);
+            self.worker.clear_poison();
+            g
+        })
+    }
+
     /// Count a long holder of the worker (see [`State::work`]) until the guard drops.
     pub fn begin_work(&self) -> WorkGuard {
         self.work.fetch_add(1, Ordering::SeqCst);
@@ -750,7 +762,7 @@ pub async fn handle_hints<E: Engine>(
             let st2 = st.clone();
             let r = tokio::task::spawn_blocking(move || {
                 let _gate = st2.persist_gate.lock().unwrap_or_else(|p| p.into_inner());
-                let w = st2.worker.lock().unwrap_or_else(|p| p.into_inner());
+                let w = st2.lock_worker();
                 w.states.as_ref().map(|s| {
                     let mut u = s.usage();
                     u["preload"] = st2.preload_status.lock().unwrap().clone();
@@ -1168,15 +1180,24 @@ where
             }
             return r;
         }
-        let mut w = st.worker.lock().unwrap_or_else(|p| p.into_inner());
+        let mut w = st.lock_worker();
         if gp.cancelled() {
             return Err(GenError::Cancelled); // the client left while queued for the worker
         }
         gp.queue_ms = crate::generate::ms_since(queued);
         // SIGTERM cancels the running generation (the bounded shutdown write needs the worker)
         *st.running.lock().unwrap() = gp.cancel.clone();
-        let r = w.generate(&st.tok, &prompt, &gp, &mut on_partial);
-        *st.running.lock().unwrap() = None;
+        /// Clears `running` on every exit, unwinding included.
+        struct ClearRunning<'a>(&'a Mutex<Option<Arc<AtomicBool>>>);
+        impl Drop for ClearRunning<'_> {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            }
+        }
+        let r = {
+            let _running = ClearRunning(&st.running);
+            w.generate(&st.tok, &prompt, &gp, &mut on_partial)
+        };
         if w.last_resume.0 != "cold" && r.as_ref().is_ok_and(|r| r.timings.preload_ms.is_some()) {
             *st.preload_status.lock().unwrap() = json!({"status": "used"});
         }
@@ -1240,7 +1261,7 @@ fn spawn_idle_reprefill<E: Engine>(st: &Arc<State<E>>, b: &Json, reply: Json, re
     let st2 = st.clone();
     tokio::task::spawn_blocking(move || {
         {
-            let mut w = st2.worker.lock().unwrap_or_else(|p| p.into_inner());
+            let mut w = st2.lock_worker();
             // a newer request started (or is queued): leave the worker to it
             if gp.cancelled() || st2.reqs.load(Ordering::SeqCst) != req_no {
                 drop(w);
@@ -1282,7 +1303,7 @@ fn spawn_persist<E: Engine>(st: &Arc<State<E>>, session: Option<String>, req_no:
         let t0 = std::time::Instant::now();
         // v0.1.3 (item 6): phase 1 copies the head snapshot and the new blocks under the lock ...
         let staged = {
-            let mut w = st2.worker.lock().unwrap_or_else(|p| p.into_inner());
+            let mut w = st2.lock_worker();
             if flag.load(Ordering::Relaxed) || st2.reqs.load(Ordering::SeqCst) != req_no {
                 None
             } else {
@@ -1304,7 +1325,7 @@ fn spawn_persist<E: Engine>(st: &Arc<State<E>>, session: Option<String>, req_no:
             // ... phase 2 writes them without it (a request that arrives now runs at once; the
             // write completes behind it), phase 3 commits the manifest under the lock again
             let written = s.write();
-            let mut w = st2.worker.lock().unwrap_or_else(|p| p.into_inner());
+            let mut w = st2.lock_worker();
             let r = w.commit_staged(s, written, session.as_deref(), Some(&flag));
             if r.head.is_some() {
                 eprintln!("oxe-server: state cache: {} files written in {:.0} ms (head off the worker lock)", r.files(), t0.elapsed().as_secs_f64() * 1e3);
