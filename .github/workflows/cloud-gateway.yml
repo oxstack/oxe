@@ -41,4 +41,4 @@ jobs:
       - run: cargo clippy --locked --manifest-path oxc-gateway/Cargo.toml --all-targets --all-features -- -D warnings
       - run: cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
       - run: /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
-      - run: OXC_CATALOG_CONTRACT="$PWD/oxc-gateway/target/debug/examples/catalog_contract" OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
+      - run: OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxc-gateway/target/debug/examples/secrets_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
