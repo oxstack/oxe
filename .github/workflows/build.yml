@@ -41,7 +41,8 @@ defaults:
   run:
     shell: bash   # bash -eo pipefail
 
-# Runner choice for the x86_64 jobs (the expression in each `runs-on`): the project's own runner (label `oxci`, a rented
+# Runner choice for the x86_64 jobs (the expression in each `runs-on`): the project's own runners (label `oxci` for the merge queue,
+# main and manual runs; label `oxci-pr`, a separate low-priority pool, for pull requests; a rented
 # throwaway server with no secrets) when the repository variable OXCI is 'on'. Pull-request runs use it only when
 # OXCI_PR is also 'on' AND the pull request comes from a branch of this repository; a pull request from a fork always
 # runs on the hosted image, so outside code never reaches the runner. Any other value of OXCI sends every job back
@@ -195,7 +196,7 @@ jobs:
   oxa-test-build:
     if: inputs.heavy
     name: oxa test archive (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -267,7 +268,7 @@ jobs:
     if: inputs.heavy
     needs: oxa-test-build
     name: oxa tests shard ${{ matrix.shard }} (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -325,7 +326,7 @@ jobs:
     if: always() && inputs.heavy
     needs: [oxa-test-build, oxa-test-shards]
     name: oxa tests (bwrap sandbox required)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - name: Every archive and partition must pass

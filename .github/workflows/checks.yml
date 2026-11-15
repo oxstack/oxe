@@ -26,7 +26,8 @@ concurrency:
 env:
   RUST_VERSION: "1.99.1"
 
-# Runner choice for the x86_64 jobs (the expression in each `runs-on`): the project's own runner (label `oxci`, a rented
+# Runner choice for the x86_64 jobs (the expression in each `runs-on`): the project's own runners (label `oxci` for the merge queue,
+# main and manual runs; label `oxci-pr`, a separate low-priority pool, for pull requests; a rented
 # throwaway server with no secrets) when the repository variable OXCI is 'on'. Pull-request runs use it only when
 # OXCI_PR is also 'on' AND the pull request comes from a branch of this repository; a pull request from a fork always
 # runs on the hosted image, so outside code never reaches the runner. Any other value of OXCI sends every job back
@@ -34,7 +35,7 @@ env:
 jobs:
   changes:
     name: classify changed paths
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       full: ${{ steps.paths.outputs.full }}
@@ -56,7 +57,7 @@ jobs:
     name: documentation links
     needs: changes
     if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.docs == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,7 +127,7 @@ jobs:
 
   rustfmt:
     name: rustfmt (oxa)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-latest' }}
     timeout-minutes: 15
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -232,7 +233,7 @@ jobs:
     # the model engine run here. Uses the hosted image's rustup (setup_toolchain.sh installs the
     # aarch64 rustup binary only).
     name: oxe-server --engine stub on x86_64 (build + server tests)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -293,7 +294,7 @@ jobs:
   fuzz-oxa:
     # Task 61: the stable smoke of the oxa cargo-fuzz targets (seconds; no nightly/sanitizer).
     name: oxa fuzz smoke (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -310,7 +311,7 @@ jobs:
   fuzz-oxe:
     # Task 61: the stable smoke of the oxe cargo-fuzz targets (seconds; no model weights).
     name: oxe fuzz smoke (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -327,7 +328,7 @@ jobs:
   lab:
     if: github.event_name != 'pull_request' && github.event_name != 'push'
     name: lab tests, CLI, receipt scrub (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-latest' }}
     timeout-minutes: 30
     defaults:
       run:
@@ -382,7 +383,7 @@ jobs:
 
   scans:
     name: secret scan, SDK-material check, product isolation
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
