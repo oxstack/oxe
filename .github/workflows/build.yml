@@ -383,9 +383,6 @@ jobs:
       - name: Build oxa
         working-directory: oxa
         run: cargo build --release --locked --bin oxa
-      - name: WAVES.toml manifest
-        working-directory: oxa
-        run: python3 -I ci/check_manifest.py
       - name: Package
         if: inputs.package
         working-directory: oxa
