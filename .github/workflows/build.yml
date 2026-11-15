@@ -1,6 +1,6 @@
 name: build
 # Reusable (workflow_call): build and test oxe-server, oxi, the Flash variant and oxa on GitHub's
-# Linux ARM64 runners; optionally package the release tarballs as "dist-*" artifacts.
+# Linux ARM64 production runners and x86_64 test workers; optionally package the release tarballs as "dist-*" artifacts.
 # Called by checks.yml (no packaging) and release.yml (packaging). No secrets, no model weights:
 # every test here is model-free.
 #
@@ -58,16 +58,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Toolchain
+        run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-moe engine
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             engine/target
-          key: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-${{ github.sha }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-
-      - name: Toolchain
-        run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Build oxe-server and oxi
         run: cargo build --release --locked -p server -p image-flow --bin oxe-server --bin oxi
       - name: Smoke
@@ -119,16 +126,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Toolchain
+        run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-flash engine
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             engine/target
-          key: ${{ runner.os }}-${{ runner.arch }}-flash-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-${{ github.sha }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-flash-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-
-      - name: Toolchain
-        run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Model-free Flash package licence fixtures (also without packaging)
         run: python3 -I tools/ci/test_flash_package.py
       - name: Production ggml from the pinned public sources
@@ -161,26 +175,86 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  oxa-tests:
+  oxa-test-build:
     if: inputs.heavy
-    # oxa's tests with its bwrap sandbox REQUIRED: on the runner itself, not in a container (Docker's
-    # default seccomp/AppArmor profiles refuse the user namespaces bwrap needs). The bwrap tests print
-    # "skipped: ... bwrap ..." and return early when no sandbox can be created; here such a notice
-    # FAILS the job, so a passing run means the sandbox really ran.
-    name: oxa tests (bwrap sandbox required)
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    name: oxa test archive (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
-      RUSTUP_VERSION: "1.29.2"
-      RUSTUP_SHA256: a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-x86-oxa-ci oxa
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pinned nextest
+        run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
+      - name: Workspace doctests (isolated HOME/XDG)
+        working-directory: oxa
+        run: |
+          real=$HOME; root=$(mktemp -d); log=$(mktemp)
+          set +e
+          env -i PATH="$PATH" CARGO_HOME="$real/.cargo" RUSTUP_HOME="$real/.rustup" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+            HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_DATA_HOME="$root/d" \
+            XDG_CACHE_HOME="$root/k" XDG_RUNTIME_DIR="$root/r" OXA_REQUIRE_BWRAP=1 OXA_PARITY_PROFILE=local \
+            cargo test --profile ci --locked --workspace --doc --no-fail-fast -- --nocapture 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          test "$rc" = 0
+          if grep -n '^skipped: ' "$log"; then echo "::error::doctest skipped at runtime"; exit 1; fi
+      - name: Build child binaries and archive every workspace test once
+        working-directory: oxa
+        run: |
+          cargo build --profile ci --locked -p oxa-cli -p oxa-fake
+          cargo nextest archive --profile ci --cargo-profile ci --locked --workspace \
+            --archive-file "$RUNNER_TEMP/oxa-tests.tar.zst"
+          cargo nextest list --archive-file "$RUNNER_TEMP/oxa-tests.tar.zst" \
+            --message-format json > "$RUNNER_TEMP/oxa-test-list.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oxa-test-archive-x86
+          path: ${{ runner.temp }}/oxa-tests.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oxa-test-inventory
+          path: ${{ runner.temp }}/oxa-test-list.json
+          if-no-files-found: error
+          retention-days: 1
+
+  oxa-test-shards:
+    if: inputs.heavy
+    needs: oxa-test-build
+    name: oxa tests shard ${{ matrix.shard }} (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: bubblewrap + unprivileged user namespaces
-        # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor
-        # (kernel.apparmor_restrict_unprivileged_userns=1); bwrap needs them. Lifted for this
-        # ephemeral runner VM only.
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends bubblewrap
@@ -191,45 +265,66 @@ jobs:
           command -v bwrap || { echo "::error::bwrap is not installed"; exit 1; }
           bwrap --unshare-all --ro-bind / / true || { echo "::error::bwrap cannot create a sandbox on this runner"; exit 1; }
           echo "bwrap: --unshare-all OK"
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - name: Pinned nextest
+        run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            oxa/target
-          key: ${{ runner.os }}-${{ runner.arch }}-oxa-tests-${{ env.RUST_VERSION }}-${{ hashFiles('oxa/Cargo.lock') }}-${{ github.sha }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-oxa-tests-${{ env.RUST_VERSION }}-${{ hashFiles('oxa/Cargo.lock') }}-
-      - name: Toolchain (rustup-init pinned by version and SHA-256)
-        run: |
-          tmp=$(mktemp -d)
-          curl --proto '=https' --tlsv1.2 -sSf -o "$tmp/rustup-init" \
-            "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/aarch64-unknown-linux-gnu/rustup-init"
-          echo "$RUSTUP_SHA256  $tmp/rustup-init" | sha256sum -c -
-          chmod +x "$tmp/rustup-init"
-          RUSTUP_INIT_SKIP_PATH_CHECK=yes "$tmp/rustup-init" -y -q --no-modify-path --profile minimal \
-            --default-toolchain "$RUST_VERSION"
-          rm -rf "$tmp"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustc" --version
-      - name: Binaries the parity tests spawn
+          name: oxa-test-archive-x86
+          path: ${{ runner.temp }}/oxa-archive
+      - name: Whole-workspace partition (isolated HOME/XDG; sandbox required)
         working-directory: oxa
-        run: cargo build --release --locked -p oxa-cli -p oxa-fake
-      - name: Tests (release profile; isolated HOME/XDG; bwrap skip notices are failures)
-        working-directory: oxa
-        env:
-          OXA_REQUIRE_BWRAP: "1"   # an unusable bwrap fails the sandbox tests instead of skipping them
         run: |
           ulimit -c 0
-          real=$HOME; root=$(mktemp -d); log=$(mktemp)
-          set +e
-          CARGO_HOME="$real/.cargo" RUSTUP_HOME="$real/.rustup" HOME="$root" XDG_CONFIG_HOME="$root/c" \
-            XDG_STATE_HOME="$root/s" XDG_DATA_HOME="$root/d" XDG_CACHE_HOME="$root/k" XDG_RUNTIME_DIR="$root/r" \
-            cargo test --release --locked --no-fail-fast --workspace -- --nocapture 2>&1 | tee "$log"
-          rc=${PIPESTATUS[0]}
-          set -e
-          [ "$rc" = 0 ] || exit "$rc"
-          if grep -n '^skipped: .*bwrap' "$log"; then echo "::error::bwrap sandbox tests SKIPPED: the sandbox did not run"; exit 1; fi
-          echo "oxa tests passed; bwrap skip notices: 0"
+          root=$(mktemp -d)
+          env -i PATH="$PATH" HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" \
+            XDG_DATA_HOME="$root/d" XDG_CACHE_HOME="$root/k" XDG_RUNTIME_DIR="$root/r" \
+            OXA_REQUIRE_BWRAP=1 \
+            "$RUNNER_TEMP/nextest/cargo-nextest" nextest run --profile ci --no-tests fail \
+            --archive-file "$RUNNER_TEMP/oxa-archive/oxa-tests.tar.zst" \
+            --workspace-remap "$PWD" --extract-to "$PWD" \
+            --partition hash:${{ matrix.shard }}/2 --test-threads 4 --success-output immediate \
+            --failure-output immediate-final --no-output-indent
+      - name: Preserve and validate the report even after failure
+        if: always()
+        run: |
+          cp "oxa/target/nextest/ci/junit.xml" "$RUNNER_TEMP/junit-${{ matrix.shard }}.xml"
+          python3 -I tools/ci/check_oxa_report.py "$RUNNER_TEMP/junit-${{ matrix.shard }}.xml"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: oxa-test-report-${{ matrix.shard }}
+          path: ${{ runner.temp }}/junit-${{ matrix.shard }}.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  oxa-tests:
+    # Preserve the required check name. A missing/failed build or shard cannot turn green.
+    if: always() && inputs.heavy
+    needs: [oxa-test-build, oxa-test-shards]
+    name: oxa tests (bwrap sandbox required)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every archive and partition must pass
+        run: |
+          test '${{ needs.oxa-test-build.result }}' = success
+          test '${{ needs.oxa-test-shards.result }}' = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: oxa-test-inventory
+          path: ${{ runner.temp }}/oxa-reports
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: oxa-test-report-*
+          path: ${{ runner.temp }}/oxa-reports
+          merge-multiple: true
+      - name: All expected tests ran once; no runtime skips
+        run: |
+          python3 -I tools/ci/check_oxa_report.py --expected "$RUNNER_TEMP/oxa-reports/oxa-test-list.json" \
+            "$RUNNER_TEMP/oxa-reports/junit-1.xml" "$RUNNER_TEMP/oxa-reports/junit-2.xml"
 
   oxa:
     if: inputs.build_oxa
@@ -244,16 +339,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Toolchain
+        run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-oxa-release oxa
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             oxa/target
-          key: ${{ runner.os }}-${{ runner.arch }}-oxa-${{ env.RUST_VERSION }}-${{ hashFiles('oxa/Cargo.lock') }}-${{ github.sha }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-oxa-${{ env.RUST_VERSION }}-${{ hashFiles('oxa/Cargo.lock') }}-
-      - name: Toolchain
-        run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION"
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Build oxa
         working-directory: oxa
         run: cargo build --release --locked --bin oxa

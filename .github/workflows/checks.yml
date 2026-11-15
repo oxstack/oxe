@@ -83,7 +83,8 @@ jobs:
         run: cargo fmt --all -- --check
 
   clippy:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: changes
+    if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && (needs.changes.outputs.full == 'true' || needs.changes.outputs.engine == 'true' || needs.changes.outputs.oxa == 'true'))
     # Compile errors fail the job; lint warnings are reported but do not fail it yet. Add
     # "-- -D warnings" once the warning count is known to be zero.
     name: clippy (engine, oxa; aarch64)
@@ -97,14 +98,33 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION" clippy
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-clippy engine oxa
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+            oxa/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: engine (model-free workspace, all targets)
+        if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true' || needs.changes.outputs.engine == 'true'
         working-directory: engine
         run: cargo clippy --locked --workspace --exclude qwen4exp --all-targets
       - name: oxa (all targets)
+        if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true' || needs.changes.outputs.oxa == 'true'
         working-directory: oxa
         run: cargo clippy --locked --workspace --all-targets
 
   x86-64-stub:
+    needs: changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # oxe-server builds on x86_64 with the stub engine only (kernels-sys compiles its kernels on
     # aarch64 only; the model engine refuses to load elsewhere). Its server tests that do not need
@@ -122,14 +142,21 @@ jobs:
           persist-credentials: false
       - name: Toolchain (rustup is preinstalled on the hosted image)
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-x86-stub engine
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             engine/target
-          key: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-${{ github.sha }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cache/pip
@@ -141,6 +168,7 @@ jobs:
         working-directory: engine
         run: ./target/release/oxe-server --help > help.txt && head -n 3 help.txt
       - name: Server tests (stub engine; model-engine tests are aarch64-only)
+        if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true' || needs.changes.outputs.engine == 'true'
         working-directory: engine
         timeout-minutes: 30
         run: |
