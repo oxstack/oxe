@@ -450,7 +450,7 @@ fn worker_loop(sh: &Shared, tid: usize) {
             }
             spin_loop();
             spins = spins.wrapping_add(1);
-            if spins % 1024 == 0 && start.elapsed() >= sh.idle_spin {
+            if spins.is_multiple_of(1024) && start.elapsed() >= sh.idle_spin {
                 sh.sleepers.fetch_add(1, SeqCst);
                 if sh.epoch.load(SeqCst) == seen && !sh.shutdown.load(SeqCst) {
                     futex_wait(&sh.epoch, seen);
@@ -572,7 +572,7 @@ impl DetachedPool {
                         }
                         spin_loop();
                         spins = spins.wrapping_add(1);
-                        if spins % 1024 == 0 && start.elapsed() >= dd.spin {
+                        if spins.is_multiple_of(1024) && start.elapsed() >= dd.spin {
                             let g = dd.lock.lock().unwrap();
                             let s = dd.state.load(Acquire);
                             if s != 1 && s != 3 {
@@ -641,7 +641,7 @@ impl Team for DetachedPool {
         while d.state.load(Acquire) != 2 {
             spin_loop();
             spins = spins.wrapping_add(1);
-            if spins % 1024 == 0 && start.elapsed() >= d.spin {
+            if spins.is_multiple_of(1024) && start.elapsed() >= d.spin {
                 let g = d.lock.lock().unwrap();
                 if d.state.load(Acquire) != 2 {
                     let _g = d.cv.wait_timeout(g, Duration::from_millis(50)).unwrap();
