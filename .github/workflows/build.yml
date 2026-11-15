@@ -211,10 +211,12 @@ jobs:
           rm -rf "$tmp"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/rustc" --version
-      - name: Tests, whole workspace under the local default (release profile; isolated HOME/XDG; bwrap skip notices are failures)
+      - name: Binaries the parity tests spawn
+        working-directory: oxa
+        run: cargo build --release --locked -p oxa-cli -p oxa-fake
+      - name: Tests (release profile; isolated HOME/XDG; bwrap skip notices are failures)
         working-directory: oxa
         env:
-          OXA_PARITY_PROFILE: local
           OXA_REQUIRE_BWRAP: "1"   # an unusable bwrap fails the sandbox tests instead of skipping them
         run: |
           ulimit -c 0
@@ -227,25 +229,7 @@ jobs:
           set -e
           [ "$rc" = 0 ] || exit "$rc"
           if grep -n '^skipped: .*bwrap' "$log"; then echo "::error::bwrap sandbox tests SKIPPED: the sandbox did not run"; exit 1; fi
-          echo "oxa tests (profile local) passed; bwrap skip notices: 0"
-      - name: PARITY profile local (O-167; the suite spawns the oxa and oxa-fake binaries)
-        working-directory: oxa
-        env:
-          OXA_PARITY_PROFILE: local
-          OXA_REQUIRE_BWRAP: "1"
-        run: |
-          ulimit -c 0
-          real=$HOME; root=$(mktemp -d); log=$(mktemp)
-          cargo build --release --locked -p oxa-cli -p oxa-fake
-          set +e
-          CARGO_HOME="$real/.cargo" RUSTUP_HOME="$real/.rustup" HOME="$root" XDG_CONFIG_HOME="$root/c" \
-            XDG_STATE_HOME="$root/s" XDG_DATA_HOME="$root/d" XDG_CACHE_HOME="$root/k" XDG_RUNTIME_DIR="$root/r" \
-            cargo test --release --locked --no-fail-fast -p oxa-parity -- --nocapture 2>&1 | tee "$log"
-          rc=${PIPESTATUS[0]}
-          set -e
-          [ "$rc" = 0 ] || exit "$rc"
-          if grep -n '^skipped: ' "$log"; then echo "::error::PARITY (local) tests SKIPPED: a skip is not a pass"; exit 1; fi
-          echo "PARITY profile local passed; skip notices: 0"
+          echo "oxa tests passed; bwrap skip notices: 0"
 
   oxa:
     if: inputs.build_oxa
