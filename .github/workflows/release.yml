@@ -41,8 +41,15 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       package: true
 
+  combined:
+    # the oxc + oxa + oxe archives for aarch64 and x86_64 (cloud-only setup needs no engine weights)
+    needs: version
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
   release:
-    needs: [version, build]
+    needs: [version, build, combined]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -67,6 +74,19 @@ jobs:
           pattern: dist-*
           merge-multiple: true
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-build-*
+          path: combined
+      - name: Combined archives and SBOMs
+        run: |
+          set -euo pipefail
+          for a in aarch64 x86_64; do
+            for f in "ox-llm-$TAG-linux-$a.tar.gz" "ox-llm-$TAG-linux-$a.sbom.cdx.json"; do
+              cp "combined/release-build-$a/$f" "dist/$f"
+            done
+            sha256sum "dist/ox-llm-$TAG-linux-$a.tar.gz" | sed 's# dist/# #' > "dist/ox-llm-$TAG-linux-$a.tar.gz.sha256"
+          done
       - name: SHA256SUMS
         working-directory: dist
         run: |
@@ -78,14 +98,17 @@ jobs:
             test -f "./$p-$TAG-linux-aarch64.tar.gz" || { echo "missing tarball: $p"; exit 1; }
           done
           cat ./*.tar.gz.sha256 > SHA256SUMS
+          sha256sum ./*.sbom.cdx.json | sed 's# \./# #' >> SHA256SUMS
           rm ./*.tar.gz.sha256
           sha256sum -c SHA256SUMS
-          test "$(wc -l < SHA256SUMS)" -eq "$n"
+          test "$(wc -l < SHA256SUMS)" -eq "$((n + 2))"
           cat SHA256SUMS
       - name: Build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.sbom.cdx.json
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,6 +129,7 @@ jobs:
             echo "| \`oxe-server-flash-$TAG-linux-aarch64.tar.gz\` | \`oxe-server\` with the Flash engine (\`--engine flash\`) + \`flash-m0\` (expert sidecar) and \`flash-m3\` (selftest); ggml built in the same run from the pinned public sources |"
             echo "| \`oxi-$TAG-linux-aarch64.tar.gz\` | \`oxi\`: FLUX.2 klein image engine (experimental) |"
             echo "| \`oxa-$TAG-linux-aarch64.tar.gz\` | \`oxa\`: the coding agent (talks to the engine over its OpenAI-compatible API) |"
+            echo "| \`ox-llm-$TAG-linux-aarch64.tar.gz\` / \`ox-llm-$TAG-linux-x86_64.tar.gz\` | combined: oxc (controller payload and wrappers), oxa, oxe, oxe-server, licences; with \`.sbom.cdx.json\`. Cloud-only setup: oxc/docs/CLOUD-ONLY-QUICKSTART.md |"
             echo
             echo "Verify:"
             echo
@@ -119,5 +143,5 @@ jobs:
           } > notes.md
           opts=()
           case $TAG in *-*) opts+=(--prerelease);; esac
-          gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" \
+          gh release create "$TAG" dist/*.tar.gz dist/*.sbom.cdx.json dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" \
             --verify-tag --title "ox-llm $TAG" --notes-file notes.md "${opts[@]}"
