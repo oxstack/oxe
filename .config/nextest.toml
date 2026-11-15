@@ -1,0 +1,16 @@
+# cargo-nextest settings for the engine workspace (CI: the MoE job in .github/workflows/build.yml).
+# nextest runs every test in its own process, many at once. Test binaries whose tests assert on
+# wall-clock time must not compete for cores:
+#   sched   the spin/futex worker pool tests (spinning workers, deadlines in tests.rs)
+#   server  the lib tests with elapsed-time bounds (tests_hotfix.rs stall window, the persist/
+#           preload/fair-scheduling deadlines in tests*.rs)
+# They run one at a time (max-threads = 1) and each takes every test slot while it runs
+# (threads-required), so nothing else runs beside them.
+
+[test-groups.wall-clock]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'binary_id(sched) | binary_id(server)'
+test-group = 'wall-clock'
+threads-required = 'num-test-threads'
