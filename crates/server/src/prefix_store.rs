@@ -758,7 +758,7 @@ fn read_header_v(
     let mut u8b = [0u8; 8];
     r.read_exact(&mut u8b)?;
     let nt = u64::from_le_bytes(u8b);
-    if nt > 1 << 22 || nt.checked_mul(4).map_or(true, |b| b > file_len) {
+    if nt > 1 << 22 || nt.checked_mul(4).is_none_or(|b| b > file_len) {
         return Ok(None);
     }
     let nt = nt as usize;

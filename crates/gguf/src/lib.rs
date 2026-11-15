@@ -202,7 +202,7 @@ struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        if self.pos.checked_add(n).map_or(true, |e| e > self.buf.len()) {
+        if self.pos.checked_add(n).is_none_or(|e| e > self.buf.len()) {
             return err("truncated GGUF header");
         }
         let s = &self.buf[self.pos..self.pos + n];
@@ -225,8 +225,8 @@ fn scalar_size(vtype: u32) -> Option<usize> {
     Some(match vtype {
         0 | 1 | 7 => 1,
         2 | 3 => 2,
-        4 | 5 | 6 => 4,
-        10 | 11 | 12 => 8,
+        4..=6 => 4,
+        10..=12 => 8,
         _ => return None,
     })
 }

@@ -191,18 +191,16 @@ impl SpliceReport {
     }
     /// The class of the latest unspliced turn that matters most: a mismatch before no-record.
     pub fn miss_class(&self) -> Option<&'static str> {
-        for c in [
+        [
             MISS_LAYOUT,
             MISS_CONTENT,
             MISS_TOOL,
             MISS_REASONING,
             MISS_NO_RECORD,
-        ] {
-            if self.misses.iter().any(|(k, _)| *k == c) {
-                return Some(c);
-            }
-        }
-        None
+        ]
+        .into_iter()
+        .find(|&c| self.misses.iter().any(|(k, _)| *k == c))
+        .map(|v| v as _)
     }
     /// The prompt offset of render offset `p` (a position outside every spliced span, or its start).
     pub fn map_pos(&self, p: usize) -> usize {

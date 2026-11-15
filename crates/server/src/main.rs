@@ -146,6 +146,7 @@ fn main() {
     let mut flash_cache_auto = false;
     let mut flash_admit_harness: Option<f64> = None;
     // O-27: preferred tier (`--flash-cache-pref auto|20|18|16|14`); implies `--flash-cache-gib auto`
+    #[allow(unused_mut)]
     let mut flash_cache_pref: Option<f64> = None;
     let mut flash_cache_pref_set = false;
     // O-27: active-desktop resident floor of the swap-tolerant rule (explicit 20 / 18 preference only)
@@ -1029,6 +1030,7 @@ fn main() {
                 "oxe-server: engine switches: {}",
                 model::engine::effective_switches()
             );
+            #[allow(unused_mut)] // mutated only under feature "npu-prefill"
             let mut eng = server::oxe_engine::OxeEngine::open_head(
                 std::path::Path::new(&model),
                 head.as_deref(),

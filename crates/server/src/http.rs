@@ -126,9 +126,7 @@ impl Access {
             Some(p) => p.parse::<u16>().ok() == Some(self.port),
             None => self.port == 80,
         };
-        port_ok
-            && (LOOPBACK_NAMES.contains(&name.as_str())
-                || self.extra_hosts.iter().any(|h| *h == name))
+        port_ok && (LOOPBACK_NAMES.contains(&name.as_str()) || self.extra_hosts.contains(&name))
     }
 
     /// `Origin` is same-site when its host is loopback (any port: the controller's own pages on
@@ -150,7 +148,7 @@ impl Access {
                 return false;
             }
         }
-        LOOPBACK_NAMES.contains(&name.as_str()) || self.extra_hosts.iter().any(|h| *h == name)
+        LOOPBACK_NAMES.contains(&name.as_str()) || self.extra_hosts.contains(&name)
     }
 
     fn key_ok(&self, headers: &HeaderMap) -> bool {

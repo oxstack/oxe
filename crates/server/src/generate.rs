@@ -949,7 +949,7 @@ impl<E: Engine> Worker<E> {
         n: usize,
     ) -> (bool, Vec<(usize, Option<u8>)>) {
         let u = self.ubatch.max(1);
-        let aligned = self.cache.clean && n_cached % u == 0;
+        let aligned = self.cache.clean && n_cached.is_multiple_of(u);
         let base = if aligned { 0 } else { n_cached };
         let anchor = p
             .first_user
@@ -963,7 +963,7 @@ impl<E: Engine> Worker<E> {
         let mut turns: Vec<usize> = p
             .msg_starts
             .iter()
-            .filter(|&&m| p.first_user.map_or(true, |f| m > f))
+            .filter(|&&m| p.first_user.is_none_or(|f| m > f))
             .filter_map(|&m| grid_floor(base, u, n_cached, m.min(n - 1)))
             .collect();
         turns.sort_unstable();
@@ -985,7 +985,7 @@ impl<E: Engine> Worker<E> {
             let mut users: Vec<usize> = p
                 .user_starts
                 .iter()
-                .filter(|&&m| m >= lo && m >= n_cached && p.first_user.map_or(true, |f| m > f))
+                .filter(|&&m| m >= lo && m >= n_cached && p.first_user.is_none_or(|f| m > f))
                 .map(|&m| grid_floor(base, u, n_cached, m.min(n - 1)).unwrap_or(n_cached))
                 .filter(|&x| x > 0)
                 .collect();
@@ -1013,7 +1013,7 @@ impl<E: Engine> Worker<E> {
             let mut users: Vec<usize> = p
                 .user_starts
                 .iter()
-                .filter(|&&m| m >= lo && p.first_user.map_or(true, |f| m > f))
+                .filter(|&&m| m >= lo && p.first_user.is_none_or(|f| m > f))
                 .filter_map(|&m| grid_floor(base, u, n_cached, m.min(n - 1)))
                 .collect();
             users.sort_unstable();

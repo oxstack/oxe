@@ -248,7 +248,9 @@ fn tok_bytes(t: &[u32]) -> Vec<u8> {
 pub fn chain(id_hash: &str, tokens: &[u32]) -> Vec<String> {
     let mut prev = id_hash.to_string();
     tokens
-        .chunks_exact(BLOCK)
+        .as_chunks::<BLOCK>()
+        .0
+        .iter()
         .map(|b| {
             let mut s = Sha256::default();
             s.update(prev.as_bytes());
