@@ -114,6 +114,12 @@ jobs:
             oxa/target
           key: ${{ steps.rust-key.outputs.key }}
           restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        # A restored target/ may hold workspace crates built from OLDER sources. Checkout mtimes can be older
+        # than those artifacts, so cargo would treat stale crates as fresh. Touching the tracked sources
+        # forces workspace crates to rebuild; third-party dependencies stay cached.
+        working-directory: ${{ github.workspace }}
+        run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
       - name: Rust cache result
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: engine (model-free workspace, all targets)
@@ -157,6 +163,12 @@ jobs:
             engine/target
           key: ${{ steps.rust-key.outputs.key }}
           restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        # A restored target/ may hold workspace crates built from OLDER sources. Checkout mtimes can be older
+        # than those artifacts, so cargo would treat stale crates as fresh. Touching the tracked sources
+        # forces workspace crates to rebuild; third-party dependencies stay cached.
+        working-directory: ${{ github.workspace }}
+        run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
       - name: Rust cache result
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
