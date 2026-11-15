@@ -101,7 +101,7 @@ pub struct Sampler {
 
 impl Sampler {
     pub fn new(p: SamplingParams) -> Sampler {
-        let seed = if p.seed == 0xFFFF_FFFF {
+        let seed = if p.seed == 0xFFFF_FFFF || p.seed == u64::MAX {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
@@ -230,6 +230,16 @@ impl Sampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn seed_minus_one_is_random() {
+        let p = crate::api::gen_params(&serde_json::json!({"prompt":"x","seed":-1}), false)
+            .unwrap()
+            .sampling;
+        let a = Sampler::new(p.clone());
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let b = Sampler::new(p);
+        assert_ne!(a.rng, b.rng);
+    }
     #[test]
     fn greedy_and_probs() {
         let l = [0.0, 3.0, 1.0, 3.0];

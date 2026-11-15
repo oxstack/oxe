@@ -712,3 +712,15 @@ async fn panic_in_generate_clears_running_and_resets_the_cache() {
         "healthy request reset the cache again"
     );
 }
+
+#[test]
+fn stop_strings_are_capped() {
+    let many: Vec<String> = (0..17).map(|i| format!("s{i}")).collect();
+    let long = "x".repeat(1025);
+    for stop in [json!(many), json!([long]), json!(long)] {
+        let b = json!({"prompt":"x","stop":stop});
+        assert!(crate::api::gen_params(&b, false).is_err(), "{stop}");
+    }
+    let ok = json!({"prompt":"x","stop":["a","b","c","d"]});
+    assert_eq!(crate::api::gen_params(&ok, false).unwrap().stop.len(), 4);
+}

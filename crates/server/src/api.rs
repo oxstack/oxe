@@ -170,6 +170,10 @@ pub fn logit_bias(body: &Json) -> Result<Vec<(u32, f32)>, String> {
     Ok(out)
 }
 
+/// Caps on `stop` (OpenAI allows 4; generous, but bounded so a request cannot make every token scan huge lists).
+const MAX_STOP_STRINGS: usize = 16;
+const MAX_STOP_BYTES: usize = 1024;
+
 /// Sampling / stopping parameters common to /completion and /v1/chat/completions
 /// (`params_from_json_cmpl`).
 pub fn gen_params(body: &Json, chat: bool) -> Result<GenParams, String> {
@@ -228,6 +232,11 @@ pub fn gen_params(body: &Json, chat: bool) -> Result<GenParams, String> {
             .collect(),
         _ => Vec::new(),
     };
+    if p.stop.len() > MAX_STOP_STRINGS || p.stop.iter().any(|s| s.len() > MAX_STOP_BYTES) {
+        return Err(format!(
+            "\"stop\": at most {MAX_STOP_STRINGS} strings of {MAX_STOP_BYTES} bytes each"
+        ));
+    }
     p.cache_prompt = body
         .get("cache_prompt")
         .and_then(Json::as_bool)
