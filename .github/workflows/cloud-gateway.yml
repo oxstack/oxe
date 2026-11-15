@@ -1,0 +1,44 @@
+name: cloud gateway
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    paths: ['oxc-gateway/**', 'oxc/**', '.github/workflows/cloud-gateway.yml']
+  merge_group:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cloud-gateway-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  RUSTUP_TOOLCHAIN: '1.99.1'
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --no-self-update
+      - run: cargo fmt --manifest-path oxc-gateway/Cargo.toml --all -- --check
+  conformance:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --no-self-update
+      - run: cargo check --locked --manifest-path oxc-gateway/Cargo.toml --no-default-features
+      - run: cargo clippy --locked --manifest-path oxc-gateway/Cargo.toml --all-targets --all-features -- -D warnings
+      - run: cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
+      - run: /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
+      - run: OXC_CATALOG_CONTRACT="$PWD/oxc-gateway/target/debug/examples/catalog_contract" OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
