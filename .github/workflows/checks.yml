@@ -284,6 +284,23 @@ jobs:
           env -i PATH="$PATH" HOME="$root/home" PIP_CACHE_DIR="$HOME/.cache/pip" \
             tools/openai-contract/run.sh --mode both --server "$PWD/engine/target/release/oxe-server" --work "$root/work"
 
+  fuzz-oxe:
+    # Task 61: the stable smoke of the oxe cargo-fuzz targets (seconds; no model weights).
+    name: oxe fuzz smoke (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rustup is preinstalled on the hosted image)
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Task 61 oxe targets, short smoke
+        run: cargo test --locked --manifest-path fuzz/oxe/Cargo.toml --test smoke
+
   lab:
     if: github.event_name != 'pull_request' && github.event_name != 'push'
     name: lab tests, CLI, receipt scrub (x86_64)
