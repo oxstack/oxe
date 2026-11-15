@@ -1,9 +1,7 @@
 name: cloud gateway
+# Manual runs only. PRs, the merge queue and main run the same steps as job `gateway` in
+# checks.yml, path-gated on the classifier's `gateway` output and covered by the `gate` check.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-    paths: ['oxc-gateway/**', 'oxc/**', '.github/workflows/cloud-gateway.yml']
-  merge_group:
   workflow_dispatch:
 permissions:
   contents: read

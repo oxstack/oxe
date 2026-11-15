@@ -2,18 +2,24 @@ name: checks
 # Hosted CI: cheap drafts, fast PR checks, full merge-queue/main/manual/nightly gate.
 # Security scans always run, including docs-only changes. No secrets.
 #
-# Merge queue, path-aware: tools/ci/paths.py classifies only the files the queued group changes
-# (git diff merge_group.base_sha..merge_group.head_sha). The heavy jobs of a component run only when
-# that component changed: engine/ and fuzz/oxe/ -> the ARM engine and Flash builds; oxa/ and fuzz/oxa/
-# -> the oxa test archive, its shards and the ARM oxa build; oxc/, oxc-gateway/, oxc-rs/ and
-# conformance/ -> the lab job. Anything else (.github/, tools/, packaging/, root files, a new
-# directory) and an empty group diff count as "everything changed". A skipped job reports as
-# skipped, which satisfies its required check, so every required name still reports.
-# Risk: a change in one component is no longer exercised by another component's heavy job in the
-# queue (e.g. an engine/ change no longer runs the oxa workspace tests there). If the classifier
-# job fails, the run fails; keep "classify changed paths" a required check so that a job skipped
-# only because its classifier failed cannot let a group through. The
-# nightly run and manual runs still run every job on the whole tree and catch cross-component breaks.
+# Path-aware PRs and merge queue: tools/ci/paths.py classifies the files a ready PR changes
+# (base...head) or a queued group changes (merge_group.base_sha..head_sha); ready PRs and the queue
+# run the same set. Outputs: engine/ and fuzz/oxe/ -> `engine` (clippy, x86_64 stub server tests,
+# ARM engine and Flash builds, oxe fuzz smoke); oxa/ and fuzz/oxa/ -> `oxa` (clippy, the oxa test
+# archive and shards, the ARM oxa build, oxa fuzz smoke); oxc/ -> `lab`, `cli` and `gateway`;
+# oxc-rs/ and conformance/ -> `cli`; oxc-gateway/ -> `gateway`. Anything else (.github/, tools/,
+# packaging/, root files, a new directory) and an empty group diff count as "everything changed".
+# A push on main, the nightly run and manual runs set every output, so main runs everything after
+# each merge (one run at a time; a newer push replaces a waiting one) and catches cross-component
+# breaks that a path-gated PR or queue entry skipped. Drafts run only the classifier, the scans
+# and rustfmt. The scans run on every event and every change, unconditionally.
+# The `gate` job aggregates every job below; it fails when any job failed or was cancelled, when
+# the classifier or the scans did not succeed, or when a classifier output is not literally
+# 'true'/'false', so a skip caused by a failed or missing classifier cannot pass.
+#
+# Caches: jobs only restore; only main (push, nightly, manual) saves, once per dependency-level key
+# prefix (compiler, flags, Cargo.toml, Cargo.lock) as `<prefix>main`. Caches saved on PR or queue
+# refs are visible only there, so saving them would only evict main's shared caches.
 on:
   push:
     branches: ["main"]
@@ -48,7 +54,7 @@ env:
 jobs:
   changes:
     name: classify changed paths
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     outputs:
       full: ${{ steps.paths.outputs.full }}
@@ -56,6 +62,9 @@ jobs:
       engine: ${{ steps.paths.outputs.engine }}
       oxa: ${{ steps.paths.outputs.oxa }}
       lab: ${{ steps.paths.outputs.lab }}
+      cli: ${{ steps.paths.outputs.cli }}
+      gateway: ${{ steps.paths.outputs.gateway }}
+      md: ${{ steps.paths.outputs.md }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,8 +78,8 @@ jobs:
   links:
     name: documentation links
     needs: changes
-    if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.docs == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
+    if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.docs == 'true' || needs.changes.outputs.md == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,16 +91,17 @@ jobs:
   build:
     # Always call the reusable workflow so each required child check reports, even when skipped.
     # oxe-server, oxi, the Flash variant and oxa: build and model-free tests on ARM64 (build.yml)
-    # In the merge queue the engine and oxa jobs run only for the components the group changed.
+    # Ready PRs and the queue run the engine and oxa jobs only for the components they changed;
+    # the classifier sets every component on main, nightly and manual runs.
     needs: changes
     uses: ./.github/workflows/build.yml
     with:
       version: dev-${{ github.sha }}
       package: false
-      heavy: ${{ github.event_name != 'pull_request' && github.event_name != 'push' }}
+      heavy: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
       build_oxa: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-      engine: ${{ github.event_name != 'merge_group' || needs.changes.outputs.engine == 'true' }}
-      oxa: ${{ github.event_name != 'merge_group' || needs.changes.outputs.oxa == 'true' }}
+      engine: ${{ needs.changes.outputs.engine == 'true' }}
+      oxa: ${{ needs.changes.outputs.oxa == 'true' }}
 
   oxa-nightly-arm:
     # Extra primary-platform coverage at night; manual opt-in validates this job before merge.
@@ -117,7 +127,7 @@ jobs:
       - name: Compiler and source cache key
         id: rust-key
         run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-arm-oxa-ci oxa
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -132,6 +142,15 @@ jobs:
         run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
       - name: Whole ARM64 workspace, isolated HOME and mandatory bwrap
         run: tools/ci/run_oxa_nightly.sh "$RUNNER_TEMP/oxa-arm-nightly"
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -144,7 +163,7 @@ jobs:
 
   rustfmt:
     name: rustfmt (oxa)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -166,7 +185,7 @@ jobs:
 
   native-controller-cli:
     needs: changes
-    if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && (needs.changes.outputs.full == 'true' || needs.changes.outputs.lab == 'true'))
+    if: needs.changes.outputs.cli == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     name: experimental oxc CLI (x86_64)
     # the project's runner image uses the same tool-cache path as the hosted image, so setup-python works there too
     runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
@@ -197,7 +216,7 @@ jobs:
 
   clippy:
     needs: changes
-    if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && (needs.changes.outputs.full == 'true' || needs.changes.outputs.engine == 'true' || needs.changes.outputs.oxa == 'true'))
+    if: (needs.changes.outputs.engine == 'true' || needs.changes.outputs.oxa == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     # Compile errors fail the job; lint warnings are reported but do not fail it yet. Add
     # "-- -D warnings" once the warning count is known to be zero.
     name: clippy (engine, oxa; aarch64)
@@ -215,7 +234,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-clippy engine oxa
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -234,17 +253,28 @@ jobs:
       - name: Rust cache result
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: engine (model-free workspace, all targets)
-        if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true' || needs.changes.outputs.engine == 'true'
+        if: needs.changes.outputs.engine == 'true'
         working-directory: engine
         run: cargo clippy --locked --workspace --exclude qwen4exp --all-targets
       - name: oxa (all targets)
-        if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true' || needs.changes.outputs.oxa == 'true'
+        if: needs.changes.outputs.oxa == 'true'
         working-directory: oxa
         run: cargo clippy --locked --workspace --all-targets
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+            oxa/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
 
   x86-64-stub:
     needs: changes
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # engine changes run the server tests; controller changes need the stub build for the contract
+    if: (needs.changes.outputs.engine == 'true' || needs.changes.outputs.lab == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     # oxe-server builds on x86_64 with the stub engine only (kernels-sys compiles its kernels on
     # aarch64 only; the model engine refuses to load elsewhere). Its server tests that do not need
     # the model engine run here. Uses the hosted image's rustup (setup_toolchain.sh installs the
@@ -265,7 +295,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-x86-stub engine
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -282,7 +312,8 @@ jobs:
         run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
       - name: Rust cache result
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: pip-cache
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
@@ -293,7 +324,7 @@ jobs:
         working-directory: engine
         run: ./target/release/oxe-server --help > help.txt && head -n 3 help.txt
       - name: Server tests (stub engine; model-engine tests are aarch64-only)
-        if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true' || needs.changes.outputs.engine == 'true'
+        if: needs.changes.outputs.engine == 'true'
         working-directory: engine
         timeout-minutes: 30
         run: |
@@ -307,10 +338,27 @@ jobs:
           mkdir -p "$root/home"
           env -i PATH="$PATH" HOME="$root/home" PIP_CACHE_DIR="$HOME/.cache/pip" \
             tools/openai-contract/run.sh --mode both --server "$PWD/engine/target/release/oxe-server" --work "$root/work"
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.pip-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
 
   fuzz-oxa:
     # Task 61: the stable smoke of the oxa cargo-fuzz targets (seconds; no nightly/sanitizer).
     name: oxa fuzz smoke (x86_64)
+    needs: changes
+    if: needs.changes.outputs.oxa == 'true'
     runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
@@ -328,6 +376,8 @@ jobs:
   fuzz-oxe:
     # Task 61: the stable smoke of the oxe cargo-fuzz targets (seconds; no model weights).
     name: oxe fuzz smoke (x86_64)
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
@@ -344,7 +394,7 @@ jobs:
 
   lab:
     needs: changes
-    if: github.event_name != 'pull_request' && github.event_name != 'push' && (github.event_name != 'merge_group' || needs.changes.outputs.lab == 'true')
+    if: needs.changes.outputs.lab == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     name: lab tests, CLI, receipt scrub (x86_64)
     runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 30
@@ -356,7 +406,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: pip-cache
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
@@ -398,10 +449,17 @@ jobs:
           root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
           HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_RUNTIME_DIR="$root/r" \
             PYTHONPATH=src python3 -m oxc --help > /dev/null
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.pip-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
 
   scans:
     name: secret scan, SDK-material check, product isolation
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
+    # Never path-gated: runs on every event and every change.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -462,3 +520,57 @@ jobs:
         # when receipts are scrubbed locally). Here that is the hosted runner's account, `runner`,
         # which only matches the English word "runner" in receipts. The other rules still run.
         run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I tools/scrub_receipts.py --check --user ''
+
+  gateway:
+    # Moved from cloud-gateway.yml (fmt + conformance, same steps and matrix) so the gate covers it.
+    needs: changes
+    if: needs.changes.outputs.gateway == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    name: cloud gateway (${{ matrix.runner }})
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    # x86_64 uses the shared runner expression; ARM stays hosted.
+    runs-on: ${{ matrix.runner == 'ubuntu-latest' && (vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04') || matrix.runner }}
+    timeout-minutes: 15
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --component rustfmt --no-self-update
+      - run: cargo fmt --manifest-path oxc-gateway/Cargo.toml --all -- --check
+      - run: cargo check --locked --manifest-path oxc-gateway/Cargo.toml --no-default-features
+      - run: cargo clippy --locked --manifest-path oxc-gateway/Cargo.toml --all-targets --all-features -- -D warnings
+      - run: cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
+      - run: /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
+      - run: OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxc-gateway/target/debug/examples/secrets_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
+
+  gate:
+    # The one aggregate check: every job in `needs` must succeed or be skipped; the classifier and
+    # the scans must succeed; every classifier output must be literally 'true' or 'false'.
+    name: gate
+    if: always()
+    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, native-controller-cli, fuzz-oxa, fuzz-oxe, lab, build, gateway]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ['NEEDS'])
+          bad = {k: v['result'] for k, v in needs.items() if v['result'] not in ('success', 'skipped')}
+          for k in ('changes', 'scans'):                      # these two may never be skipped
+              if needs[k]['result'] != 'success': bad[k] = needs[k]['result']
+          flags = needs['changes'].get('outputs', {})
+          for k in ('engine', 'oxa', 'lab', 'cli', 'gateway', 'docs', 'md', 'full'):
+              if flags.get(k) not in ('true', 'false'): bad['changes.' + k] = repr(flags.get(k))
+          print(json.dumps({k: v['result'] for k, v in needs.items()}, indent=1)); print('bad:', bad)
+          sys.exit(1 if bad else 0)
+          PY

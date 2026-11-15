@@ -78,7 +78,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-moe engine
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -111,6 +111,15 @@ jobs:
         run: |
           ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
           cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
       - name: Package
         if: inputs.package
         env:
@@ -152,7 +161,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-flash engine
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -187,6 +196,15 @@ jobs:
           cargo test --release --locked --no-fail-fast -p qwen4exp
           ./target/release/flash-m3 selftest | tee selftest.txt
           ! grep -q FAIL selftest.txt
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
       - name: Package
         if: inputs.package
         env:
@@ -218,7 +236,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-x86-oxa-ci oxa
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -258,6 +276,15 @@ jobs:
             --archive-file "$RUNNER_TEMP/oxa-tests.tar.zst"
           cargo nextest list --archive-file "$RUNNER_TEMP/oxa-tests.tar.zst" \
             --message-format json > "$RUNNER_TEMP/oxa-test-list.json"
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oxa-test-archive-x86
@@ -334,7 +361,7 @@ jobs:
     if: always() && inputs.heavy && inputs.oxa
     needs: [oxa-test-build, oxa-test-shards]
     name: oxa tests (bwrap sandbox required)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
       - name: Every archive and partition must pass
@@ -377,7 +404,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-oxa-release oxa
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -397,6 +424,15 @@ jobs:
       - name: Build oxa
         working-directory: oxa
         run: cargo build --release --locked --bin oxa
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
       - name: Package
         if: inputs.package
         working-directory: oxa
