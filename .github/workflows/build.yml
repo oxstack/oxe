@@ -28,6 +28,14 @@ on:
         description: Run the oxa build (disabled only for draft PR checks)
         type: boolean
         default: true
+      engine:
+        description: The engine component changed (false only for a merge group that leaves engine/ alone)
+        type: boolean
+        default: true
+      oxa:
+        description: The oxa component changed (false only for a merge group that leaves oxa/ alone)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -49,7 +57,7 @@ defaults:
 # to the hosted images (kill switch). The ARM jobs are always hosted.
 jobs:
   engine:
-    if: inputs.heavy
+    if: inputs.heavy && inputs.engine
     name: oxe-server (MoE) + oxi
     runs-on: ubuntu-24.04-arm
     container:
@@ -120,7 +128,7 @@ jobs:
           retention-days: 7
 
   flash:
-    if: inputs.heavy
+    if: inputs.heavy && inputs.engine
     name: oxe-server --features flash
     runs-on: ubuntu-24.04-arm
     container:
@@ -194,7 +202,7 @@ jobs:
           retention-days: 7
 
   oxa-test-build:
-    if: inputs.heavy
+    if: inputs.heavy && inputs.oxa
     name: oxa test archive (x86_64)
     runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 30
@@ -265,7 +273,7 @@ jobs:
           retention-days: 1
 
   oxa-test-shards:
-    if: inputs.heavy
+    if: inputs.heavy && inputs.oxa
     needs: oxa-test-build
     name: oxa tests shard ${{ matrix.shard }} (x86_64)
     runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
@@ -323,7 +331,7 @@ jobs:
 
   oxa-tests:
     # Preserve the required check name. A missing/failed build or shard cannot turn green.
-    if: always() && inputs.heavy
+    if: always() && inputs.heavy && inputs.oxa
     needs: [oxa-test-build, oxa-test-shards]
     name: oxa tests (bwrap sandbox required)
     runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
@@ -351,7 +359,7 @@ jobs:
             "$RUNNER_TEMP/oxa-reports/junit-1.xml" "$RUNNER_TEMP/oxa-reports/junit-2.xml"
 
   oxa:
-    if: inputs.build_oxa
+    if: inputs.build_oxa && inputs.oxa
     # oxa (the coding agent) is its own cargo workspace at oxa/. No model, no engine build: oxa
     # talks to the engine over HTTP only. Generic aarch64 code (no target-cpu flag).
     name: oxa
