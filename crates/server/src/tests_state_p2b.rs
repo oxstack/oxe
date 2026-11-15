@@ -1130,3 +1130,54 @@ fn thinking_follow_up_after_a_restart_resumes_the_exact_ram_checkpoint() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #213: GET /state-cache must not wait for a running generation (it holds the worker): it
+/// answers 409 "busy" at once instead of blocking until the generation ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn state_cache_status_reports_busy_instead_of_blocking() {
+    let dir = tmp("p213-status-busy");
+    let a = server_echo(&dir, vec![], 1 << 40);
+    let held = a.worker.lock().unwrap();
+    let r = tokio::time::timeout(
+        Duration::from_secs(3),
+        call(&a, "GET", "/state-cache", Json::Null),
+    )
+    .await;
+    drop(held);
+    let (c, j) = r.expect("GET /state-cache blocked on the worker lock");
+    assert_eq!(c, 409, "{j}");
+    let (c, _) = call(&a, "GET", "/state-cache", Json::Null).await;
+    assert_eq!(c, 200, "idle again");
+}
+
+/// #213 review: a poisoned worker mutex must not deadlock GET /state-cache (the guard inside the
+/// PoisonError is used for the recovery), and a held persist gate answers 409 at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn state_cache_status_survives_poisoned_worker_and_busy_gate() {
+    let dir = tmp("p213-status-poison");
+    let a = server_echo(&dir, vec![], 1 << 40);
+    let b = a.clone();
+    let _ = std::thread::spawn(move || {
+        let _g = b.worker.lock().unwrap();
+        panic!("poison the worker");
+    })
+    .join();
+    assert!(a.worker.is_poisoned());
+    let r = tokio::time::timeout(
+        Duration::from_secs(3),
+        call(&a, "GET", "/state-cache", Json::Null),
+    )
+    .await;
+    let (c, j) = r.expect("GET /state-cache deadlocked on a poisoned worker");
+    assert_eq!(c, 200, "{j}");
+    assert!(!a.worker.is_poisoned(), "poison cleared by the recovery");
+    let gate = a.persist_gate.lock().unwrap();
+    let r = tokio::time::timeout(
+        Duration::from_secs(3),
+        call(&a, "GET", "/state-cache", Json::Null),
+    )
+    .await;
+    drop(gate);
+    let (c, _) = r.expect("GET /state-cache blocked on the persist gate");
+    assert_eq!(c, 409);
+}

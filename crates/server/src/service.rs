@@ -759,22 +759,42 @@ pub async fn handle_hints<E: Engine>(
         }
         // CACHE-PERFECT P2 state store (the controller's /_local/cache routes forward here)
         ("GET", "/state-cache") => {
+            use std::sync::TryLockError;
             let st2 = st.clone();
+            // #213: never wait for a running generation (it holds the worker): report busy
             let r = tokio::task::spawn_blocking(move || {
-                let _gate = st2.persist_gate.lock().unwrap_or_else(|p| p.into_inner());
-                let w = st2.lock_worker();
-                w.states.as_ref().map(|s| {
+                let _gate = match st2.persist_gate.try_lock() {
+                    Ok(g) => g,
+                    Err(TryLockError::Poisoned(p)) => p.into_inner(),
+                    Err(TryLockError::WouldBlock) => return Err(()),
+                };
+                let w = match st2.worker.try_lock() {
+                    Ok(w) => w,
+                    Err(TryLockError::Poisoned(p)) => {
+                        // recover with the guard we already hold (locking again would deadlock)
+                        let mut g = p.into_inner();
+                        let w = &mut *g;
+                        w.cache.reset(&mut w.engine);
+                        st2.worker.clear_poison();
+                        g
+                    }
+                    Err(TryLockError::WouldBlock) => return Err(()),
+                };
+                Ok(w.states.as_ref().map(|s| {
                     let mut u = s.usage();
                     u["preload"] = st2.preload_status.lock().unwrap().clone();
                     u
-                })
+                }))
             })
             .await
-            .ok()
-            .flatten();
+            .ok();
             match r {
-                Some(j) => Reply::Json(200, j),
-                None => Reply::Json(404, api::error_json(404, "state cache is off")),
+                Some(Ok(Some(j))) => Reply::Json(200, j),
+                Some(Err(())) => Reply::Json(
+                    409,
+                    api::error_json(409, "busy: a request or state write is running"),
+                ),
+                _ => Reply::Json(404, api::error_json(404, "state cache is off")),
             }
         }
         // P2b preload (T1-WARM contract): restore a session's newest snapshot into the idle engine

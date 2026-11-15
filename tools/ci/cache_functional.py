@@ -234,10 +234,20 @@ def run_steps(srv, res, name, think, steps, tools=True, reorder=False, system=SY
     return recs
 
 
+def state_cache_get(srv, timeout=60):
+    # GET /state-cache answers 409 while a write holds the worker/persist gate: retry
+    t0 = time.time()
+    while True:
+        st, u = http(srv.port, 'GET', '/state-cache')
+        if st != 409 or time.time() - t0 > timeout:
+            return st, u
+        time.sleep(0.25)
+
+
 def wait_persisted(srv, n_tokens, timeout=300):
     t0 = time.time()
     while time.time() - t0 < timeout:
-        st, u = http(srv.port, 'GET', '/state-cache')
+        st, u = state_cache_get(srv)
         if st == 200 and max([s['n_tokens'] for s in u.get('sessions', [])] or [0]) >= n_tokens:
             return
         time.sleep(0.5)
@@ -398,7 +408,7 @@ def scenarios(a, res):
                                        'cache_n': info['cache_n'], 'prompt': len(t_comp)}
 
         # 4. budget and clear endpoints (the same server, idle between requests)
-        st, u = http(srv.port, 'GET', '/state-cache')
+        st, u = state_cache_get(srv)
         res.expect(st == 200 and u.get('used_bytes', 0) > 0 and u.get('sessions'),
                    'state-cache: usage reports the sessions and their bytes on disk',
                    f'status={st} used={u.get("used_bytes")} sessions={len(u.get("sessions", []))}')
@@ -410,7 +420,7 @@ def scenarios(a, res):
         st, b = http(srv.port, 'POST', '/state-cache/budget', {'bytes': a.budget})
         res.expect(st == 200 and b.get('budget_bytes') == a.budget, 'budget restored', f'status={st} {b}')
         st, c = http(srv.port, 'POST', '/state-cache/clear', {'scope': 'all'})
-        st2, u2 = http(srv.port, 'GET', '/state-cache')
+        st2, u2 = state_cache_get(srv)
         res.expect(st == 200 and st2 == 200 and u2.get('sessions') == [] and u2.get('used_bytes', 1 << 30) <= 4096,
                    'clear(all) drops every session (only the identity files remain)',
                    f'status={st} sessions={u2.get("sessions")} used_after={u2.get("used_bytes")}')
