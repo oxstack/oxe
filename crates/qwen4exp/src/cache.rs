@@ -119,7 +119,13 @@ impl Entry {
 
 impl Cache {
     /// `quota[l]` = slots of layer l.
-    pub fn new(layout: Layout, quota: &[usize], sidecar_fd: i32, no_io: bool, prefault: bool) -> std::io::Result<Cache> {
+    pub fn new(
+        layout: Layout,
+        quota: &[usize],
+        sidecar_fd: i32,
+        no_io: bool,
+        prefault: bool,
+    ) -> std::io::Result<Cache> {
         assert_eq!(quota.len(), N_LAYER);
         let total: usize = (0..N_LAYER).map(|l| quota[l] * layout.geom[l].slot).sum();
         let arena = Arena::new(total, prefault)?;
@@ -173,8 +179,12 @@ impl Cache {
         assert!(floor_bytes <= budget, "budget below the per-layer floor");
         let wsum: f64 = weights.iter().sum();
         let spare = (budget - floor_bytes) as f64;
-        let mut q: Vec<usize> =
-            (0..N_LAYER).map(|l| (floor + (spare * weights[l] / wsum / slot(l) as f64).floor() as usize).min(N_EXPERT)).collect();
+        let mut q: Vec<usize> = (0..N_LAYER)
+            .map(|l| {
+                (floor + (spare * weights[l] / wsum / slot(l) as f64).floor() as usize)
+                    .min(N_EXPERT)
+            })
+            .collect();
         // never exceed the budget
         while (0..N_LAYER).map(|l| q[l] * slot(l)).sum::<usize>() > budget {
             let l = (0..N_LAYER).max_by_key(|&l| q[l]).unwrap();
@@ -201,7 +211,14 @@ impl Cache {
     ///
     /// # Safety
     /// Control thread only.
-    pub unsafe fn lookup(&self, io: &IoQueue, l: usize, e: usize, stamp: u64, class: ReqClass) -> (Entry, bool) {
+    pub unsafe fn lookup(
+        &self,
+        io: &IoQueue,
+        l: usize,
+        e: usize,
+        stamp: u64,
+        class: ReqClass,
+    ) -> (Entry, bool) {
         self.lookup_protect(io, l, e, stamp, stamp, class)
     }
 
@@ -210,7 +227,15 @@ impl Cache {
     ///
     /// # Safety
     /// Control thread only.
-    pub unsafe fn lookup_protect(&self, io: &IoQueue, l: usize, e: usize, stamp: u64, protect_from: u64, class: ReqClass) -> (Entry, bool) {
+    pub unsafe fn lookup_protect(
+        &self,
+        io: &IoQueue,
+        l: usize,
+        e: usize,
+        stamp: u64,
+        protect_from: u64,
+        class: ReqClass,
+    ) -> (Entry, bool) {
         self.lookup_protect_keep(io, l, e, stamp, protect_from, class, None)
     }
 
@@ -221,7 +246,16 @@ impl Cache {
     /// # Safety
     /// Control thread only.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn lookup_protect_keep(&self, io: &IoQueue, l: usize, e: usize, stamp: u64, protect_from: u64, class: ReqClass, keep: Option<&[u64; N_EXPERT / 64]>) -> (Entry, bool) {
+    pub unsafe fn lookup_protect_keep(
+        &self,
+        io: &IoQueue,
+        l: usize,
+        e: usize,
+        stamp: u64,
+        protect_from: u64,
+        class: ReqClass,
+        keep: Option<&[u64; N_EXPERT / 64]>,
+    ) -> (Entry, bool) {
         let p = &mut self.pools()[l];
         let st = &mut *self.stats.get();
         let pf = &mut (&mut *self.prefetched.get())[l];
@@ -263,8 +297,21 @@ impl Cache {
                 }
                 p.state[s].store(PENDING, Release);
                 st.read_bytes += p.slot as u64;
-                io.push(Req { class, fd: self.sidecar_fd, buf: p.base.add(s * p.slot) as *mut u8, len: p.slot as u32, off: self.layout.offset(l, e), state: &p.state[s] });
-                return (Entry { ptr: p.base.add(s * p.slot), state: &p.state[s] }, true);
+                io.push(Req {
+                    class,
+                    fd: self.sidecar_fd,
+                    buf: p.base.add(s * p.slot) as *mut u8,
+                    len: p.slot as u32,
+                    off: self.layout.offset(l, e),
+                    state: &p.state[s],
+                });
+                return (
+                    Entry {
+                        ptr: p.base.add(s * p.slot),
+                        state: &p.state[s],
+                    },
+                    true,
+                );
             }
             p.stamp[s] = stamp;
             if demand {
@@ -298,11 +345,24 @@ impl Cache {
                     }
                 }
             }
-            return (Entry { ptr: p.base.add(s * p.slot), state: &p.state[s] }, false);
+            return (
+                Entry {
+                    ptr: p.base.add(s * p.slot),
+                    state: &p.state[s],
+                },
+                false,
+            );
         }
-        let kept = |p: &Pool, h: usize| keep.is_some_and(|k| p.owner[h] >= 0 && (k[p.owner[h] as usize / 64] >> (p.owner[h] as usize % 64)) & 1 == 1);
+        let kept = |p: &Pool, h: usize| {
+            keep.is_some_and(|k| {
+                p.owner[h] >= 0
+                    && (k[p.owner[h] as usize / 64] >> (p.owner[h] as usize % 64)) & 1 == 1
+            })
+        };
         let evictable = |p: &Pool, h: usize| {
-            !((p.stamp[h] != u64::MAX && p.stamp[h] >= protect_from && p.stamp[h] <= stamp) || p.state[h].load(Acquire) == PENDING || kept(p, h))
+            !((p.stamp[h] != u64::MAX && p.stamp[h] >= protect_from && p.stamp[h] <= stamp)
+                || p.state[h].load(Acquire) == PENDING
+                || kept(p, h))
         };
         // miss: LFU (empty slot first, else fewest counts, then least recently used) or CLOCK
         let lfu_victim = if lfu {
@@ -320,25 +380,32 @@ impl Cache {
                     best = Some(key);
                 }
             }
-            Some(best.unwrap_or_else(|| panic!("layer {l}: no evictable slot")).2)
+            Some(
+                best.unwrap_or_else(|| panic!("layer {l}: no evictable slot"))
+                    .2,
+            )
         } else {
             None
         };
         let mut steps = 0;
-        let v = if let Some(v) = lfu_victim { v } else { loop {
-            let h = p.hand;
-            p.hand = (p.hand + 1) % p.n;
-            steps += 1;
-            assert!(steps <= 3 * p.n + 3, "layer {l}: no evictable slot");
-            if !evictable(p, h) {
-                continue;
+        let v = if let Some(v) = lfu_victim {
+            v
+        } else {
+            loop {
+                let h = p.hand;
+                p.hand = (p.hand + 1) % p.n;
+                steps += 1;
+                assert!(steps <= 3 * p.n + 3, "layer {l}: no evictable slot");
+                if !evictable(p, h) {
+                    continue;
+                }
+                if p.refb[h] {
+                    p.refb[h] = false;
+                    continue;
+                }
+                break h;
             }
-            if p.refb[h] {
-                p.refb[h] = false;
-                continue;
-            }
-            break h;
-        } };
+        };
         p.last[v] = p.tick;
         if p.owner[v] >= 0 {
             p.map[p.owner[v] as usize] = -1;
@@ -377,7 +444,13 @@ impl Cache {
                 state: &p.state[v],
             });
         }
-        (Entry { ptr, state: &p.state[v] }, true)
+        (
+            Entry {
+                ptr,
+                state: &p.state[v],
+            },
+            true,
+        )
     }
 
     /// F123: the LFU demand count of (layer l, expert e) (0 under CLOCK, which keeps no counts). No side effects.
@@ -406,7 +479,13 @@ impl Cache {
     ///
     /// # Safety
     /// Control thread only, and no op is using layer l's slots (called between ops).
-    pub unsafe fn prefetch_guarded(&self, io: &IoQueue, l: usize, e: usize, keep: &[u64; N_EXPERT / 64]) -> u8 {
+    pub unsafe fn prefetch_guarded(
+        &self,
+        io: &IoQueue,
+        l: usize,
+        e: usize,
+        keep: &[u64; N_EXPERT / 64],
+    ) -> u8 {
         let p = &mut self.pools()[l];
         let st = &mut *self.stats.get();
         let pf = &mut (&mut *self.prefetched.get())[l];
@@ -421,7 +500,14 @@ impl Cache {
                 p.state[s].store(PENDING, Release);
                 st.prefetch_issued += 1;
                 st.read_bytes += p.slot as u64;
-                io.push(Req { class: ReqClass::Prefetch, fd: self.sidecar_fd, buf: p.base.add(s * p.slot) as *mut u8, len: p.slot as u32, off: self.layout.offset(l, e), state: &p.state[s] });
+                io.push(Req {
+                    class: ReqClass::Prefetch,
+                    fd: self.sidecar_fd,
+                    buf: p.base.add(s * p.slot) as *mut u8,
+                    len: p.slot as u32,
+                    off: self.layout.offset(l, e),
+                    state: &p.state[s],
+                });
                 return 1;
             }
             return 0;
@@ -474,7 +560,14 @@ impl Cache {
         } else {
             p.state[v].store(PENDING, Release);
             st.read_bytes += p.slot as u64;
-            io.push(Req { class: ReqClass::Prefetch, fd: self.sidecar_fd, buf: ptr as *mut u8, len: p.slot as u32, off: self.layout.offset(l, e), state: &p.state[v] });
+            io.push(Req {
+                class: ReqClass::Prefetch,
+                fd: self.sidecar_fd,
+                buf: ptr as *mut u8,
+                len: p.slot as u32,
+                off: self.layout.offset(l, e),
+                state: &p.state[v],
+            });
         }
         1
     }
@@ -501,7 +594,14 @@ impl Cache {
     ///
     /// # Safety
     /// As [`Cache::prefetch_guarded`].
-    pub unsafe fn speculate(&self, io: &IoQueue, l: usize, e: usize, keep: &[u64; N_EXPERT / 64], stamp: u64) -> u8 {
+    pub unsafe fn speculate(
+        &self,
+        io: &IoQueue,
+        l: usize,
+        e: usize,
+        keep: &[u64; N_EXPERT / 64],
+        stamp: u64,
+    ) -> u8 {
         let r = self.prefetch_guarded(io, l, e, keep);
         if r == 1 {
             let s = self.pools()[l].map[e] as usize;
@@ -524,7 +624,16 @@ impl Cache {
             .map(|p| {
                 let mut v: Vec<(u64, u16)> = (0..p.n)
                     .filter(|&s| p.owner[s] >= 0 && p.state[s].load(Acquire) == READY)
-                    .map(|s| (if p.stamp[s] == u64::MAX { 0 } else { p.stamp[s] }, p.owner[s] as u16))
+                    .map(|s| {
+                        (
+                            if p.stamp[s] == u64::MAX {
+                                0
+                            } else {
+                                p.stamp[s]
+                            },
+                            p.owner[s] as u16,
+                        )
+                    })
                     .collect();
                 v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
                 v.into_iter().map(|x| x.1).collect()
@@ -564,19 +673,43 @@ mod pf_tests {
     use crate::model::ExpertGeom;
 
     fn tiny_cache() -> Cache {
-        let g = ExpertGeom { gate_w: W::Iq2S, down_w: W::Iq4Nl, gate_bytes: 1024, down_bytes: 1024, record: 3072, slot: 4096 };
+        let g = ExpertGeom {
+            gate_w: W::Iq2S,
+            down_w: W::Iq4Nl,
+            gate_bytes: 1024,
+            down_bytes: 1024,
+            record: 3072,
+            slot: 4096,
+        };
         let geom = vec![g; N_LAYER];
         let base: Vec<u64> = (0..N_LAYER).map(|l| (l * 4096 * N_EXPERT) as u64).collect();
-        let layout = Layout { geom, base, total: (N_LAYER * 4096 * N_EXPERT) as u64, r4: true };
+        let layout = Layout {
+            geom,
+            base,
+            total: (N_LAYER * 4096 * N_EXPERT) as u64,
+            r4: true,
+        };
         Cache::new(layout, &[16; N_LAYER], -1, true, false).unwrap()
     }
 
     /// F76b: the read-ahead re-reads a FAILED slot (one read, in place), and leaves PENDING / READY slots alone.
     #[test]
     fn prefetch_guarded_rereads_a_failed_slot() {
-        let g = ExpertGeom { gate_w: W::Iq2S, down_w: W::Iq4Nl, gate_bytes: 1024, down_bytes: 1024, record: 3072, slot: 4096 };
+        let g = ExpertGeom {
+            gate_w: W::Iq2S,
+            down_w: W::Iq4Nl,
+            gate_bytes: 1024,
+            down_bytes: 1024,
+            record: 3072,
+            slot: 4096,
+        };
         let base: Vec<u64> = (0..N_LAYER).map(|l| (l * 4096 * N_EXPERT) as u64).collect();
-        let layout = Layout { geom: vec![g; N_LAYER], base, total: (N_LAYER * 4096 * N_EXPERT) as u64, r4: true };
+        let layout = Layout {
+            geom: vec![g; N_LAYER],
+            base,
+            total: (N_LAYER * 4096 * N_EXPERT) as u64,
+            r4: true,
+        };
         // IO on, but no IO thread: pushed reads stay queued, slot states are set by hand
         let c = Cache::new(layout, &[16; N_LAYER], -1, false, false).unwrap();
         let io = IoQueue::new();
@@ -585,10 +718,18 @@ mod pf_tests {
             assert_eq!(c.prefetch_guarded(&io, 2, 77, &keep), 1, "first read");
             let s = c.pools()[2].map[77] as usize;
             assert_eq!(c.pools()[2].state[s].load(Acquire), PENDING);
-            assert_eq!(c.prefetch_guarded(&io, 2, 77, &keep), 0, "pending: no second read");
+            assert_eq!(
+                c.prefetch_guarded(&io, 2, 77, &keep),
+                0,
+                "pending: no second read"
+            );
             c.pools()[2].state[s].store(FAILED, Release);
             let issued = (*c.stats.get()).prefetch_issued;
-            assert_eq!(c.prefetch_guarded(&io, 2, 77, &keep), 1, "FAILED: read again");
+            assert_eq!(
+                c.prefetch_guarded(&io, 2, 77, &keep),
+                1,
+                "FAILED: read again"
+            );
             assert_eq!(c.pools()[2].map[77] as usize, s, "same slot");
             assert_eq!(c.pools()[2].state[s].load(Acquire), PENDING);
             assert_eq!((*c.stats.get()).prefetch_issued, issued + 1);
@@ -637,38 +778,67 @@ mod pf_tests {
             assert_eq!(c.speculate(&io, l, 201, &k, 0), 0, "already there");
             // speculative reads go out in the PREFETCH class: the slot is marked prefetched (a demand hit promotes it)
             let pf = &(&*c.prefetched.get())[l];
-            assert!(pf[c.pools()[l].map[200] as usize] && pf[c.pools()[l].map[201] as usize], "speculation = prefetch class");
+            assert!(
+                pf[c.pools()[l].map[200] as usize] && pf[c.pools()[l].map[201] as usize],
+                "speculation = prefetch class"
+            );
             // back-pressure query: both reads are in flight; a resident READY expert and an absent one are not
-            assert!(c.pending(l, 200) && c.pending(l, 201) && !c.pending(l, 100) && !c.pending(l, 300));
-            assert_eq!(c.pools()[l].tick, tick, "speculation is not a demand access");
+            assert!(
+                c.pending(l, 200) && c.pending(l, 201) && !c.pending(l, 100) && !c.pending(l, 300)
+            );
+            assert_eq!(
+                c.pools()[l].tick,
+                tick,
+                "speculation is not a demand access"
+            );
             assert_eq!(c.pools()[l].cnt[200], 0);
             let st = *c.stats.get();
             assert_eq!((st.spec_issued, st.evictions, st.demand_misses), (2, 0, 14));
             // 200 is demanded while its read is still pending: a hit, not a miss, no second read
             let (ent, miss) = c.lookup(&io, l, 200, 2, ReqClass::Demand);
             assert!(!miss && !ent.ready());
-            assert_eq!((*c.stats.get()).demand_hits_prefetched, 1, "the demand hit found the prefetch-class read");
+            assert_eq!(
+                (*c.stats.get()).demand_hits_prefetched,
+                1,
+                "the demand hit found the prefetch-class read"
+            );
             ready(&c);
             assert!(!c.pending(l, 200) && !c.pending(l, 201), "landed");
             // a demand miss evicts the coldest slot = the unused speculated 201 (count 0)
             assert!(c.lookup(&io, l, 300, 2, ReqClass::Demand).1);
             assert!(!c.resident(l, 201) && c.resident(l, 200));
             let st = *c.stats.get();
-            assert_eq!((st.spec_hit_pending, st.spec_hit_ready, st.spec_evicted_unused), (1, 0, 1));
+            assert_eq!(
+                (
+                    st.spec_hit_pending,
+                    st.spec_hit_ready,
+                    st.spec_evicted_unused
+                ),
+                (1, 0, 1)
+            );
             ready(&c);
             // a speculated expert hit after its read landed; a later speculation never evicts the kept set
             let k = keep_of(&[400, 401]);
             assert_eq!(c.speculate(&io, l, 400, &k, 3), 1);
             assert_eq!(c.speculate(&io, l, 401, &k, 3), 1);
-            assert!(c.resident(l, 400) && c.resident(l, 401), "the second speculation must not evict the first");
+            assert!(
+                c.resident(l, 400) && c.resident(l, 401),
+                "the second speculation must not evict the first"
+            );
             ready(&c);
             // the call stamped 3 misses on 500 first: the speculated 400 / 401 (count 0, the coldest) are protected
             assert!(c.lookup(&io, l, 500, 3, ReqClass::Demand).1);
-            assert!(c.resident(l, 400) && c.resident(l, 401), "a speculated expert must survive its own call's misses");
+            assert!(
+                c.resident(l, 400) && c.resident(l, 401),
+                "a speculated expert must survive its own call's misses"
+            );
             ready(&c);
             assert!(!c.lookup(&io, l, 400, 3, ReqClass::Demand).1);
             let st = *c.stats.get();
-            assert_eq!((st.spec_issued, st.spec_hit_pending, st.spec_hit_ready), (4, 1, 1));
+            assert_eq!(
+                (st.spec_issued, st.spec_hit_pending, st.spec_hit_ready),
+                (4, 1, 1)
+            );
             // every slot's flag is consistent: only 401 is still speculated-unused
             let sp = &(&*c.spec.get())[l];
             assert_eq!(sp.iter().filter(|&&x| x).count(), 1);

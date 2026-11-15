@@ -106,19 +106,42 @@ fn bad(msg: impl AsRef<str>) -> Reply {
 
 impl<E: Engine> State<E> {
     pub fn new(cfg: Config, tok: Tokenizer, worker: Worker<E>) -> Result<State<E>, String> {
-        let bos = tok.bos.and_then(|t| tok.token_text(t)).unwrap_or("").to_string();
-        let eos = tok.eos.and_then(|t| tok.token_text(t)).unwrap_or("").to_string();
+        let bos = tok
+            .bos
+            .and_then(|t| tok.token_text(t))
+            .unwrap_or("")
+            .to_string();
+        let eos = tok
+            .eos
+            .and_then(|t| tok.token_text(t))
+            .unwrap_or("")
+            .to_string();
         let tmpl = match &tok.chat_template {
-            Some(src) => Some(ChatTemplate::new(src, &bos, &eos).map_err(|e| format!("chat template: {e:#}"))?),
+            Some(src) => Some(
+                ChatTemplate::new(src, &bos, &eos).map_err(|e| format!("chat template: {e:#}"))?,
+            ),
             None => None,
         };
         let n_ctx = worker.engine.n_ctx();
         let state_cache = worker.states.is_some();
         let n_vocab = worker.engine.n_vocab();
-        let user_delim = tok.chat_template.as_deref().filter(|t| t.contains("<|im_start|>")).map(|_| tok.encode("<|im_start|>user", false, true)).filter(|d| d.len() >= 2);
-        let asst_delim = tok.chat_template.as_deref().filter(|t| t.contains("<|im_start|>")).map(|_| tok.encode("<|im_start|>assistant", false, true)).filter(|d| d.len() >= 2);
+        let user_delim = tok
+            .chat_template
+            .as_deref()
+            .filter(|t| t.contains("<|im_start|>"))
+            .map(|_| tok.encode("<|im_start|>user", false, true))
+            .filter(|d| d.len() >= 2);
+        let asst_delim = tok
+            .chat_template
+            .as_deref()
+            .filter(|t| t.contains("<|im_start|>"))
+            .map(|_| tok.encode("<|im_start|>assistant", false, true))
+            .filter(|d| d.len() >= 2);
         let im_end = tok.token_id("<|im_end|>");
-        let speculative = speculative_json(worker.engine.spec_max_depth(), worker.engine.spec_fallback());
+        let speculative = speculative_json(
+            worker.engine.spec_max_depth(),
+            worker.engine.spec_fallback(),
+        );
         Ok(State {
             cfg,
             tok: Arc::new(tok),
@@ -131,12 +154,18 @@ impl<E: Engine> State<E> {
             reqs: Default::default(),
             idle_done: Default::default(),
             stream_stall: std::time::Duration::from_secs_f64(
-                std::env::var("OXE_STREAM_STALL_SECS").ok().and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(30.0),
+                std::env::var("OXE_STREAM_STALL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .unwrap_or(30.0),
             ),
             sse_keepalive: sse_keepalive_from_env(),
             default_max_tokens: default_max_tokens_from_env(n_ctx),
             speculative,
-            echo: Mutex::new(crate::echo::EchoStore::new(crate::echo::EchoConfig::from_env())),
+            echo: Mutex::new(crate::echo::EchoStore::new(
+                crate::echo::EchoConfig::from_env(),
+            )),
             asst_delim,
             im_end,
             state_cache,
@@ -198,13 +227,25 @@ impl<E: Engine> State<E> {
 
     /// The default output limit as published (null = none).
     fn max_output_json(&self) -> Json {
-        if self.default_max_tokens > 0 { json!(self.default_max_tokens) } else { Json::Null }
+        if self.default_max_tokens > 0 {
+            json!(self.default_max_tokens)
+        } else {
+            Json::Null
+        }
     }
 
     /// `GET /v1/models/{id}`: the OpenAI model object of this server's alias, else 404 model_not_found.
     fn model(&self, id: &str) -> Reply {
         if id != self.cfg.model_name {
-            return Reply::Json(404, api::error_json_with(404, &format!("The model '{id}' does not exist"), "model_not_found", Some("model")));
+            return Reply::Json(
+                404,
+                api::error_json_with(
+                    404,
+                    &format!("The model '{id}' does not exist"),
+                    "model_not_found",
+                    Some("model"),
+                ),
+            );
         }
         let mut row = self.models()["data"][0].clone();
         if let Some(o) = row.as_object_mut() {
@@ -248,7 +289,11 @@ impl<E: Engine> State<E> {
                 for x in a {
                     match x {
                         // ids above u32 used to wrap onto valid ids (`as`)
-                        Json::Number(n) => out.push(n.as_u64().and_then(|v| Token::try_from(v).ok()).ok_or("bad token")?),
+                        Json::Number(n) => out.push(
+                            n.as_u64()
+                                .and_then(|v| Token::try_from(v).ok())
+                                .ok_or("bad token")?,
+                        ),
                         Json::String(s) => {
                             out.extend(self.tok.encode(s, add_special && first, true));
                             first = false;
@@ -269,21 +314,46 @@ impl<E: Engine> State<E> {
     fn render(&self, pc: &PreparedChat) -> Rendered {
         let text = &pc.applied.prompt;
         let marks = match (&self.tmpl, &self.asst_delim) {
-            (Some(t), Some(_)) => chat::request::template_marks(t, &pc.inputs, text).ok().flatten(),
+            (Some(t), Some(_)) => chat::request::template_marks(t, &pc.inputs, text)
+                .ok()
+                .flatten(),
             _ => None,
         };
         let Some((starts, ends)) = marks else {
             let tokens = self.tok.encode(text, true, true);
             let (msg_starts, first_user) = match &self.user_delim {
-                Some(d) => (tokens.iter().enumerate().filter(|(_, &t)| t == d[0]).map(|(i, _)| i).collect(), tokens.windows(d.len()).position(|w| w == &d[..])),
+                Some(d) => (
+                    tokens
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, &t)| t == d[0])
+                        .map(|(i, _)| i)
+                        .collect(),
+                    tokens.windows(d.len()).position(|w| w == &d[..]),
+                ),
                 None => (Vec::new(), None),
             };
-            let last_user = self.user_delim.as_ref().and_then(|d| tokens.windows(d.len()).rposition(|w| w == &d[..]));
+            let last_user = self
+                .user_delim
+                .as_ref()
+                .and_then(|d| tokens.windows(d.len()).rposition(|w| w == &d[..]));
             let user_starts = match &self.user_delim {
-                Some(d) => tokens.windows(d.len()).enumerate().filter(|(_, w)| *w == &d[..]).map(|(i, _)| i).collect(),
+                Some(d) => tokens
+                    .windows(d.len())
+                    .enumerate()
+                    .filter(|(_, w)| *w == &d[..])
+                    .map(|(i, _)| i)
+                    .collect(),
                 None => Vec::new(),
             };
-            return Rendered { tokens, asst: None, msg_starts, first_user, last_user, user_starts };
+            return Rendered {
+                tokens,
+                asst: None,
+                msg_starts,
+                first_user,
+                last_user,
+                user_starts,
+            };
         };
         let mut cuts: Vec<usize> = starts.iter().chain(&ends).copied().collect();
         cuts.sort_unstable();
@@ -292,12 +362,27 @@ impl<E: Engine> State<E> {
         let tok_at = |b: usize| cuts.binary_search(&b).ok().and_then(|i| at[i]);
         let is = |b: usize, role: &str| text[b + chat::request::IM_START.len()..].starts_with(role);
         let msg_starts: Vec<usize> = starts.iter().filter_map(|&b| tok_at(b)).collect();
-        let first_user = starts.iter().find(|&&b| is(b, "user")).and_then(|&b| tok_at(b));
-        let last_user = starts.iter().rev().find(|&&b| is(b, "user")).and_then(|&b| tok_at(b));
-        let user_starts: Vec<usize> = starts.iter().filter(|&&b| is(b, "user")).filter_map(|&b| tok_at(b)).collect();
+        let first_user = starts
+            .iter()
+            .find(|&&b| is(b, "user"))
+            .and_then(|&b| tok_at(b));
+        let last_user = starts
+            .iter()
+            .rev()
+            .find(|&&b| is(b, "user"))
+            .and_then(|&b| tok_at(b));
+        let user_starts: Vec<usize> = starts
+            .iter()
+            .filter(|&&b| is(b, "user"))
+            .filter_map(|&b| tok_at(b))
+            .collect();
         let mut asst = Some(Vec::new());
         let n_starts = starts.len();
-        for (k, &b) in starts.iter().enumerate().filter(|(_, &b)| is(b, "assistant")) {
+        for (k, &b) in starts
+            .iter()
+            .enumerate()
+            .filter(|(_, &b)| is(b, "assistant"))
+        {
             let next = starts.get(k + 1).copied().unwrap_or(text.len());
             match ends.iter().find(|&&e| e > b).filter(|&&e| e < next) {
                 Some(&e) => match (tok_at(b), tok_at(e), asst.as_mut()) {
@@ -312,7 +397,14 @@ impl<E: Engine> State<E> {
         if starts.len() != msg_starts.len() {
             asst = None;
         }
-        Rendered { tokens, asst, msg_starts, first_user, last_user, user_starts }
+        Rendered {
+            tokens,
+            asst,
+            msg_starts,
+            first_user,
+            last_user,
+            user_starts,
+        }
     }
 
     /// v0.1.3 pre-think point of a fed chat prompt: thinking on (the generation prompt ends in an
@@ -325,7 +417,8 @@ impl<E: Engine> State<E> {
             return None;
         }
         let t = self.tok.encode(tail, false, true);
-        (!t.is_empty() && t.len() < prompt.len() && prompt.ends_with(&t)).then(|| prompt.len() - t.len())
+        (!t.is_empty() && t.len() < prompt.len() && prompt.ends_with(&t))
+            .then(|| prompt.len() - t.len())
     }
 
     /// v0.2.0 H4: the END OF THE LAST MESSAGE in a fed chat prompt, as a token position: the prompt
@@ -336,18 +429,33 @@ impl<E: Engine> State<E> {
     /// request renders no generation prompt (an H6 prefill, `add_generation_prompt: false`). None
     /// when the prompt does not end with exactly the tokens of that opener (another template shape):
     /// no snapshot is kept and the reply reports `snap_pos: null`.
-    fn snapshot_point(&self, prompt: &[Token], generation_prompt: &str, added: bool) -> Option<usize> {
+    fn snapshot_point(
+        &self,
+        prompt: &[Token],
+        generation_prompt: &str,
+        added: bool,
+    ) -> Option<usize> {
         if !added || generation_prompt.is_empty() {
             return (!prompt.is_empty()).then_some(prompt.len());
         }
         let t = self.tok.encode(generation_prompt, false, true);
-        (!t.is_empty() && t.len() < prompt.len() && prompt.ends_with(&t)).then(|| prompt.len() - t.len())
+        (!t.is_empty() && t.len() < prompt.len() && prompt.ends_with(&t))
+            .then(|| prompt.len() - t.len())
     }
 
     /// ECHO: the prompt to feed for a rendered chat prompt (see `echo.rs`).
-    fn splice(&self, r: &Rendered, inputs: &chat::ChatInputs) -> (Vec<Token>, crate::echo::SpliceReport) {
+    fn splice(
+        &self,
+        r: &Rendered,
+        inputs: &chat::ChatInputs,
+    ) -> (Vec<Token>, crate::echo::SpliceReport) {
         match (&self.asst_delim, self.im_end) {
-            (Some(_), Some(_)) => self.echo.lock().unwrap_or_else(|p| p.into_inner()).splice(&r.tokens, &inputs.messages, &inputs.reasoning_sent, r.asst.as_deref()),
+            (Some(_), Some(_)) => self.echo.lock().unwrap_or_else(|p| p.into_inner()).splice(
+                &r.tokens,
+                &inputs.messages,
+                &inputs.reasoning_sent,
+                r.asst.as_deref(),
+            ),
             _ => (r.tokens.clone(), Default::default()),
         }
     }
@@ -355,18 +463,35 @@ impl<E: Engine> State<E> {
     /// ECHO: keep a finished turn (see `echo.rs`). `delivered`: the client received all of the
     /// turn's text (`r.text`); a streamed turn cut at the length limit may have held back a partial
     /// stop word or an unfinished UTF-8 sequence, and such a turn is not kept (V014-SL-1).
-    fn echo_record(&self, prompt: &[Token], msg: &chat::ChatMsg, r: &GenResult, session: Option<&str>, delivered: bool) {
-        let (Some(a), Some(e)) = (&self.asst_delim, self.im_end) else { return };
+    fn echo_record(
+        &self,
+        prompt: &[Token],
+        msg: &chat::ChatMsg,
+        r: &GenResult,
+        session: Option<&str>,
+        delivered: bool,
+    ) {
+        let (Some(a), Some(e)) = (&self.asst_delim, self.im_end) else {
+            return;
+        };
         use crate::echo::TurnEnd;
         use crate::generate::StopType;
-        let end = if r.stop == StopType::Eos && r.tokens.last().is_some_and(|&t| self.tok.is_eog(t)) {
+        let end = if r.stop == StopType::Eos && r.tokens.last().is_some_and(|&t| self.tok.is_eog(t))
+        {
             TurnEnd::Eog
-        } else if r.stop == StopType::Limit && delivered && !r.tokens.iter().any(|&t| self.tok.is_eog(t)) {
+        } else if r.stop == StopType::Limit
+            && delivered
+            && !r.tokens.iter().any(|&t| self.tok.is_eog(t))
+        {
             TurnEnd::Length
         } else {
             TurnEnd::Other
         };
-        let (_, pending) = self.echo.lock().unwrap_or_else(|p| p.into_inner()).record_deferred(prompt, a, e, msg, &r.tokens, end, session);
+        let (_, pending) = self
+            .echo
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .record_deferred(prompt, a, e, msg, &r.tokens, end, session);
         // audit v0.1.2 N4: the file append and its fsync run after the store's mutex is released,
         // so the next request's splice never waits for the disk
         if let Some(p) = pending {
@@ -376,9 +501,20 @@ impl<E: Engine> State<E> {
 
     /// HISTORY-REWRITE: keep the history turns this request fed as rendered (see `EchoStore::adopt`);
     /// the file appends run after the store's mutex is released, as for `echo_record`.
-    fn echo_adopt(&self, prompt: &[Token], adopt: Option<&(Vec<(usize, usize, usize)>, Json, Vec<Option<String>>)>, session: Option<&str>) {
-        let Some((turns, msgs, sent)) = adopt else { return };
-        let pending = self.echo.lock().unwrap_or_else(|p| p.into_inner()).adopt(prompt, turns, msgs, sent, session);
+    fn echo_adopt(
+        &self,
+        prompt: &[Token],
+        adopt: Option<&(Vec<(usize, usize, usize)>, Json, Vec<Option<String>>)>,
+        session: Option<&str>,
+    ) {
+        let Some((turns, msgs, sent)) = adopt else {
+            return;
+        };
+        let pending = self
+            .echo
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .adopt(prompt, turns, msgs, sent, session);
         for p in pending {
             p.write();
         }
@@ -396,13 +532,26 @@ impl<E: Engine> State<E> {
 }
 
 /// Route a request. Blocking work (generation) is done in `spawn_blocking`.
-pub async fn handle<E: Engine>(st: Arc<State<E>>, method: &str, path: &str, query: &str, body: &[u8]) -> Reply {
+pub async fn handle<E: Engine>(
+    st: Arc<State<E>>,
+    method: &str,
+    path: &str,
+    query: &str,
+    body: &[u8],
+) -> Reply {
     handle_session(st, method, path, query, body, None).await
 }
 
 /// [`handle`] with the conversation's session hint (`X-Oxe-Session`, forwarded by the
 /// controller). A hint only: echo records are found by their token chain, never by this id.
-pub async fn handle_session<E: Engine>(st: Arc<State<E>>, method: &str, path: &str, query: &str, body: &[u8], session: Option<String>) -> Reply {
+pub async fn handle_session<E: Engine>(
+    st: Arc<State<E>>,
+    method: &str,
+    path: &str,
+    query: &str,
+    body: &[u8],
+    session: Option<String>,
+) -> Reply {
     handle_request(st, method, path, query, body, session, None).await
 }
 
@@ -410,12 +559,23 @@ pub async fn handle_session<E: Engine>(st: Arc<State<E>>, method: &str, path: &s
 /// `[A-Za-z0-9_.-]` (others dropped). A free label (`chat`, `compaction`, `branch_summary`,
 /// `prefill`, `subagent`, anything a client uses); it changes nothing else.
 pub fn ledger_label(k: &str) -> String {
-    k.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')).take(32).collect()
+    k.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        .take(32)
+        .collect()
 }
 
 /// [`handle_session`] with the turn label (`X-Oxe-Turn-Kind`, v0.2.0 H5): a free label copied to
 /// the ledger; it places no checkpoint and selects nothing (before v0.2.0 `compaction` placed a cut).
-pub async fn handle_request<E: Engine>(st: Arc<State<E>>, method: &str, path: &str, query: &str, body: &[u8], session: Option<String>, turn_kind: Option<String>) -> Reply {
+pub async fn handle_request<E: Engine>(
+    st: Arc<State<E>>,
+    method: &str,
+    path: &str,
+    query: &str,
+    body: &[u8],
+    session: Option<String>,
+    turn_kind: Option<String>,
+) -> Reply {
     handle_policy(st, method, path, query, body, session, turn_kind, false).await
 }
 
@@ -424,8 +584,28 @@ pub async fn handle_request<E: Engine>(st: Arc<State<E>>, method: &str, path: &s
 /// state (see [`GenParams::ephemeral`]): no echo splice or record, no session hint, no post-reply
 /// state write, no idle re-prefill, no prefix reuse; the local live session is held and restored.
 #[allow(clippy::too_many_arguments)]
-pub async fn handle_policy<E: Engine>(st: Arc<State<E>>, method: &str, path: &str, query: &str, body: &[u8], session: Option<String>, turn_kind: Option<String>, ephemeral: bool) -> Reply {
-    handle_hints(st, method, path, query, body, session, turn_kind, ephemeral, Hints::default()).await
+pub async fn handle_policy<E: Engine>(
+    st: Arc<State<E>>,
+    method: &str,
+    path: &str,
+    query: &str,
+    body: &[u8],
+    session: Option<String>,
+    turn_kind: Option<String>,
+    ephemeral: bool,
+) -> Reply {
+    handle_hints(
+        st,
+        method,
+        path,
+        query,
+        body,
+        session,
+        turn_kind,
+        ephemeral,
+        Hints::default(),
+    )
+    .await
 }
 
 /// v0.2.0 client-neutral request hints read from headers (HARNESS-RS-PLAN sec. 3; engine API doc
@@ -442,7 +622,17 @@ pub struct Hints {
 
 /// [`handle_policy`] with the v0.2.0 hints.
 #[allow(clippy::too_many_arguments)]
-pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str, query: &str, body: &[u8], session: Option<String>, turn_kind: Option<String>, ephemeral: bool, hints: Hints) -> Reply {
+pub async fn handle_hints<E: Engine>(
+    st: Arc<State<E>>,
+    method: &str,
+    path: &str,
+    query: &str,
+    body: &[u8],
+    session: Option<String>,
+    turn_kind: Option<String>,
+    ephemeral: bool,
+    hints: Hints,
+) -> Reply {
     // exact paths like llama-server (REVIEW S4: a trimmed `/v1/chat/completions/` ran as a chat
     // completion while the controller did not treat it as inference)
     let parse = || -> Result<Json, Reply> {
@@ -454,7 +644,12 @@ pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str
     match (method, path) {
         ("GET", "/health") | ("GET", "/v1/health") => Reply::Json(200, json!({"status": "ok"})),
         ("GET", "/v1/models") | ("GET", "/models") => Reply::Json(200, st.models()),
-        ("GET", p) if p.strip_prefix("/v1/models/").is_some_and(|id| !id.is_empty()) => st.model(&percent_decode(&p["/v1/models/".len()..])),
+        ("GET", p)
+            if p.strip_prefix("/v1/models/")
+                .is_some_and(|id| !id.is_empty()) =>
+        {
+            st.model(&percent_decode(&p["/v1/models/".len()..]))
+        }
         // the OpenAI legacy completions (`text_completion`), built on the native completion path; the
         // engine's own /completion(s) keep llama-server's native shape
         ("POST", "/v1/completions") => {
@@ -471,14 +666,23 @@ pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str
         ("GET", "/props") => Reply::Json(200, st.props()),
         ("GET", "/slots") => {
             if !st.cfg.slots {
-                return Reply::Json(501, api::error_json(501, "This server does not support slots endpoint."));
+                return Reply::Json(
+                    501,
+                    api::error_json(501, "This server does not support slots endpoint."),
+                );
             }
             let busy = st.worker.try_lock().is_err();
-            Reply::Json(200, json!([{"id": 0, "n_ctx": st.n_ctx, "speculative": false, "is_processing": busy}]))
+            Reply::Json(
+                200,
+                json!([{"id": 0, "n_ctx": st.n_ctx, "speculative": false, "is_processing": busy}]),
+            )
         }
         ("POST", p) if p.starts_with("/slots") => {
             let _ = query;
-            Reply::Json(501, api::error_json(501, "slot save/restore is not supported by oxe-server yet"))
+            Reply::Json(
+                501,
+                api::error_json(501, "slot save/restore is not supported by oxe-server yet"),
+            )
         }
         ("POST", "/tokenize") => {
             let b = match parse() {
@@ -488,10 +692,19 @@ pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str
             let Some(content) = b.get("content").and_then(Json::as_str) else {
                 return Reply::Json(200, json!({"tokens": []}));
             };
-            let add_special = b.get("add_special").and_then(Json::as_bool).unwrap_or(false);
-            let parse_special = b.get("parse_special").and_then(Json::as_bool).unwrap_or(true);
+            let add_special = b
+                .get("add_special")
+                .and_then(Json::as_bool)
+                .unwrap_or(false);
+            let parse_special = b
+                .get("parse_special")
+                .and_then(Json::as_bool)
+                .unwrap_or(true);
             let toks = st.tok.encode(content, add_special, parse_special);
-            if b.get("with_pieces").and_then(Json::as_bool).unwrap_or(false) {
+            if b.get("with_pieces")
+                .and_then(Json::as_bool)
+                .unwrap_or(false)
+            {
                 let v: Vec<Json> = toks
                     .iter()
                     .map(|&t| {
@@ -513,9 +726,21 @@ pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str
                 Ok(b) => b,
                 Err(r) => return r,
             };
-            let toks: Vec<Token> =
-                b.get("tokens").and_then(Json::as_array).map(|a| a.iter().filter_map(|x| x.as_u64().map(|v| Token::try_from(v).unwrap_or(Token::MAX))).collect()).unwrap_or_default();
-            if let Err(e) = st.check_tokens(&toks).or_else(|e| if toks.is_empty() { Ok(()) } else { Err(e) }) {
+            let toks: Vec<Token> = b
+                .get("tokens")
+                .and_then(Json::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| {
+                            x.as_u64().map(|v| Token::try_from(v).unwrap_or(Token::MAX))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Err(e) =
+                st.check_tokens(&toks)
+                    .or_else(|e| if toks.is_empty() { Ok(()) } else { Err(e) })
+            {
                 return bad(e);
             }
             Reply::Json(200, json!({"content": st.tok.decode(&toks, true)}))
@@ -570,8 +795,16 @@ pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str
                     };
                     match w {
                         None => Err(None),
-                        Some(w) if !w.cache.tokens.is_empty() || w.preloaded.is_some() => Err(Some("live")),
-                        Some(w) if w.states.as_ref().is_none_or(|s| s.budget == 0 || s.newest_plan(None).is_none()) => Err(Some("none")),
+                        Some(w) if !w.cache.tokens.is_empty() || w.preloaded.is_some() => {
+                            Err(Some("live"))
+                        }
+                        Some(w)
+                            if w.states
+                                .as_ref()
+                                .is_none_or(|s| s.budget == 0 || s.newest_plan(None).is_none()) =>
+                        {
+                            Err(Some("none"))
+                        }
                         Some(w) => {
                             // counted and armed while the worker is held: a request that comes after
                             // this finds the flag (and its own counter bump makes the task give up)
@@ -599,13 +832,16 @@ pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str
                 // the old 200 ms bound under CPU load).
                 let r = (|| {
                     let mut w = loop {
-                        if flag.load(Ordering::SeqCst) || st2.reqs.load(Ordering::SeqCst) != req_no {
+                        if flag.load(Ordering::SeqCst) || st2.reqs.load(Ordering::SeqCst) != req_no
+                        {
                             return ("cancelled", 0, 0.0);
                         }
                         match st2.worker.try_lock() {
                             Ok(w) => break w,
                             Err(std::sync::TryLockError::Poisoned(p)) => break p.into_inner(),
-                            Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                            Err(std::sync::TryLockError::WouldBlock) => {
+                                std::thread::sleep(std::time::Duration::from_millis(1))
+                            }
                         }
                     };
                     if flag.load(Ordering::SeqCst) || st2.reqs.load(Ordering::SeqCst) != req_no {
@@ -618,7 +854,8 @@ pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str
                 // published it under the lock: a second preload right after saw a held worker)
                 drop(work);
                 let (status, pos, ms) = r;
-                *st2.preload_status.lock().unwrap() = json!({"status": status, "pos": pos, "ms": ms});
+                *st2.preload_status.lock().unwrap() =
+                    json!({"status": status, "pos": pos, "ms": ms});
             });
             Reply::Json(202, json!({"status": "started"}))
         }
@@ -768,9 +1005,13 @@ pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str
                         return Reply::Json(200, out);
                     }
                     let mut out = json!({"prompt": pc.applied.prompt});
-                    if b.get("return_tokens").and_then(Json::as_bool).unwrap_or(false) {
+                    if b.get("return_tokens")
+                        .and_then(Json::as_bool)
+                        .unwrap_or(false)
+                    {
                         let r = st.render(&pc);
-                        out["generation_prompt"] = Json::String(pc.applied.generation_prompt.clone());
+                        out["generation_prompt"] =
+                            Json::String(pc.applied.generation_prompt.clone());
                         out["msg_starts"] = json!(r.msg_starts);
                         out["assistant_spans"] = json!(r.asst);
                         if b.get("echo").and_then(Json::as_bool).unwrap_or(false) {
@@ -791,7 +1032,14 @@ pub async fn handle_hints<E: Engine>(st: Arc<State<E>>, method: &str, path: &str
                 Err(r) => return r,
             };
             // as chat: an ephemeral (LAN share) request keeps no session and writes no state
-            completion(st, b, if ephemeral { None } else { session }, ephemeral, hints.snapshot_keep && !ephemeral).await
+            completion(
+                st,
+                b,
+                if ephemeral { None } else { session },
+                ephemeral,
+                hints.snapshot_keep && !ephemeral,
+            )
+            .await
         }
         ("POST", "/v1/chat/completions") | ("POST", "/chat/completions") => {
             let b = match parse() {
@@ -828,16 +1076,23 @@ struct PreparedChat {
 
 fn prepare_chat<E: Engine>(st: &State<E>, body: &Json) -> Result<PreparedChat, Reply> {
     let Some(tmpl) = &st.tmpl else {
-        return Err(Reply::Json(500, api::error_json(500, "model has no chat template")));
+        return Err(Reply::Json(
+            500,
+            api::error_json(500, "model has no chat template"),
+        ));
     };
     let inputs = chat::chat_inputs(body, &st.cfg.chat_opts, tmpl).map_err(|e| {
         if e.0.contains("(this model takes text only)") {
-            Reply::Json(400, api::error_json_with(400, &e.0, "unsupported_content_type", Some("messages")))
+            Reply::Json(
+                400,
+                api::error_json_with(400, &e.0, "unsupported_content_type", Some("messages")),
+            )
         } else {
             bad(e.0)
         }
     })?;
-    let applied = chat::apply(tmpl, &inputs).map_err(|e| bad(format!("chat template error: {e:#}")))?;
+    let applied =
+        chat::apply(tmpl, &inputs).map_err(|e| bad(format!("chat template error: {e:#}")))?;
     Ok(PreparedChat { applied, inputs })
 }
 
@@ -868,7 +1123,12 @@ fn gen_error_json(e: GenError) -> Json {
 
 /// Run the generation on a blocking thread. For streams the first event decides between an
 /// HTTP error and a 200 SSE stream, like llama-server (which pre-fetches the first result).
-async fn run_blocking<E: Engine, F>(st: Arc<State<E>>, prompt: Vec<Token>, mut gp: GenParams, mut on_partial: F) -> Result<GenResult, GenError>
+async fn run_blocking<E: Engine, F>(
+    st: Arc<State<E>>,
+    prompt: Vec<Token>,
+    mut gp: GenParams,
+    mut on_partial: F,
+) -> Result<GenResult, GenError>
 where
     F: FnMut(Partial) -> bool + Send + 'static,
 {
@@ -884,7 +1144,10 @@ where
             }
         }
     }
-    let flag = gp.cancel.get_or_insert_with(|| Arc::new(AtomicBool::new(false))).clone();
+    let flag = gp
+        .cancel
+        .get_or_insert_with(|| Arc::new(AtomicBool::new(false)))
+        .clone();
     let mut guard = DropCancel(flag, false);
     // PRELOAD-RACE: a long holder from now until the generation is done with the worker; a preload
     // armed after this request's start (it missed `preempt_idle`) is cancelled here
@@ -898,7 +1161,9 @@ where
         if st.fair.quantum().is_some() {
             // fair time-slicing between generations (fair.rs)
             let r = crate::fair::run_sliced(&st, &prompt, &mut gp, queued, &mut on_partial);
-            if r.as_ref().is_ok_and(|r| r.timings.resume_src != "cold" && r.timings.preload_ms.is_some()) {
+            if r.as_ref()
+                .is_ok_and(|r| r.timings.resume_src != "cold" && r.timings.preload_ms.is_some())
+            {
                 *st.preload_status.lock().unwrap() = json!({"status": "used"});
             }
             return r;
@@ -918,7 +1183,11 @@ where
         r
     })
     .await
-    .unwrap_or_else(|e| Err(GenError::Engine(crate::engine::EngineError(format!("worker panicked: {e}")))));
+    .unwrap_or_else(|e| {
+        Err(GenError::Engine(crate::engine::EngineError(format!(
+            "worker panicked: {e}"
+        ))))
+    });
     guard.1 = true;
     r
 }
@@ -938,18 +1207,31 @@ fn spawn_idle_reprefill<E: Engine>(st: &Arc<State<E>>, b: &Json, reply: Json, re
         return;
     }
     let mut body = b.clone();
-    let Some(msgs) = body.get_mut("messages").and_then(Json::as_array_mut) else { return };
+    let Some(msgs) = body.get_mut("messages").and_then(Json::as_array_mut) else {
+        return;
+    };
     msgs.push(reply);
     msgs.push(json!({"role": "user", "content": ""}));
-    let Ok(pc) = prepare_chat(st, &body) else { return };
+    let Ok(pc) = prepare_chat(st, &body) else {
+        return;
+    };
     let r = st.render(&pc);
     let (toks, rep) = st.splice(&r, &pc.inputs);
-    let Some(cut) = r.last_user.map(|c| rep.map_pos(c)) else { return };
+    let Some(cut) = r.last_user.map(|c| rep.map_pos(c)) else {
+        return;
+    };
     let hist = toks[..cut.min(toks.len())].to_vec();
     let req_no = st.fair.post_reply_req(req_no);
-    let Ok(mut gp) = api::gen_params(&body, true) else { return };
+    let Ok(mut gp) = api::gen_params(&body, true) else {
+        return;
+    };
     gp.first_user = r.first_user.map(|c| rep.map_pos(c)).filter(|&c| c < cut);
-    gp.msg_starts = r.msg_starts.iter().map(|&c| rep.map_pos(c)).filter(|&c| c < cut).collect();
+    gp.msg_starts = r
+        .msg_starts
+        .iter()
+        .map(|&c| rep.map_pos(c))
+        .filter(|&c| c < cut)
+        .collect();
     gp.query_start = false;
     let flag = Arc::new(AtomicBool::new(false));
     gp.cancel = Some(flag.clone());
@@ -964,9 +1246,13 @@ fn spawn_idle_reprefill<E: Engine>(st: &Arc<State<E>>, b: &Json, reply: Json, re
                 drop(w);
             } else {
                 match w.prefill_idle(&hist, &gp) {
-                    Ok(n) if n > 0 => eprintln!("oxe-server: idle re-prefill: {n} tokens of the history form"),
+                    Ok(n) if n > 0 => {
+                        eprintln!("oxe-server: idle re-prefill: {n} tokens of the history form")
+                    }
                     Ok(_) => {}
-                    Err(GenError::Cancelled) => eprintln!("oxe-server: idle re-prefill: preempted by a request"),
+                    Err(GenError::Cancelled) => {
+                        eprintln!("oxe-server: idle re-prefill: preempted by a request")
+                    }
                     Err(e) => eprintln!("oxe-server: idle re-prefill failed: {e:?}"),
                 }
             }
@@ -1005,7 +1291,10 @@ fn spawn_persist<E: Engine>(st: &Arc<State<E>>, session: Option<String>, req_no:
                     // nothing to stage (or more than the stage holds): the on-lock writer, as before
                     let n = w.persist_states(session.as_deref(), Some(&flag));
                     if n > 0 {
-                        eprintln!("oxe-server: state cache: {n} files written in {:.0} ms", t0.elapsed().as_secs_f64() * 1e3);
+                        eprintln!(
+                            "oxe-server: state cache: {n} files written in {:.0} ms",
+                            t0.elapsed().as_secs_f64() * 1e3
+                        );
                     }
                 }
                 s
@@ -1030,7 +1319,11 @@ fn spawn_persist<E: Engine>(st: &Arc<State<E>>, session: Option<String>, req_no:
 /// A client that keeps its socket open but stops reading fills the channel; `blocking_send`
 /// then held the worker (and every later request) for ever. Now, after `stall` without room
 /// for the next frame, the stream is given up: the generation is cancelled like a disconnect.
-pub(crate) fn send_frame(tx: &mpsc::Sender<String>, frame: String, stall: std::time::Duration) -> bool {
+pub(crate) fn send_frame(
+    tx: &mpsc::Sender<String>,
+    frame: String,
+    stall: std::time::Duration,
+) -> bool {
     use tokio::sync::mpsc::error::TrySendError;
     let t0 = std::time::Instant::now();
     let mut frame = frame;
@@ -1053,22 +1346,32 @@ pub(crate) fn send_frame(tx: &mpsc::Sender<String>, frame: String, stall: std::t
 /// The async side of [`send_frame`] (final frames after the worker is free): false when the
 /// client is gone or has taken nothing for `stall`.
 async fn send_final(tx: &mpsc::Sender<String>, frame: String, stall: std::time::Duration) -> bool {
-    matches!(tokio::time::timeout(stall, tx.send(frame)).await, Ok(Ok(())))
+    matches!(
+        tokio::time::timeout(stall, tx.send(frame)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// v0.2.0 EG5: a request hint as `/state-cache/clear {"scope": "hint"}` accepts it: 1-128 characters
 /// of `[A-Za-z0-9._-]` (a client's `parent.s1` style child id fits; nothing else is a hint).
 pub fn valid_hint(h: &str) -> bool {
-    (1..=128).contains(&h.len()) && h.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+    (1..=128).contains(&h.len())
+        && h.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
 }
 
 /// Purge stored session `sid` from every tier (Codex P2/P3 review 1): its manifest and the blocks no
 /// other session names, the live and parked RAM state that is its own, the legacy stores' entries.
 /// Returns (freed bytes, RAM states, legacy entries, its hint hash); the echo records are the
 /// caller's. 400 "unknown session" for an id with no manifest.
-fn purge_session<E: Engine>(w: &mut crate::generate::Worker<E>, sid: &str) -> Result<(u64, usize, usize, Option<String>), (u16, String)> {
+fn purge_session<E: Engine>(
+    w: &mut crate::generate::Worker<E>,
+    sid: &str,
+) -> Result<(u64, usize, usize, Option<String>), (u16, String)> {
     let s = w.states.as_mut().unwrap();
-    let m = s.session_match(sid).ok_or((400, "unknown session".to_string()))?;
+    let m = s
+        .session_match(sid)
+        .ok_or((400, "unknown session".to_string()))?;
     let freed = s.clear("session", Some(sid)).map_err(|e| (400, e))?;
     let owns = |t: &[u32]| m.owns(t);
     let mut ram = 0;
@@ -1081,7 +1384,10 @@ fn purge_session<E: Engine>(w: &mut crate::generate::Worker<E>, sid: &str) -> Re
     }
     ram += w.cache.drop_parked_where(&owns);
     let mut legacy = 0;
-    for ps in [w.store.as_mut(), w.sessions.as_mut()].into_iter().flatten() {
+    for ps in [w.store.as_mut(), w.sessions.as_mut()]
+        .into_iter()
+        .flatten()
+    {
         legacy += ps.remove_where(&owns);
     }
     if let Some((p, se)) = w.legacy_off.as_mut() {
@@ -1097,12 +1403,17 @@ fn purge_session<E: Engine>(w: &mut crate::generate::Worker<E>, sid: &str) -> Re
 /// `<think>` .. `</think>` block the model wrote itself; a think block cut by the limit counts to the
 /// end. 0 for a template without single-token think markers.
 pub fn reasoning_tokens(tok: &Tokenizer, tokens: &[Token], generation_prompt: &str) -> usize {
-    let Some(end) = tok.token_id("</think>") else { return 0 };
-    let opened = generation_prompt.rfind("<think>").is_some_and(|i| !generation_prompt[i..].contains("</think>"));
+    let Some(end) = tok.token_id("</think>") else {
+        return 0;
+    };
+    let opened = generation_prompt
+        .rfind("<think>")
+        .is_some_and(|i| !generation_prompt[i..].contains("</think>"));
     let start = if opened {
         Some(0)
     } else {
-        tok.token_id("<think>").and_then(|b| tokens.iter().position(|&t| t == b))
+        tok.token_id("<think>")
+            .and_then(|b| tokens.iter().position(|&t| t == b))
     };
     let Some(start) = start else { return 0 };
     match tokens[start..].iter().position(|&t| t == end) {
@@ -1117,8 +1428,14 @@ fn attach_logprobs(chunk: &mut Json, pend: &mut Vec<crate::generate::TokenProbs>
     if pend.is_empty() {
         return;
     }
-    if let Some(c) = chunk.pointer_mut("/choices/0").and_then(Json::as_object_mut) {
-        c.insert("logprobs".into(), json!({"content": api::probs_json(pend, false)}));
+    if let Some(c) = chunk
+        .pointer_mut("/choices/0")
+        .and_then(Json::as_object_mut)
+    {
+        c.insert(
+            "logprobs".into(),
+            json!({"content": api::probs_json(pend, false)}),
+        );
         pend.clear();
     }
 }
@@ -1145,20 +1462,30 @@ fn percent_decode(s: &str) -> String {
 
 /// `/props.speculative` from the engine's load-time decision.
 pub fn speculative_json(max_depth: usize, fallback: Option<String>) -> Json {
-    let lookup = std::env::var("OXE_LOOKUP_LANES").ok().and_then(|v| v.parse::<usize>().ok()).is_some_and(|l| l > 1);
+    let lookup = std::env::var("OXE_LOOKUP_LANES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .is_some_and(|l| l > 1);
     let (active, depth) = match max_depth {
         d @ 1..=8 => ("draft-mtp", d),
         _ if lookup => ("lookup", 0),
         _ => ("none", 0),
     };
-    let requested = if fallback.is_some() { "draft-mtp" } else { active };
+    let requested = if fallback.is_some() {
+        "draft-mtp"
+    } else {
+        active
+    };
     json!({"active": active, "depth": depth, "requested": requested, "fallback": fallback})
 }
 
 /// The default output limit (see [`State::default_max_tokens`]): `OXE_DEFAULT_MAX_TOKENS` (0 = none),
 /// else min(16384, n_ctx / 4) (at least 1). -1 = no default.
 pub fn default_max_tokens_from_env(n_ctx: usize) -> i64 {
-    default_max_tokens_for(std::env::var("OXE_DEFAULT_MAX_TOKENS").ok().as_deref(), n_ctx)
+    default_max_tokens_for(
+        std::env::var("OXE_DEFAULT_MAX_TOKENS").ok().as_deref(),
+        n_ctx,
+    )
 }
 
 /// [`default_max_tokens_from_env`] for a given setting.
@@ -1175,7 +1502,11 @@ pub const SSE_KEEPALIVE_SECS: f64 = 15.0;
 
 /// `OXE_SSE_KEEPALIVE_SECS` (0 = off; unset or unparsable: [`SSE_KEEPALIVE_SECS`]).
 pub fn sse_keepalive_from_env() -> std::time::Duration {
-    let s = std::env::var("OXE_SSE_KEEPALIVE_SECS").ok().and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(SSE_KEEPALIVE_SECS);
+    let s = std::env::var("OXE_SSE_KEEPALIVE_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(SSE_KEEPALIVE_SECS);
     std::time::Duration::from_secs_f64(s)
 }
 
@@ -1185,7 +1516,10 @@ pub fn sse_keepalive_from_env() -> std::time::Duration {
 /// since the request arrived, rounded down; `pos` only where a component keeps an ordered queue: the
 /// engine's worker is a lock, not a queue, so it sends no `pos`). See SERVER.md "Long prefills".
 pub fn keepalive_comment(pr: &Progress, elapsed: std::time::Duration) -> String {
-    let (done, total) = (pr.done.load(Ordering::Relaxed), pr.total.load(Ordering::Relaxed));
+    let (done, total) = (
+        pr.done.load(Ordering::Relaxed),
+        pr.total.load(Ordering::Relaxed),
+    );
     // fair slicing: a suspended generation waits for its turn again
     if total == 0 || pr.suspended.load(Ordering::Relaxed) {
         format!(": queued wait_s={}\n\n", elapsed.as_secs())
@@ -1226,7 +1560,9 @@ fn spawn_keepalive(tx: &mpsc::Sender<String>, pr: Arc<Progress>, every: std::tim
                 }
                 continue;
             }
-            if let Err(mpsc::error::TrySendError::Closed(_)) = tx.try_send(keepalive_comment(&pr, t0.elapsed())) {
+            if let Err(mpsc::error::TrySendError::Closed(_)) =
+                tx.try_send(keepalive_comment(&pr, t0.elapsed()))
+            {
                 return;
             }
         }
@@ -1271,7 +1607,13 @@ fn unsupported_constraint(b: &Json) -> Option<String> {
     None
 }
 
-async fn completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<String>, ephemeral: bool, snapshot_keep: bool) -> Reply {
+async fn completion<E: Engine>(
+    st: Arc<State<E>>,
+    b: Json,
+    session: Option<String>,
+    ephemeral: bool,
+    snapshot_keep: bool,
+) -> Reply {
     let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
@@ -1286,7 +1628,10 @@ async fn completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<Strin
     gp.ephemeral = ephemeral;
     gp.session = session.clone();
     gp.req_no = Some(req_no);
-    let prompt_json = b.get("prompt").cloned().unwrap_or(Json::String(String::new()));
+    let prompt_json = b
+        .get("prompt")
+        .cloned()
+        .unwrap_or(Json::String(String::new()));
     let t_tok = std::time::Instant::now();
     let prompt = match st.tokenize_prompt(&prompt_json, true) {
         Ok(p) => p,
@@ -1307,8 +1652,14 @@ async fn completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<Strin
         _ => st.tok.decode(&prompt, true),
     };
     let stream = b.get("stream").and_then(Json::as_bool).unwrap_or(false);
-    let post = b.get("post_sampling_probs").and_then(Json::as_bool).unwrap_or(false);
-    let return_tokens = b.get("return_tokens").and_then(Json::as_bool).unwrap_or(false);
+    let post = b
+        .get("post_sampling_probs")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
+    let return_tokens = b
+        .get("return_tokens")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
     let model = st.cfg.model_name.clone();
     if !stream {
         return match run_blocking(st.clone(), prompt, gp.clone(), |_| true).await {
@@ -1317,7 +1668,18 @@ async fn completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<Strin
                 if !ephemeral {
                     spawn_persist(&st, session.clone(), req_no);
                 }
-                Reply::Json(200, api::completion_final(&model, &prompt_text, &r, false, &gp, return_tokens, post))
+                Reply::Json(
+                    200,
+                    api::completion_final(
+                        &model,
+                        &prompt_text,
+                        &r,
+                        false,
+                        &gp,
+                        return_tokens,
+                        post,
+                    ),
+                )
             }
             Err(e) => gen_error_reply(e),
         };
@@ -1348,7 +1710,8 @@ async fn completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<Strin
                 if !ephemeral {
                     spawn_persist(&st3, session3, req_no);
                 }
-                let mut fin = api::completion_final(&model, &prompt_text, &r, true, &gp, return_tokens, post);
+                let mut fin =
+                    api::completion_final(&model, &prompt_text, &r, true, &gp, return_tokens, post);
                 // rows of the tokens after the last partial (a held-back UTF-8 tail, a stop word)
                 let n = sent.load(Ordering::Relaxed).min(r.probs.len());
                 if n < r.probs.len() {
@@ -1368,17 +1731,23 @@ async fn completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<Strin
 /// an array of one token-id array. Several prompts are refused (`unsupported_value`), a malformed
 /// one is `invalid_value`; both name `prompt`.
 fn legacy_prompt(b: &Json) -> Result<Json, Reply> {
-    let refuse = |code: &str, m: &str| Reply::Json(400, api::error_json_with(400, m, code, Some("prompt")));
+    let refuse =
+        |code: &str, m: &str| Reply::Json(400, api::error_json_with(400, m, code, Some("prompt")));
     const SEVERAL: &str = "One prompt per request: send a string, or an array with one prompt.";
     match b.get("prompt") {
         Some(p @ Json::String(_)) => Ok(p.clone()),
         Some(Json::Array(a)) if a.is_empty() => Err(refuse("invalid_value", "\"prompt\" is empty")),
         Some(p @ Json::Array(a)) if a.iter().all(Json::is_number) => Ok(p.clone()),
-        Some(Json::Array(a)) if a.iter().all(Json::is_string) || a.iter().all(Json::is_array) => match a.len() {
-            1 => Ok(a[0].clone()),
-            _ => Err(refuse("unsupported_value", SEVERAL)),
-        },
-        _ => Err(refuse("invalid_value", "\"prompt\" must be a string, an array of one string, or an array of token ids")),
+        Some(Json::Array(a)) if a.iter().all(Json::is_string) || a.iter().all(Json::is_array) => {
+            match a.len() {
+                1 => Ok(a[0].clone()),
+                _ => Err(refuse("unsupported_value", SEVERAL)),
+            }
+        }
+        _ => Err(refuse(
+            "invalid_value",
+            "\"prompt\" must be a string, an array of one string, or an array of token ids",
+        )),
     }
 }
 
@@ -1395,7 +1764,13 @@ struct LegacyTally {
 /// (tokenisation, default output limit, session and hint handling, state write after the reply,
 /// cancel on close, keepalive); only the body and the reply differ. One prompt; `suffix` (insert
 /// mode) is refused; `logprobs` is 0..=5; `echo` prefixes the prompt text to the reply.
-async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<String>, ephemeral: bool, snapshot_keep: bool) -> Reply {
+async fn v1_completion<E: Engine>(
+    st: Arc<State<E>>,
+    b: Json,
+    session: Option<String>,
+    ephemeral: bool,
+    snapshot_keep: bool,
+) -> Reply {
     if let Err(j) = api::check_n(&b) {
         return Reply::Json(400, j);
     }
@@ -1410,7 +1785,17 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
     match b.get("suffix") {
         None | Some(Json::Null) => {}
         Some(Json::String(s)) if s.is_empty() => {}
-        Some(_) => return Reply::Json(400, api::error_json_with(400, "\"suffix\" (insert mode) is not supported by this model server.", "unsupported_value", Some("suffix"))),
+        Some(_) => {
+            return Reply::Json(
+                400,
+                api::error_json_with(
+                    400,
+                    "\"suffix\" (insert mode) is not supported by this model server.",
+                    "unsupported_value",
+                    Some("suffix"),
+                ),
+            )
+        }
     }
     // absent / null: no logprobs object. An explicit 0 is valid: the chosen token's logprob with an
     // empty top list (the sampler then reports one candidate, which the reply leaves out)
@@ -1418,7 +1803,17 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
         None | Some(Json::Null) => None,
         Some(v) => match v.as_u64() {
             Some(n) if n <= 5 => Some(n as usize),
-            _ => return Reply::Json(400, api::error_json_with(400, "\"logprobs\" must be an integer from 0 to 5", "invalid_value", Some("logprobs"))),
+            _ => {
+                return Reply::Json(
+                    400,
+                    api::error_json_with(
+                        400,
+                        "\"logprobs\" must be an integer from 0 to 5",
+                        "invalid_value",
+                        Some("logprobs"),
+                    ),
+                )
+            }
         },
     };
     let echo = match b.get("echo") {
@@ -1427,7 +1822,17 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
             Json::String(s) => Some(s.clone()),
             _ => Some(String::new()),
         },
-        Some(_) => return Reply::Json(400, api::error_json_with(400, "\"echo\" must be a boolean", "invalid_value", Some("echo"))),
+        Some(_) => {
+            return Reply::Json(
+                400,
+                api::error_json_with(
+                    400,
+                    "\"echo\" must be a boolean",
+                    "invalid_value",
+                    Some("echo"),
+                ),
+            )
+        }
     };
     // the native parameters, with the legacy `logprobs` count as `n_probs`
     let mut gb = b.clone();
@@ -1448,11 +1853,19 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
     let t_tok = std::time::Instant::now();
     let prompt = match st.tokenize_prompt(&prompt_json, true) {
         Ok(p) => p,
-        Err(e) => return Reply::Json(400, api::error_json_with(400, &e, "invalid_value", Some("prompt"))),
+        Err(e) => {
+            return Reply::Json(
+                400,
+                api::error_json_with(400, &e, "invalid_value", Some("prompt")),
+            )
+        }
     };
     gp.tokenize_ms = crate::generate::ms_since(t_tok);
     if let Err(e) = st.check_tokens(&prompt) {
-        return Reply::Json(400, api::error_json_with(400, &e, "invalid_value", Some("prompt")));
+        return Reply::Json(
+            400,
+            api::error_json_with(400, &e, "invalid_value", Some("prompt")),
+        );
     }
     if prompt.len() >= st.n_ctx {
         return Reply::Json(400, api::exceed_context_json(prompt.len(), st.n_ctx));
@@ -1460,7 +1873,10 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
     gp.snap_keep = snapshot_keep;
     gp.snap_at = snapshot_keep.then_some(prompt.len());
     let stream = b.get("stream").and_then(Json::as_bool).unwrap_or(false);
-    let include_usage = b.pointer("/stream_options/include_usage").and_then(Json::as_bool).unwrap_or(false);
+    let include_usage = b
+        .pointer("/stream_options/include_usage")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
     let meta = Arc::new(ChatMeta {
         id: format!("cmpl-{}", &api::random_hex()[..24]),
         model: st.cfg.model_name.clone(),
@@ -1478,7 +1894,9 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
             spawn_persist(&st, session.clone(), req_no);
         }
         let mut offset = echo_chars;
-        let logprobs = top_n.filter(|_| !r.probs.is_empty()).map(|n| api::legacy_logprobs(&r.probs, n, &mut offset));
+        let logprobs = top_n
+            .filter(|_| !r.probs.is_empty())
+            .map(|n| api::legacy_logprobs(&r.probs, n, &mut offset));
         let text = format!("{}{}", echo.unwrap_or_default(), r.text);
         return Reply::Json(200, api::text_completion(&meta, &text, &r, logprobs));
     }
@@ -1487,7 +1905,12 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
     let pr = Arc::new(Progress::default());
     gp.progress = Some(pr.clone());
     spawn_keepalive(&tx, pr.clone(), st.sse_keepalive);
-    let tally = Arc::new(Mutex::new(LegacyTally { echo, offset: echo_chars, rows: 0, sent: 0 }));
+    let tally = Arc::new(Mutex::new(LegacyTally {
+        echo,
+        offset: echo_chars,
+        rows: 0,
+        sent: 0,
+    }));
     let tally2 = tally.clone();
     let meta2 = meta.clone();
     let tx2 = tx.clone();
@@ -1505,10 +1928,16 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
             if let Some(e) = t.echo.take() {
                 text = format!("{e}{text}");
             }
-            let logprobs = top_n.filter(|_| !p.probs.is_empty()).map(|n| api::legacy_logprobs(&p.probs, n, &mut t.offset));
+            let logprobs = top_n
+                .filter(|_| !p.probs.is_empty())
+                .map(|n| api::legacy_logprobs(&p.probs, n, &mut t.offset));
             t.rows += p.probs.len();
             drop(t);
-            send_frame(&tx2, api::sse(&api::text_chunk(&meta2, &text, None, logprobs)), stall)
+            send_frame(
+                &tx2,
+                api::sse(&api::text_chunk(&meta2, &text, None, logprobs)),
+                stall,
+            )
         })
         .await;
         let r = match res {
@@ -1529,8 +1958,15 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
             let head = t.echo.take().unwrap_or_default();
             let tail_text = r.text.get(t.sent..).unwrap_or("");
             let n = t.rows.min(r.probs.len());
-            let logprobs = top_n.filter(|_| n < r.probs.len()).map(|k| api::legacy_logprobs(&r.probs[n..], k, &mut t.offset));
-            let fin = api::text_chunk(&meta, &format!("{head}{tail_text}"), Some(api::finish_reason(r.stop, false)), logprobs);
+            let logprobs = top_n
+                .filter(|_| n < r.probs.len())
+                .map(|k| api::legacy_logprobs(&r.probs[n..], k, &mut t.offset));
+            let fin = api::text_chunk(
+                &meta,
+                &format!("{head}{tail_text}"),
+                Some(api::finish_reason(r.stop, false)),
+                logprobs,
+            );
             let mut frames = vec![fin];
             if include_usage {
                 frames.push(api::text_usage_chunk(&meta, &r));
@@ -1550,7 +1986,14 @@ async fn v1_completion<E: Engine>(st: Arc<State<E>>, b: Json, session: Option<St
     Reply::Stream(rx)
 }
 
-async fn chat_completion<E: Engine>(st: Arc<State<E>>, mut b: Json, session: Option<String>, turn_kind: Option<String>, ephemeral: bool, snapshot_keep: bool) -> Reply {
+async fn chat_completion<E: Engine>(
+    st: Arc<State<E>>,
+    mut b: Json,
+    session: Option<String>,
+    turn_kind: Option<String>,
+    ephemeral: bool,
+    snapshot_keep: bool,
+) -> Reply {
     if let Err(j) = api::check_n(&b) {
         return Reply::Json(400, j);
     }
@@ -1572,7 +2015,8 @@ async fn chat_completion<E: Engine>(st: Arc<State<E>>, mut b: Json, session: Opt
     let prefill_only = gp.n_predict == 0;
     if prefill_only {
         if let Some(o) = b.as_object_mut() {
-            o.entry("add_generation_prompt").or_insert(Json::Bool(false));
+            o.entry("add_generation_prompt")
+                .or_insert(Json::Bool(false));
         }
     }
     let t_render = std::time::Instant::now();
@@ -1586,12 +2030,22 @@ async fn chat_completion<E: Engine>(st: Arc<State<E>>, mut b: Json, session: Opt
     let rendered = st.render(&pc);
     // ECHO: earlier assistant turns as their exact generated ids (cache keeps every token); an
     // ephemeral request never looks at this machine's echo records (its prompt is the plain render)
-    let (prompt, echo) = if ephemeral { (rendered.tokens.clone(), Default::default()) } else { st.splice(&rendered, &pc.inputs) };
+    let (prompt, echo) = if ephemeral {
+        (rendered.tokens.clone(), Default::default())
+    } else {
+        st.splice(&rendered, &pc.inputs)
+    };
     gp.tokenize_ms = crate::generate::ms_since(t_tok);
     gp.ephemeral = ephemeral;
     let echo_json = (echo.blocks > 0).then(|| echo.to_json());
     // HISTORY-REWRITE: the history turns fed as rendered, kept after the request (EchoStore::adopt)
-    let adopt = (!echo.unspliced.is_empty()).then(|| (echo.unspliced.clone(), pc.inputs.messages.clone(), pc.inputs.reasoning_sent.clone()));
+    let adopt = (!echo.unspliced.is_empty()).then(|| {
+        (
+            echo.unspliced.clone(),
+            pc.inputs.messages.clone(),
+            pc.inputs.reasoning_sent.clone(),
+        )
+    });
     gp.echo = echo_json.clone();
     if let Err(e) = st.check_tokens(&prompt) {
         return bad(e);
@@ -1600,19 +2054,39 @@ async fn chat_completion<E: Engine>(st: Arc<State<E>>, mut b: Json, session: Opt
         return Reply::Json(400, api::exceed_context_json(prompt.len(), st.n_ctx));
     }
     gp.first_user = rendered.first_user.map(|c| echo.map_pos(c));
-    gp.msg_starts = rendered.msg_starts.iter().map(|&c| echo.map_pos(c)).collect();
-    gp.user_starts = rendered.user_starts.iter().map(|&c| echo.map_pos(c)).collect();
+    gp.msg_starts = rendered
+        .msg_starts
+        .iter()
+        .map(|&c| echo.map_pos(c))
+        .collect();
+    gp.user_starts = rendered
+        .user_starts
+        .iter()
+        .map(|&c| echo.map_pos(c))
+        .collect();
     gp.pre_think = st.pre_think(&prompt, &pc.applied.generation_prompt);
     // v0.2.0 H5: a free label for the ledger only (any value; kept to a safe charset there)
-    gp.turn_kind = turn_kind.map(|k| ledger_label(&k)).filter(|k| !k.is_empty());
+    gp.turn_kind = turn_kind
+        .map(|k| ledger_label(&k))
+        .filter(|k| !k.is_empty());
     drop(rendered);
-    gp.query_start = b.get("messages").and_then(Json::as_array).and_then(|m| m.last()).and_then(|m| m.get("role")).and_then(Json::as_str) == Some("user");
+    gp.query_start = b
+        .get("messages")
+        .and_then(Json::as_array)
+        .and_then(|m| m.last())
+        .and_then(|m| m.get("role"))
+        .and_then(Json::as_str)
+        == Some("user");
     gp.session = session.clone();
     gp.req_no = Some(req_no);
     // H4: the exact end of the last message (`snapshot_point`); none for an ephemeral request
     gp.snap_keep = snapshot_keep && !ephemeral;
     if gp.snap_keep {
-        gp.snap_at = st.snapshot_point(&prompt, &pc.applied.generation_prompt, pc.inputs.add_generation_prompt);
+        gp.snap_at = st.snapshot_point(
+            &prompt,
+            &pc.applied.generation_prompt,
+            pc.inputs.add_generation_prompt,
+        );
     }
     let tmpl = st.tmpl.as_ref().unwrap();
     let pcfg = ParserConfig {
@@ -1633,7 +2107,10 @@ async fn chat_completion<E: Engine>(st: Arc<State<E>>, mut b: Json, session: Opt
         fingerprint: st.cfg.fingerprint.clone(),
     });
     let stream = b.get("stream").and_then(Json::as_bool).unwrap_or(false);
-    let include_usage = b.pointer("/stream_options/include_usage").and_then(Json::as_bool).unwrap_or(false);
+    let include_usage = b
+        .pointer("/stream_options/include_usage")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
     let want_probs = gp.n_probs > 0;
     let gen_prompt = pc.applied.generation_prompt.clone();
     let prompt_kept = prompt.clone();
@@ -1658,7 +2135,10 @@ async fn chat_completion<E: Engine>(st: Arc<State<E>>, mut b: Json, session: Opt
             }
             spawn_persist(&st, session.clone(), req_no);
         }
-        if !ephemeral && !prefill_only && api::finish_reason(r.stop, !sess.msg().tool_calls.is_empty()) == "stop" {
+        if !ephemeral
+            && !prefill_only
+            && api::finish_reason(r.stop, !sess.msg().tool_calls.is_empty()) == "stop"
+        {
             spawn_idle_reprefill(&st, &b, sess.msg().to_json(), req_no);
         }
         let mut resp = api::chat_response(&meta, sess.msg(), &r, want_probs, false);
@@ -1698,7 +2178,11 @@ async fn chat_completion<E: Engine>(st: Arc<State<E>>, mut b: Json, session: Opt
             fed2.fetch_add(p.text.len(), Ordering::Relaxed);
             let mut frames = Vec::new();
             if p.n_decoded == 1 {
-                frames.push(api::chat_chunk(&m2, json!({"role": "assistant", "content": null}), None));
+                frames.push(api::chat_chunk(
+                    &m2,
+                    json!({"role": "assistant", "content": null}),
+                    None,
+                ));
             }
             rows_seen2.fetch_add(p.probs.len(), Ordering::Relaxed);
             pend2.lock().unwrap().extend(p.probs);
@@ -1750,7 +2234,11 @@ async fn chat_completion<E: Engine>(st: Arc<State<E>>, mut b: Json, session: Opt
         let mut frames = Vec::new();
         if r.n_decoded == 0 {
             // H6: no token, so no partial sent the role chunk; the stream still opens with it
-            frames.push(api::chat_chunk(&meta, json!({"role": "assistant", "content": null}), None));
+            frames.push(api::chat_chunk(
+                &meta,
+                json!({"role": "assistant", "content": null}),
+                None,
+            ));
         }
         match diffs {
             Ok(ds) => {
@@ -1765,7 +2253,11 @@ async fn chat_completion<E: Engine>(st: Arc<State<E>>, mut b: Json, session: Opt
                 return;
             }
         }
-        let mut fin = api::chat_chunk(&meta, json!({}), Some(api::finish_reason(r.stop, has_calls)));
+        let mut fin = api::chat_chunk(
+            &meta,
+            json!({}),
+            Some(api::finish_reason(r.stop, has_calls)),
+        );
         attach_logprobs(&mut fin, &mut pend.lock().unwrap());
         frames.push(fin);
         if !ephemeral {

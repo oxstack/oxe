@@ -28,7 +28,10 @@ const PV_CHUNK: usize = 256;
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) as u32
     }
     fn f(&mut self) -> f32 {
@@ -94,8 +97,15 @@ fn timed(nt: usize, reps: usize, f: &(dyn Fn(usize) + Sync)) -> f64 {
 #[test]
 #[ignore]
 fn kv_kbench_f16_vs_q8() {
-    let reps: usize = std::env::var("OXE_KBENCH_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
-    let threads: Vec<usize> = std::env::var("OXE_KBENCH_THREADS").unwrap_or("1,8".into()).split(',').map(|x| x.trim().parse().unwrap()).collect();
+    let reps: usize = std::env::var("OXE_KBENCH_REPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    let threads: Vec<usize> = std::env::var("OXE_KBENCH_THREADS")
+        .unwrap_or("1,8".into())
+        .split(',')
+        .map(|x| x.trim().parse().unwrap())
+        .collect();
     let mut r = Lcg(0x5eed);
     println!("kv-kbench: head_dim {HD}, {NKV} KV heads x {NCOL} columns (one layer, one lane), reps {reps}");
     println!(
@@ -105,7 +115,11 @@ fn kv_kbench_f16_vs_q8() {
     for n_ctx in [16384usize, 32768] {
         let vs = n_ctx + VPAD;
         // f16 K [kvh][n_ctx][HD], V^T [kvh][HD][vs]; int8 K / V [kvh][n_ctx] rows of RB bytes
-        let kf: Vec<u16> = f16s(&(0..NKV * n_ctx * HD).map(|_| r.f() * 0.5).collect::<Vec<_>>());
+        let kf: Vec<u16> = f16s(
+            &(0..NKV * n_ctx * HD)
+                .map(|_| r.f() * 0.5)
+                .collect::<Vec<_>>(),
+        );
         let vf: Vec<u16> = f16s(&(0..NKV * HD * vs).map(|_| r.f() * 0.5).collect::<Vec<_>>());
         let k8 = q8_rows(NKV * n_ctx, &mut r);
         let v8 = q8_rows(NKV * n_ctx, &mut r);
@@ -122,16 +136,30 @@ fn kv_kbench_f16_vs_q8() {
             for kvh in 0..NKV {
                 for c in 0..NCOL {
                     for p in 0..pos {
-                        pv[(kvh * NCOL + c) * n_ctx + p] = (r.next() % 1000) as f32 / (1000.0 * pos as f32);
+                        pv[(kvh * NCOL + c) * n_ctx + p] =
+                            (r.next() % 1000) as f32 / (1000.0 * pos as f32);
                     }
                 }
             }
             let p16 = f16s(&pv);
             for &nt in &threads {
                 // per-thread scratch / outputs (score columns at stride n_ctx, as the engine's acs)
-                let scores: Vec<std::sync::Mutex<Vec<f32>>> = (0..nt).map(|_| std::sync::Mutex::new(vec![0f32; NKV * NCOL * n_ctx])).collect();
-                let outs: Vec<std::sync::Mutex<Vec<f32>>> = (0..nt).map(|_| std::sync::Mutex::new(vec![0f32; 32 * NCOL + NCOL * HD + 8192])).collect();
-                let (kf, vf, k8, v8, qf, q8, p16, nfull) = (P(kf.as_ptr() as _), P(vf.as_ptr() as _), P(k8.as_ptr()), P(v8.as_ptr()), P(qf.as_ptr() as _), P(q8.as_ptr()), P(p16.as_ptr() as _), P(nfull.as_ptr() as _));
+                let scores: Vec<std::sync::Mutex<Vec<f32>>> = (0..nt)
+                    .map(|_| std::sync::Mutex::new(vec![0f32; NKV * NCOL * n_ctx]))
+                    .collect();
+                let outs: Vec<std::sync::Mutex<Vec<f32>>> = (0..nt)
+                    .map(|_| std::sync::Mutex::new(vec![0f32; 32 * NCOL + NCOL * HD + 8192]))
+                    .collect();
+                let (kf, vf, k8, v8, qf, q8, p16, nfull) = (
+                    P(kf.as_ptr() as _),
+                    P(vf.as_ptr() as _),
+                    P(k8.as_ptr()),
+                    P(v8.as_ptr()),
+                    P(qf.as_ptr() as _),
+                    P(q8.as_ptr()),
+                    P(p16.as_ptr() as _),
+                    P(nfull.as_ptr() as _),
+                );
                 let rows = pos * NKV;
                 // f16 scores: rows (kvh, p) split over threads, 64-position tiles
                 let f16_sc = |t: usize| {
@@ -232,12 +260,56 @@ fn kv_kbench_f16_vs_q8() {
                         let (p0, p1) = (ch * PV_CHUNK, ((ch + 1) * PV_CHUNK).min(n32));
                         // SAFETY: V rows [p0, p1) of head kvh; probabilities column-strided n_ctx.
                         unsafe {
-                            let (v, pr) = (v8.p().add(kvh * n_ctx * RB), (p16.p() as *const u16).add(kvh * NCOL * n_ctx));
-                            let (hd, rb, a, b, ps, nc) = (HD as i32, RB as i64, p0 as i32, p1 as i32, n_ctx as i64, NCOL as i32);
+                            let (v, pr) = (
+                                v8.p().add(kvh * n_ctx * RB),
+                                (p16.p() as *const u16).add(kvh * NCOL * n_ctx),
+                            );
+                            let (hd, rb, a, b, ps, nc) = (
+                                HD as i32,
+                                RB as i64,
+                                p0 as i32,
+                                p1 as i32,
+                                n_ctx as i64,
+                                NCOL as i32,
+                            );
                             match kern {
-                                0 => ffi::oxe_pv_q8_fast(hd, v, rb, a, b, pr, ps, nc, o1.as_mut_ptr(), scr.as_mut_ptr()),
-                                1 => ffi::oxe_pv_q8(hd, v, rb, a, b, pr, ps, nc, o1.as_mut_ptr(), scr.as_mut_ptr()),
-                                _ => ffi::oxe_pv_q8_int(hd, v, rb, a, b, pr, ps, nc, o1.as_mut_ptr(), scr.as_mut_ptr() as *mut core::ffi::c_void, if kern == 2 { 16 } else { 8 }),
+                                0 => ffi::oxe_pv_q8_fast(
+                                    hd,
+                                    v,
+                                    rb,
+                                    a,
+                                    b,
+                                    pr,
+                                    ps,
+                                    nc,
+                                    o1.as_mut_ptr(),
+                                    scr.as_mut_ptr(),
+                                ),
+                                1 => ffi::oxe_pv_q8(
+                                    hd,
+                                    v,
+                                    rb,
+                                    a,
+                                    b,
+                                    pr,
+                                    ps,
+                                    nc,
+                                    o1.as_mut_ptr(),
+                                    scr.as_mut_ptr(),
+                                ),
+                                _ => ffi::oxe_pv_q8_int(
+                                    hd,
+                                    v,
+                                    rb,
+                                    a,
+                                    b,
+                                    pr,
+                                    ps,
+                                    nc,
+                                    o1.as_mut_ptr(),
+                                    scr.as_mut_ptr() as *mut core::ffi::c_void,
+                                    if kern == 2 { 16 } else { 8 },
+                                ),
                             }
                         }
                     }

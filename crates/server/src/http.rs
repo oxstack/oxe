@@ -12,8 +12,8 @@ use crate::engine::Engine;
 use crate::service::{handle_hints, Reply, State};
 use bytes::Bytes;
 use hyper::body::{Body, Frame, Incoming};
-use hyper::service::service_fn;
 use hyper::header::HeaderMap;
+use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use std::convert::Infallible;
@@ -32,10 +32,15 @@ pub enum RBody {
 impl Body for RBody {
     type Data = Bytes;
     type Error = Infallible;
-    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
         match self.get_mut() {
             RBody::Full(b) => Poll::Ready(b.take().map(|b| Ok(Frame::data(b)))),
-            RBody::Chan(rx) => rx.poll_recv(cx).map(|o| o.map(|s| Ok(Frame::data(Bytes::from(s))))),
+            RBody::Chan(rx) => rx
+                .poll_recv(cx)
+                .map(|o| o.map(|s| Ok(Frame::data(Bytes::from(s))))),
         }
     }
 }
@@ -63,11 +68,16 @@ async fn collect(mut b: Incoming) -> Result<Vec<u8>, String> {
 }
 
 fn json_resp(status: u16, v: &serde_json::Value) -> Response<RBody> {
-    let mut r = Response::builder().status(status).header("Content-Type", "application/json; charset=utf-8");
+    let mut r = Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json; charset=utf-8");
     if status == 401 {
         r = r.header("WWW-Authenticate", "Bearer");
     }
-    r.body(RBody::Full(Some(Bytes::from(serde_json::to_vec(v).unwrap())))).unwrap()
+    r.body(RBody::Full(Some(Bytes::from(
+        serde_json::to_vec(v).unwrap(),
+    ))))
+    .unwrap()
 }
 
 /// Who may talk to this port (B1). Built once at startup; `port` is the bound port.
@@ -116,14 +126,19 @@ impl Access {
             Some(p) => p.parse::<u16>().ok() == Some(self.port),
             None => self.port == 80,
         };
-        port_ok && (LOOPBACK_NAMES.contains(&name.as_str()) || self.extra_hosts.iter().any(|h| *h == name))
+        port_ok
+            && (LOOPBACK_NAMES.contains(&name.as_str())
+                || self.extra_hosts.iter().any(|h| *h == name))
     }
 
     /// `Origin` is same-site when its host is loopback (any port: the controller's own pages on
     /// 8092 are local) or an extra host; `null` and anything else is cross-site.
     fn origin_ok(&self, origin: &str) -> bool {
         let o = origin.trim();
-        let Some(rest) = o.strip_prefix("http://").or_else(|| o.strip_prefix("https://")) else {
+        let Some(rest) = o
+            .strip_prefix("http://")
+            .or_else(|| o.strip_prefix("https://"))
+        else {
             return false;
         };
         if rest.contains('/') || rest.contains('@') {
@@ -145,9 +160,14 @@ impl Access {
             .filter_map(|v| v.to_str().ok())
             .filter_map(|v| {
                 let (scheme, tok) = v.trim().split_once(' ')?;
-                scheme.eq_ignore_ascii_case("bearer").then(|| tok.trim().as_bytes().to_vec())
+                scheme
+                    .eq_ignore_ascii_case("bearer")
+                    .then(|| tok.trim().as_bytes().to_vec())
             });
-        let xkey = headers.get_all("x-api-key").iter().map(|v| v.as_bytes().to_vec());
+        let xkey = headers
+            .get_all("x-api-key")
+            .iter()
+            .map(|v| v.as_bytes().to_vec());
         let given: Vec<Vec<u8>> = bearer.chain(xkey).collect();
         // check every (given, key) pair so the time does not depend on which key matched
         let mut ok = false;
@@ -160,8 +180,17 @@ impl Access {
     }
 
     /// `Err((status, message))` when the request must be refused before routing.
-    pub fn check(&self, method: &str, path: &str, headers: &HeaderMap) -> Result<(), (u16, &'static str)> {
-        let hosts: Vec<&[u8]> = headers.get_all("host").iter().map(|v| v.as_bytes()).collect();
+    pub fn check(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &HeaderMap,
+    ) -> Result<(), (u16, &'static str)> {
+        let hosts: Vec<&[u8]> = headers
+            .get_all("host")
+            .iter()
+            .map(|v| v.as_bytes())
+            .collect();
         if hosts.len() > 1 {
             return Err((403, "more than one Host header"));
         }
@@ -196,7 +225,9 @@ impl Access {
 /// input and sets it itself). Any other value, or the header twice, is refused rather than ignored.
 pub fn state_policy(headers: &HeaderMap) -> Result<bool, &'static str> {
     let mut values = headers.get_all("x-oxe-state-policy").iter();
-    let Some(v) = values.next() else { return Ok(false) };
+    let Some(v) = values.next() else {
+        return Ok(false);
+    };
     if values.next().is_some() {
         return Err("X-Oxe-State-Policy given more than once");
     }
@@ -210,13 +241,21 @@ pub fn state_policy(headers: &HeaderMap) -> Result<bool, &'static str> {
 /// v0.2.0 H4 `X-Oxe-Snapshot: keep` (client-neutral, see `service::Hints`). A hint: any other value,
 /// or no header, is "no snapshot" (a server that lacks the hint ignores it the same way).
 pub fn snapshot_keep(headers: &HeaderMap) -> bool {
-    headers.get_all("x-oxe-snapshot").iter().any(|v| v.as_bytes().trim_ascii().eq_ignore_ascii_case(b"keep"))
+    headers
+        .get_all("x-oxe-snapshot")
+        .iter()
+        .any(|v| v.as_bytes().trim_ascii().eq_ignore_ascii_case(b"keep"))
 }
 
 /// Parse an API key file (llama-server's `--api-key-file` format): every non-empty line,
 /// whitespace trimmed, is a key. An empty result is an error (fail closed).
 pub fn parse_key_file(text: &str) -> Result<Vec<Vec<u8>>, String> {
-    let keys: Vec<Vec<u8>> = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| l.as_bytes().to_vec()).collect();
+    let keys: Vec<Vec<u8>> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.as_bytes().to_vec())
+        .collect();
     if keys.is_empty() {
         return Err("API key file holds no key".into());
     }
@@ -231,8 +270,13 @@ pub fn bind_is_loopback(host: &str) -> bool {
     if h.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    let h = h.strip_prefix('[').and_then(|x| x.strip_suffix(']')).unwrap_or(h);
-    h.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+    let h = h
+        .strip_prefix('[')
+        .and_then(|x| x.strip_suffix(']'))
+        .unwrap_or(h);
+    h.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 /// Audit S12: refuse to listen beyond loopback without an API key. The Host check only stops
@@ -250,7 +294,15 @@ pub fn check_bind(host: &str, has_key: bool) -> Result<(), String> {
 /// Serve with the default access rules for the listener's port (no key).
 pub async fn serve<E: Engine>(st: Arc<State<E>>, listener: TcpListener) -> std::io::Result<()> {
     let port = listener.local_addr()?.port();
-    serve_with(st, listener, Access { port, ..Default::default() }).await
+    serve_with(
+        st,
+        listener,
+        Access {
+            port,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// `x-request-id` of a reply: `req_` and 32 lower-case hex digits, new for every request. The id
@@ -260,7 +312,11 @@ pub fn request_id() -> String {
     format!("req_{}", crate::api::random_hex())
 }
 
-pub async fn serve_with<E: Engine>(st: Arc<State<E>>, listener: TcpListener, access: Access) -> std::io::Result<()> {
+pub async fn serve_with<E: Engine>(
+    st: Arc<State<E>>,
+    listener: TcpListener,
+    access: Access,
+) -> std::io::Result<()> {
     let access = Arc::new(access);
     loop {
         let (sock, _) = listener.accept().await?;
@@ -279,13 +335,20 @@ pub async fn serve_with<E: Engine>(st: Arc<State<E>>, listener: TcpListener, acc
                     Ok::<_, Infallible>(reply)
                 }
             });
-            let _ = hyper::server::conn::http1::Builder::new().keep_alive(true).serve_connection(TokioIo::new(sock), svc).await;
+            let _ = hyper::server::conn::http1::Builder::new()
+                .keep_alive(true)
+                .serve_connection(TokioIo::new(sock), svc)
+                .await;
         });
     }
 }
 
 /// One request, from the access checks to the reply (the caller adds `x-request-id`).
-async fn answer<E: Engine>(st: Arc<State<E>>, access: &Access, req: Request<Incoming>) -> Response<RBody> {
+async fn answer<E: Engine>(
+    st: Arc<State<E>>,
+    access: &Access,
+    req: Request<Incoming>,
+) -> Response<RBody> {
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -294,7 +357,11 @@ async fn answer<E: Engine>(st: Arc<State<E>>, access: &Access, req: Request<Inco
     }
     if method == "OPTIONS" {
         // no CORS: a browser preflight from another site fails here
-        return Response::builder().status(204).header("Allow", "GET, POST, OPTIONS").body(RBody::Full(None)).unwrap();
+        return Response::builder()
+            .status(204)
+            .header("Allow", "GET, POST, OPTIONS")
+            .body(RBody::Full(None))
+            .unwrap();
     }
     // LAN share: the controller's state policy for a request from another device
     let ephemeral = match state_policy(req.headers()) {
@@ -302,17 +369,33 @@ async fn answer<E: Engine>(st: Arc<State<E>>, access: &Access, req: Request<Inco
         Err(msg) => return json_resp(400, &crate::api::error_json(400, msg)),
     };
     // CACHE-PERFECT: the controller's session hint (a hint, never a cache key)
-    let session = req.headers().get("x-oxe-session").and_then(|v| v.to_str().ok()).map(|s| s.chars().take(128).collect::<String>()).filter(|s| !s.is_empty());
+    let session = req
+        .headers()
+        .get("x-oxe-session")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.chars().take(128).collect::<String>())
+        .filter(|s| !s.is_empty());
     // v0.1.3 CACHE-DEEP: the controller's turn label (chat | compaction | post-compaction);
     // places checkpoints only (the compaction cut), never a cache key
-    let turn_kind = req.headers().get("x-oxe-turn-kind").and_then(|v| v.to_str().ok()).map(|s| s.chars().take(64).collect::<String>()).filter(|s| !s.is_empty());
+    let turn_kind = req
+        .headers()
+        .get("x-oxe-turn-kind")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.chars().take(64).collect::<String>())
+        .filter(|s| !s.is_empty());
     // v0.2.0 H4: the client's snapshot hint
-    let hints = crate::service::Hints { snapshot_keep: snapshot_keep(req.headers()) };
+    let hints = crate::service::Hints {
+        snapshot_keep: snapshot_keep(req.headers()),
+    };
     let body = match collect(req.into_body()).await {
         Ok(b) => b,
         Err(e) => return json_resp(400, &crate::api::error_json(400, &e)),
     };
-    match handle_hints(st, &method, &path, &query, &body, session, turn_kind, ephemeral, hints).await {
+    match handle_hints(
+        st, &method, &path, &query, &body, session, turn_kind, ephemeral, hints,
+    )
+    .await
+    {
         Reply::Json(code, v) => json_resp(code, &v),
         Reply::Stream(rx) => Response::builder()
             .status(200)

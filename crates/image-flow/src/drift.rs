@@ -35,7 +35,9 @@ impl Scope {
         match s {
             "component" => Ok(Scope::Component),
             "blocks" => Ok(Scope::Blocks),
-            other => Err(format!("--scope must be component or blocks, got '{other}'")),
+            other => Err(format!(
+                "--scope must be component or blocks, got '{other}'"
+            )),
         }
     }
 }
@@ -93,7 +95,14 @@ pub fn perturb(x: &[f32], ulp: u32) -> Vec<f32> {
 }
 
 /// Runs the probes for each arithmetic in `ariths` on step `step` of the hand-over in `dir`.
-pub fn run(model: &mut RefModel, h: &Handoff, dir: &Path, step: usize, scope: Scope, ariths: &[Arith]) -> Result<Value, String> {
+pub fn run(
+    model: &mut RefModel,
+    h: &Handoff,
+    dir: &Path,
+    step: usize,
+    scope: Scope,
+    ariths: &[Arith],
+) -> Result<Value, String> {
     run_with(model, h, dir, step, scope, ariths, BlocksOpts::default())
 }
 
@@ -121,8 +130,14 @@ pub fn run_with(
     let sd_vec = dump(dir, "dump.flux.vec", step)?;
     let sd_img_emb = dump(dir, "dump.flux.img_emb", step)?;
     let sd_txt_emb = dump(dir, "dump.flux.txt_emb", step)?;
-    let s0_in = h.single_in_at(0, step).ok_or("dump.single.0.in missing for this step")?.to_vec();
-    let s1_in = h.single_in_at(1, step).ok_or("dump.single.1.in missing for this step")?.to_vec();
+    let s0_in = h
+        .single_in_at(0, step)
+        .ok_or("dump.single.0.in missing for this step")?
+        .to_vec();
+    let s1_in = h
+        .single_in_at(1, step)
+        .ok_or("dump.single.1.in missing for this step")?
+        .to_vec();
     let stage_tags = ["xmod", "q", "k", "v", "attn", "mlp", "z"];
     let mut sd_stage: Vec<(&str, Option<Vec<f32>>)> = Vec::new();
     for t in stage_tags {
@@ -163,11 +178,24 @@ pub fn run_with(
         let (shift, scale, gate) = match (&sd_shift, &sd_scale, &sd_gate) {
             (Some(s), Some(c), Some(g)) => (s.clone(), c.clone(), g.clone()),
             _ => {
-                notes.push("single block 0 uses the Rust modulation (dump.single.mod.* absent)".into());
-                (tv.mod_single[..hd].to_vec(), tv.mod_single[hd..2 * hd].to_vec(), tv.mod_single[2 * hd..].to_vec())
+                notes.push(
+                    "single block 0 uses the Rust modulation (dump.single.mod.* absent)".into(),
+                );
+                (
+                    tv.mod_single[..hd].to_vec(),
+                    tv.mod_single[hd..2 * hd].to_vec(),
+                    tv.mod_single[2 * hd..].to_vec(),
+                )
             }
         };
-        let inp = BlockInput { n_tokens: n, x: s0_in.clone(), pe: h.pe.clone(), shift, scale, gate };
+        let inp = BlockInput {
+            n_tokens: n,
+            x: s0_in.clone(),
+            pe: h.pe.clone(),
+            shift,
+            scale,
+            gate,
+        };
         let tb = Instant::now();
         let (o, st) = model.single_block(0, &inp)?;
         let block_s = tb.elapsed().as_secs_f64();
@@ -245,12 +273,18 @@ fn blocks_probe(
     let mut rows: Vec<Value> = Vec::new();
 
     // double blocks
-    let mut prev: Option<(Vec<f32>, Vec<f32>)> = match (dump(dir, "dump.flux.img_emb", step)?, dump(dir, "dump.flux.txt_emb", step)?) {
+    let mut prev: Option<(Vec<f32>, Vec<f32>)> = match (
+        dump(dir, "dump.flux.img_emb", step)?,
+        dump(dir, "dump.flux.txt_emb", step)?,
+    ) {
         (Some(i), Some(t)) => Some((i, t)),
         _ => None,
     };
     for i in 0..d.n_double {
-        let want = match (dump(dir, &format!("dump.double.{i}.img_out"), step)?, dump(dir, &format!("dump.double.{i}.txt_out"), step)?) {
+        let want = match (
+            dump(dir, &format!("dump.double.{i}.img_out"), step)?,
+            dump(dir, &format!("dump.double.{i}.txt_out"), step)?,
+        ) {
             (Some(a), Some(b)) => Some((a, b)),
             _ => None,
         };
@@ -264,8 +298,10 @@ fn blocks_probe(
                     "txt": block_err(&gt, wt, &txt),
                 });
                 if bo.perturb_ulp > 0 {
-                    let (pimg, ptxt) = (perturb(&img, bo.perturb_ulp), perturb(&txt, bo.perturb_ulp));
-                    let (qi, qt) = model.double_block_at(i, pimg.clone(), ptxt.clone(), tv, &h.pe)?;
+                    let (pimg, ptxt) =
+                        (perturb(&img, bo.perturb_ulp), perturb(&txt, bo.perturb_ulp));
+                    let (qi, qt) =
+                        model.double_block_at(i, pimg.clone(), ptxt.clone(), tv, &h.pe)?;
                     row["self_noise"] = json!({
                         "img_delta_rel_rmse": rel_rmse(&sub(&qi, &pimg), &sub(&gi, &img)),
                         "txt_delta_rel_rmse": rel_rmse(&sub(&qt, &ptxt), &sub(&gt, &txt)),
@@ -274,32 +310,54 @@ fn blocks_probe(
                 row["seconds"] = json!(t.elapsed().as_secs_f64());
                 rows.push(row);
             }
-            _ => notes.push(format!("double.{i}: sd.cpp input or output dump missing, skipped")),
+            _ => notes.push(format!(
+                "double.{i}: sd.cpp input or output dump missing, skipped"
+            )),
         }
         prev = want;
     }
 
     // single blocks
     let modv = |tag: &str| dump(dir, tag, step);
-    let (shift, scale, gate) = match (modv("dump.single.mod.shift")?, modv("dump.single.mod.scale")?, modv("dump.single.mod.gate")?) {
+    let (shift, scale, gate) = match (
+        modv("dump.single.mod.shift")?,
+        modv("dump.single.mod.scale")?,
+        modv("dump.single.mod.gate")?,
+    ) {
         (Some(a), Some(b), Some(c)) => (a, b, c),
-        _ => (tv.mod_single[..hd].to_vec(), tv.mod_single[hd..2 * hd].to_vec(), tv.mod_single[2 * hd..].to_vec()),
+        _ => (
+            tv.mod_single[..hd].to_vec(),
+            tv.mod_single[hd..2 * hd].to_vec(),
+            tv.mod_single[2 * hd..].to_vec(),
+        ),
     };
     let final_in = dump(dir, "dump.final.in", step)?;
     let n_single = bo.max_single.map_or(d.n_single, |m| m.min(d.n_single));
     for i in 0..n_single {
         let x = dump(dir, &format!("dump.single.{i}.in"), step)?;
-        let next = if i + 1 < d.n_single { dump(dir, &format!("dump.single.{}.in", i + 1), step)? } else { None };
+        let next = if i + 1 < d.n_single {
+            dump(dir, &format!("dump.single.{}.in", i + 1), step)?
+        } else {
+            None
+        };
         let Some(x) = x else {
             notes.push(format!("single.{i}: dump.single.{i}.in missing, skipped"));
             continue;
         };
-        let inp = BlockInput { n_tokens: n, x, pe: h.pe.clone(), shift: shift.clone(), scale: scale.clone(), gate: gate.clone() };
+        let inp = BlockInput {
+            n_tokens: n,
+            x,
+            pe: h.pe.clone(),
+            shift: shift.clone(),
+            scale: scale.clone(),
+            gate: gate.clone(),
+        };
         let t = Instant::now();
         let row = match (&next, &final_in) {
             (Some(want), _) => {
                 let (o, _) = model.single_block(i, &inp)?;
-                let mut r = json!({"block": format!("single.{i}"), "all": block_err(&o.out, want, &inp.x)});
+                let mut r =
+                    json!({"block": format!("single.{i}"), "all": block_err(&o.out, want, &inp.x)});
                 if bo.perturb_ulp > 0 {
                     let px = perturb(&inp.x, bo.perturb_ulp);
                     let pinp = BlockInput {

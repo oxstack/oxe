@@ -44,13 +44,22 @@ pub struct ChanAccum {
 
 impl ChanAccum {
     pub fn new(h: usize) -> ChanAccum {
-        ChanAccum { h, rows: 0, sumsq: vec![0.0; h], absmax: vec![0.0; h] }
+        ChanAccum {
+            h,
+            rows: 0,
+            sumsq: vec![0.0; h],
+            absmax: vec![0.0; h],
+        }
     }
 
     /// Add `n` rows of width `h`.
     pub fn add(&mut self, x: &[f32], n: usize) -> Result<(), String> {
         if x.len() != n * self.h {
-            return Err(format!("chan-calib: {} values for {n} rows of {}", x.len(), self.h));
+            return Err(format!(
+                "chan-calib: {} values for {n} rows of {}",
+                x.len(),
+                self.h
+            ));
         }
         for row in x.chunks_exact(self.h) {
             for k in 0..self.h {
@@ -68,7 +77,10 @@ impl ChanAccum {
 
     /// Root mean square per channel (0 for an unseen or all-zero channel).
     pub fn rms(&self) -> Vec<f32> {
-        self.sumsq.iter().map(|s| (s / self.rows.max(1) as f64).sqrt() as f32).collect()
+        self.sumsq
+            .iter()
+            .map(|s| (s / self.rows.max(1) as f64).sqrt() as f32)
+            .collect()
     }
 
     pub fn absmax(&self) -> &[f32] {
@@ -79,24 +91,60 @@ impl ChanAccum {
 /// Magnitude-sorted permutation (ascending, ties by channel index: deterministic).
 pub fn sorted_perm(mag: &[f32]) -> Vec<u32> {
     let mut order: Vec<u32> = (0..mag.len() as u32).collect();
-    order.sort_by(|&a, &b| mag[a as usize].partial_cmp(&mag[b as usize]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
+    order.sort_by(|&a, &b| {
+        mag[a as usize]
+            .partial_cmp(&mag[b as usize])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
     order
 }
 
 /// Equalisation divisors `s_k = mag_k^alpha`, normalised to geometric mean 1 over the non-zero
 /// channels; zero channels get 1.
 pub fn eq_scale(mag: &[f32], alpha: f32) -> Vec<f32> {
-    let logs: Vec<f64> = mag.iter().filter(|m| **m > 0.0).map(|m| (*m as f64).ln() * alpha as f64).collect();
-    let mean = if logs.is_empty() { 0.0 } else { logs.iter().sum::<f64>() / logs.len() as f64 };
-    mag.iter().map(|&m| if m > 0.0 { ((m as f64).ln() * alpha as f64 - mean).exp() as f32 } else { 1.0 }).collect()
+    let logs: Vec<f64> = mag
+        .iter()
+        .filter(|m| **m > 0.0)
+        .map(|m| (*m as f64).ln() * alpha as f64)
+        .collect();
+    let mean = if logs.is_empty() {
+        0.0
+    } else {
+        logs.iter().sum::<f64>() / logs.len() as f64
+    };
+    mag.iter()
+        .map(|&m| {
+            if m > 0.0 {
+                ((m as f64).ln() * alpha as f64 - mean).exp() as f32
+            } else {
+                1.0
+            }
+        })
+        .collect()
 }
 
 /// Balanced (and plain) relative int8 error of `n` rows with one max-based scale per token per
 /// `chunk` positions, channels taken in `order` and divided by `div` before quantisation (and
 /// multiplied back after). `bal` is the per-channel magnitude of the balanced measure.
 #[allow(clippy::too_many_arguments)]
-pub fn quant_error_with(x: &[f32], n: usize, h: usize, order: &[u32], div: &[f32], bal: &[f32], chunk: usize) -> (f64, f64) {
-    assert!(chunk > 0 && h % chunk == 0 && order.len() == h && div.len() == h && bal.len() == h && x.len() == n * h);
+pub fn quant_error_with(
+    x: &[f32],
+    n: usize,
+    h: usize,
+    order: &[u32],
+    div: &[f32],
+    bal: &[f32],
+    chunk: usize,
+) -> (f64, f64) {
+    assert!(
+        chunk > 0
+            && h % chunk == 0
+            && order.len() == h
+            && div.len() == h
+            && bal.len() == h
+            && x.len() == n * h
+    );
     let (mut e_plain, mut s_plain, mut e_bal, mut s_bal) = (0f64, 0f64, 0f64, 0f64);
     let mut buf = vec![0f32; chunk];
     for t in 0..n {
@@ -124,7 +172,10 @@ pub fn quant_error_with(x: &[f32], n: usize, h: usize, order: &[u32], div: &[f32
             }
         }
     }
-    ((e_plain / s_plain.max(f64::MIN_POSITIVE)).sqrt(), (e_bal / s_bal.max(f64::MIN_POSITIVE)).sqrt())
+    (
+        (e_plain / s_plain.max(f64::MIN_POSITIVE)).sqrt(),
+        (e_bal / s_bal.max(f64::MIN_POSITIVE)).sqrt(),
+    )
 }
 
 /// The proposal for one operand.
@@ -156,13 +207,24 @@ impl OperandPlan {
 }
 
 /// Plan one operand: magnitudes from `calib`, decision on the held-out rows `hold` (`n_hold` rows).
-pub fn plan_operand(name: &str, calib: &ChanAccum, hold: &[f32], n_hold: usize, chunk: usize, slack: f64) -> Result<OperandPlan, String> {
+pub fn plan_operand(
+    name: &str,
+    calib: &ChanAccum,
+    hold: &[f32],
+    n_hold: usize,
+    chunk: usize,
+    slack: f64,
+) -> Result<OperandPlan, String> {
     let h = calib.h;
     if chunk == 0 || chunk % 32 != 0 || h % chunk != 0 || h % 32 != 0 {
-        return Err(format!("chan-calib: {name}: chunk {chunk} must be a multiple of 32 dividing {h}"));
+        return Err(format!(
+            "chan-calib: {name}: chunk {chunk} must be a multiple of 32 dividing {h}"
+        ));
     }
     if n_hold == 0 || hold.len() != n_hold * h || calib.rows == 0 {
-        return Err(format!("chan-calib: {name}: needs calibration rows and held-out rows"));
+        return Err(format!(
+            "chan-calib: {name}: needs calibration rows and held-out rows"
+        ));
     }
     let mag = calib.rms();
     // the balanced measure uses the held-out rows' own magnitudes (independent of the plan)
@@ -188,24 +250,56 @@ pub fn plan_operand(name: &str, calib: &ChanAccum, hold: &[f32], n_hold: usize, 
         "limit": limit,
     });
     let base = OperandPlan {
-        name: name.to_string(), h, chunk, arrange: "natural", alpha: None, meets_target: nat <= limit, perm: None, scale: None,
-        errors, calib_rows: calib.rows, holdout_rows: n_hold,
+        name: name.to_string(),
+        h,
+        chunk,
+        arrange: "natural",
+        alpha: None,
+        meets_target: nat <= limit,
+        perm: None,
+        scale: None,
+        errors,
+        calib_rows: calib.rows,
+        holdout_rows: n_hold,
     };
     if nat <= limit {
         return Ok(base);
     }
     if sorted <= limit {
-        return Ok(OperandPlan { arrange: "sorted", meets_target: true, perm: Some(perm), ..base });
+        return Ok(OperandPlan {
+            arrange: "sorted",
+            meets_target: true,
+            perm: Some(perm),
+            ..base
+        });
     }
     if let Some((a, s, _)) = eqs.iter().find(|(_, _, e)| *e <= limit) {
-        return Ok(OperandPlan { arrange: "equalized", alpha: Some(*a), meets_target: true, scale: Some(s.clone()), ..base });
+        return Ok(OperandPlan {
+            arrange: "equalized",
+            alpha: Some(*a),
+            meets_target: true,
+            scale: Some(s.clone()),
+            ..base
+        });
     }
     // nothing meets the target: keep the best one, flagged (chunk stays off for this operand)
-    let (best_a, best_s, best_e) = eqs.iter().min_by(|x, y| x.2.partial_cmp(&y.2).unwrap_or(std::cmp::Ordering::Equal)).expect("alphas");
+    let (best_a, best_s, best_e) = eqs
+        .iter()
+        .min_by(|x, y| x.2.partial_cmp(&y.2).unwrap_or(std::cmp::Ordering::Equal))
+        .expect("alphas");
     if sorted <= *best_e && sorted < nat {
-        Ok(OperandPlan { arrange: "sorted", perm: Some(perm), ..base })
+        Ok(OperandPlan {
+            arrange: "sorted",
+            perm: Some(perm),
+            ..base
+        })
     } else if *best_e < nat {
-        Ok(OperandPlan { arrange: "equalized", alpha: Some(*best_a), scale: Some(best_s.clone()), ..base })
+        Ok(OperandPlan {
+            arrange: "equalized",
+            alpha: Some(*best_a),
+            scale: Some(best_s.clone()),
+            ..base
+        })
     } else {
         Ok(base)
     }
@@ -228,14 +322,22 @@ pub fn record(chunk: usize, slack: f64, plans: &[OperandPlan], sources: &[String
 
 /// Read back a permutation / scale from a record operand (validated: a real permutation of `0..h`,
 /// finite positive scales), for the pack-time application and for tests.
-pub fn operand_transform(op: &Value) -> Result<(usize, Option<Vec<u32>>, Option<Vec<f32>>), String> {
+pub fn operand_transform(
+    op: &Value,
+) -> Result<(usize, Option<Vec<u32>>, Option<Vec<f32>>), String> {
     let h = op["h"].as_u64().ok_or("operand without h")? as usize;
     let perm = match op["perm"].as_array() {
         None => None,
         Some(a) => {
-            let p: Vec<u32> = a.iter().map(|v| v.as_u64().map(|x| x as u32).ok_or("perm entry")).collect::<Result<_, _>>()?;
+            let p: Vec<u32> = a
+                .iter()
+                .map(|v| v.as_u64().map(|x| x as u32).ok_or("perm entry"))
+                .collect::<Result<_, _>>()?;
             let mut seen = vec![false; h];
-            if p.len() != h || p.iter().any(|&i| (i as usize) >= h || std::mem::replace(&mut seen[i as usize], true)) {
+            if p.len() != h
+                || p.iter()
+                    .any(|&i| (i as usize) >= h || std::mem::replace(&mut seen[i as usize], true))
+            {
                 return Err("perm is not a permutation of 0..h".into());
             }
             Some(p)
@@ -244,7 +346,10 @@ pub fn operand_transform(op: &Value) -> Result<(usize, Option<Vec<u32>>, Option<
     let scale = match op["scale"].as_array() {
         None => None,
         Some(a) => {
-            let s: Vec<f32> = a.iter().map(|v| v.as_f64().map(|x| x as f32).ok_or("scale entry")).collect::<Result<_, _>>()?;
+            let s: Vec<f32> = a
+                .iter()
+                .map(|v| v.as_f64().map(|x| x as f32).ok_or("scale entry"))
+                .collect::<Result<_, _>>()?;
             if s.len() != h || s.iter().any(|v| !(v.is_finite() && *v > 0.0)) {
                 return Err("scale must be h finite positive values".into());
             }

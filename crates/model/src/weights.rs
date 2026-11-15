@@ -32,7 +32,10 @@ const HUGE: usize = 2 << 20;
 
 /// Engine identity used in the cache key: layout version, kernel commit, build flags.
 pub fn engine_id() -> String {
-    format!("{LAYOUT_VERSION}-{KERNEL_COMMIT}-{:08x}", hash_bytes(kernels_sys::KERNEL_CFLAGS.as_bytes()) as u32)
+    format!(
+        "{LAYOUT_VERSION}-{KERNEL_COMMIT}-{:08x}",
+        hash_bytes(kernels_sys::KERNEL_CFLAGS.as_bytes()) as u32
+    )
 }
 
 // ------------------------------------------------------------------ mappings
@@ -53,7 +56,14 @@ impl Mapping {
         let len = len.max(1);
         // SAFETY: anonymous private mapping; checked for MAP_FAILED.
         let ptr = unsafe {
-            libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0)
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
         };
         if ptr == libc::MAP_FAILED {
             return Err(std::io::Error::last_os_error());
@@ -62,17 +72,36 @@ impl Mapping {
             // SAFETY: advisory on our own mapping.
             unsafe { libc::madvise(ptr, len, libc::MADV_HUGEPAGE) };
         }
-        Ok(Mapping { ptr: ptr as *mut u8, len })
+        Ok(Mapping {
+            ptr: ptr as *mut u8,
+            len,
+        })
     }
     fn file(f: &File, len: usize, writable: bool) -> std::io::Result<Mapping> {
         use std::os::unix::io::AsRawFd;
-        let prot = if writable { libc::PROT_READ | libc::PROT_WRITE } else { libc::PROT_READ };
+        let prot = if writable {
+            libc::PROT_READ | libc::PROT_WRITE
+        } else {
+            libc::PROT_READ
+        };
         // SAFETY: shared mapping of a file we own; checked for MAP_FAILED.
-        let ptr = unsafe { libc::mmap(std::ptr::null_mut(), len, prot, libc::MAP_SHARED, f.as_raw_fd(), 0) };
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                prot,
+                libc::MAP_SHARED,
+                f.as_raw_fd(),
+                0,
+            )
+        };
         if ptr == libc::MAP_FAILED {
             return Err(std::io::Error::last_os_error());
         }
-        Ok(Mapping { ptr: ptr as *mut u8, len })
+        Ok(Mapping {
+            ptr: ptr as *mut u8,
+            len,
+        })
     }
     pub fn len(&self) -> usize {
         self.len
@@ -174,15 +203,31 @@ impl WeightRef {
     #[inline]
     pub fn f32(&self) -> *const f32 {
         // N1 (audit): a real check; a wrong layout here reads quantised bytes as floats.
-        assert!(self.layout == Layout::F32, "f32() on a {:?} tensor", self.layout);
+        assert!(
+            self.layout == Layout::F32,
+            "f32() on a {:?} tensor",
+            self.layout
+        );
         self.ptr as *const f32
     }
     /// F32 tensor as a slice (all experts).
     pub fn f32_slice(&self) -> &[f32] {
-        assert!(self.layout == Layout::F32, "f32_slice() on a {:?} tensor", self.layout);
+        assert!(
+            self.layout == Layout::F32,
+            "f32_slice() on a {:?} tensor",
+            self.layout
+        );
         // N1 (audit): from_raw_parts needs an aligned pointer and a whole number of floats.
-        assert!(self.ptr % std::mem::align_of::<f32>() == 0, "F32 tensor at unaligned offset {:#x}", self.ptr);
-        assert!(self.bytes % 4 == 0, "F32 tensor of {} bytes is not a whole number of floats", self.bytes);
+        assert!(
+            self.ptr % std::mem::align_of::<f32>() == 0,
+            "F32 tensor at unaligned offset {:#x}",
+            self.ptr
+        );
+        assert!(
+            self.bytes % 4 == 0,
+            "F32 tensor of {} bytes is not a whole number of floats",
+            self.bytes
+        );
         // SAFETY: the tensor's own read-only arena range, checked aligned and sized above.
         unsafe { std::slice::from_raw_parts(self.ptr as *const f32, self.bytes / 4) }
     }
@@ -192,7 +237,13 @@ fn layout_for(t: &TensorInfo, embd: bool) -> Result<Layout, String> {
     if t.ty == GgmlType::F32 {
         return Ok(Layout::F32);
     }
-    let q = qtype(t.ty).ok_or_else(|| format!("{}: type {} has no kernel (Q3_K/Q4_K/Q5_K/Q6_K/Q8_0/F32)", t.name, t.ty.name()))?;
+    let q = qtype(t.ty).ok_or_else(|| {
+        format!(
+            "{}: type {} has no kernel (Q3_K/Q4_K/Q5_K/Q6_K/Q8_0/F32)",
+            t.name,
+            t.ty.name()
+        )
+    })?;
     if embd {
         if q == QType::Q3K {
             return Err(format!("{}: Q3_K embedding rows are not supported", t.name));
@@ -200,7 +251,12 @@ fn layout_for(t: &TensorInfo, embd: bool) -> Result<Layout, String> {
         return Ok(Layout::Raw(q));
     }
     if t.shape.len() < 2 || t.shape[1] % q.nr() as u64 != 0 || t.shape[0] % q.qk() as u64 != 0 {
-        return Err(format!("{}: shape {:?} cannot be {}-row repacked", t.name, t.shape, q.nr()));
+        return Err(format!(
+            "{}: shape {:?} cannot be {}-row repacked",
+            t.name,
+            t.shape,
+            q.nr()
+        ));
     }
     Ok(Layout::Packed(q))
 }
@@ -209,15 +265,30 @@ fn layout_for(t: &TensorInfo, embd: bool) -> Result<Layout, String> {
 /// the kernels address rows by this shape, so a size that does not match it would read past
 /// the tensor (a crafted file).
 fn checked_geometry(t: &TensorInfo) -> Result<(usize, usize, usize, usize), String> {
-    let bad = || format!("{}: shape {:?} does not match its {} data bytes", t.name, t.shape, t.bytes());
+    let bad = || {
+        format!(
+            "{}: shape {:?} does not match its {} data bytes",
+            t.name,
+            t.shape,
+            t.bytes()
+        )
+    };
     let (_, blk, size) = t.ty.info().ok_or_else(bad)?;
     let k = t.shape.first().copied().unwrap_or(0);
     let rows = t.shape.get(1).copied().unwrap_or(1);
     let n_expert = t.shape.get(2).copied().unwrap_or(1);
-    if k == 0 || rows == 0 || n_expert == 0 || k % blk != 0 || t.shape.iter().skip(3).any(|&d| d != 1) {
+    if k == 0
+        || rows == 0
+        || n_expert == 0
+        || k % blk != 0
+        || t.shape.iter().skip(3).any(|&d| d != 1)
+    {
         return Err(bad());
     }
-    let want = (k / blk).checked_mul(size).and_then(|r| r.checked_mul(rows)).and_then(|r| r.checked_mul(n_expert));
+    let want = (k / blk)
+        .checked_mul(size)
+        .and_then(|r| r.checked_mul(rows))
+        .and_then(|r| r.checked_mul(n_expert));
     let want = match want {
         Some(w) if Some(w) == t.checked_bytes() => w,
         _ => return Err(bad()),
@@ -228,7 +299,14 @@ fn checked_geometry(t: &TensorInfo) -> Result<(usize, usize, usize, usize), Stri
 
 fn make_ref(t: &TensorInfo, embd: bool, ptr: usize) -> Result<WeightRef, String> {
     let (k, rows, n_expert, bytes) = checked_geometry(t)?;
-    Ok(WeightRef { ptr, layout: layout_for(t, embd)?, k, rows, n_expert, bytes })
+    Ok(WeightRef {
+        ptr,
+        layout: layout_for(t, embd)?,
+        k,
+        rows,
+        n_expert,
+        bytes,
+    })
 }
 
 /// Arena offsets: tensors >= 2 MiB start on a 2 MiB boundary, smaller ones on 4 KiB.
@@ -239,7 +317,8 @@ fn arena_layout(tensors: &[TensorInfo], ids: &[Tid]) -> Result<(Vec<(Tid, usize)
     let mut off = 0usize;
     let mut out = Vec::new();
     for &id in ids {
-        let b = usize::try_from(tensors[id].checked_bytes().ok_or_else(over)?).map_err(|_| over())?;
+        let b =
+            usize::try_from(tensors[id].checked_bytes().ok_or_else(over)?).map_err(|_| over())?;
         let align = if b >= HUGE { HUGE } else { 4096 };
         off = up(off, align).ok_or_else(over)?;
         out.push((id, off));
@@ -252,8 +331,18 @@ fn arena_layout(tensors: &[TensorInfo], ids: &[Tid]) -> Result<(Vec<(Tid, usize)
 
 /// Fast non-cryptographic 64-bit checksum (4 independent lanes over u64 words).
 pub fn hash_bytes(b: &[u8]) -> u64 {
-    const K: [u64; 4] = [0x9E3779B97F4A7C15, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9, 0xD6E8FEB86659FD93];
-    let mut h = [0x243F6A8885A308D3u64, 0x13198A2E03707344, 0xA4093822299F31D0, 0x082EFA98EC4E6C89];
+    const K: [u64; 4] = [
+        0x9E3779B97F4A7C15,
+        0xC2B2AE3D27D4EB4F,
+        0x165667B19E3779F9,
+        0xD6E8FEB86659FD93,
+    ];
+    let mut h = [
+        0x243F6A8885A308D3u64,
+        0x13198A2E03707344,
+        0xA4093822299F31D0,
+        0x082EFA98EC4E6C89,
+    ];
     let words = b.len() / 32;
     for i in 0..words {
         for l in 0..4 {
@@ -394,9 +483,25 @@ impl CacheHeader {
             for x in v.iter_mut() {
                 *x = r.u64()?;
             }
-            entries.push(Entry { name, layout, k: v[0], rows: v[1], n_expert: v[2], off: v[3], bytes: v[4], hash: v[5] });
+            entries.push(Entry {
+                name,
+                layout,
+                k: v[0],
+                rows: v[1],
+                n_expert: v[2],
+                off: v[3],
+                bytes: v[4],
+                hash: v[5],
+            });
         }
-        Ok(CacheHeader { engine_id, model_sha, model_bytes, data_off, total, entries })
+        Ok(CacheHeader {
+            engine_id,
+            model_sha,
+            model_bytes,
+            data_off,
+            total,
+            entries,
+        })
     }
 }
 
@@ -414,7 +519,8 @@ pub fn cache_dir(override_dir: Option<&Path>) -> Result<PathBuf, String> {
     };
     if !dir.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
     }
     let md = std::fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
     // SAFETY: trivial libc call.
@@ -434,14 +540,26 @@ pub fn model_sha256(path: &Path, dir: &Path) -> Result<String, String> {
 
 /// [`model_sha256`]; `from_env` false ignores `OXE_MODEL_SHA256` (a file that is not the model).
 pub fn model_sha256_opt(path: &Path, dir: &Path, from_env: bool) -> Result<String, String> {
-    if let Ok(s) = std::env::var("OXE_MODEL_SHA256").map_err(|_| ()).and_then(|s| if from_env { Ok(s) } else { Err(()) }) {
+    if let Ok(s) = std::env::var("OXE_MODEL_SHA256")
+        .map_err(|_| ())
+        .and_then(|s| if from_env { Ok(s) } else { Err(()) })
+    {
         if s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Ok(s.to_ascii_lowercase());
         }
         return Err("OXE_MODEL_SHA256 must be 64 hex digits".into());
     }
     let md = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let key = format!("{} {} {} {}.{} {}.{}", md.dev(), md.ino(), md.size(), md.mtime(), md.mtime_nsec(), md.ctime(), md.ctime_nsec());
+    let key = format!(
+        "{} {} {} {}.{} {}.{}",
+        md.dev(),
+        md.ino(),
+        md.size(),
+        md.mtime(),
+        md.mtime_nsec(),
+        md.ctime(),
+        md.ctime_nsec()
+    );
     let index = dir.join("sha256-index.tsv");
     if let Ok(s) = std::fs::read_to_string(&index) {
         for line in s.lines() {
@@ -454,16 +572,32 @@ pub fn model_sha256_opt(path: &Path, dir: &Path, from_env: bool) -> Result<Strin
             }
         }
     }
-    eprintln!("load: computing sha256 of {} (once; cached in {})", path.display(), index.display());
-    let out = std::process::Command::new("sha256sum").arg(path).output().map_err(|e| format!("sha256sum: {e}"))?;
+    eprintln!(
+        "load: computing sha256 of {} (once; cached in {})",
+        path.display(),
+        index.display()
+    );
+    let out = std::process::Command::new("sha256sum")
+        .arg(path)
+        .output()
+        .map_err(|e| format!("sha256sum: {e}"))?;
     if !out.status.success() {
         return Err("sha256sum failed".into());
     }
-    let sha = String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or("").to_string();
+    let sha = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string();
     if sha.len() != 64 {
         return Err("sha256sum: unexpected output".into());
     }
-    let mut f = OpenOptions::new().create(true).append(true).mode(0o600).open(&index).map_err(|e| e.to_string())?;
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&index)
+        .map_err(|e| e.to_string())?;
     let _ = writeln!(f, "{key}\t{sha}\t{}", path.display());
     Ok(sha)
 }
@@ -506,7 +640,16 @@ pub struct LoadOptions {
 
 impl Default for LoadOptions {
     fn default() -> Self {
-        LoadOptions { backing: Backing::File, verify: Verify::Sample, threads: 8, cache_dir: None, progress: true, thp_collapse: false, mlock: false, sha_from_env: true }
+        LoadOptions {
+            backing: Backing::File,
+            verify: Verify::Sample,
+            threads: 8,
+            cache_dir: None,
+            progress: true,
+            thp_collapse: false,
+            mlock: false,
+            sha_from_env: true,
+        }
     }
 }
 
@@ -561,7 +704,13 @@ impl WeightStore {
     /// Load an explicit set of tensors (sorted, unique) into their own cache file
     /// `<sha>-<engine-id><tag>.bin` (M3.1: the MTP head uses tag "-mtp"). `embd` is the
     /// token-embedding tensor if it is among `ids` (raw rows), else None.
-    pub fn load_ids(g: Gguf, ids: Vec<Tid>, embd: Option<Tid>, opt: &LoadOptions, tag: &str) -> Result<WeightStore, String> {
+    pub fn load_ids(
+        g: Gguf,
+        ids: Vec<Tid>,
+        embd: Option<Tid>,
+        opt: &LoadOptions,
+        tag: &str,
+    ) -> Result<WeightStore, String> {
         let t0 = Instant::now();
         let tensors = g.header.tensors.clone();
         for &id in &ids {
@@ -571,7 +720,11 @@ impl WeightStore {
         let sha = model_sha256_opt(&g.path, &dir, opt.sha_from_env)?;
         let eid = engine_id();
         let path = dir.join(format!("{sha}-{eid}{tag}.bin"));
-        let mut info = LoadInfo { cache_path: path.display().to_string(), model_sha256: sha.clone(), ..Default::default() };
+        let mut info = LoadInfo {
+            cache_path: path.display().to_string(),
+            model_sha256: sha.clone(),
+            ..Default::default()
+        };
         let (offs, total) = arena_layout(&tensors, &ids)?;
         for &id in &ids {
             checked_geometry(&tensors[id])?;
@@ -597,7 +750,9 @@ impl WeightStore {
             }
             None => {
                 let tb = Instant::now();
-                let h = build_cache(&g, &tensors, &ids, embd, &offs, total, &path, &eid, &sha, opt)?;
+                let h = build_cache(
+                    &g, &tensors, &ids, embd, &offs, total, &path, &eid, &sha, opt,
+                )?;
                 drop(g); // unmap the GGUF (its pages were already released per tensor)
                 info.built_seconds = tb.elapsed().as_secs_f64();
                 let f = open_ro_nofollow(&path)?;
@@ -620,8 +775,16 @@ impl WeightStore {
         for (e, &(id, off)) in hdr.entries.iter().zip(&offs) {
             let t = &tensors[id];
             let want = make_ref(t, Some(id) == embd, 0)?;
-            if e.name != t.name || e.off as usize != off || e.bytes as usize != want.bytes || e.layout != want.layout || e.n_expert != want.n_expert as u64 {
-                return Err(format!("cache entry {} does not match the model/plan", e.name));
+            if e.name != t.name
+                || e.off as usize != off
+                || e.bytes as usize != want.bytes
+                || e.layout != want.layout
+                || e.n_expert != want.n_expert as u64
+            {
+                return Err(format!(
+                    "cache entry {} does not match the model/plan",
+                    e.name
+                ));
             }
         }
         // verification
@@ -666,8 +829,15 @@ impl WeightStore {
                 drop(map);
                 let f = File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
                 fadvise_dontneed(&f, 0, 0); // the verify sample's pages
-                let a = Mapping::anon(hdr.total as usize, true).map_err(|e| format!("anon arena: {e}"))?;
-                chunked_read_into(&f, hdr.data_off, a.base(), hdr.total as usize, opt.threads.clamp(1, 4))?;
+                let a = Mapping::anon(hdr.total as usize, true)
+                    .map_err(|e| format!("anon arena: {e}"))?;
+                chunked_read_into(
+                    &f,
+                    hdr.data_off,
+                    a.base(),
+                    hdr.total as usize,
+                    opt.threads.clamp(1, 4),
+                )?;
                 info.backing = "anon".into();
                 (a, 0)
             }
@@ -685,7 +855,9 @@ impl WeightStore {
             refs,
             arena,
             data_off,
-            embd_row_bytes: embd.map(|e| (tensors[e].bytes() / tensors[e].shape[1]) as usize).unwrap_or(0),
+            embd_row_bytes: embd
+                .map(|e| (tensors[e].bytes() / tensors[e].shape[1]) as usize)
+                .unwrap_or(0),
             load_seconds: t0.elapsed().as_secs_f64(),
             repacked_bytes: total as u64,
             info,
@@ -701,38 +873,59 @@ impl WeightStore {
     /// Borrow a sealed native-layout tensor for a bounded DSP window. CPU decode
     /// retains the same object through this WeightStore even after DSP teardown.
     pub fn shared_expert(&self, id: Tid) -> Option<&oxn::shared_memory::SharedMemory> {
-        self.shared_experts.binary_search_by_key(&id, |(i, _)| *i).ok().map(|i| &self.shared_experts[i].1)
+        self.shared_experts
+            .binary_search_by_key(&id, |(i, _)| *i)
+            .ok()
+            .map(|i| &self.shared_experts[i].1)
     }
 
     /// Experimental storage change only: no DSP session or arithmetic change.
     /// Requires exclusive store access BEFORE constructing any Engine. Publish
     /// all replacement pointers together; on error the original refs stay valid.
     #[cfg(feature = "npu-device")]
-    pub fn relocate_experts(&mut self, plan: &Plan, allocator: &oxn::shared_memory::SharedAllocator) -> Result<usize, String> {
+    pub fn relocate_experts(
+        &mut self,
+        plan: &Plan,
+        allocator: &oxn::shared_memory::SharedAllocator,
+    ) -> Result<usize, String> {
         if self.info.backing != "file" || !self.shared_experts.is_empty() {
             return Err("shared experts require an unmodified file-backed store".into());
         }
-        let mut ids: Vec<_> = plan.layers.iter().flat_map(|l| [l.gate_exps, l.up_exps, l.down_exps]).collect();
-        ids.sort_unstable(); ids.dedup();
+        let mut ids: Vec<_> = plan
+            .layers
+            .iter()
+            .flat_map(|l| [l.gate_exps, l.up_exps, l.down_exps])
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
         // Hold the already-validated cache inode while advising away source pages.
         // fadvise is advisory and does not alter file contents or invalidate refs.
         let cache = open_ro_nofollow(Path::new(&self.info.cache_path))?;
-        let staged = self.stage_shared_backings(&ids, |src| {
-            let mut m = allocator.allocate(src.len())?;
-            m.as_mut_bytes().copy_from_slice(src);
-            Ok(m.seal())
-        }, |ptr, bytes| {
-            let page = 4096usize;
-            let begin = (ptr + page - 1) & !(page - 1);
-            let end = (ptr + bytes) & !(page - 1);
-            if end > begin {
-                // SAFETY: aligned inward, wholly inside the live file mapping.
-                unsafe { libc::madvise(begin as *mut libc::c_void, end - begin, libc::MADV_DONTNEED); }
-                if let (Ok(off), Ok(len)) = (i64::try_from(begin - self.arena.base() as usize), i64::try_from(end - begin)) {
-                    fadvise_dontneed(&cache, off, len);
+        let staged = self.stage_shared_backings(
+            &ids,
+            |src| {
+                let mut m = allocator.allocate(src.len())?;
+                m.as_mut_bytes().copy_from_slice(src);
+                Ok(m.seal())
+            },
+            |ptr, bytes| {
+                let page = 4096usize;
+                let begin = (ptr + page - 1) & !(page - 1);
+                let end = (ptr + bytes) & !(page - 1);
+                if end > begin {
+                    // SAFETY: aligned inward, wholly inside the live file mapping.
+                    unsafe {
+                        libc::madvise(begin as *mut libc::c_void, end - begin, libc::MADV_DONTNEED);
+                    }
+                    if let (Ok(off), Ok(len)) = (
+                        i64::try_from(begin - self.arena.base() as usize),
+                        i64::try_from(end - begin),
+                    ) {
+                        fadvise_dontneed(&cache, off, len);
+                    }
                 }
-            }
-        })?;
+            },
+        )?;
         // Everything is validated and owned. No fallible action after publishing.
         for (id, memory) in &staged {
             self.refs[*id].as_mut().unwrap().ptr = memory.as_bytes().as_ptr() as usize;
@@ -743,17 +936,34 @@ impl WeightStore {
     }
 
     #[cfg(any(feature = "npu-device", test))]
-    fn stage_shared_backings<B: AsRef<[u8]>>(&self, ids: &[Tid], mut allocate_copy: impl FnMut(&[u8]) -> Result<B, String>, mut copied: impl FnMut(usize, usize)) -> Result<Vec<(Tid, B)>, String> {
+    fn stage_shared_backings<B: AsRef<[u8]>>(
+        &self,
+        ids: &[Tid],
+        mut allocate_copy: impl FnMut(&[u8]) -> Result<B, String>,
+        mut copied: impl FnMut(usize, usize),
+    ) -> Result<Vec<(Tid, B)>, String> {
         if ids.is_empty() || ids.windows(2).any(|p| p[0] >= p[1]) {
             return Err("shared expert IDs must be nonempty, unique and sorted".into());
         }
         let start = self.arena.base() as usize;
-        let end = start.checked_add(self.arena.len()).ok_or("arena range overflow")?;
+        let end = start
+            .checked_add(self.arena.len())
+            .ok_or("arena range overflow")?;
         // Preflight ALL bounds/types before allocating or releasing source pages.
         for &id in ids {
-            let r = self.refs.get(id).and_then(Option::as_ref).ok_or("expert tensor not loaded")?;
-            if r.n_expert < 2 || !matches!(r.layout, Layout::Packed(_)) || r.bytes == 0 || r.bytes % 4096 != 0 || r.bytes > 512 << 20
-                || r.ptr < start || r.ptr.checked_add(r.bytes).is_none_or(|e| e > end) {
+            let r = self
+                .refs
+                .get(id)
+                .and_then(Option::as_ref)
+                .ok_or("expert tensor not loaded")?;
+            if r.n_expert < 2
+                || !matches!(r.layout, Layout::Packed(_))
+                || r.bytes == 0
+                || r.bytes % 4096 != 0
+                || r.bytes > 512 << 20
+                || r.ptr < start
+                || r.ptr.checked_add(r.bytes).is_none_or(|e| e > end)
+            {
                 return Err("shared expert layout/range/size is not supported".into());
             }
         }
@@ -763,7 +973,9 @@ impl WeightStore {
             // SAFETY: checked file arena range; exclusive store, no running engine.
             let source = unsafe { std::slice::from_raw_parts(r.ptr as *const u8, r.bytes) };
             let owned = allocate_copy(source)?;
-            if owned.as_ref() != source { return Err("native packed expert copy differs".into()); }
+            if owned.as_ref() != source {
+                return Err("native packed expert copy differs".into());
+            }
             staged.push((id, owned));
             copied(r.ptr, r.bytes);
         }
@@ -780,12 +992,21 @@ impl WeightStore {
         let r = self.get(plan.embd);
         assert!(token < r.rows, "token id {token} out of range");
         // SAFETY: row `token` of the raw embedding inside the read-only arena.
-        unsafe { std::slice::from_raw_parts((r.ptr + token * self.embd_row_bytes) as *const u8, self.embd_row_bytes) }
+        unsafe {
+            std::slice::from_raw_parts(
+                (r.ptr + token * self.embd_row_bytes) as *const u8,
+                self.embd_row_bytes,
+            )
+        }
     }
 }
 
 fn open_ro_nofollow(path: &Path) -> Result<File, String> {
-    let f = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let f = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let md = f.metadata().map_err(|e| e.to_string())?;
     // SAFETY: trivial libc call.
     let uid = unsafe { libc::getuid() };
@@ -797,7 +1018,13 @@ fn open_ro_nofollow(path: &Path) -> Result<File, String> {
 
 /// Read `len` bytes of `f` from `file_off` into `dst` (an anonymous mapping of at least `len`
 /// bytes) in 64 MiB chunks on `threads` threads, dropping each chunk's page cache after the copy.
-fn chunked_read_into(f: &File, file_off: u64, dst: *mut u8, len: usize, threads: usize) -> Result<(), String> {
+fn chunked_read_into(
+    f: &File,
+    file_off: u64,
+    dst: *mut u8,
+    len: usize,
+    threads: usize,
+) -> Result<(), String> {
     use std::os::unix::fs::FileExt;
     const CHUNK: usize = 64 << 20;
     let n = len.div_ceil(CHUNK);
@@ -816,7 +1043,8 @@ fn chunked_read_into(f: &File, file_off: u64, dst: *mut u8, len: usize, threads:
                 // written by exactly one thread.
                 let buf = unsafe { std::slice::from_raw_parts_mut((base + o) as *mut u8, l) };
                 if let Err(e) = f.read_exact_at(buf, file_off + o as u64) {
-                    *failed.lock().unwrap() = Some(format!("cache read at {}: {e}", file_off + o as u64));
+                    *failed.lock().unwrap() =
+                        Some(format!("cache read at {}: {e}", file_off + o as u64));
                     break;
                 }
                 fadvise_dontneed(f, (file_off + o as u64) as i64, l as i64);
@@ -836,7 +1064,10 @@ fn lock_arena(m: &Mapping) -> Result<(), String> {
         return Ok(());
     }
     let e = std::io::Error::last_os_error();
-    let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let mut rl = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     // SAFETY: plain getrlimit into a local.
     unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut rl) };
     Err(format!(
@@ -853,7 +1084,12 @@ fn fadvise_dontneed(f: &File, off: i64, len: i64) {
     unsafe { libc::posix_fadvise(f.as_raw_fd(), off, len, libc::POSIX_FADV_DONTNEED) };
 }
 
-fn open_cache(path: &Path, eid: &str, sha: &str, model_bytes: u64) -> Result<(File, CacheHeader), String> {
+fn open_cache(
+    path: &Path,
+    eid: &str,
+    sha: &str,
+    model_bytes: u64,
+) -> Result<(File, CacheHeader), String> {
     let mut f = open_ro_nofollow(path)?;
     let mut lenb = [0u8; 8];
     f.read_exact(&mut lenb).map_err(|e| e.to_string())?;
@@ -873,12 +1109,20 @@ fn open_cache(path: &Path, eid: &str, sha: &str, model_bytes: u64) -> Result<(Fi
     }
     let flen = f.metadata().map_err(|e| e.to_string())?.len();
     if h.data_off.checked_add(h.total) != Some(flen) {
-        return Err(format!("cache file is {flen} bytes, header says {} + {}", h.data_off, h.total));
+        return Err(format!(
+            "cache file is {flen} bytes, header says {} + {}",
+            h.data_off, h.total
+        ));
     }
     Ok((f, h))
 }
 
-fn verify_entries(map: &Mapping, h: &CacheHeader, sel: &[usize], threads: usize) -> Result<(), String> {
+fn verify_entries(
+    map: &Mapping,
+    h: &CacheHeader,
+    sel: &[usize],
+    threads: usize,
+) -> Result<(), String> {
     let next = AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(Vec::<String>::new());
     std::thread::scope(|s| {
@@ -892,7 +1136,10 @@ fn verify_entries(map: &Mapping, h: &CacheHeader, sel: &[usize], threads: usize)
                 let eb = (e.bytes / e.n_expert) as usize;
                 let mut acc = 0u64;
                 for x in 0..e.n_expert as usize {
-                    acc = combine(acc, hash_bytes(map.slice(h.data_off as usize + e.off as usize + x * eb, eb)));
+                    acc = combine(
+                        acc,
+                        hash_bytes(map.slice(h.data_off as usize + e.off as usize + x * eb, eb)),
+                    );
                 }
                 if acc != e.hash {
                     bad.lock().unwrap().push(e.name.clone());
@@ -902,11 +1149,14 @@ fn verify_entries(map: &Mapping, h: &CacheHeader, sel: &[usize], threads: usize)
     });
     let bad = bad.into_inner().unwrap();
     if !bad.is_empty() {
-        return Err(format!("weight cache checksum mismatch in {} tensor(s), e.g. {}; delete the cache file", bad.len(), bad[0]));
+        return Err(format!(
+            "weight cache checksum mismatch in {} tensor(s), e.g. {}; delete the cache file",
+            bad.len(),
+            bad[0]
+        ));
     }
     Ok(())
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn build_cache(
@@ -929,10 +1179,26 @@ fn build_cache(
         .map(|&(id, off)| {
             let t = &tensors[id];
             let r = make_ref(t, Some(id) == embd_id, 0)?;
-            Ok(Entry { name: t.name.clone(), layout: r.layout, k: r.k as u64, rows: r.rows as u64, n_expert: r.n_expert as u64, off: off as u64, bytes: r.bytes as u64, hash: 0 })
+            Ok(Entry {
+                name: t.name.clone(),
+                layout: r.layout,
+                k: r.k as u64,
+                rows: r.rows as u64,
+                n_expert: r.n_expert as u64,
+                off: off as u64,
+                bytes: r.bytes as u64,
+                hash: 0,
+            })
         })
         .collect::<Result<_, String>>()?;
-    let probe = CacheHeader { engine_id: eid.into(), model_sha: sha.into(), model_bytes: g.file_bytes, data_off: 0, total: total as u64, entries: entries.clone() };
+    let probe = CacheHeader {
+        engine_id: eid.into(),
+        model_sha: sha.into(),
+        model_bytes: g.file_bytes,
+        data_off: 0,
+        total: total as u64,
+        entries: entries.clone(),
+    };
     let data_off = (probe.encode().len() + 4096).div_ceil(HUGE) * HUGE;
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     let f = OpenOptions::new()
@@ -947,10 +1213,17 @@ fn build_cache(
         let _ = std::fs::remove_file(&tmp);
         e
     };
-    f.set_len((data_off + total) as u64).map_err(|e| cleanup(format!("ftruncate: {e}")))?;
-    let map = Mapping::file(&f, data_off + total, true).map_err(|e| cleanup(format!("mmap tmp cache: {e}")))?;
+    f.set_len((data_off + total) as u64)
+        .map_err(|e| cleanup(format!("ftruncate: {e}")))?;
+    let map = Mapping::file(&f, data_off + total, true)
+        .map_err(|e| cleanup(format!("mmap tmp cache: {e}")))?;
     if opt.progress {
-        eprintln!("load: building weight cache {} ({:.2} GiB) with {} threads", path.display(), total as f64 / (1u64 << 30) as f64, opt.threads);
+        eprintln!(
+            "load: building weight cache {} ({:.2} GiB) with {} threads",
+            path.display(),
+            total as f64 / (1u64 << 30) as f64,
+            opt.threads
+        );
     }
     // work items: (entry index, expert)
     let mut items = Vec::new();
@@ -959,8 +1232,14 @@ fn build_cache(
             items.push((ei, x));
         }
     }
-    let hashes: Vec<Vec<AtomicU64>> = entries.iter().map(|e| (0..e.n_expert).map(|_| AtomicU64::new(0)).collect()).collect();
-    let remaining: Vec<AtomicUsize> = entries.iter().map(|e| AtomicUsize::new(e.n_expert as usize)).collect();
+    let hashes: Vec<Vec<AtomicU64>> = entries
+        .iter()
+        .map(|e| (0..e.n_expert).map(|_| AtomicU64::new(0)).collect())
+        .collect();
+    let remaining: Vec<AtomicUsize> = entries
+        .iter()
+        .map(|e| AtomicUsize::new(e.n_expert as usize))
+        .collect();
     let next = AtomicUsize::new(0);
     let done = AtomicU64::new(0);
     let base = map.base() as usize + data_off;
@@ -978,13 +1257,20 @@ fn build_cache(
                 let eb = (e.bytes / e.n_expert) as usize;
                 let src = &g.tensor_data(t)[x * eb..(x + 1) * eb];
                 // arena_layout keeps every (off, bytes) inside total; a cheap release assert
-                assert!(e.off as usize + (x + 1) * eb <= total, "weight cache item outside the arena");
+                assert!(
+                    e.off as usize + (x + 1) * eb <= total,
+                    "weight cache item outside the arena"
+                );
                 // SAFETY: each (tensor, expert) item owns a disjoint range of the mapping, inside
                 // [data_off, data_off + total) by the assert above.
-                let dst = unsafe { std::slice::from_raw_parts_mut((base + e.off as usize + x * eb) as *mut u8, eb) };
+                let dst = unsafe {
+                    std::slice::from_raw_parts_mut((base + e.off as usize + x * eb) as *mut u8, eb)
+                };
                 match e.layout {
                     Layout::F32 | Layout::Raw(_) => dst.copy_from_slice(src),
-                    Layout::Packed(q) => kernels_sys::repack(q, src, dst, e.rows as usize, e.k as usize),
+                    Layout::Packed(q) => {
+                        kernels_sys::repack(q, src, dst, e.rows as usize, e.k as usize)
+                    }
                 }
                 hashes[ei][x].store(hash_bytes(dst), Relaxed);
                 g.release_range(t, x * eb, eb);
@@ -1004,9 +1290,18 @@ fn build_cache(
         }
     });
     for (ei, e) in entries.iter_mut().enumerate() {
-        e.hash = hashes[ei].iter().fold(0u64, |acc, h| combine(acc, h.load(Relaxed)));
+        e.hash = hashes[ei]
+            .iter()
+            .fold(0u64, |acc, h| combine(acc, h.load(Relaxed)));
     }
-    let h = CacheHeader { engine_id: eid.into(), model_sha: sha.into(), model_bytes: g.file_bytes, data_off: data_off as u64, total: total as u64, entries };
+    let h = CacheHeader {
+        engine_id: eid.into(),
+        model_sha: sha.into(),
+        model_bytes: g.file_bytes,
+        data_off: data_off as u64,
+        total: total as u64,
+        entries,
+    };
     let enc = h.encode();
     assert!(enc.len() <= data_off);
     // SAFETY: the header region [0, data_off) of our own writable mapping.
@@ -1014,7 +1309,10 @@ fn build_cache(
     // SAFETY: msync of our own mapping.
     let rc = unsafe { libc::msync(map.base() as *mut libc::c_void, map.len(), libc::MS_SYNC) };
     if rc != 0 {
-        return Err(cleanup(format!("msync: {}", std::io::Error::last_os_error())));
+        return Err(cleanup(format!(
+            "msync: {}",
+            std::io::Error::last_os_error()
+        )));
     }
     drop(map);
     f.sync_all().map_err(|e| cleanup(format!("fsync: {e}")))?;
@@ -1025,7 +1323,10 @@ fn build_cache(
         }
     }
     if opt.progress {
-        eprintln!("load: weight cache written in {:.1} s", t0.elapsed().as_secs_f64());
+        eprintln!(
+            "load: weight cache written in {:.1} s",
+            t0.elapsed().as_secs_f64()
+        );
     }
     Ok(h)
 }
@@ -1035,7 +1336,12 @@ mod s1_tests {
     use super::*;
 
     fn t(shape: &[u64], ty: GgmlType) -> TensorInfo {
-        TensorInfo { name: "w".into(), shape: shape.to_vec(), ty, offset: 0 }
+        TensorInfo {
+            name: "w".into(),
+            shape: shape.to_vec(),
+            ty,
+            offset: 0,
+        }
     }
 
     /// REVIEW-v0.1.1 S1: the refs the kernels address by shape must have exactly that many bytes,
@@ -1056,7 +1362,10 @@ mod s1_tests {
         // arena: sizes that wrap usize are an error, not a small arena
         let ts = vec![t(&[1 << 61], GgmlType::F32), t(&[1 << 61], GgmlType::F32)];
         assert!(arena_layout(&ts, &[0, 1]).is_err());
-        let ts = vec![t(&[1024], GgmlType::F32), t(&[(HUGE / 4) as u64], GgmlType::F32)];
+        let ts = vec![
+            t(&[1024], GgmlType::F32),
+            t(&[(HUGE / 4) as u64], GgmlType::F32),
+        ];
         let (offs, total) = arena_layout(&ts, &[0, 1]).unwrap();
         for (id, off) in offs {
             assert!(off + ts[id].bytes() as usize <= total);
@@ -1065,8 +1374,13 @@ mod s1_tests {
     /// The real model headers (header only, no weights read; skipped when absent) still pass.
     #[test]
     fn real_model_headers_pass_the_geometry_check() {
-        let dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/ai-stack/models/llm");
-        for f in ["Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf", "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf", "Qwen3.8-27B-Q4_K_M.gguf"] {
+        let dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".local/share/ai-stack/models/llm");
+        for f in [
+            "Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf",
+            "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf",
+            "Qwen3.8-27B-Q4_K_M.gguf",
+        ] {
             let p = dir.join(f);
             if !p.is_file() {
                 eprintln!("skip: {f}");
@@ -1085,47 +1399,157 @@ mod s1_tests {
 #[cfg(test)]
 mod shared_expert_tests {
     use super::*;
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
     const BYTES: usize = 36 * 4096; // valid Q4_K [256,512,2], not fake geometry
     fn store() -> WeightStore {
-        let arena = Mapping::anon(2*BYTES,false).unwrap();
-        unsafe { std::slice::from_raw_parts_mut(arena.base(),2*BYTES).iter_mut().enumerate().for_each(|(i,v)|*v=(i%251)as u8); }
-        let refs = (0..2).map(|i|Some(WeightRef{ptr:arena.base()as usize+i*BYTES,layout:Layout::Packed(QType::Q4K),k:256,rows:512,n_expert:2,bytes:BYTES})).collect();
-        WeightStore{refs,arena,data_off:0,embd_row_bytes:0,load_seconds:0.,repacked_bytes:(2*BYTES)as u64,info:LoadInfo::default(),shared_experts:vec![]}
+        let arena = Mapping::anon(2 * BYTES, false).unwrap();
+        unsafe {
+            std::slice::from_raw_parts_mut(arena.base(), 2 * BYTES)
+                .iter_mut()
+                .enumerate()
+                .for_each(|(i, v)| *v = (i % 251) as u8);
+        }
+        let refs = (0..2)
+            .map(|i| {
+                Some(WeightRef {
+                    ptr: arena.base() as usize + i * BYTES,
+                    layout: Layout::Packed(QType::Q4K),
+                    k: 256,
+                    rows: 512,
+                    n_expert: 2,
+                    bytes: BYTES,
+                })
+            })
+            .collect();
+        WeightStore {
+            refs,
+            arena,
+            data_off: 0,
+            embd_row_bytes: 0,
+            load_seconds: 0.,
+            repacked_bytes: (2 * BYTES) as u64,
+            info: LoadInfo::default(),
+            shared_experts: vec![],
+        }
     }
-    struct Owned { data:Vec<u8>, live:Arc<AtomicUsize> }
-    impl Owned { fn new(src:&[u8],live:&Arc<AtomicUsize>)->Self{live.fetch_add(1,Ordering::Relaxed);Self{data:src.to_vec(),live:live.clone()}} }
-    impl AsRef<[u8]> for Owned { fn as_ref(&self)->&[u8]{&self.data} }
-    impl Drop for Owned {fn drop(&mut self){self.live.fetch_sub(1,Ordering::Relaxed);}}
+    struct Owned {
+        data: Vec<u8>,
+        live: Arc<AtomicUsize>,
+    }
+    impl Owned {
+        fn new(src: &[u8], live: &Arc<AtomicUsize>) -> Self {
+            live.fetch_add(1, Ordering::Relaxed);
+            Self {
+                data: src.to_vec(),
+                live: live.clone(),
+            }
+        }
+    }
+    impl AsRef<[u8]> for Owned {
+        fn as_ref(&self) -> &[u8] {
+            &self.data
+        }
+    }
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            self.live.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
     #[test]
     fn allocation_failure_rolls_back_all_staging_without_publishing_pointers() {
-        let ws=store();let old:Vec<_>=ws.refs.iter().map(|r|r.unwrap().ptr).collect();
-        let live=Arc::new(AtomicUsize::new(0));let mut calls=0;let mut advised=0;
-        let got=ws.stage_shared_backings(&[0,1],|src|{calls+=1;if calls==2{Err("injected allocation failure".into())}else{Ok(Owned::new(src,&live))}},|_,_|advised+=1);
-        assert!(got.is_err());assert_eq!(calls,2);assert_eq!(advised,1);assert_eq!(live.load(Ordering::Relaxed),0);
-        assert_eq!(old,ws.refs.iter().map(|r|r.unwrap().ptr).collect::<Vec<_>>());assert_eq!(ws.shared_expert_bytes(),0);
-        assert_eq!(ws.arena.slice(0,2*BYTES),(0..2*BYTES).map(|i|(i%251)as u8).collect::<Vec<_>>());
+        let ws = store();
+        let old: Vec<_> = ws.refs.iter().map(|r| r.unwrap().ptr).collect();
+        let live = Arc::new(AtomicUsize::new(0));
+        let mut calls = 0;
+        let mut advised = 0;
+        let got = ws.stage_shared_backings(
+            &[0, 1],
+            |src| {
+                calls += 1;
+                if calls == 2 {
+                    Err("injected allocation failure".into())
+                } else {
+                    Ok(Owned::new(src, &live))
+                }
+            },
+            |_, _| advised += 1,
+        );
+        assert!(got.is_err());
+        assert_eq!(calls, 2);
+        assert_eq!(advised, 1);
+        assert_eq!(live.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            old,
+            ws.refs.iter().map(|r| r.unwrap().ptr).collect::<Vec<_>>()
+        );
+        assert_eq!(ws.shared_expert_bytes(), 0);
+        assert_eq!(
+            ws.arena.slice(0, 2 * BYTES),
+            (0..2 * BYTES).map(|i| (i % 251) as u8).collect::<Vec<_>>()
+        );
     }
     #[test]
     fn all_ranges_preflight_before_first_allocation_or_advice() {
-        for ids in [vec![],vec![0,0],vec![1,0],vec![0,2]]{
-            let ws=store();let mut calls=0;
-            let got=ws.stage_shared_backings(&ids,|src|{calls+=1;Ok(src.to_vec())},|_,_|panic!("advice before preflight"));
-            assert!(got.is_err());assert_eq!(calls,0);
+        for ids in [vec![], vec![0, 0], vec![1, 0], vec![0, 2]] {
+            let ws = store();
+            let mut calls = 0;
+            let got = ws.stage_shared_backings(
+                &ids,
+                |src| {
+                    calls += 1;
+                    Ok(src.to_vec())
+                },
+                |_, _| panic!("advice before preflight"),
+            );
+            assert!(got.is_err());
+            assert_eq!(calls, 0);
         }
-        let mut ws=store();ws.refs[1].as_mut().unwrap().ptr=usize::MAX-4;
-        let got=ws.stage_shared_backings(&[0,1],|_:&[u8]|->Result<Vec<u8>,String>{panic!("allocation before range preflight")},|_,_|panic!("advice before preflight"));
+        let mut ws = store();
+        ws.refs[1].as_mut().unwrap().ptr = usize::MAX - 4;
+        let got = ws.stage_shared_backings(
+            &[0, 1],
+            |_: &[u8]| -> Result<Vec<u8>, String> { panic!("allocation before range preflight") },
+            |_, _| panic!("advice before preflight"),
+        );
         assert!(got.is_err());
     }
     #[test]
     fn wrong_copy_is_rejected_and_success_preserves_exact_native_bytes() {
-        let ws=store();let live=Arc::new(AtomicUsize::new(0));let mut advised=0;
-        let bad=ws.stage_shared_backings(&[0,1],|src|{let mut o=Owned::new(src,&live);o.data[9]^=1;Ok(o)},|_,_|advised+=1);
-        assert!(bad.is_err());assert_eq!(advised,0);assert_eq!(live.load(Ordering::Relaxed),0);
-        let good=ws.stage_shared_backings(&[0,1],|src|Ok(Owned::new(src,&live)),|_,bytes|{assert_eq!(bytes,BYTES);advised+=1;}).unwrap();
-        assert_eq!(advised,2);assert_eq!(live.load(Ordering::Relaxed),2);
-        for (id,m) in &good{assert_eq!(m.as_ref(),ws.arena.slice(id*BYTES,BYTES));}
-        drop(good);assert_eq!(live.load(Ordering::Relaxed),0);
+        let ws = store();
+        let live = Arc::new(AtomicUsize::new(0));
+        let mut advised = 0;
+        let bad = ws.stage_shared_backings(
+            &[0, 1],
+            |src| {
+                let mut o = Owned::new(src, &live);
+                o.data[9] ^= 1;
+                Ok(o)
+            },
+            |_, _| advised += 1,
+        );
+        assert!(bad.is_err());
+        assert_eq!(advised, 0);
+        assert_eq!(live.load(Ordering::Relaxed), 0);
+        let good = ws
+            .stage_shared_backings(
+                &[0, 1],
+                |src| Ok(Owned::new(src, &live)),
+                |_, bytes| {
+                    assert_eq!(bytes, BYTES);
+                    advised += 1;
+                },
+            )
+            .unwrap();
+        assert_eq!(advised, 2);
+        assert_eq!(live.load(Ordering::Relaxed), 2);
+        for (id, m) in &good {
+            assert_eq!(m.as_ref(), ws.arena.slice(id * BYTES, BYTES));
+        }
+        drop(good);
+        assert_eq!(live.load(Ordering::Relaxed), 0);
     }
 }
 
@@ -1135,29 +1559,76 @@ mod real_native_reader_tests {
     #[test]
     #[ignore = "explicit real-weight proof; requires canonical inference lease"]
     fn native_expert_tiles_match_real_original_gguf() {
-        let home=PathBuf::from(std::env::var("HOME").unwrap());
-        assert!(!crate::load::lease_free(&home.join(".local/state/local-ai/inference.lock")),"hold canonical inference lease before touching real weights");
-        let path=home.join(".local/share/ai-stack/models/llm/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf");
-        let g=Gguf::open(&path).unwrap();let mut checked=0;
-        for (name,ty) in [("blk.0.ffn_gate_exps.weight",QType::Q4K),("blk.5.ffn_down_exps.weight",QType::Q3K)]{
-            let tensor=g.header.tensors.iter().find(|t|t.name==name).unwrap();
-            assert_eq!(qtype(tensor.ty),Some(ty));assert_eq!(tensor.shape.len(),3);
-            let (k,rows,experts)=(tensor.shape[0]as usize,tensor.shape[1]as usize,tensor.shape[2]as usize);
-            assert_eq!(experts,256);let raw=g.tensor_data(tensor);let rb=ty.row_bytes(k);let bb=ty.block_bytes();
-            for e in [0,1,127,255]{for row0 in [0,rows-32]{for kb in [0,k/512,k/256-1]{
-                let mut group=vec![0u8;32*bb];
-                for r in 0..32{let at=(e*rows+row0+r)*rb+kb*bb;group[r*bb..(r+1)*bb].copy_from_slice(&raw[at..at+bb]);}
-                let mut packed=vec![0u8;group.len()];kernels_sys::repack(ty,&group,&mut packed,32,256);
-                let mut floats=vec![0f32;32*256];
-                for r in 0..32{kernels_sys::dequantize_row(ty,&group[r*bb..(r+1)*bb],&mut floats[r*256..(r+1)*256]);}
-                let mut expected=vec![0u16;floats.len()];kernels_sys::f32_to_f16(&floats,&mut expected);
-                for c0 in (0..256).step_by(32){
-                    let mut tile=[0u16;1024];kernels_sys::native_expert_tile(ty,&packed,256,32,1,0,0,c0,&mut tile).unwrap();
-                    for r in 0..32{for c in 0..32{assert_eq!(tile[(c/2)*64+2*r+c%2],expected[r*256+c0+c],"{name} expert{e} row{} k{}",row0+r,kb*256+c0+c);checked+=1;}}
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        assert!(
+            !crate::load::lease_free(&home.join(".local/state/local-ai/inference.lock")),
+            "hold canonical inference lease before touching real weights"
+        );
+        let path =
+            home.join(".local/share/ai-stack/models/llm/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf");
+        let g = Gguf::open(&path).unwrap();
+        let mut checked = 0;
+        for (name, ty) in [
+            ("blk.0.ffn_gate_exps.weight", QType::Q4K),
+            ("blk.5.ffn_down_exps.weight", QType::Q3K),
+        ] {
+            let tensor = g.header.tensors.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(qtype(tensor.ty), Some(ty));
+            assert_eq!(tensor.shape.len(), 3);
+            let (k, rows, experts) = (
+                tensor.shape[0] as usize,
+                tensor.shape[1] as usize,
+                tensor.shape[2] as usize,
+            );
+            assert_eq!(experts, 256);
+            let raw = g.tensor_data(tensor);
+            let rb = ty.row_bytes(k);
+            let bb = ty.block_bytes();
+            for e in [0, 1, 127, 255] {
+                for row0 in [0, rows - 32] {
+                    for kb in [0, k / 512, k / 256 - 1] {
+                        let mut group = vec![0u8; 32 * bb];
+                        for r in 0..32 {
+                            let at = (e * rows + row0 + r) * rb + kb * bb;
+                            group[r * bb..(r + 1) * bb].copy_from_slice(&raw[at..at + bb]);
+                        }
+                        let mut packed = vec![0u8; group.len()];
+                        kernels_sys::repack(ty, &group, &mut packed, 32, 256);
+                        let mut floats = vec![0f32; 32 * 256];
+                        for r in 0..32 {
+                            kernels_sys::dequantize_row(
+                                ty,
+                                &group[r * bb..(r + 1) * bb],
+                                &mut floats[r * 256..(r + 1) * 256],
+                            );
+                        }
+                        let mut expected = vec![0u16; floats.len()];
+                        kernels_sys::f32_to_f16(&floats, &mut expected);
+                        for c0 in (0..256).step_by(32) {
+                            let mut tile = [0u16; 1024];
+                            kernels_sys::native_expert_tile(
+                                ty, &packed, 256, 32, 1, 0, 0, c0, &mut tile,
+                            )
+                            .unwrap();
+                            for r in 0..32 {
+                                for c in 0..32 {
+                                    assert_eq!(
+                                        tile[(c / 2) * 64 + 2 * r + c % 2],
+                                        expected[r * 256 + c0 + c],
+                                        "{name} expert{e} row{} k{}",
+                                        row0 + r,
+                                        kb * 256 + c0 + c
+                                    );
+                                    checked += 1;
+                                }
+                            }
+                        }
+                    }
                 }
-            }}}
+            }
         }
-        assert_eq!(checked,393216);println!("W2b native reader real-GGUF fp16 elements checked={checked}, all exact, no model graph/DSP session");
+        assert_eq!(checked, 393216);
+        println!("W2b native reader real-GGUF fp16 elements checked={checked}, all exact, no model graph/DSP session");
     }
 }
 
@@ -1166,7 +1637,14 @@ mod n1_tests {
     use super::*;
 
     fn f32_ref(ptr: usize, bytes: usize) -> WeightRef {
-        WeightRef { ptr, layout: Layout::F32, k: bytes / 4, rows: 1, n_expert: 1, bytes }
+        WeightRef {
+            ptr,
+            layout: Layout::F32,
+            k: bytes / 4,
+            rows: 1,
+            n_expert: 1,
+            bytes,
+        }
     }
 
     #[test]
@@ -1192,7 +1670,14 @@ mod n1_tests {
     #[test]
     #[should_panic(expected = "f32() on a")]
     fn f32_pointer_refuses_a_quantised_layout() {
-        let w = WeightRef { ptr: 0, layout: Layout::Raw(QType::Q8_0), k: 32, rows: 1, n_expert: 1, bytes: 34 };
+        let w = WeightRef {
+            ptr: 0,
+            layout: Layout::Raw(QType::Q8_0),
+            k: 32,
+            rows: 1,
+            n_expert: 1,
+            bytes: 34,
+        };
         let _ = w.f32();
     }
 }

@@ -200,24 +200,32 @@ pub struct AutoPolicy {
 
 impl Default for AutoPolicy {
     fn default() -> AutoPolicy {
-        AutoPolicy { min_kv: PFA_AUTO_MIN_KV, kernel: PFA_AUTO_KERNEL }
+        AutoPolicy {
+            min_kv: PFA_AUTO_MIN_KV,
+            kernel: PFA_AUTO_KERNEL,
+        }
     }
 }
 
 impl AutoPolicy {
     /// The v0.1.3 lane-A rule (today's behaviour), whatever the defaults say.
-    pub const LEGACY: AutoPolicy = AutoPolicy { min_kv: None, kernel: PfAttn::Fa2 };
+    pub const LEGACY: AutoPolicy = AutoPolicy {
+        min_kv: None,
+        kernel: PfAttn::Fa2,
+    };
 
     /// `kernel` must be fa2, fa2x or pfg.
     pub fn new(min_kv: Option<usize>, kernel: PfAttn) -> Option<AutoPolicy> {
-        matches!(kernel, PfAttn::Fa2 | PfAttn::Fa2x | PfAttn::Pfg).then_some(AutoPolicy { min_kv, kernel })
+        matches!(kernel, PfAttn::Fa2 | PfAttn::Fa2x | PfAttn::Pfg)
+            .then_some(AutoPolicy { min_kv, kernel })
     }
 
     /// The KV cutoff (positions): PFA_MIN_KV for the legacy rule, else min_kv clamped to
     /// [PFA_MIN_KV, PFA_AUTO_MIN_CTX] (short prompts keep tiled bits; the tiled scratch, sized for
     /// the cutoff, never exceeds the 128K-class size).
     pub fn cut(self) -> usize {
-        self.min_kv.map_or(PFA_MIN_KV, |n| n.clamp(PFA_MIN_KV, PFA_AUTO_MIN_CTX))
+        self.min_kv
+            .map_or(PFA_MIN_KV, |n| n.clamp(PFA_MIN_KV, PFA_AUTO_MIN_CTX))
     }
 
     /// `OXE_PF_ATTN_AUTO_MIN_KV` value: "legacy" = None (the lane-A rule, whatever the default),
@@ -242,7 +250,9 @@ impl AutoPolicy {
 
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> AutoPolicy {
         let mut p = AutoPolicy::default();
-        if let Some(v) = get("OXE_PF_ATTN_AUTO_MIN_KV").filter(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "default")) {
+        if let Some(v) = get("OXE_PF_ATTN_AUTO_MIN_KV")
+            .filter(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "default"))
+        {
             match AutoPolicy::parse_min_kv(&v) {
                 Some(m) => p.min_kv = m,
                 None => {
@@ -284,7 +294,10 @@ pub struct PfPath {
 }
 
 impl PfPath {
-    pub const TILED: PfPath = PfPath { kernel: PfKernel::Tiled, cut: usize::MAX };
+    pub const TILED: PfPath = PfPath {
+        kernel: PfKernel::Tiled,
+        cut: usize::MAX,
+    };
 
     /// fa2, fa2x or pfg units exist (fa2's scratch policy: tiled units only up to the cutoff).
     pub fn fa2(self) -> bool {
@@ -315,14 +328,18 @@ pub struct XParams {
 
 impl Default for XParams {
     fn default() -> XParams {
-        XParams { fold: FA2X_FOLD, ch: FA2X_CH }
+        XParams {
+            fold: FA2X_FOLD,
+            ch: FA2X_CH,
+        }
     }
 }
 
 impl XParams {
     /// Valid: fold 8 / 16 / 32, ch a multiple of 32 in [32, FA2X_MAX_CH].
     pub fn new(fold: usize, ch: usize) -> Option<XParams> {
-        (matches!(fold, 8 | 16 | 32) && ch >= 32 && ch % 32 == 0 && ch <= FA2X_MAX_CH).then_some(XParams { fold, ch })
+        (matches!(fold, 8 | 16 | 32) && ch >= 32 && ch % 32 == 0 && ch <= FA2X_MAX_CH)
+            .then_some(XParams { fold, ch })
     }
 
     /// `OXE_PF_FA2X_FOLD` / `OXE_PF_FA2X_CH` (read once; an invalid value warns and keeps the default).
@@ -384,7 +401,13 @@ pub struct GParams {
 
 impl Default for GParams {
     fn default() -> GParams {
-        GParams { fold_qk: PFG_FOLD_QK, fold_pv: PFG_FOLD_PV, ch: PFG_CH, tb: PFG_TB, mk: PgMk::Ld1r }
+        GParams {
+            fold_qk: PFG_FOLD_QK,
+            fold_pv: PFG_FOLD_PV,
+            ch: PFG_CH,
+            tb: PFG_TB,
+            mk: PgMk::Ld1r,
+        }
     }
 }
 
@@ -392,8 +415,19 @@ impl GParams {
     /// Valid: folds 16 / 32, ch a multiple of 32 in [32, PFG_MAX_CH], tb 8 / 16 / 32.
     pub fn new(fold_qk: usize, fold_pv: usize, ch: usize, tb: usize, mk: PgMk) -> Option<GParams> {
         let fold = |f: usize| matches!(f, 16 | 32);
-        (fold(fold_qk) && fold(fold_pv) && ch >= 32 && ch % 32 == 0 && ch <= PFG_MAX_CH && matches!(tb, 8 | 16 | 32))
-            .then_some(GParams { fold_qk, fold_pv, ch, tb, mk })
+        (fold(fold_qk)
+            && fold(fold_pv)
+            && ch >= 32
+            && ch % 32 == 0
+            && ch <= PFG_MAX_CH
+            && matches!(tb, 8 | 16 | 32))
+        .then_some(GParams {
+            fold_qk,
+            fold_pv,
+            ch,
+            tb,
+            mk,
+        })
     }
 
     /// `OXE_PF_PFG_FOLD` value: "f" (both) or "qk:pv".
@@ -414,7 +448,11 @@ impl GParams {
     /// is invalid.
     pub fn try_from_lookup(get: impl Fn(&str) -> Option<String>) -> Option<GParams> {
         let d = GParams::default();
-        let num = |k: &str, dv: usize| get(k).map(|v| v.trim().parse::<usize>().unwrap_or(usize::MAX)).unwrap_or(dv);
+        let num = |k: &str, dv: usize| {
+            get(k)
+                .map(|v| v.trim().parse::<usize>().unwrap_or(usize::MAX))
+                .unwrap_or(dv)
+        };
         let (fq, fp) = match get("OXE_PF_PFG_FOLD") {
             Some(v) => GParams::parse_fold(&v)?,
             None => (d.fold_qk, d.fold_pv),
@@ -423,7 +461,13 @@ impl GParams {
             Some(v) => PgMk::parse(&v)?,
             None => d.mk,
         };
-        GParams::new(fq, fp, num("OXE_PF_PFG_CH", d.ch), num("OXE_PF_PFG_TB", d.tb), mk)
+        GParams::new(
+            fq,
+            fp,
+            num("OXE_PF_PFG_CH", d.ch),
+            num("OXE_PF_PFG_TB", d.tb),
+            mk,
+        )
     }
 
     /// [`GParams::try_from_lookup`], or the defaults with a warning (once).
@@ -440,20 +484,41 @@ impl GParams {
 
     /// State-identity / report tag: `q<fold_qk>.p<fold_pv>.c<ch>.t<tb>.<mk>`.
     pub fn tag(self) -> String {
-        format!("q{}.p{}.c{}.t{}.{}", self.fold_qk, self.fold_pv, self.ch, self.tb, self.mk.name())
+        format!(
+            "q{}.p{}.c{}.t{}.{}",
+            self.fold_qk,
+            self.fold_pv,
+            self.ch,
+            self.tb,
+            self.mk.name()
+        )
     }
 
     /// Lossless packing into one word (never 0), for the prefill scratch's per-call atomic.
     pub fn encode(self) -> usize {
-        1 | (self.fold_qk << 1) | (self.fold_pv << 8) | (self.ch << 16) | (self.tb << 28) | ((self.mk.code() as usize) << 36)
+        1 | (self.fold_qk << 1)
+            | (self.fold_pv << 8)
+            | (self.ch << 16)
+            | (self.tb << 28)
+            | ((self.mk.code() as usize) << 36)
     }
 
     pub fn decode(w: usize) -> Option<GParams> {
         if w & 1 == 0 {
             return None;
         }
-        let mk = if (w >> 36) & 1 == 0 { PgMk::Ld1r } else { PgMk::Elem };
-        GParams::new((w >> 1) & 0x7f, (w >> 8) & 0xff, (w >> 16) & 0xfff, (w >> 28) & 0xff, mk)
+        let mk = if (w >> 36) & 1 == 0 {
+            PgMk::Ld1r
+        } else {
+            PgMk::Elem
+        };
+        GParams::new(
+            (w >> 1) & 0x7f,
+            (w >> 8) & 0xff,
+            (w >> 16) & 0xfff,
+            (w >> 28) & 0xff,
+            mk,
+        )
     }
 
     /// Tokens per unit for `group` query heads per KV head: tb, lowered until the unit fits
@@ -481,7 +546,10 @@ pub fn pfg_cols(group: usize) -> usize {
 /// attention-core work units (0 or unset = all, today's behaviour). Units are scheduled
 /// dynamically and each is computed by one thread, so any value gives the same bits.
 pub fn pf_attn_threads_from_env() -> usize {
-    std::env::var("OXE_PF_ATTN_THREADS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0)
+    std::env::var("OXE_PF_ATTN_THREADS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// Per-thread scratch of the fa2 kernel for up to `ncol` columns of `hd` dims: everything is
@@ -559,11 +627,20 @@ impl Scratch {
 
     /// Bytes of [`Scratch::new`] (`ctx_mem` accounting; equal to [`Scratch::bytes_allocated`]).
     pub fn bytes(ncol: usize, hd: usize) -> usize {
-        ncol * PFA_CH * (4 + 2) + ncol * hd * (4 + 4) + ncol * (2 + 1 + 1) * 4 + ncol * 4 + x_bytes(ncol, hd)
+        ncol * PFA_CH * (4 + 2)
+            + ncol * hd * (4 + 4)
+            + ncol * (2 + 1 + 1) * 4
+            + ncol * 4
+            + x_bytes(ncol, hd)
     }
 
     pub fn bytes_allocated(&self) -> usize {
-        self.s.len() * 4 + self.p.len() * 2 + (self.part.len() + self.ml.len() + self.acc.len() + self.m.len() + self.l.len()) * 4 + self.nv.len() * 4 + self.xs.len() + self.gs.len()
+        self.s.len() * 4
+            + self.p.len() * 2
+            + (self.part.len() + self.ml.len() + self.acc.len() + self.m.len() + self.l.len()) * 4
+            + self.nv.len() * 4
+            + self.xs.len()
+            + self.gs.len()
     }
 
     /// Normalised (ungated) output of column `c` after [`Tile::run`].
@@ -626,7 +703,9 @@ impl Tile {
     /// `ncol <= PFA_MAX_COLS`, `n_ctx % 32 == 0`, `last() < n_ctx`.
     pub unsafe fn run(&self, scr: &mut Scratch) {
         let (hd, ncol, group) = (self.hd, self.ncol, self.group);
-        assert!(ncol >= 1 && ncol <= scr.ncol && hd == scr.hd && ncol <= PFA_MAX_COLS && group >= 1);
+        assert!(
+            ncol >= 1 && ncol <= scr.ncol && hd == scr.hd && ncol <= PFA_MAX_COLS && group >= 1
+        );
         assert!(self.n_ctx % 32 == 0 && self.last() < self.n_ctx);
         let rows = self.last() + 1;
         let n32 = rows.div_ceil(32) * 32;
@@ -690,7 +769,11 @@ impl Tile {
                     }
                 } else {
                     // new max: rescale what is there (nothing on the first valid chunk)
-                    let a = if mo == f32::NEG_INFINITY { 0.0 } else { (mo - mc).exp() };
+                    let a = if mo == f32::NEG_INFINITY {
+                        0.0
+                    } else {
+                        (mo - mc).exp()
+                    };
                     scr.l[c] = scr.l[c] * a + lc;
                     for (x, &y) in o.iter_mut().zip(pc) {
                         *x = *x * a + y;
@@ -747,7 +830,14 @@ impl Tile {
     /// `scr` built by [`Scratch::new_pfg`] for at least `ncol` columns of `hd`; `hd % 32 == 0`.
     pub unsafe fn run_g(&self, scr: &mut Scratch, gp: GParams, prof: Option<&mut [u64; 5]>) {
         let (hd, ncol) = (self.hd, self.ncol);
-        assert!(ncol >= 1 && ncol <= scr.ncol && ncol <= PFG_MAX_COLS && hd == scr.hd && self.group >= 1 && !scr.gs.is_empty());
+        assert!(
+            ncol >= 1
+                && ncol <= scr.ncol
+                && ncol <= PFG_MAX_COLS
+                && hd == scr.hd
+                && self.group >= 1
+                && !scr.gs.is_empty()
+        );
         assert!(self.n_ctx % 32 == 0 && self.last() < self.n_ctx);
         let rc = ffi::oxe_pfg_unit(
             hd as i32,
@@ -792,8 +882,15 @@ mod tests {
         assert_eq!(PfAttn::parse("flash"), None);
         assert_eq!(PfAttn::parse("FA2X"), Some(PfAttn::Fa2x));
         assert!(PfAttn::Fa2x.fa2_at(4096) && PfAttn::Fa2x.name() == "fa2x");
-        assert_eq!(XParams::default(), XParams::new(FA2X_FOLD, FA2X_CH).unwrap());
-        assert!(XParams::new(12, 128).is_none() && XParams::new(8, 100).is_none() && XParams::new(8, 1024).is_none());
+        assert_eq!(
+            XParams::default(),
+            XParams::new(FA2X_FOLD, FA2X_CH).unwrap()
+        );
+        assert!(
+            XParams::new(12, 128).is_none()
+                && XParams::new(8, 100).is_none()
+                && XParams::new(8, 1024).is_none()
+        );
         // auto: only a 256K-class engine
         for n in [4096usize, 32_768, 131_072] {
             assert!(!PfAttn::Auto.fa2_at(n), "{n}");
@@ -810,21 +907,51 @@ mod tests {
         let leg = AutoPolicy::LEGACY;
         // legacy: tiled up to and including 131072, fa2 beyond PFA_MIN_KV above it
         assert_eq!(PfAttn::Auto.path(131_072, leg), PfPath::TILED);
-        assert_eq!(PfAttn::Auto.path(131_328, leg), PfPath { kernel: PfKernel::Fa2, cut: PFA_MIN_KV });
+        assert_eq!(
+            PfAttn::Auto.path(131_328, leg),
+            PfPath {
+                kernel: PfKernel::Fa2,
+                cut: PFA_MIN_KV
+            }
+        );
         // explicit modes ignore the auto policy
         let p32 = AutoPolicy::new(Some(32_768), PfAttn::Fa2x).unwrap();
         for a in [leg, p32] {
             assert_eq!(PfAttn::Tiled.path(262_144, a), PfPath::TILED);
-            assert_eq!(PfAttn::Fa2.path(16_384, a), PfPath { kernel: PfKernel::Fa2, cut: PFA_MIN_KV });
-            assert_eq!(PfAttn::Fa2x.path(16_384, a), PfPath { kernel: PfKernel::Fa2x, cut: PFA_MIN_KV });
+            assert_eq!(
+                PfAttn::Fa2.path(16_384, a),
+                PfPath {
+                    kernel: PfKernel::Fa2,
+                    cut: PFA_MIN_KV
+                }
+            );
+            assert_eq!(
+                PfAttn::Fa2x.path(16_384, a),
+                PfPath {
+                    kernel: PfKernel::Fa2x,
+                    cut: PFA_MIN_KV
+                }
+            );
         }
         // min-kv 32768: an engine whose n_ctx cannot exceed the cutoff stays tiled; above it, the
         // auto kernel beyond 32768
         assert_eq!(PfAttn::Auto.path(32_768, p32), PfPath::TILED);
-        assert_eq!(PfAttn::Auto.path(32_769, p32), PfPath { kernel: PfKernel::Fa2x, cut: 32_768 });
+        assert_eq!(
+            PfAttn::Auto.path(32_769, p32),
+            PfPath {
+                kernel: PfKernel::Fa2x,
+                cut: 32_768
+            }
+        );
         assert_eq!(PfAttn::Auto.path(65_536, p32).name(), "fa2x");
         let p32f = AutoPolicy::new(Some(32_768), PfAttn::Fa2).unwrap();
-        assert_eq!(PfAttn::Auto.path(65_536, p32f), PfPath { kernel: PfKernel::Fa2, cut: 32_768 });
+        assert_eq!(
+            PfAttn::Auto.path(65_536, p32f),
+            PfPath {
+                kernel: PfKernel::Fa2,
+                cut: 32_768
+            }
+        );
         // clamps: below PFA_MIN_KV short prompts keep tiled bits; above PFA_AUTO_MIN_CTX the
         // tiled scratch would outgrow the 128K class
         let p0 = AutoPolicy::new(Some(0), PfAttn::Fa2).unwrap();
@@ -835,7 +962,10 @@ mod tests {
         assert_eq!(pbig.cut(), PFA_AUTO_MIN_CTX);
         assert_eq!(PfAttn::Auto.path(131_072, pbig), PfPath::TILED);
         assert_eq!(PfAttn::Auto.path(262_144, pbig).cut, PFA_AUTO_MIN_CTX);
-        assert!(AutoPolicy::new(Some(1), PfAttn::Tiled).is_none() && AutoPolicy::new(None, PfAttn::Auto).is_none());
+        assert!(
+            AutoPolicy::new(Some(1), PfAttn::Tiled).is_none()
+                && AutoPolicy::new(None, PfAttn::Auto).is_none()
+        );
         assert_eq!(PfPath::TILED.cut_opt(), None);
     }
 
@@ -843,18 +973,44 @@ mod tests {
     #[test]
     fn pf_attn_auto_policy_default_and_env() {
         // the one-line change after AP-1 updates this assertion together with PFA_AUTO_MIN_KV
-        assert_eq!(AutoPolicy::default(), AutoPolicy::LEGACY, "PFA_AUTO_MIN_KV / PFA_AUTO_KERNEL changed: update the release notes");
+        assert_eq!(
+            AutoPolicy::default(),
+            AutoPolicy::LEGACY,
+            "PFA_AUTO_MIN_KV / PFA_AUTO_KERNEL changed: update the release notes"
+        );
         for n in [4096usize, 32_768, 65_536, 131_072] {
-            assert!(!PfAttn::Auto.fa2_at(n), "{n}: auto must stay tiled at <= 131072 by default");
+            assert!(
+                !PfAttn::Auto.fa2_at(n),
+                "{n}: auto must stay tiled at <= 131072 by default"
+            );
         }
-        let env = |kv: &'static [(&'static str, &'static str)]| AutoPolicy::from_lookup(|k| kv.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string()));
+        let env = |kv: &'static [(&'static str, &'static str)]| {
+            AutoPolicy::from_lookup(|k| {
+                kv.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+            })
+        };
         assert_eq!(env(&[]), AutoPolicy::default());
-        assert_eq!(env(&[("OXE_PF_ATTN_AUTO_MIN_KV", "24576")]).min_kv, Some(24_576));
+        assert_eq!(
+            env(&[("OXE_PF_ATTN_AUTO_MIN_KV", "24576")]).min_kv,
+            Some(24_576)
+        );
         assert_eq!(env(&[("OXE_PF_ATTN_AUTO_MIN_KV", "legacy")]).min_kv, None);
-        assert_eq!(env(&[("OXE_PF_ATTN_AUTO_MIN_KV", "default")]).min_kv, PFA_AUTO_MIN_KV);
-        assert_eq!(env(&[("OXE_PF_ATTN_AUTO_MIN_KV", "lots")]), AutoPolicy::default());
-        assert_eq!(env(&[("OXE_PF_ATTN_AUTO_KERNEL", "FA2X")]).kernel, PfAttn::Fa2x);
-        assert_eq!(env(&[("OXE_PF_ATTN_AUTO_KERNEL", "tiled")]).kernel, PFA_AUTO_KERNEL);
+        assert_eq!(
+            env(&[("OXE_PF_ATTN_AUTO_MIN_KV", "default")]).min_kv,
+            PFA_AUTO_MIN_KV
+        );
+        assert_eq!(
+            env(&[("OXE_PF_ATTN_AUTO_MIN_KV", "lots")]),
+            AutoPolicy::default()
+        );
+        assert_eq!(
+            env(&[("OXE_PF_ATTN_AUTO_KERNEL", "FA2X")]).kernel,
+            PfAttn::Fa2x
+        );
+        assert_eq!(
+            env(&[("OXE_PF_ATTN_AUTO_KERNEL", "tiled")]).kernel,
+            PFA_AUTO_KERNEL
+        );
         assert_eq!(AutoPolicy::parse_min_kv(" 16384 "), Some(Some(16_384)));
         assert_eq!(AutoPolicy::parse_min_kv("-1"), None);
     }
@@ -865,22 +1021,47 @@ mod tests {
         assert_eq!(PfAttn::parse(" PFG "), Some(PfAttn::Pfg));
         assert_eq!(PfAttn::Pfg.name(), "pfg");
         let leg = AutoPolicy::LEGACY;
-        assert_eq!(PfAttn::Pfg.path(16_384, leg), PfPath { kernel: PfKernel::Pfg, cut: PFA_MIN_KV });
+        assert_eq!(
+            PfAttn::Pfg.path(16_384, leg),
+            PfPath {
+                kernel: PfKernel::Pfg,
+                cut: PFA_MIN_KV
+            }
+        );
         assert_eq!(PfAttn::Pfg.path(16_384, leg).name(), "pfg");
         assert!(PfAttn::Pfg.path(16_384, leg).fa2());
         // default unchanged: auto never resolves to pfg unless asked
         for n in [4096usize, 65_536, 131_072, 262_144] {
-            assert_ne!(PfAttn::Auto.path(n, AutoPolicy::default()).kernel, PfKernel::Pfg, "{n}");
+            assert_ne!(
+                PfAttn::Auto.path(n, AutoPolicy::default()).kernel,
+                PfKernel::Pfg,
+                "{n}"
+            );
         }
         let pa = AutoPolicy::new(Some(32_768), PfAttn::Pfg).unwrap();
-        assert_eq!(PfAttn::Auto.path(65_536, pa), PfPath { kernel: PfKernel::Pfg, cut: 32_768 });
+        assert_eq!(
+            PfAttn::Auto.path(65_536, pa),
+            PfPath {
+                kernel: PfKernel::Pfg,
+                cut: 32_768
+            }
+        );
         assert_eq!(AutoPolicy::parse_kernel("pfg"), Some(PfAttn::Pfg));
         // parameters
         let d = GParams::default();
-        assert_eq!((d.fold_qk, d.fold_pv, d.ch, d.tb, d.mk), (PFG_FOLD_QK, PFG_FOLD_PV, PFG_CH, PFG_TB, PgMk::Ld1r));
+        assert_eq!(
+            (d.fold_qk, d.fold_pv, d.ch, d.tb, d.mk),
+            (PFG_FOLD_QK, PFG_FOLD_PV, PFG_CH, PFG_TB, PgMk::Ld1r)
+        );
         assert_eq!(d.tag(), "q16.p32.c128.t16.ld1r");
-        assert!(GParams::new(8, 32, 128, 16, PgMk::Ld1r).is_none() && GParams::new(32, 32, 100, 16, PgMk::Ld1r).is_none());
-        assert!(GParams::new(32, 32, 512, 16, PgMk::Ld1r).is_none() && GParams::new(32, 32, 128, 12, PgMk::Ld1r).is_none());
+        assert!(
+            GParams::new(8, 32, 128, 16, PgMk::Ld1r).is_none()
+                && GParams::new(32, 32, 100, 16, PgMk::Ld1r).is_none()
+        );
+        assert!(
+            GParams::new(32, 32, 512, 16, PgMk::Ld1r).is_none()
+                && GParams::new(32, 32, 128, 12, PgMk::Ld1r).is_none()
+        );
         for fq in [16usize, 32] {
             for fp in [16usize, 32] {
                 for ch in [32usize, 96, 128, 256] {
@@ -895,16 +1076,50 @@ mod tests {
             }
         }
         assert_eq!(GParams::decode(0), None);
-        let env = |kv: &'static [(&'static str, &'static str)]| GParams::from_lookup(|k| kv.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string()));
+        let env = |kv: &'static [(&'static str, &'static str)]| {
+            GParams::from_lookup(|k| kv.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string()))
+        };
         assert_eq!(env(&[]), d);
-        assert_eq!(env(&[("OXE_PF_PFG_FOLD", "32")]), GParams { fold_qk: 32, fold_pv: 32, ..d });
-        assert_eq!(env(&[("OXE_PF_PFG_FOLD", "16:32")]), GParams { fold_qk: 16, fold_pv: 32, ..d });
-        assert_eq!(env(&[("OXE_PF_PFG_CH", "256"), ("OXE_PF_PFG_TB", "32"), ("OXE_PF_PFG_MK", "ELEM")]), GParams { ch: 256, tb: 32, mk: PgMk::Elem, ..d });
+        assert_eq!(
+            env(&[("OXE_PF_PFG_FOLD", "32")]),
+            GParams {
+                fold_qk: 32,
+                fold_pv: 32,
+                ..d
+            }
+        );
+        assert_eq!(
+            env(&[("OXE_PF_PFG_FOLD", "16:32")]),
+            GParams {
+                fold_qk: 16,
+                fold_pv: 32,
+                ..d
+            }
+        );
+        assert_eq!(
+            env(&[
+                ("OXE_PF_PFG_CH", "256"),
+                ("OXE_PF_PFG_TB", "32"),
+                ("OXE_PF_PFG_MK", "ELEM")
+            ]),
+            GParams {
+                ch: 256,
+                tb: 32,
+                mk: PgMk::Elem,
+                ..d
+            }
+        );
         assert_eq!(env(&[("OXE_PF_PFG_FOLD", "8")]), d);
         assert_eq!(env(&[("OXE_PF_PFG_MK", "dup")]), d);
         assert_eq!(env(&[("OXE_PF_PFG_TB", "x")]), d);
-        assert!(GParams::try_from_lookup(|k| (k == "OXE_PF_PFG_TB").then(|| "16".to_string())).is_some());
-        assert!(GParams::try_from_lookup(|k| (k == "OXE_PF_PFG_CH").then(|| "48".to_string())).is_none());
+        assert!(
+            GParams::try_from_lookup(|k| (k == "OXE_PF_PFG_TB").then(|| "16".to_string()))
+                .is_some()
+        );
+        assert!(
+            GParams::try_from_lookup(|k| (k == "OXE_PF_PFG_CH").then(|| "48".to_string()))
+                .is_none()
+        );
         // tokens per unit fit 256 columns
         assert_eq!(d.tokens_per_unit(8), 16);
         assert_eq!(GParams { tb: 32, ..d }.tokens_per_unit(8), 32);
@@ -916,7 +1131,11 @@ mod tests {
         // scratch: allocation equals the accounting; ~1.3 MiB per thread at Ornith's shape
         let s = Scratch::new_pfg(256, 8);
         assert_eq!(s.bytes_allocated(), Scratch::bytes_pfg(256, 8));
-        assert!(Scratch::bytes_pfg(256, 8) < 2 << 20, "{}", Scratch::bytes_pfg(256, 8));
+        assert!(
+            Scratch::bytes_pfg(256, 8) < 2 << 20,
+            "{}",
+            Scratch::bytes_pfg(256, 8)
+        );
         assert!(pfg_tick_hz() > 0);
     }
 
@@ -924,7 +1143,11 @@ mod tests {
     fn scratch_bytes_match_allocation_and_do_not_grow_with_context() {
         for (ncol, hd) in [(64usize, 256usize), (32, 128), (8, 128), (1, 64)] {
             let s = Scratch::new(ncol, hd);
-            assert_eq!(s.bytes_allocated(), Scratch::bytes(ncol, hd), "{ncol} x {hd}");
+            assert_eq!(
+                s.bytes_allocated(),
+                Scratch::bytes(ncol, hd),
+                "{ncol} x {hd}"
+            );
         }
         // Ornith's unit (64 columns x 256 dims): ~224 KiB fa2 + ~304 KiB fa2x, whatever the context
         assert!(Scratch::bytes(64, 256) < 576 << 10);

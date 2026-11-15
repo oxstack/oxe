@@ -38,7 +38,9 @@ impl WeightImports {
             held: HashMap::new(),
         }
     }
-    pub fn is_readonly(&self, session:u32,slot:u32)->bool { self.held.contains_key(&(session,slot)) }
+    pub fn is_readonly(&self, session: u32, slot: u32) -> bool {
+        self.held.contains_key(&(session, slot))
+    }
     pub fn contains(&self, session: u32, allocation: u64) -> bool {
         self.held
             .iter()

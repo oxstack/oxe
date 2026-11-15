@@ -24,7 +24,12 @@ pub struct Dims {
 }
 
 impl Dims {
-    pub const KLEIN_4B: Dims = Dims { hidden: 3072, heads: 24, head_dim: 128, mlp: 9216 };
+    pub const KLEIN_4B: Dims = Dims {
+        hidden: 3072,
+        heads: 24,
+        head_dim: 128,
+        mlp: 9216,
+    };
 
     pub fn check(&self) {
         assert_eq!(self.heads * self.head_dim, self.hidden);

@@ -119,7 +119,11 @@ pub struct Taps {
 impl Taps {
     /// Both single-block input taps enabled.
     pub fn recording() -> Taps {
-        Taps { single0_in: Some(Vec::new()), single1_in: Some(Vec::new()), ..Taps::default() }
+        Taps {
+            single0_in: Some(Vec::new()),
+            single1_in: Some(Vec::new()),
+            ..Taps::default()
+        }
     }
 
     /// Every tap enabled (about 220 MB at 512 px with five double blocks).
@@ -155,7 +159,10 @@ enum Blocks {
     /// Blocks are dequantised from the mapped GGUF while they run.
     File(Gguf),
     /// Blocks decoded up front.
-    Mem { double: Vec<DoubleBlockF32>, single: Vec<BlockWeightsF32> },
+    Mem {
+        double: Vec<DoubleBlockF32>,
+        single: Vec<BlockWeightsF32>,
+    },
 }
 
 struct TxtCache {
@@ -186,7 +193,15 @@ impl RefModel {
         for i in 0..dims.n_single {
             check_single(&GgufSource(&g), i, &dims)?;
         }
-        Ok(RefModel { dims, embed, blocks: Blocks::File(g), threads: threads.max(1), txt_cache: None, arith: Arith::F32, perturb_ulp: 0 })
+        Ok(RefModel {
+            dims,
+            embed,
+            blocks: Blocks::File(g),
+            threads: threads.max(1),
+            txt_cache: None,
+            arith: Arith::F32,
+            perturb_ulp: 0,
+        })
     }
 
     /// Decode every tensor from `src` (tests and small models).
@@ -240,9 +255,23 @@ impl RefModel {
 
     /// Time embedding and every modulation vector for timestep `t` (component probe: no tokens).
     pub fn time_vectors(&self, t: f32) -> TimeVectors {
-        let (h, th, a, ty) = (self.dims.block.hidden, self.threads, self.arith, &self.embed.types);
+        let (h, th, a, ty) = (
+            self.dims.block.hidden,
+            self.threads,
+            self.arith,
+            &self.embed.types,
+        );
         let temb = timestep_embedding(t, TIME_DIM, TIME_MAX_PERIOD, TIME_FACTOR);
-        let mut t1 = linear_a(&self.embed.time_in0, TIME_DIM, h, &temb, 1, th, a, ty.time_in0);
+        let mut t1 = linear_a(
+            &self.embed.time_in0,
+            TIME_DIM,
+            h,
+            &temb,
+            1,
+            th,
+            a,
+            ty.time_in0,
+        );
         for v in t1.iter_mut() {
             *v = silu(*v);
         }
@@ -251,14 +280,36 @@ impl RefModel {
         TimeVectors {
             mod_img: linear_a(&self.embed.mod_img, h, 6 * h, &svec, 1, th, a, ty.mod_img),
             mod_txt: linear_a(&self.embed.mod_txt, h, 6 * h, &svec, 1, th, a, ty.mod_txt),
-            mod_single: linear_a(&self.embed.mod_single, h, 3 * h, &svec, 1, th, a, ty.mod_single),
-            final_mod: linear_a(&self.embed.final_adaln, h, 2 * h, &svec, 1, th, a, ty.final_adaln),
+            mod_single: linear_a(
+                &self.embed.mod_single,
+                h,
+                3 * h,
+                &svec,
+                1,
+                th,
+                a,
+                ty.mod_single,
+            ),
+            final_mod: linear_a(
+                &self.embed.final_adaln,
+                h,
+                2 * h,
+                &svec,
+                1,
+                th,
+                a,
+                ty.final_adaln,
+            ),
             vec,
         }
     }
 
     /// Single block `i` alone on a given input (component probe; e.g. sd.cpp's dumped block input).
-    pub fn single_block(&self, i: usize, input: &BlockInput) -> Result<(BlockOutput, StageTaps), String> {
+    pub fn single_block(
+        &self,
+        i: usize,
+        input: &BlockInput,
+    ) -> Result<(BlockOutput, StageTaps), String> {
         let (th, a) = (self.threads, self.arith);
         with_single(self, i, |w| single_block_ref_taps(w, input, th, a))
     }
@@ -274,9 +325,14 @@ impl RefModel {
         pe: &[f32],
     ) -> Result<(Vec<f32>, Vec<f32>), String> {
         let h = self.dims.block.hidden;
-        let (mi, mt) = (Mods6::from_vec(&tv.mod_img, h), Mods6::from_vec(&tv.mod_txt, h));
+        let (mi, mt) = (
+            Mods6::from_vec(&tv.mod_img, h),
+            Mods6::from_vec(&tv.mod_txt, h),
+        );
         let (b, th, a) = (self.dims.block, self.threads, self.arith);
-        with_double(self, i, |blk| double_block_a(b, blk, img, txt, &mi, &mt, pe, th, a))
+        with_double(self, i, |blk| {
+            double_block_a(b, blk, img, txt, &mi, &mt, pe, th, a)
+        })
     }
 
     /// Final layer on the image tokens `[n_img][h]` with the final modulation of `tv`.
@@ -287,19 +343,48 @@ impl RefModel {
         let y = par_rows(n_img, h, th, |s, e, out| {
             for t in s..e {
                 let o = (t - s) * h;
-                ln_modulate(&img_tok[t * h..(t + 1) * h], fshift, fscale, &mut out[o..o + h]);
+                ln_modulate(
+                    &img_tok[t * h..(t + 1) * h],
+                    fshift,
+                    fscale,
+                    &mut out[o..o + h],
+                );
             }
         });
-        linear_a(&self.embed.final_linear, h, self.dims.out_ch, &y, n_img, th, a, self.embed.types.final_linear)
+        linear_a(
+            &self.embed.final_linear,
+            h,
+            self.dims.out_ch,
+            &y,
+            n_img,
+            th,
+            a,
+            self.embed.types.final_linear,
+        )
     }
 
     /// `img_in(img)` and `txt_in(txt)` (component probe).
-    pub fn embed_tokens(&self, img: &[f32], n_img: usize, txt: &[f32], n_txt: usize) -> (Vec<f32>, Vec<f32>) {
+    pub fn embed_tokens(
+        &self,
+        img: &[f32],
+        n_img: usize,
+        txt: &[f32],
+        n_txt: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
         let (d, th, a, ty) = (self.dims, self.threads, self.arith, &self.embed.types);
         let h = d.block.hidden;
         (
             linear_a(&self.embed.img_in, d.in_ch, h, img, n_img, th, a, ty.img_in),
-            linear_a(&self.embed.txt_in, d.ctx_dim, h, txt, n_txt, th, a, ty.txt_in),
+            linear_a(
+                &self.embed.txt_in,
+                d.ctx_dim,
+                h,
+                txt,
+                n_txt,
+                th,
+                a,
+                ty.txt_in,
+            ),
         )
     }
 
@@ -307,7 +392,8 @@ impl RefModel {
     pub fn forward_with_taps(&mut self, input: &ModelInput, taps: &mut Taps) -> Vec<f32> {
         self.ensure_txt(input);
         let emb = &self.txt_cache.as_ref().expect("txt cache set above").emb;
-        self.run(input, emb, taps).expect("weights were validated at construction")
+        self.run(input, emb, taps)
+            .expect("weights were validated at construction")
     }
 
     /// `txt_in(txt)` does not depend on the step: recompute only when the context changes.
@@ -319,11 +405,28 @@ impl RefModel {
         }
         let h = self.dims.block.hidden;
         let ty = self.embed.types.txt_in;
-        let emb = linear_a(&self.embed.txt_in, self.dims.ctx_dim, h, &input.txt, input.n_txt, self.threads, self.arith, ty);
-        self.txt_cache = Some(TxtCache { txt: input.txt.clone(), emb });
+        let emb = linear_a(
+            &self.embed.txt_in,
+            self.dims.ctx_dim,
+            h,
+            &input.txt,
+            input.n_txt,
+            self.threads,
+            self.arith,
+            ty,
+        );
+        self.txt_cache = Some(TxtCache {
+            txt: input.txt.clone(),
+            emb,
+        });
     }
 
-    fn run(&self, input: &ModelInput, txt_emb: &[f32], taps: &mut Taps) -> Result<Vec<f32>, String> {
+    fn run(
+        &self,
+        input: &ModelInput,
+        txt_emb: &[f32],
+        taps: &mut Taps,
+    ) -> Result<Vec<f32>, String> {
         let d = self.dims;
         let b = d.block;
         let (h, hd) = (b.hidden, b.head_dim);
@@ -339,7 +442,16 @@ impl RefModel {
         let a = self.arith;
 
         // 1. embedders
-        let mut img = linear_a(&self.embed.img_in, d.in_ch, h, &input.img, n_img, th, a, self.embed.types.img_in);
+        let mut img = linear_a(
+            &self.embed.img_in,
+            d.in_ch,
+            h,
+            &input.img,
+            n_img,
+            th,
+            a,
+            self.embed.types.img_in,
+        );
         let mut txt = txt_emb.to_vec();
         if self.perturb_ulp > 0 {
             img = crate::drift::perturb(&img, self.perturb_ulp);
@@ -359,7 +471,17 @@ impl RefModel {
         // 4. double blocks (joint attention, text tokens first)
         for i in 0..d.n_double {
             let (ni, nt) = with_double(self, i, |blk| {
-                double_block_a(b, blk, std::mem::take(&mut img), std::mem::take(&mut txt), &mi, &mt, &input.pe, th, a)
+                double_block_a(
+                    b,
+                    blk,
+                    std::mem::take(&mut img),
+                    std::mem::take(&mut txt),
+                    &mi,
+                    &mt,
+                    &input.pe,
+                    th,
+                    a,
+                )
             })?;
             img = ni;
             txt = nt;
@@ -426,7 +548,11 @@ impl DitBackend for RefModel {
 // block access (lazy for File, owned for Mem)
 // ---------------------------------------------------------------------------------------------
 
-fn with_double<R>(m: &RefModel, i: usize, f: impl FnOnce(&DoubleBlockF32) -> R) -> Result<R, String> {
+fn with_double<R>(
+    m: &RefModel,
+    i: usize,
+    f: impl FnOnce(&DoubleBlockF32) -> R,
+) -> Result<R, String> {
     match &m.blocks {
         Blocks::Mem { double, .. } => Ok(f(&double[i])),
         Blocks::File(g) => {
@@ -436,7 +562,11 @@ fn with_double<R>(m: &RefModel, i: usize, f: impl FnOnce(&DoubleBlockF32) -> R) 
     }
 }
 
-fn with_single<R>(m: &RefModel, i: usize, f: impl FnOnce(&BlockWeightsF32) -> R) -> Result<R, String> {
+fn with_single<R>(
+    m: &RefModel,
+    i: usize,
+    f: impl FnOnce(&BlockWeightsF32) -> R,
+) -> Result<R, String> {
     match &m.blocks {
         Blocks::Mem { single, .. } => Ok(f(&single[i])),
         Blocks::File(g) => {
@@ -463,14 +593,18 @@ fn model_dims(src: &dyn WeightSource) -> Result<ModelDims, String> {
     let (_, _, ctx_dim) = src.f32("txt_in.weight")?;
     let (_, out_ch, fin_k) = src.f32("final_layer.linear.weight")?;
     if fin_k != hidden {
-        return Err(format!("final_layer.linear input {fin_k} != hidden {hidden}"));
+        return Err(format!(
+            "final_layer.linear input {fin_k} != hidden {hidden}"
+        ));
     }
     let (head_dim, mlp) = if n_single > 0 {
         let (_, _, hd) = src.f32("single_blocks.0.norm.query_norm.scale")?;
         let (_, rows1, k1) = src.q8("single_blocks.0.linear1.weight")?;
         let (_, rows2, k2) = src.q8("single_blocks.0.linear2.weight")?;
         if k1 != hidden || rows2 != hidden || k2 <= hidden {
-            return Err(format!("single block shapes: linear1 in {k1}, linear2 out {rows2}, in {k2}"));
+            return Err(format!(
+                "single block shapes: linear1 in {k1}, linear2 out {rows2}, in {k2}"
+            ));
         }
         let mlp = k2 - hidden;
         if rows1 != 3 * hidden + 2 * mlp {
@@ -486,15 +620,31 @@ fn model_dims(src: &dyn WeightSource) -> Result<ModelDims, String> {
         (hd, k)
     };
     if head_dim == 0 || hidden % head_dim != 0 || head_dim % 2 != 0 {
-        return Err(format!("bad attention shape: hidden {hidden}, head_dim {head_dim}"));
+        return Err(format!(
+            "bad attention shape: hidden {hidden}, head_dim {head_dim}"
+        ));
     }
-    let block = Dims { hidden, heads: hidden / head_dim, head_dim, mlp };
+    let block = Dims {
+        hidden,
+        heads: hidden / head_dim,
+        head_dim,
+        mlp,
+    };
     block.check();
-    Ok(ModelDims { block, in_ch, ctx_dim, out_ch, n_double, n_single })
+    Ok(ModelDims {
+        block,
+        in_ch,
+        ctx_dim,
+        out_ch,
+        n_double,
+        n_single,
+    })
 }
 
 fn count_blocks(src: &dyn WeightSource, kind: &str, probe: &str) -> usize {
-    (0usize..).take_while(|i| src.has(&format!("{kind}.{i}.{probe}"))).count()
+    (0usize..)
+        .take_while(|i| src.has(&format!("{kind}.{i}.{probe}")))
+        .count()
 }
 
 fn decode_embed(src: &dyn WeightSource, d: &ModelDims) -> Result<EmbedF32, String> {
@@ -541,7 +691,12 @@ fn check_double(src: &dyn WeightSource, i: usize, d: &ModelDims) -> Result<(), S
 
 fn check_single(src: &dyn WeightSource, i: usize, d: &ModelDims) -> Result<(), String> {
     let (h, hd, m) = (d.block.hidden, d.block.head_dim, d.block.mlp);
-    check_q8(src, &format!("single_blocks.{i}.linear1.weight"), 3 * h + 2 * m, h)?;
+    check_q8(
+        src,
+        &format!("single_blocks.{i}.linear1.weight"),
+        3 * h + 2 * m,
+        h,
+    )?;
     check_q8(src, &format!("single_blocks.{i}.linear2.weight"), h, h + m)?;
     check_f32_len(src, &format!("single_blocks.{i}.norm.query_norm.scale"), hd)?;
     check_f32_len(src, &format!("single_blocks.{i}.norm.key_norm.scale"), hd)
@@ -567,7 +722,11 @@ fn double_names(i: usize, s: &str) -> StreamNames {
     }
 }
 
-fn decode_double(src: &dyn WeightSource, i: usize, d: &ModelDims) -> Result<DoubleBlockF32, String> {
+fn decode_double(
+    src: &dyn WeightSource,
+    i: usize,
+    d: &ModelDims,
+) -> Result<DoubleBlockF32, String> {
     let (h, hd, m) = (d.block.hidden, d.block.head_dim, d.block.mlp);
     let stream = |s: &str| -> Result<StreamF32, String> {
         let n = double_names(i, s);
@@ -580,17 +739,39 @@ fn decode_double(src: &dyn WeightSource, i: usize, d: &ModelDims) -> Result<Doub
             k_scale: get_f32(src, &n.k_scale, 1, hd)?,
         })
     };
-    Ok(DoubleBlockF32 { img: stream("img")?, txt: stream("txt")? })
+    Ok(DoubleBlockF32 {
+        img: stream("img")?,
+        txt: stream("txt")?,
+    })
 }
 
-fn decode_single(src: &dyn WeightSource, i: usize, d: &ModelDims) -> Result<BlockWeightsF32, String> {
+fn decode_single(
+    src: &dyn WeightSource,
+    i: usize,
+    d: &ModelDims,
+) -> Result<BlockWeightsF32, String> {
     let (h, hd, m) = (d.block.hidden, d.block.head_dim, d.block.mlp);
     Ok(BlockWeightsF32 {
         dims: d.block,
-        w1: get_q8_f32(src, &format!("single_blocks.{i}.linear1.weight"), 3 * h + 2 * m, h)?,
+        w1: get_q8_f32(
+            src,
+            &format!("single_blocks.{i}.linear1.weight"),
+            3 * h + 2 * m,
+            h,
+        )?,
         w2: get_q8_f32(src, &format!("single_blocks.{i}.linear2.weight"), h, h + m)?,
-        q_scale: get_f32(src, &format!("single_blocks.{i}.norm.query_norm.scale"), 1, hd)?,
-        k_scale: get_f32(src, &format!("single_blocks.{i}.norm.key_norm.scale"), 1, hd)?,
+        q_scale: get_f32(
+            src,
+            &format!("single_blocks.{i}.norm.query_norm.scale"),
+            1,
+            hd,
+        )?,
+        k_scale: get_f32(
+            src,
+            &format!("single_blocks.{i}.norm.key_norm.scale"),
+            1,
+            hd,
+        )?,
     })
 }
 
@@ -600,7 +781,11 @@ fn check_q8(src: &dyn WeightSource, name: &str, rows: usize, k: usize) -> Result
         return Err(format!("{name}: shape [{kk}, {r}], want [{k}, {rows}]"));
     }
     if bytes.len() != rows * (k / 32) * 34 {
-        return Err(format!("{name}: {} bytes, want {}", bytes.len(), rows * (k / 32) * 34));
+        return Err(format!(
+            "{name}: {} bytes, want {}",
+            bytes.len(),
+            rows * (k / 32) * 34
+        ));
     }
     Ok(())
 }
@@ -623,7 +808,12 @@ fn get_f32(src: &dyn WeightSource, name: &str, rows: usize, k: usize) -> Result<
 }
 
 /// A Q8_0 matrix `[rows][k]`, dequantised.
-fn get_q8_f32(src: &dyn WeightSource, name: &str, rows: usize, k: usize) -> Result<Vec<f32>, String> {
+fn get_q8_f32(
+    src: &dyn WeightSource,
+    name: &str,
+    rows: usize,
+    k: usize,
+) -> Result<Vec<f32>, String> {
     check_q8(src, name, rows, k)?;
     let (bytes, _, _) = src.q8(name)?;
     Ok(dequant_q8_0(bytes, rows, k))
@@ -648,7 +838,14 @@ impl Mods6 {
     pub(crate) fn from_vec(v: &[f32], h: usize) -> Mods6 {
         assert_eq!(v.len(), 6 * h);
         let c = |k: usize| v[k * h..(k + 1) * h].to_vec();
-        Mods6 { shift1: c(0), scale1: c(1), gate1: c(2), shift2: c(3), scale2: c(4), gate2: c(5) }
+        Mods6 {
+            shift1: c(0),
+            scale1: c(1),
+            gate1: c(2),
+            shift2: c(3),
+            scale2: c(4),
+            gate2: c(5),
+        }
     }
 }
 
@@ -663,7 +860,11 @@ impl Mods3 {
     pub(crate) fn from_vec(v: &[f32], h: usize) -> Mods3 {
         assert_eq!(v.len(), 3 * h);
         let c = |k: usize| v[k * h..(k + 1) * h].to_vec();
-        Mods3 { shift: c(0), scale: c(1), gate: c(2) }
+        Mods3 {
+            shift: c(0),
+            scale: c(1),
+            gate: c(2),
+        }
     }
 }
 
@@ -731,7 +932,12 @@ fn stream_qkv(
     let xm = par_rows(n, h, threads, |a, b, out| {
         for t in a..b {
             let o = (t - a) * h;
-            ln_modulate(&x[t * h..(t + 1) * h], &m.shift1, &m.scale1, &mut out[o..o + h]);
+            ln_modulate(
+                &x[t * h..(t + 1) * h],
+                &m.shift1,
+                &m.scale1,
+                &mut out[o..o + h],
+            );
         }
     });
     let y = linear_a(&s.qkv, h, 3 * h, &xm, n, threads, a, WType::Q8_0);
@@ -756,7 +962,15 @@ fn stream_qkv(
 }
 
 /// Attention output projection with gate, then LayerNorm+modulate and the SiLU-gated MLP with gate.
-fn stream_post(d: Dims, s: &StreamF32, mut x: Vec<f32>, attn: &[f32], m: &Mods6, threads: usize, a: Arith) -> Vec<f32> {
+fn stream_post(
+    d: Dims,
+    s: &StreamF32,
+    mut x: Vec<f32>,
+    attn: &[f32],
+    m: &Mods6,
+    threads: usize,
+    a: Arith,
+) -> Vec<f32> {
     let (h, mlp) = (d.hidden, d.mlp);
     let n = x.len() / h;
     let p = linear_a(&s.proj, h, h, attn, n, threads, a, WType::Q8_0);
@@ -768,7 +982,12 @@ fn stream_post(d: Dims, s: &StreamF32, mut x: Vec<f32>, attn: &[f32], m: &Mods6,
     let xm = par_rows(n, h, threads, |a, b, out| {
         for t in a..b {
             let o = (t - a) * h;
-            ln_modulate(&x[t * h..(t + 1) * h], &m.shift2, &m.scale2, &mut out[o..o + h]);
+            ln_modulate(
+                &x[t * h..(t + 1) * h],
+                &m.shift2,
+                &m.scale2,
+                &mut out[o..o + h],
+            );
         }
     });
     let m0 = linear_a(&s.mlp0, h, 2 * mlp, &xm, n, threads, a, WType::Q8_0);
@@ -828,7 +1047,14 @@ fn attention(d: Dims, q: &[f32], k: &[f32], v: &[f32], n: usize, threads: usize)
 }
 
 /// `y[t][o] = sum_i w[o][i] x[t][i]` for `rows` tokens; `w` is `[out][in]`.
-pub(crate) fn linear_rows(w: &[f32], in_dim: usize, out_dim: usize, x: &[f32], rows: usize, threads: usize) -> Vec<f32> {
+pub(crate) fn linear_rows(
+    w: &[f32],
+    in_dim: usize,
+    out_dim: usize,
+    x: &[f32],
+    rows: usize,
+    threads: usize,
+) -> Vec<f32> {
     assert_eq!(w.len(), out_dim * in_dim, "linear weight shape");
     assert_eq!(x.len(), rows * in_dim, "linear input shape");
     // Tokens in groups of TOKEN_GROUP so a weight row is reused from cache; every (token, row)
@@ -906,7 +1132,11 @@ where
 pub(crate) fn ln_modulate(x: &[f32], shift: &[f32], scale: &[f32], out: &mut [f32]) {
     let n = x.len() as f64;
     let mean = x.iter().map(|&v| v as f64).sum::<f64>() / n;
-    let var = x.iter().map(|&v| (v as f64 - mean) * (v as f64 - mean)).sum::<f64>() / n;
+    let var = x
+        .iter()
+        .map(|&v| (v as f64 - mean) * (v as f64 - mean))
+        .sum::<f64>()
+        / n;
     let denom = (var + EPS as f64).sqrt();
     for (((o, &xv), &sc), &sh) in out.iter_mut().zip(x).zip(scale).zip(shift) {
         let y = ((xv as f64 - mean) / denom) as f32;

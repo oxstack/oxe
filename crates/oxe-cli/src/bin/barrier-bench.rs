@@ -11,7 +11,14 @@ fn main() {
     let mut cpu_list: Option<String> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--threads" => threads = args.next().expect("--threads 4,6,8").split(',').map(|s| s.parse().expect("number")).collect(),
+            "--threads" => {
+                threads = args
+                    .next()
+                    .expect("--threads 4,6,8")
+                    .split(',')
+                    .map(|s| s.parse().expect("number"))
+                    .collect()
+            }
             "--reps" => reps = args.next().expect("--reps N").parse().expect("number"),
             "--cpu-list" => cpu_list = Some(args.next().expect("--cpu-list LIST")),
             _ => {

@@ -26,7 +26,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn greedy(n_predict: i64) -> GenParams {
-    GenParams { n_predict, sampling: SamplingParams { temperature: 0.0, ..Default::default() }, ..Default::default() }
+    GenParams {
+        n_predict,
+        sampling: SamplingParams {
+            temperature: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 /// A long first turn with user-turn points (RAM checkpoints below the prompt end).
@@ -42,7 +49,13 @@ fn turn_params() -> GenParams {
 /// The deepest RAM checkpoint strictly below the live head (what the legacy park would stream first).
 fn deepest_ram_point(w: &Worker<StubEngine>) -> usize {
     let n = w.cache.tokens.len();
-    w.cache.snapshot_info().iter().map(|x| x.0).filter(|&p| p < n).max().unwrap()
+    w.cache
+        .snapshot_info()
+        .iter()
+        .map(|x| x.0)
+        .filter(|&p| p < n)
+        .max()
+        .unwrap()
 }
 
 /// Root cause, part 1: a request that arrives after ONE optional snapshot file cuts the post-reply
@@ -57,7 +70,10 @@ fn a_cut_post_reply_write_keeps_the_deepest_point() {
     let prompt = toks(1500, 4);
     gen(&mut w, &prompt, &turn_params());
     let deep = deepest_ram_point(&w);
-    assert!(deep >= prompt.len() - 16, "a RAM point near the prompt end: {deep}");
+    assert!(
+        deep >= prompt.len() - 16,
+        "a RAM point near the prompt end: {deep}"
+    );
     let n = w.cache.tokens.len();
     w.opt_write_limit = 1;
     let r = w.persist(Some("a"), PersistMode::Reply, None);
@@ -65,15 +81,28 @@ fn a_cut_post_reply_write_keeps_the_deepest_point() {
     {
         let st = w.states.as_ref().unwrap();
         let m = st.manifests.values().find(|m| m.n_tokens == n).unwrap();
-        let below: Vec<usize> = m.snaps.iter().map(|x| x.pos).filter(|&p| p < n && p > BLOCK).collect();
-        assert_eq!(below, vec![deep], "the one optional file written is the deepest point");
+        let below: Vec<usize> = m
+            .snaps
+            .iter()
+            .map(|x| x.pos)
+            .filter(|&p| p < n && p > BLOCK)
+            .collect();
+        assert_eq!(
+            below,
+            vec![deep],
+            "the one optional file written is the deepest point"
+        );
     }
     drop(w);
     // restart; the same request again (a retry, the gate's warm-restart replay)
     let mut w2 = worker(&dir);
     w2.persist_every = 0;
     let r2 = gen(&mut w2, &prompt, &turn_params());
-    assert_eq!((r2.timings.cache_n, r2.timings.resume_src), (deep, "disk"), "resumed at the deepest point");
+    assert_eq!(
+        (r2.timings.cache_n, r2.timings.resume_src),
+        (deep, "disk"),
+        "resumed at the deepest point"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -96,7 +125,11 @@ fn shutdown_writes_the_points_a_cut_reply_write_left() {
     let log = w.shutdown_writes(true, false, t0, t0 + Duration::from_secs(5), &mut |_| 0);
     assert!(log[0].contains("snapshots"), "{log:?}");
     // a second shutdown write has nothing left
-    let r3 = w.persist(None, PersistMode::Shutdown(Instant::now() + Duration::from_secs(5)), None);
+    let r3 = w.persist(
+        None,
+        PersistMode::Shutdown(Instant::now() + Duration::from_secs(5)),
+        None,
+    );
     assert_eq!(r3.note.as_deref(), Some("already on disk"));
     drop(w);
     let mut w2 = worker(&dir);
@@ -108,7 +141,11 @@ fn shutdown_writes_the_points_a_cut_reply_write_left() {
     let mut w3 = worker(&dir2);
     w3.persist_every = 0;
     gen(&mut w3, &prompt, &turn_params());
-    let r4 = w3.persist(None, PersistMode::Shutdown(Instant::now() + Duration::from_millis(100)), None);
+    let r4 = w3.persist(
+        None,
+        PersistMode::Shutdown(Instant::now() + Duration::from_millis(100)),
+        None,
+    );
     assert_eq!((r4.head.is_some(), r4.snaps), (true, 0), "{r4:?}");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&dir2);
@@ -117,7 +154,17 @@ fn shutdown_writes_the_points_a_cut_reply_write_left() {
 /// One chat request through the HTTP layer (hint "h"); waits for its post-reply state write.
 async fn chat(st: &Arc<State<StubEngine>>, b: Vec<u8>) -> Json {
     let n0 = st.persist_done.load(Ordering::SeqCst);
-    let r = match handle_request(st.clone(), "POST", "/v1/chat/completions", "", &b, Some("h".into()), None).await {
+    let r = match handle_request(
+        st.clone(),
+        "POST",
+        "/v1/chat/completions",
+        "",
+        &b,
+        Some("h".into()),
+        None,
+    )
+    .await
+    {
         Reply::Json(c, j) => {
             assert_eq!(c, 200, "{j}");
             j
@@ -153,10 +200,20 @@ fn server_at(thinking: bool, scripts: &[&str], dir: &Path) -> Arc<State<StubEngi
 /// off and on.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_turn_after_a_restart_resumes_at_the_previous_full_context() {
-    let long_sys: String = (0..30).map(|i| format!("Rule {i:02}: keep the change small and test it. ")).collect();
+    let long_sys: String = (0..30)
+        .map(|i| format!("Rule {i:02}: keep the change small and test it. "))
+        .collect();
     for thinking in [false, true] {
         let dir = tmp(&format!("depth-turns-{thinking}"));
-        let replies: Vec<String> = (0..4).map(|i| if thinking { format!("step {i} plan\n</think>\n\nAnswer {i} done.") } else { format!("Answer {i} done.") }).collect();
+        let replies: Vec<String> = (0..4)
+            .map(|i| {
+                if thinking {
+                    format!("step {i} plan\n</think>\n\nAnswer {i} done.")
+                } else {
+                    format!("Answer {i} done.")
+                }
+            })
+            .collect();
         let mut msgs = vec![json!({"role":"system","content":long_sys})];
         let mut prev_full: Option<usize> = None;
         for (turn, reply) in replies.iter().enumerate() {
@@ -164,9 +221,16 @@ async fn every_turn_after_a_restart_resumes_at_the_previous_full_context() {
             msgs.push(json!({"role":"user","content":format!("question number {turn}")}));
             let r = chat(&s, body(&Json::Array(msgs.clone()), thinking, true)).await;
             let t = &r["timings"];
-            let (c, p, g) = (t["cache_n"].as_u64().unwrap() as usize, t["prompt_n"].as_u64().unwrap() as usize, t["predicted_n"].as_u64().unwrap() as usize);
+            let (c, p, g) = (
+                t["cache_n"].as_u64().unwrap() as usize,
+                t["prompt_n"].as_u64().unwrap() as usize,
+                t["predicted_n"].as_u64().unwrap() as usize,
+            );
             if let Some(full) = prev_full {
-                assert!(c + 1 >= full && c <= full, "thinking {thinking} turn {turn}: resumed {c}, previous full context {full}");
+                assert!(
+                    c + 1 >= full && c <= full,
+                    "thinking {thinking} turn {turn}: resumed {c}, previous full context {full}"
+                );
                 assert_eq!(t["resume_src"], "disk", "thinking {thinking} turn {turn}");
             }
             prev_full = Some(c + p + g);
@@ -174,11 +238,22 @@ async fn every_turn_after_a_restart_resumes_at_the_previous_full_context() {
             {
                 let w = s.worker.lock().unwrap();
                 let st = w.states.as_ref().unwrap();
-                let deepest = st.manifests.values().flat_map(|m| m.snaps.iter().map(|x| x.pos)).max().unwrap();
-                assert_eq!(deepest + 1, c + p + g, "thinking {thinking} turn {turn}: the stored head");
+                let deepest = st
+                    .manifests
+                    .values()
+                    .flat_map(|m| m.snaps.iter().map(|x| x.pos))
+                    .max()
+                    .unwrap();
+                assert_eq!(
+                    deepest + 1,
+                    c + p + g,
+                    "thinking {thinking} turn {turn}: the stored head"
+                );
             }
             let mut m = r["choices"][0]["message"].clone();
-            m.as_object_mut().unwrap().retain(|k, _| k == "role" || k == "content" || k == "reasoning_content");
+            m.as_object_mut()
+                .unwrap()
+                .retain(|k, _| k == "role" || k == "content" || k == "reasoning_content");
             msgs.push(m);
             drop(s); // the restart: a new server on the same store
         }
@@ -192,19 +267,46 @@ fn mini_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("oxe-depth-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("cache")).unwrap();
-    std::fs::set_permissions(dir.join("cache"), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(
+        dir.join("cache"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
     model::testkit::mini_model_ext(&dir.join("mini-mtp.gguf"), true);
     dir
 }
 
-fn mini_worker(dir: &Path, depth: usize, store: Option<&Path>) -> Worker<crate::oxe_engine::OxeEngine> {
-    let n = std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1);
-    let eng = crate::oxe_engine::OxeEngine::open_cache(&dir.join("mini-mtp.gguf"), None, &[n - 1], None, 64, 2048, depth, Some(dir.join("cache"))).unwrap();
+fn mini_worker(
+    dir: &Path,
+    depth: usize,
+    store: Option<&Path>,
+) -> Worker<crate::oxe_engine::OxeEngine> {
+    let n = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1);
+    let eng = crate::oxe_engine::OxeEngine::open_cache(
+        &dir.join("mini-mtp.gguf"),
+        None,
+        &[n - 1],
+        None,
+        64,
+        2048,
+        depth,
+        Some(dir.join("cache")),
+    )
+    .unwrap();
     let mut w = Worker::new(eng, 8);
     w.ubatch = 64;
     w.persist_every = 0;
     if let Some(root) = store {
-        let id = crate::state_store::Identity::new("sha256:mini", &w.engine.state_id().unwrap(), 64, &w.engine.arith_id(), "b", false);
+        let id = crate::state_store::Identity::new(
+            "sha256:mini",
+            &w.engine.state_id().unwrap(),
+            64,
+            &w.engine.arith_id(),
+            "b",
+            false,
+        );
         let mut st = StateStore::open(root, id, 1 << 40, 3600, true).unwrap();
         st.min_tokens = 0;
         st.min_free_bytes = 0;
@@ -247,13 +349,26 @@ fn restarts_resume_at_the_full_context_bitwise_on_the_mini_model() {
                 let l = live.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
                 let ls = state_bytes(&mut live.engine);
                 if turn > 0 {
-                    assert_eq!(d.timings.cache_n, prev_full - 1, "depth {depth} thinking {thinking} turn {turn}: resumed depth");
+                    assert_eq!(
+                        d.timings.cache_n,
+                        prev_full - 1,
+                        "depth {depth} thinking {thinking} turn {turn}: resumed depth"
+                    );
                     assert_eq!(d.timings.resume_src, "disk");
                     assert_eq!(l.timings.cache_n, d.timings.cache_n);
                 }
-                assert_eq!(d.tokens, l.tokens, "depth {depth} thinking {thinking} turn {turn}: tokens");
-                assert!(ds == ls, "depth {depth} thinking {thinking} turn {turn}: state bytes");
-                assert_eq!((d.timings.draft_n, d.timings.draft_n_accepted), (l.timings.draft_n, l.timings.draft_n_accepted));
+                assert_eq!(
+                    d.tokens, l.tokens,
+                    "depth {depth} thinking {thinking} turn {turn}: tokens"
+                );
+                assert!(
+                    ds == ls,
+                    "depth {depth} thinking {thinking} turn {turn}: state bytes"
+                );
+                assert_eq!(
+                    (d.timings.draft_n, d.timings.draft_n_accepted),
+                    (l.timings.draft_n, l.timings.draft_n_accepted)
+                );
                 prev_full = prompt.len() + d.tokens.len();
                 // the next turn: this prompt + the reply (as generated) + a new user message
                 prompt.extend(&d.tokens[..d.tokens.len() - 1]);
@@ -284,7 +399,11 @@ fn fill(root: &Path, lens: &[(usize, u64)]) -> Worker<StubEngine> {
             }
         }
         w.last_first_user = Some(BLOCK - 10);
-        sids.push(w.persist(Some(&format!("e{i}")), PersistMode::Reply, None).sid.unwrap());
+        sids.push(
+            w.persist(Some(&format!("e{i}")), PersistMode::Reply, None)
+                .sid
+                .unwrap(),
+        );
     }
     let s = w.states.as_mut().unwrap();
     let now = now_s();
@@ -304,18 +423,44 @@ fn deep_recent_state_survives_over_shallow_old_state() {
     let root = tmp("depth-evict");
     let mut w = fill(&root, &[(1200, 3 * 86400), (6000, 1200)]);
     let s = w.states.as_mut().unwrap();
-    let deep = s.manifests.values().find(|m| m.n_tokens == 6000).unwrap().clone();
-    let old = s.manifests.values().find(|m| m.n_tokens == 1200).unwrap().clone();
+    let deep = s
+        .manifests
+        .values()
+        .find(|m| m.n_tokens == 6000)
+        .unwrap()
+        .clone();
+    let old = s
+        .manifests
+        .values()
+        .find(|m| m.n_tokens == 1200)
+        .unwrap()
+        .clone();
     assert!(deep.snaps.len() >= 3 && old.snaps.len() >= 3);
-    let old_opt: u64 = old.snaps.iter().filter(|x| x.pos != old.n_tokens && x.class != "anchor").map(|x| x.bytes).sum();
-    let old_head = old.snaps.iter().find(|x| x.pos == old.n_tokens).unwrap().bytes;
+    let old_opt: u64 = old
+        .snaps
+        .iter()
+        .filter(|x| x.pos != old.n_tokens && x.class != "anchor")
+        .map(|x| x.bytes)
+        .sum();
+    let old_head = old
+        .snaps
+        .iter()
+        .find(|x| x.pos == old.n_tokens)
+        .unwrap()
+        .bytes;
     let used = s.used_bytes();
     // more than the old session's optional points free (a rewritten manifest shrinks too), less
     // than the whole old session
     s.set_budget(used - old_opt - old_head / 2);
     assert!(s.used_bytes() <= s.budget);
-    assert!(!s.manifests.contains_key(&old.sid), "the shallow old session goes");
-    let d = s.manifests.get(&deep.sid).expect("the deep recent session stays");
+    assert!(
+        !s.manifests.contains_key(&old.sid),
+        "the shallow old session goes"
+    );
+    let d = s
+        .manifests
+        .get(&deep.sid)
+        .expect("the deep recent session stays");
     assert_eq!(d.snaps, deep.snaps, "with its head and every point");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -328,14 +473,31 @@ fn a_small_overshoot_drops_the_cheapest_point_never_the_head() {
     let mut w = fill(&root, &[(6000, 1200)]);
     let s = w.states.as_mut().unwrap();
     let m0 = s.manifests.values().next().unwrap().clone();
-    let opt: Vec<usize> = m0.snaps.iter().filter(|x| x.pos != m0.n_tokens && x.class != "anchor").map(|x| x.pos).collect();
+    let opt: Vec<usize> = m0
+        .snaps
+        .iter()
+        .filter(|x| x.pos != m0.n_tokens && x.class != "anchor")
+        .map(|x| x.pos)
+        .collect();
     assert!(opt.len() >= 2, "{opt:?}");
     s.set_budget(s.used_bytes() - 1);
     let m1 = &s.manifests[&m0.sid];
     assert_eq!(m1.snaps.len(), m0.snaps.len() - 1, "one point");
-    assert!(m1.snaps.iter().any(|x| x.pos == m0.n_tokens), "the head stays");
-    let gone: Vec<usize> = m0.snaps.iter().map(|x| x.pos).filter(|p| !m1.snaps.iter().any(|y| y.pos == *p)).collect();
-    assert_eq!(gone, vec![*opt.iter().min().unwrap()], "the point that saves the least goes");
+    assert!(
+        m1.snaps.iter().any(|x| x.pos == m0.n_tokens),
+        "the head stays"
+    );
+    let gone: Vec<usize> = m0
+        .snaps
+        .iter()
+        .map(|x| x.pos)
+        .filter(|p| !m1.snaps.iter().any(|y| y.pos == *p))
+        .collect();
+    assert_eq!(
+        gone,
+        vec![*opt.iter().min().unwrap()],
+        "the point that saves the least goes"
+    );
     s.set_budget(1);
     assert!(s.manifests.is_empty());
     let _ = std::fs::remove_dir_all(&root);
@@ -345,9 +507,17 @@ fn a_small_overshoot_drops_the_cheapest_point_never_the_head() {
 
 #[test]
 fn legacy_session_writes_flag() {
-    assert_eq!(legacy_session_writes("auto", true, true), Some(false), "auto: off with the state cache + park write");
+    assert_eq!(
+        legacy_session_writes("auto", true, true),
+        Some(false),
+        "auto: off with the state cache + park write"
+    );
     assert_eq!(legacy_session_writes("auto", false, true), Some(true));
-    assert_eq!(legacy_session_writes("auto", true, false), Some(true), "no park write: the legacy park stays");
+    assert_eq!(
+        legacy_session_writes("auto", true, false),
+        Some(true),
+        "no park write: the legacy park stays"
+    );
     assert_eq!(legacy_session_writes("on", true, true), Some(true));
     assert_eq!(legacy_session_writes("off", false, true), Some(false));
     assert_eq!(legacy_session_writes("maybe", true, true), None);
@@ -364,7 +534,9 @@ fn legacy_writes_off_parks_into_the_state_store_only() {
         w.persist_every = 0;
         w.legacy_writes = legacy;
         let ldir = tmp(&format!("depth-legacy-{legacy}-sessions"));
-        w.sessions = Some(crate::prefix_store::PrefixStore::open(&ldir, "legacy-id".into(), 1 << 30, 64).unwrap());
+        w.sessions = Some(
+            crate::prefix_store::PrefixStore::open(&ldir, "legacy-id".into(), 1 << 30, 64).unwrap(),
+        );
         w.cache.park_budget = 1 << 30;
         w.cache.park_min = 8;
         w.cache.spill = legacy;
@@ -376,15 +548,26 @@ fn legacy_writes_off_parks_into_the_state_store_only() {
         gen(&mut w, &toks(1300, 7), &greedy(3));
         let ps = w.sessions.as_mut().unwrap();
         ps.flush();
-        assert_eq!(ps.n_entries() > 0, legacy, "legacy {legacy}: session cache entries {}", ps.n_entries());
+        assert_eq!(
+            ps.n_entries() > 0,
+            legacy,
+            "legacy {legacy}: session cache entries {}",
+            ps.n_entries()
+        );
         let st = w.states.as_ref().unwrap();
-        assert!(st.manifests.values().any(|m| m.n_tokens == a_full.len()), "A's full depth is in the state store");
+        assert!(
+            st.manifests.values().any(|m| m.n_tokens == a_full.len()),
+            "A's full depth is in the state store"
+        );
         drop(w);
         let mut w2 = worker(&dir);
         let mut q = a_full.clone();
         q.extend([201, 202, 203]);
         let r = gen(&mut w2, &q, &greedy(2));
-        assert_eq!((r.timings.cache_n, r.timings.resume_src), (a_full.len(), "disk"));
+        assert_eq!(
+            (r.timings.cache_n, r.timings.resume_src),
+            (a_full.len(), "disk")
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&ldir);
     }

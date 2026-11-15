@@ -20,7 +20,7 @@ pub const SSM_K_HEADS: usize = 16;
 pub const SSM_D: usize = 128;
 pub const SSM_CONV: usize = 4;
 pub const SSM_QKV: usize = 2 * SSM_K_HEADS * SSM_D + SSM_INNER; // 10240
-// attention
+                                                                // attention
 pub const N_HEAD: usize = 24;
 pub const N_HEAD_KV: usize = 2;
 pub const HEAD_D: usize = 256;
@@ -66,7 +66,8 @@ impl Shards {
         for (i, p) in paths.iter().enumerate() {
             let g = gguf::Gguf::open(p).map_err(|e| e.0)?;
             for t in &g.header.tensors {
-                let w = W::from_ggml(t.ty.0).ok_or_else(|| format!("{}: unsupported type {}", t.name, t.ty.0))?;
+                let w = W::from_ggml(t.ty.0)
+                    .ok_or_else(|| format!("{}: unsupported type {}", t.name, t.ty.0))?;
                 tensors.push(Tensor {
                     name: t.name.clone(),
                     shard: i,
@@ -78,7 +79,11 @@ impl Shards {
             }
             files.push(g);
         }
-        let s = Shards { paths, files, tensors };
+        let s = Shards {
+            paths,
+            files,
+            tensors,
+        };
         s.check_hparams()?;
         Ok(s)
     }
@@ -87,15 +92,21 @@ impl Shards {
         self.tensors.iter().find(|t| t.name == name)
     }
     pub fn req(&self, name: &str) -> &Tensor {
-        self.get(name).unwrap_or_else(|| panic!("missing tensor {name}"))
+        self.get(name)
+            .unwrap_or_else(|| panic!("missing tensor {name}"))
     }
 
     fn meta_u64(&self, key: &str) -> Option<u64> {
-        self.files.iter().find_map(|f| f.header.get(key).and_then(|v| v.as_u64()))
+        self.files
+            .iter()
+            .find_map(|f| f.header.get(key).and_then(|v| v.as_u64()))
     }
 
     fn check_hparams(&self) -> Result<(), String> {
-        let arch = self.files.iter().find_map(|f| f.header.architecture().map(|s| s.to_string()));
+        let arch = self
+            .files
+            .iter()
+            .find_map(|f| f.header.architecture().map(|s| s.to_string()));
         if arch.as_deref() != Some("qwen4exp") {
             return Err(format!("architecture {arch:?}, expected qwen4exp"));
         }
@@ -112,7 +123,10 @@ impl Shards {
         ];
         for (k, v) in want {
             if self.meta_u64(k) != Some(v) {
-                return Err(format!("{k} = {:?}, prototype written for {v}", self.meta_u64(k)));
+                return Err(format!(
+                    "{k} = {:?}, prototype written for {v}",
+                    self.meta_u64(k)
+                ));
             }
         }
         Ok(())
@@ -124,12 +138,17 @@ impl Shards {
             self.files
                 .iter()
                 .find_map(|f| match f.header.get(key) {
-                    Some(gguf::Value::Array(v)) => Some(v.iter().filter_map(|x| x.as_u64()).collect()),
+                    Some(gguf::Value::Array(v)) => {
+                        Some(v.iter().filter_map(|x| x.as_u64()).collect())
+                    }
                     _ => None,
                 })
                 .unwrap_or_default()
         };
-        (arr("qwen4exp.ple.head_offsets"), arr("qwen4exp.ple.head_vocab_sizes"))
+        (
+            arr("qwen4exp.ple.head_offsets"),
+            arr("qwen4exp.ple.head_vocab_sizes"),
+        )
     }
 
     pub fn meta_u64_pub(&self, key: &str) -> Option<u64> {
@@ -175,5 +194,12 @@ pub fn expert_geom(s: &Shards, l: usize) -> ExpertGeom {
     assert_eq!(g.bytes as usize, gate_bytes * N_EXPERT);
     assert_eq!(d.bytes as usize, down_bytes * N_EXPERT);
     let record = 2 * gate_bytes + down_bytes;
-    ExpertGeom { gate_w: g.w, down_w: d.w, gate_bytes, down_bytes, record, slot: record.div_ceil(4096) * 4096 }
+    ExpertGeom {
+        gate_w: g.w,
+        down_w: d.w,
+        gate_bytes,
+        down_bytes,
+        record,
+        slot: record.div_ceil(4096) * 4096,
+    }
 }

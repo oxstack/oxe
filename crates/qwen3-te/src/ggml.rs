@@ -32,9 +32,16 @@ impl GgmlLinears {
         for (l, lw) in w.layers.iter().enumerate() {
             for kd in Kind::ALL {
                 let m = lw.mat(kd);
-                let q = m.q8_0().ok_or_else(|| format!("cpu-ggml: blk.{l}.{} is not Q8_0", kd.gguf()))?;
+                let q = m
+                    .q8_0()
+                    .ok_or_else(|| format!("cpu-ggml: blk.{l}.{} is not Q8_0", kd.gguf()))?;
                 if m.o() % 4 != 0 || m.k() % 32 != 0 {
-                    return Err(format!("cpu-ggml: blk.{l}.{} shape {}x{} not 4x32-aligned", kd.gguf(), m.o(), m.k()));
+                    return Err(format!(
+                        "cpu-ggml: blk.{l}.{} shape {}x{} not 4x32-aligned",
+                        kd.gguf(),
+                        m.o(),
+                        m.k()
+                    ));
                 }
                 jobs.push(((l, kd), m.o(), m.k(), q));
             }
@@ -50,8 +57,16 @@ impl GgmlLinears {
                 unsafe { *(op as *mut Option<Packed>).add(i) = Some(Packed { o, k, bytes }) };
             }
         });
-        let packed = jobs.iter().zip(out).map(|(j, p)| (j.0, p.expect("packed"))).collect();
-        Ok(GgmlLinears { packed, threads: threads.max(1), repack_s: t.elapsed().as_secs_f64() })
+        let packed = jobs
+            .iter()
+            .zip(out)
+            .map(|(j, p)| (j.0, p.expect("packed")))
+            .collect();
+        Ok(GgmlLinears {
+            packed,
+            threads: threads.max(1),
+            repack_s: t.elapsed().as_secs_f64(),
+        })
     }
 
     pub fn bytes(&self) -> usize {
@@ -80,12 +95,21 @@ pub(crate) fn quantize_act(x: &[f32], n: usize, k: usize, threads: usize) -> QAc
     par_ranges(n4 / 4, threads, |g| {
         for gi in g {
             // SAFETY: group gi owns bytes [gi*4*rb, (gi+1)*4*rb) and reads 4 full rows of x.
-            unsafe { kernels_sys::quantize_mat4_raw(at, x[gi * 4 * k..].as_ptr(), (ap as *mut u8).add(gi * 4 * rb), k) };
+            unsafe {
+                kernels_sys::quantize_mat4_raw(
+                    at,
+                    x[gi * 4 * k..].as_ptr(),
+                    (ap as *mut u8).add(gi * 4 * rb),
+                    k,
+                )
+            };
         }
     });
     for (i, t) in (n4..n).enumerate() {
         // SAFETY: one row of k floats into rb bytes.
-        unsafe { kernels_sys::quantize_row_raw(at, x[t * k..].as_ptr(), tail[i * rb..].as_mut_ptr(), k) };
+        unsafe {
+            kernels_sys::quantize_row_raw(at, x[t * k..].as_ptr(), tail[i * rb..].as_mut_ptr(), k)
+        };
     }
     QAct { k, n, groups, tail }
 }
@@ -108,10 +132,26 @@ fn gemm_q(p: &Packed, a: &QAct, y: &mut [f32], threads: usize) {
         // SAFETY: columns c0..c0+nc of every row belong to this range; sizes as documented in kernels-sys.
         unsafe {
             if n4 > 0 {
-                kernels_sys::gemm_raw(QType::Q8_0, k, yp.0.add(c0), o, w, a.groups.as_ptr(), n4, nc);
+                kernels_sys::gemm_raw(
+                    QType::Q8_0,
+                    k,
+                    yp.0.add(c0),
+                    o,
+                    w,
+                    a.groups.as_ptr(),
+                    n4,
+                    nc,
+                );
             }
             for (i, t) in (n4..n).enumerate() {
-                kernels_sys::gemv_raw(QType::Q8_0, k, yp.0.add(t * o + c0), w, a.tail[i * rb..].as_ptr(), nc);
+                kernels_sys::gemv_raw(
+                    QType::Q8_0,
+                    k,
+                    yp.0.add(t * o + c0),
+                    w,
+                    a.tail[i * rb..].as_ptr(),
+                    nc,
+                );
             }
         }
     });
@@ -120,8 +160,18 @@ fn gemm_q(p: &Packed, a: &QAct, y: &mut [f32], threads: usize) {
 /// `y = x W^T` for one repacked Q8_0 matrix (quantizes `x` itself; the pre-v0.1.3 per-projection
 /// path, kept as the bitwise reference of the shared-activation path).
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn gemm_one(lin: &GgmlLinears, layer: usize, kind: Kind, x: &[f32], n: usize, y: &mut Vec<f32>) -> Result<(), String> {
-    let p = lin.packed.get(&(layer, kind)).ok_or_else(|| format!("cpu-ggml: no blk.{layer}.{}", kind.gguf()))?;
+pub(crate) fn gemm_one(
+    lin: &GgmlLinears,
+    layer: usize,
+    kind: Kind,
+    x: &[f32],
+    n: usize,
+    y: &mut Vec<f32>,
+) -> Result<(), String> {
+    let p = lin
+        .packed
+        .get(&(layer, kind))
+        .ok_or_else(|| format!("cpu-ggml: no blk.{layer}.{}", kind.gguf()))?;
     if x.len() != n * p.k {
         return Err(format!("cpu-ggml: input {} for n {n} k {}", x.len(), p.k));
     }
@@ -135,12 +185,22 @@ impl Linears for GgmlLinears {
     fn name(&self) -> String {
         "cpu-ggml".into()
     }
-    fn project(&self, layer: usize, kinds: &[Kind], x: &[f32], n: usize, outs: &mut [Vec<f32>]) -> Result<(), String> {
+    fn project(
+        &self,
+        layer: usize,
+        kinds: &[Kind],
+        x: &[f32],
+        n: usize,
+        outs: &mut [Vec<f32>],
+    ) -> Result<(), String> {
         // One quantization of the shared input for every projection (q/k/v, gate/up): the
         // activation bytes are a pure function of `x`, so this is bitwise the per-projection path.
         let mut act: Option<QAct> = None;
         for (i, kd) in kinds.iter().enumerate() {
-            let p = self.packed.get(&(layer, *kd)).ok_or_else(|| format!("cpu-ggml: no blk.{layer}.{}", kd.gguf()))?;
+            let p = self
+                .packed
+                .get(&(layer, *kd))
+                .ok_or_else(|| format!("cpu-ggml: no blk.{layer}.{}", kd.gguf()))?;
             if x.len() != n * p.k {
                 return Err(format!("cpu-ggml: input {} for n {n} k {}", x.len(), p.k));
             }
@@ -148,7 +208,12 @@ impl Linears for GgmlLinears {
                 act = Some(quantize_act(x, n, p.k, self.threads));
             }
             outs[i].resize(n * p.o, 0.0);
-            gemm_q(p, act.as_ref().expect("quantized"), &mut outs[i], self.threads);
+            gemm_q(
+                p,
+                act.as_ref().expect("quantized"),
+                &mut outs[i],
+                self.threads,
+            );
         }
         Ok(())
     }

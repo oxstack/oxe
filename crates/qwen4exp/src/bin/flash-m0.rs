@@ -35,7 +35,9 @@ impl Args {
         let mut m = HashMap::new();
         let mut i = 0;
         while i < v.len() {
-            let k = v[i].strip_prefix("--").unwrap_or_else(|| die(&format!("unexpected {}", v[i])));
+            let k = v[i]
+                .strip_prefix("--")
+                .unwrap_or_else(|| die(&format!("unexpected {}", v[i])));
             if i + 1 < v.len() && !v[i + 1].starts_with("--") {
                 m.insert(k.to_string(), v[i + 1].clone());
                 i += 2;
@@ -51,7 +53,9 @@ impl Args {
     }
     fn n<T: std::str::FromStr>(&self, k: &str, d: T) -> T {
         match self.0.get(k) {
-            Some(v) => v.parse().unwrap_or_else(|_| die(&format!("--{k} {v}: bad value"))),
+            Some(v) => v
+                .parse()
+                .unwrap_or_else(|_| die(&format!("--{k} {v}: bad value"))),
             None => d,
         }
     }
@@ -70,18 +74,27 @@ fn default_trace() -> PathBuf {
     // A recorded expert-id trace (CSV). Override with OXF_EXPERT_TRACE or --trace.
     std::env::var_os("OXF_EXPERT_TRACE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".cache/local-ai/snapdragon-engine/flash/flash-fixed353-expert-ids.csv"))
+        .unwrap_or_else(|| {
+            home().join(".cache/local-ai/snapdragon-engine/flash/flash-fixed353-expert-ids.csv")
+        })
 }
 
 fn status_kib(key: &str) -> Option<u64> {
     let s = std::fs::read_to_string("/proc/self/status").ok()?;
-    s.lines().find(|l| l.starts_with(key))?.split_whitespace().nth(1)?.parse().ok()
+    s.lines()
+        .find(|l| l.starts_with(key))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 fn cgroup_file(name: &str) -> Option<String> {
     let cg = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     let path = cg.lines().find_map(|l| l.strip_prefix("0::"))?;
     let p = format!("/sys/fs/cgroup{}/{name}", path.trim());
-    std::fs::read_to_string(p).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(p)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn main() {
@@ -95,7 +108,15 @@ fn main() {
         "run" => cmd_run(&a),
         "info" => cmd_info(&a),
         _ => {
-            eprintln!("{}", include_str!("flash-m0.rs").lines().take(8).map(|l| l.trim_start_matches("//!")).collect::<Vec<_>>().join("\n"));
+            eprintln!(
+                "{}",
+                include_str!("flash-m0.rs")
+                    .lines()
+                    .take(8)
+                    .map(|l| l.trim_start_matches("//!"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
             std::process::exit(2)
         }
     }
@@ -134,7 +155,10 @@ fn cmd_sidecar(a: &Args) {
     let r = sidecar::build(&s, &lay, &out).unwrap_or_else(|e| die(&e));
     let n = a.n("verify", 64usize);
     let v = sidecar::verify(&s, &lay, &out, n).unwrap_or_else(|e| die(&e));
-    println!("{}", json!({"sidecar": out, "build": r, "verified_records": v, "commit": qwen4exp::ENGINE_COMMIT}));
+    println!(
+        "{}",
+        json!({"sidecar": out, "build": r, "verified_records": v, "commit": qwen4exp::ENGINE_COMMIT})
+    );
 }
 
 fn cmd_verify(a: &Args) {
@@ -152,7 +176,9 @@ fn prefill_weights(trace: &Trace, lay: &Layout) -> Vec<f64> {
     let n: Vec<f64> = trace.prefill.iter().map(|p| p.len() as f64).collect();
     let ok: Vec<f64> = n.iter().cloned().filter(|&x| x >= 20.0).collect();
     let mean = ok.iter().sum::<f64>() / ok.len().max(1) as f64;
-    (0..N_LAYER).map(|l| (if n[l] >= 20.0 { n[l] } else { mean }) * lay.geom[l].slot as f64).collect()
+    (0..N_LAYER)
+        .map(|l| (if n[l] >= 20.0 { n[l] } else { mean }) * lay.geom[l].slot as f64)
+        .collect()
 }
 
 fn pct(v: &mut [f64], p: f64) -> f64 {
@@ -162,7 +188,8 @@ fn pct(v: &mut [f64], p: f64) -> f64 {
 
 fn cmd_run(a: &Args) {
     let t_start = Instant::now();
-    let cpus = sched::parse_cpu_list(&a.s("cpu-list", "0,1,2,4,5,6,8,9")).unwrap_or_else(|e| die(&e));
+    let cpus =
+        sched::parse_cpu_list(&a.s("cpu-list", "0,1,2,4,5,6,8,9")).unwrap_or_else(|e| die(&e));
     let io_cpu: Option<usize> = match a.s("io-cpu", "3").as_str() {
         "none" => None,
         c => Some(c.parse().unwrap_or_else(|_| die("--io-cpu"))),
@@ -206,7 +233,10 @@ fn cmd_run(a: &Args) {
     let budget = (cache_gib * (1u64 << 30) as f64) as usize;
     let est = 4.6e9 + budget as f64 + (ngram_mib << 20) as f64 + 0.4e9;
     if est / (1u64 << 30) as f64 > max_gib {
-        die(&format!("estimated footprint {:.1} GiB > --max-gib {max_gib}", est / (1u64 << 30) as f64));
+        die(&format!(
+            "estimated footprint {:.1} GiB > --max-gib {max_gib}",
+            est / (1u64 << 30) as f64
+        ));
     }
 
     // quotas
@@ -229,18 +259,31 @@ fn cmd_run(a: &Args) {
         w.bytes_router as f64 / 1e9,
         w.bytes_experts as f64 / 1e9
     );
-    let sc_fd = qwen4exp::uring::open_direct(&sc).unwrap_or_else(|e| die(&format!("{}: {e}", sc.display())));
+    let sc_fd = qwen4exp::uring::open_direct(&sc)
+        .unwrap_or_else(|e| die(&format!("{}: {e}", sc.display())));
     let t_cache = Instant::now();
-    let cache = Cache::new(lay.clone(), &quota, sc_fd, io_mode == IoMode::None, true).unwrap_or_else(|e| die(&e.to_string()));
+    let cache = Cache::new(lay.clone(), &quota, sc_fd, io_mode == IoMode::None, true)
+        .unwrap_or_else(|e| die(&e.to_string()));
     let cache_alloc_s = t_cache.elapsed().as_secs_f64();
     let ioq = Arc::new(IoQueue::new());
-    let io_thread = io::spawn(ioq.clone(), IoConfig { qd, prefetch_qd: pf_qd, cpu: io_cpu });
+    let io_thread = io::spawn(
+        ioq.clone(),
+        IoConfig {
+            qd,
+            prefetch_qd: pf_qd,
+            cpu: io_cpu,
+        },
+    );
 
     let ngram = if ngram_on {
         let t = s.req("per_layer_token_embd.weight");
-        let fd = qwen4exp::uring::open_direct(&s.paths[t.shard]).unwrap_or_else(|e| die(&e.to_string()));
+        let fd =
+            qwen4exp::uring::open_direct(&s.paths[t.shard]).unwrap_or_else(|e| die(&e.to_string()));
         let (ho, hv) = s.ple_heads();
-        Some(NgramTable::new(fd, t.off, ho, hv, ngram_mib << 20).unwrap_or_else(|e| die(&e.to_string())))
+        Some(
+            NgramTable::new(fd, t.off, ho, hv, ngram_mib << 20)
+                .unwrap_or_else(|e| die(&e.to_string())),
+        )
     } else {
         None
     };
@@ -248,7 +291,13 @@ fn cmd_run(a: &Args) {
     // warm the cache with the prefill routes (what a real prompt would leave behind)
     let t_warm = Instant::now();
     let mut stamp = 1u64 << 40;
-    let done = |q: &IoQueue| q.counters.bytes.iter().map(|b| b.load(std::sync::atomic::Ordering::Acquire)).sum::<u64>();
+    let done = |q: &IoQueue| {
+        q.counters
+            .bytes
+            .iter()
+            .map(|b| b.load(std::sync::atomic::Ordering::Acquire))
+            .sum::<u64>()
+    };
     let drain = |q: &IoQueue| {
         while done(q) < cache.peek_stats().read_bytes {
             std::thread::sleep(Duration::from_millis(1));
@@ -270,11 +319,25 @@ fn cmd_run(a: &Args) {
     let warm_s = t_warm.elapsed().as_secs_f64();
     // SAFETY: control thread.
     let warm_stats = unsafe { cache.take_stats() };
-    eprintln!("flash-m0: cache warmed from the prefill routes: {:.2} GB in {:.1} s", warm_issued as f64 / 1e9, warm_s);
+    eprintln!(
+        "flash-m0: cache warmed from the prefill routes: {:.2} GB in {:.1} s",
+        warm_issued as f64 / 1e9,
+        warm_s
+    );
 
-    let pool = sched::Pool::new(&cpus, Duration::from_millis(50)).unwrap_or_else(|e| die(&e.to_string()));
+    let pool =
+        sched::Pool::new(&cpus, Duration::from_millis(50)).unwrap_or_else(|e| die(&e.to_string()));
     let nt = pool.nthreads();
-    let cfg = Cfg { io: io_mode, recall, depth, false_pos, ctx, pos0, ngram: ngram_on, seed: a.n("seed", 12345u64) };
+    let cfg = Cfg {
+        io: io_mode,
+        recall,
+        depth,
+        false_pos,
+        ctx,
+        pos0,
+        ngram: ngram_on,
+        seed: a.n("seed", 12345u64),
+    };
     let eng = Engine::new(&w, &cache, &ioq, ngram, &trace, cfg, nt);
 
     // synthetic token stream (the fixed-screen token ids are not in the trace)
@@ -291,7 +354,11 @@ fn cmd_run(a: &Args) {
     let snap = |q: &IoQueue| -> [[u64; 3]; 3] {
         let c = &q.counters;
         let l = |x: &std::sync::atomic::AtomicU64| x.load(std::sync::atomic::Ordering::Acquire);
-        [[l(&c.completed[0]), l(&c.completed[1]), l(&c.completed[2])], [l(&c.bytes[0]), l(&c.bytes[1]), l(&c.bytes[2])], [l(&c.lat_ns[0]), l(&c.lat_ns[1]), l(&c.lat_ns[2])]]
+        [
+            [l(&c.completed[0]), l(&c.completed[1]), l(&c.completed[2])],
+            [l(&c.bytes[0]), l(&c.bytes[1]), l(&c.bytes[2])],
+            [l(&c.lat_ns[0]), l(&c.lat_ns[1]), l(&c.lat_ns[2])],
+        ]
     };
     let mut io_snap = snap(&ioq);
     for t in 0..tokens {

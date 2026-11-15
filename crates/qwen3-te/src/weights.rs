@@ -9,9 +9,22 @@ use std::borrow::Cow;
 
 /// One `o x k` row-major matrix (row = output channel), in its storage format.
 pub enum Mat<'a> {
-    F32 { o: usize, k: usize, data: Cow<'a, [f32]> },
-    F16 { o: usize, k: usize, bytes: &'a [u8] },
-    Quant { ty: QType, o: usize, k: usize, bytes: &'a [u8] },
+    F32 {
+        o: usize,
+        k: usize,
+        data: Cow<'a, [f32]>,
+    },
+    F16 {
+        o: usize,
+        k: usize,
+        bytes: &'a [u8],
+    },
+    Quant {
+        ty: QType,
+        o: usize,
+        k: usize,
+        bytes: &'a [u8],
+    },
 }
 
 impl<'a> Mat<'a> {
@@ -24,14 +37,22 @@ impl<'a> Mat<'a> {
     /// The raw GGUF Q8_0 bytes, when this matrix is Q8_0 (the oxn W8 format takes them as they are).
     pub fn q8_0(&self) -> Option<&[u8]> {
         match self {
-            Mat::Quant { ty: QType::Q8_0, bytes, .. } => Some(bytes),
+            Mat::Quant {
+                ty: QType::Q8_0,
+                bytes,
+                ..
+            } => Some(bytes),
             _ => None,
         }
     }
 
     pub fn from_tensor(t: &TensorInfo, bytes: &'a [u8]) -> Result<Mat<'a>, String> {
         if t.shape.len() != 2 {
-            return Err(format!("{}: {}-D, want a 2-D matrix", t.name, t.shape.len()));
+            return Err(format!(
+                "{}: {}-D, want a 2-D matrix",
+                t.name,
+                t.shape.len()
+            ));
         }
         let (k, o) = (t.shape[0] as usize, t.shape[1] as usize);
         let want = |bpe_num: usize, bpe_den: usize| o * k * bpe_num / bpe_den;
@@ -42,7 +63,11 @@ impl<'a> Mat<'a> {
                 }
                 // SAFETY: length and alignment checked; f32 has no invalid bit patterns.
                 let s = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, o * k) };
-                Mat::F32 { o, k, data: Cow::Borrowed(s) }
+                Mat::F32 {
+                    o,
+                    k,
+                    data: Cow::Borrowed(s),
+                }
             }
             GgmlType::F16 => {
                 if bytes.len() != want(2, 1) {
@@ -62,7 +87,12 @@ impl<'a> Mat<'a> {
                 if k % qt.qk() != 0 || bytes.len() != o * qt.row_bytes(k) {
                     return Err(format!("{}: quantized size mismatch", t.name));
                 }
-                Mat::Quant { ty: qt, o, k, bytes }
+                Mat::Quant {
+                    ty: qt,
+                    o,
+                    k,
+                    bytes,
+                }
             }
         };
         Ok(m)
@@ -110,7 +140,15 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] = [Kind::Q, Kind::K, Kind::V, Kind::O, Kind::Gate, Kind::Up, Kind::Down];
+    pub const ALL: [Kind; 7] = [
+        Kind::Q,
+        Kind::K,
+        Kind::V,
+        Kind::O,
+        Kind::Gate,
+        Kind::Up,
+        Kind::Down,
+    ];
     pub fn gguf(self) -> &'static str {
         match self {
             Kind::Q => "attn_q",
@@ -152,26 +190,50 @@ impl<'a> TeWeights<'a> {
     pub fn from_gguf(g: &'a Gguf, n_layers: usize) -> Result<TeWeights<'a>, String> {
         let cfg = Qwen3Config::from_header(&g.header)?;
         if n_layers > cfg.n_layers {
-            return Err(format!("text encoder: {n_layers} layers requested, the model has {}", cfg.n_layers));
+            return Err(format!(
+                "text encoder: {n_layers} layers requested, the model has {}",
+                cfg.n_layers
+            ));
         }
-        let tensor = |name: &str| g.header.tensor(name).ok_or_else(|| format!("text encoder: missing {name}"));
+        let tensor = |name: &str| {
+            g.header
+                .tensor(name)
+                .ok_or_else(|| format!("text encoder: missing {name}"))
+        };
         let vec = |name: &str, len: usize| -> Result<Vec<f32>, String> {
             let t = tensor(name)?;
-            let m = Mat::from_tensor(&TensorInfo { shape: vec![t.shape[0], 1], ..t.clone() }, g.tensor_data(t))?;
+            let m = Mat::from_tensor(
+                &TensorInfo {
+                    shape: vec![t.shape[0], 1],
+                    ..t.clone()
+                },
+                g.tensor_data(t),
+            )?;
             if m.k() != len || t.shape.len() != 1 {
-                return Err(format!("text encoder: {name} has shape {:?}, want [{len}]", t.shape));
+                return Err(format!(
+                    "text encoder: {name} has shape {:?}, want [{len}]",
+                    t.shape
+                ));
             }
             let mut v = vec![0f32; len];
             m.read_row(0, &mut v)?;
             Ok(v)
         };
         let mat = |name: &str| -> Result<Mat<'a>, String> {
-            let t = g.header.tensor(name).ok_or_else(|| format!("text encoder: missing {name}"))?;
+            let t = g
+                .header
+                .tensor(name)
+                .ok_or_else(|| format!("text encoder: missing {name}"))?;
             Mat::from_tensor(t, g.tensor_data(t))
         };
         let embd = mat("token_embd.weight")?;
         if embd.shape() != (cfg.vocab, cfg.hidden) {
-            return Err(format!("token_embd: {:?}, want ({}, {})", embd.shape(), cfg.vocab, cfg.hidden));
+            return Err(format!(
+                "token_embd: {:?}, want ({}, {})",
+                embd.shape(),
+                cfg.vocab,
+                cfg.hidden
+            ));
         }
         let mut layers = Vec::with_capacity(n_layers);
         for l in 0..n_layers {
@@ -198,7 +260,11 @@ impl<'a> TeWeights<'a> {
 
     /// Bytes of the placed linears if they were fp16 (the NPU fp16 residency).
     pub fn linear_fp16_bytes(&self) -> u64 {
-        self.layers.iter().flat_map(|l| l.mats.iter()).map(|m| (m.o() * m.k() * 2) as u64).sum()
+        self.layers
+            .iter()
+            .flat_map(|l| l.mats.iter())
+            .map(|m| (m.o() * m.k() * 2) as u64)
+            .sum()
     }
 }
 

@@ -48,9 +48,17 @@ impl FlowInputs {
     }
 
     /// From a cached conditioning and an initial latent of `n_img * in_ch` values.
-    pub fn from_conditioning(c: &Conditioning, img0: Vec<f32>, sigmas: Vec<f32>) -> Result<FlowInputs, String> {
+    pub fn from_conditioning(
+        c: &Conditioning,
+        img0: Vec<f32>,
+        sigmas: Vec<f32>,
+    ) -> Result<FlowInputs, String> {
         if c.n_img == 0 || img0.len() % c.n_img != 0 {
-            return Err(format!("initial latent has {} values, not a multiple of {} tokens", img0.len(), c.n_img));
+            return Err(format!(
+                "initial latent has {} values, not a multiple of {} tokens",
+                img0.len(),
+                c.n_img
+            ));
         }
         if sigmas.is_empty() {
             return Err("no sigmas".into());
@@ -72,19 +80,31 @@ impl FlowInputs {
 
     /// Sigma of step `i` and the sigma after it.
     pub fn sigma_pair(&self, i: usize) -> (f32, f32) {
-        let next = if i + 1 < self.steps() { self.sigmas[i + 1] } else { self.sigma_end };
+        let next = if i + 1 < self.steps() {
+            self.sigmas[i + 1]
+        } else {
+            self.sigma_end
+        };
         (self.sigmas[i], next)
     }
 }
 
 /// Runs the Euler loop from a hand-over (see [`run_flow_inputs`]).
-pub fn run_flow(model: &mut dyn DitBackend, h: &Handoff, on_step: &mut dyn FnMut(usize, &[f32], &[f32])) -> Vec<f32> {
+pub fn run_flow(
+    model: &mut dyn DitBackend,
+    h: &Handoff,
+    on_step: &mut dyn FnMut(usize, &[f32], &[f32]),
+) -> Vec<f32> {
     run_flow_inputs(model, &FlowInputs::from_handoff(h), on_step)
 }
 
 /// Runs the Euler loop from `inp.img0`. `on_step(i, x_before, model_out)` is called for each step.
 /// Returns the latent tokens `[n_img][in_ch]` after the last update.
-pub fn run_flow_inputs(model: &mut dyn DitBackend, inp: &FlowInputs, on_step: &mut dyn FnMut(usize, &[f32], &[f32])) -> Vec<f32> {
+pub fn run_flow_inputs(
+    model: &mut dyn DitBackend,
+    inp: &FlowInputs,
+    on_step: &mut dyn FnMut(usize, &[f32], &[f32]),
+) -> Vec<f32> {
     let mut x = inp.img0.clone();
     for i in 0..inp.steps() {
         let (sigma, sigma_next) = inp.sigma_pair(i);
@@ -97,7 +117,11 @@ pub fn run_flow_inputs(model: &mut dyn DitBackend, inp: &FlowInputs, on_step: &m
             pe: inp.pe.clone(),
         };
         let v = model.forward(&input);
-        assert_eq!(v.len(), x.len(), "model output must have the latent's shape (out_ch == in_ch)");
+        assert_eq!(
+            v.len(),
+            x.len(),
+            "model output must have the latent's shape (out_ch == in_ch)"
+        );
         on_step(i, &x, &v);
         let dt = sigma_next - sigma;
         for (xi, vi) in x.iter_mut().zip(&v) {
@@ -177,7 +201,9 @@ mod tests {
         let h = handoff(sig.clone(), x0.clone(), 2);
         let mut be = NegBackend { calls: vec![] };
         let mut seen = Vec::new();
-        let out = run_flow(&mut be, &h, &mut |i, x, v| seen.push((i, x.to_vec(), v.to_vec())));
+        let out = run_flow(&mut be, &h, &mut |i, x, v| {
+            seen.push((i, x.to_vec(), v.to_vec()))
+        });
 
         // model is called at the step's own sigma
         let ts: Vec<f32> = be.calls.iter().map(|c| c.0).collect();
@@ -215,9 +241,15 @@ mod tests {
         let h = handoff(sig.clone(), vec![0.3, -0.7, 1.1, 0.2], 2);
         let mut be = NegBackend { calls: vec![] };
         let mut steps = Vec::new();
-        let last = run_flow(&mut be, &h, &mut |_, x, v| steps.push((x.to_vec(), v.to_vec())));
+        let last = run_flow(&mut be, &h, &mut |_, x, v| {
+            steps.push((x.to_vec(), v.to_vec()))
+        });
         for i in 0..sig.len() {
-            let after: &[f32] = if i + 1 < sig.len() { &steps[i + 1].0 } else { &last };
+            let after: &[f32] = if i + 1 < sig.len() {
+                &steps[i + 1].0
+            } else {
+                &last
+            };
             let c = fit_step(&steps[i].0, &steps[i].1, after);
             let want = h.sigma_pair(i).1 as f64 - h.sigma_pair(i).0 as f64;
             assert!((c - want).abs() < 1e-5, "step {i}: fit {c} want {want}");

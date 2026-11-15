@@ -24,7 +24,11 @@ use common::*;
 use std::time::{Duration, Instant};
 
 fn env_list(k: &str, d: &str) -> Vec<usize> {
-    std::env::var(k).unwrap_or_else(|_| d.to_string()).split(',').filter_map(|s| s.trim().parse().ok()).collect()
+    std::env::var(k)
+        .unwrap_or_else(|_| d.to_string())
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect()
 }
 
 fn median(v: &mut [f64]) -> f64 {
@@ -41,20 +45,43 @@ fn kbench_fused_verify_attention() {
     let chs = env_list("OXE_KBENCH_CH", "256");
     let ctxs = env_list("OXE_KBENCH_CTX", "6144,8192,16384,32000");
     let nlayer = env_list("OXE_KBENCH_LAYERS", "10")[0].max(1);
-    let cpu_list = std::env::var("OXE_KBENCH_CPUS").ok().map(|s| sched::parse_cpu_list(&s).expect("OXE_KBENCH_CPUS"));
+    let cpu_list = std::env::var("OXE_KBENCH_CPUS")
+        .ok()
+        .map(|s| sched::parse_cpu_list(&s).expect("OXE_KBENCH_CPUS"));
     println!("O-70 kbench: head_dim {HD}, {NKV} KV heads x {GROUP}, n_ctx {N_CTX}, {nlayer} layers cycled, reps {reps}, threads {threads:?}, chunks {chs:?}");
-    println!("{:>6} {:>5} {:>3} {:>5} {:>10} {:>10} {:>9} {:>9} {:>7} {:>8}", "ctx", "lanes", "thr", "ch", "old_us", "fused_us", "old_ns/p", "fus_ns/p", "cut%", "fus_GB/s");
+    println!(
+        "{:>6} {:>5} {:>3} {:>5} {:>10} {:>10} {:>9} {:>9} {:>7} {:>8}",
+        "ctx",
+        "lanes",
+        "thr",
+        "ch",
+        "old_us",
+        "fused_us",
+        "old_ns/p",
+        "fus_ns/p",
+        "cut%",
+        "fus_GB/s"
+    );
     let mut verdict = Vec::new();
     for &ctx in &ctxs {
         let pos0 = ctx - 1;
-        let mut layers: Vec<Case> = (0..nlayer).map(|l| Case::new(N_CTX, 2, pos0, Kind::Random, 4.0, 0xbe7c4 + l as u64, &[])).collect();
+        let mut layers: Vec<Case> = (0..nlayer)
+            .map(|l| Case::new(N_CTX, 2, pos0, Kind::Random, 4.0, 0xbe7c4 + l as u64, &[]))
+            .collect();
         for nl in [1usize, 2] {
             for c in layers.iter_mut() {
                 c.nl = nl;
             }
             for &nth in &threads {
-                let cpus = cpu_list.clone().map(|v| v[..nth.min(v.len())].to_vec()).unwrap_or_else(|| cpus(nth));
-                assert_eq!(cpus.len(), nth, "OXE_KBENCH_CPUS has fewer cpus than threads");
+                let cpus = cpu_list
+                    .clone()
+                    .map(|v| v[..nth.min(v.len())].to_vec())
+                    .unwrap_or_else(|| cpus(nth));
+                assert_eq!(
+                    cpus.len(),
+                    nth,
+                    "OXE_KBENCH_CPUS has fewer cpus than threads"
+                );
                 let rows: Vec<(usize, f64, f64)> = std::thread::scope(|s| {
                     s.spawn(|| {
                         let pool = sched::Pool::new(&cpus, Duration::from_micros(200)).unwrap();
@@ -108,7 +135,14 @@ fn kbench_fused_verify_attention() {
                         bytes / tf / 1e9
                     );
                     if nl == 2 && (6144..=8192).contains(&ctx) {
-                        verdict.push(format!("ctx {ctx} lanes 2 threads {nth} ch {ch}: cut {cut:.1}% -> {}", if cut < 20.0 { "KILL (< 20%)" } else { "pass (>= 20%)" }));
+                        verdict.push(format!(
+                            "ctx {ctx} lanes 2 threads {nth} ch {ch}: cut {cut:.1}% -> {}",
+                            if cut < 20.0 {
+                                "KILL (< 20%)"
+                            } else {
+                                "pass (>= 20%)"
+                            }
+                        ));
                     }
                 }
             }

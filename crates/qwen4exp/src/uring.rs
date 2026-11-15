@@ -158,10 +158,12 @@ impl Ring {
                 p.sq_thread_cpu = c;
             }
         } else if o.defer_taskrun {
-            p.flags |= IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN;
+            p.flags |=
+                IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN;
         }
         // SAFETY: plain syscall with a correctly sized params struct.
-        let fd = unsafe { libc::syscall(libc::SYS_io_uring_setup, entries, &mut p as *mut Params) } as i32;
+        let fd = unsafe { libc::syscall(libc::SYS_io_uring_setup, entries, &mut p as *mut Params) }
+            as i32;
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -171,7 +173,14 @@ impl Ring {
         let map = |len: usize, off: i64| -> io::Result<*mut u8> {
             // SAFETY: mapping the ring regions the kernel documented for this fd.
             let r = unsafe {
-                libc::mmap(ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED | libc::MAP_POPULATE, fd, off)
+                libc::mmap(
+                    ptr::null_mut(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED | libc::MAP_POPULATE,
+                    fd,
+                    off,
+                )
             };
             if r == libc::MAP_FAILED {
                 Err(io::Error::last_os_error())
@@ -179,9 +188,17 @@ impl Ring {
                 Ok(r as *mut u8)
             }
         };
-        let (sq_len, cq_len) = if single { (sq_len.max(cq_len), sq_len.max(cq_len)) } else { (sq_len, cq_len) };
+        let (sq_len, cq_len) = if single {
+            (sq_len.max(cq_len), sq_len.max(cq_len))
+        } else {
+            (sq_len, cq_len)
+        };
         let sq_ptr = map(sq_len, IORING_OFF_SQ_RING)?;
-        let cq_ptr = if single { sq_ptr } else { map(cq_len, IORING_OFF_CQ_RING)? };
+        let cq_ptr = if single {
+            sq_ptr
+        } else {
+            map(cq_len, IORING_OFF_CQ_RING)?
+        };
         let sqes_len = p.sq_entries as usize * 64;
         let sqes = map(sqes_len, IORING_OFF_SQES)? as *mut Sqe;
         // SAFETY: offsets come from the kernel for these mappings.
@@ -224,7 +241,15 @@ impl Ring {
     pub fn register_file(&mut self, fd: i32) -> io::Result<()> {
         let fds = [fd];
         // SAFETY: plain syscall, one-element fd array.
-        let r = unsafe { libc::syscall(libc::SYS_io_uring_register, self.fd, IORING_REGISTER_FILES, fds.as_ptr(), 1u32) };
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_io_uring_register,
+                self.fd,
+                IORING_REGISTER_FILES,
+                fds.as_ptr(),
+                1u32,
+            )
+        };
         if r < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -238,8 +263,17 @@ impl Ring {
     /// # Safety
     /// The region must stay mapped for the ring's lifetime.
     pub unsafe fn register_buffer(&mut self, ptr: *mut u8, len: usize) -> io::Result<()> {
-        let iov = [libc::iovec { iov_base: ptr as *mut libc::c_void, iov_len: len }];
-        let r = libc::syscall(libc::SYS_io_uring_register, self.fd, IORING_REGISTER_BUFFERS, iov.as_ptr(), 1u32);
+        let iov = [libc::iovec {
+            iov_base: ptr as *mut libc::c_void,
+            iov_len: len,
+        }];
+        let r = libc::syscall(
+            libc::SYS_io_uring_register,
+            self.fd,
+            IORING_REGISTER_BUFFERS,
+            iov.as_ptr(),
+            1u32,
+        );
         if r < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -251,19 +285,32 @@ impl Ring {
     ///
     /// # Safety
     /// `buf` must stay valid and untouched until the completion with `user_data` is reaped.
-    pub unsafe fn push_read(&mut self, fd: i32, buf: *mut u8, len: u32, off: u64, user_data: u64) -> bool {
+    pub unsafe fn push_read(
+        &mut self,
+        fd: i32,
+        buf: *mut u8,
+        len: u32,
+        off: u64,
+        user_data: u64,
+    ) -> bool {
         if self.sq_space() == 0 {
             return false;
         }
         let tail = (*self.sq_tail).load(Relaxed);
         let idx = tail & self.sq_mask;
         let sqe = self.sqes.add(idx as usize);
-        let fixed_buf = self.fixed_buf.is_some_and(|(b, l)| buf as usize >= b && buf as usize + len as usize <= b + l);
+        let fixed_buf = self
+            .fixed_buf
+            .is_some_and(|(b, l)| buf as usize >= b && buf as usize + len as usize <= b + l);
         let fixed_file = self.fixed_file == Some(fd);
         ptr::write(
             sqe,
             Sqe {
-                opcode: if fixed_buf { IORING_OP_READ_FIXED } else { IORING_OP_READ },
+                opcode: if fixed_buf {
+                    IORING_OP_READ_FIXED
+                } else {
+                    IORING_OP_READ
+                },
                 flags: if fixed_file { IOSQE_FIXED_FILE } else { 0 },
                 ioprio: 0,
                 fd: if fixed_file { 0 } else { fd },
@@ -294,26 +341,51 @@ impl Ring {
             // SAFETY: ring word valid for the ring's lifetime.
             let need = unsafe { (*self.sq_flags).load(Acquire) } & IORING_SQ_NEED_WAKEUP != 0;
             if need || wait {
-                let flags = if need { IORING_ENTER_SQ_WAKEUP } else { 0 } | if wait { IORING_ENTER_GETEVENTS } else { 0 };
+                let flags = if need { IORING_ENTER_SQ_WAKEUP } else { 0 }
+                    | if wait { IORING_ENTER_GETEVENTS } else { 0 };
                 // SAFETY: plain syscall on our ring fd.
-                let r = unsafe { libc::syscall(libc::SYS_io_uring_enter, self.fd, 0u32, if wait { 1u32 } else { 0 }, flags, ptr::null::<u8>(), 0usize) };
+                let r = unsafe {
+                    libc::syscall(
+                        libc::SYS_io_uring_enter,
+                        self.fd,
+                        0u32,
+                        if wait { 1u32 } else { 0 },
+                        flags,
+                        ptr::null::<u8>(),
+                        0usize,
+                    )
+                };
                 if r < 0 {
                     let e = io::Error::last_os_error();
-                    if e.raw_os_error() != Some(libc::EINTR) && e.raw_os_error() != Some(libc::EBUSY) {
+                    if e.raw_os_error() != Some(libc::EINTR)
+                        && e.raw_os_error() != Some(libc::EBUSY)
+                    {
                         return Err(e);
                     }
                 }
             }
             return Ok(());
         }
-        let flags = if wait || self.inflight > 0 { IORING_ENTER_GETEVENTS } else { 0 };
+        let flags = if wait || self.inflight > 0 {
+            IORING_ENTER_GETEVENTS
+        } else {
+            0
+        };
         let min = if wait { 1 } else { 0 };
         if self.unsubmitted == 0 && flags == 0 {
             return Ok(());
         }
         // SAFETY: plain syscall on our ring fd.
         let r = unsafe {
-            libc::syscall(libc::SYS_io_uring_enter, self.fd, self.unsubmitted, min, flags, ptr::null::<u8>(), 0usize)
+            libc::syscall(
+                libc::SYS_io_uring_enter,
+                self.fd,
+                self.unsubmitted,
+                min,
+                flags,
+                ptr::null::<u8>(),
+                0usize,
+            )
         };
         if r < 0 {
             let e = io::Error::last_os_error();
@@ -335,7 +407,10 @@ impl Ring {
             let tail = (*self.cq_tail).load(Acquire);
             while head != tail {
                 let c = &*self.cqes.add((head & self.cq_mask) as usize);
-                f(Completion { user_data: c.user_data, res: c.res });
+                f(Completion {
+                    user_data: c.user_data,
+                    res: c.res,
+                });
                 head = head.wrapping_add(1);
                 n += 1;
             }
@@ -376,14 +451,27 @@ impl Arena {
         // transparent huge page (mmap only guarantees 4 KiB alignment, which left the first/last partial 2 MB as 4 KiB pages)
         // SAFETY: anonymous private mapping.
         let raw = unsafe {
-            libc::mmap(ptr::null_mut(), len + HUGE, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0)
+            libc::mmap(
+                ptr::null_mut(),
+                len + HUGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
         };
         if raw == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
         // FLASH_ARENA_ALIGN2M=1 arms the alignment (FD-5 ABBA arm); default keeps the old placement (mmap's own address)
-        let align = std::env::var("FLASH_ARENA_ALIGN2M").map(|v| v == "1").unwrap_or(false);
-        let start = if align { (raw as usize).div_ceil(HUGE) * HUGE } else { raw as usize };
+        let align = std::env::var("FLASH_ARENA_ALIGN2M")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let start = if align {
+            (raw as usize).div_ceil(HUGE) * HUGE
+        } else {
+            raw as usize
+        };
         let head = start - raw as usize;
         let tail = HUGE - head;
         // SAFETY: trimming the unused ends of our own mapping.
@@ -398,7 +486,10 @@ impl Arena {
         let p = start as *mut libc::c_void;
         // SAFETY: advisory on our mapping.
         unsafe { libc::madvise(p, len, libc::MADV_HUGEPAGE) };
-        let a = Arena { ptr: p as *mut u8, len };
+        let a = Arena {
+            ptr: p as *mut u8,
+            len,
+        };
         if prefault {
             // touch every 4 KiB page so the timing loop never page-faults
             for off in (0..len).step_by(4096) {
@@ -421,7 +512,12 @@ pub fn open_direct(path: &std::path::Path) -> io::Result<i32> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
     // SAFETY: plain open.
-    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECT | libc::O_CLOEXEC) };
+    let fd = unsafe {
+        libc::open(
+            c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECT | libc::O_CLOEXEC,
+        )
+    };
     if fd < 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -439,7 +535,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oxf-uring-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("f.bin");
-        let data: Vec<u8> = (0..(4 << 20)).map(|i: u32| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        let data: Vec<u8> = (0..(4 << 20))
+            .map(|i: u32| (i.wrapping_mul(2654435761) >> 24) as u8)
+            .collect();
         std::fs::File::create(&p).unwrap().write_all(&data).unwrap();
         let fd = match open_direct(&p) {
             Ok(fd) => fd,
@@ -452,7 +550,13 @@ mod tests {
         let arena = Arena::new(4 << 20, false).unwrap();
         unsafe {
             for i in 0..4u64 {
-                assert!(ring.push_read(fd, arena.ptr.add((i as usize) << 20), 1 << 20, (3 - i) << 20, i));
+                assert!(ring.push_read(
+                    fd,
+                    arena.ptr.add((i as usize) << 20),
+                    1 << 20,
+                    (3 - i) << 20,
+                    i
+                ));
             }
         }
         let mut done = 0;

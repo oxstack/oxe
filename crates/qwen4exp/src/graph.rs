@@ -63,7 +63,13 @@ pub enum GgmlTensor {}
 pub type ExpertFn = unsafe extern "C" fn(call: *const crate::stream::FgExpertCall, ud: *mut c_void);
 
 extern "C" {
-    fn fg_model_new(refs: *const FgTensorRef, n: c_int, regions: *const FgRegion, n_regions: c_int, ple: *const FgPle) -> *mut FgModel;
+    fn fg_model_new(
+        refs: *const FgTensorRef,
+        n: c_int,
+        regions: *const FgRegion,
+        n_regions: c_int,
+        ple: *const FgPle,
+    ) -> *mut FgModel;
     fn fg_model_free(m: *mut FgModel);
     fn fg_ctx_new(m: *mut FgModel, n_ctx: u32) -> *mut FgCtx;
     fn fg_ctx_free(c: *mut FgCtx);
@@ -94,12 +100,32 @@ extern "C" {
     fn fg_pf_set_attn(on: c_int);
     fn fg_pf_get_attn() -> c_int;
     fn fg_pf_attn_units(reset: c_int) -> std::ffi::c_long;
-    fn fg_pf_selftest_attn(n_kv: c_int, n_rows: c_int, nth: c_int, pattern: c_int, reps: c_int, out2: *mut f64) -> c_int;
+    fn fg_pf_selftest_attn(
+        n_kv: c_int,
+        n_rows: c_int,
+        nth: c_int,
+        pattern: c_int,
+        reps: c_int,
+        out2: *mut f64,
+    ) -> c_int;
     fn fg_pf_stats(out2: *mut std::ffi::c_long, reset: c_int);
     fn fg_selftest_dense(nth: c_int) -> c_int;
     fn fg_selftest_split(nth: c_int) -> c_int;
-    fn fg_selftest_mm_cols(nth: c_int, max_w: c_int, bitwise_out: *mut c_int, maxd_out: *mut f64) -> c_int;
-    fn fg_pf_bench_dense(ty: c_int, k: std::ffi::c_long, r: std::ffi::c_long, t: std::ffi::c_long, nth: c_int, reps: c_int, out3: *mut f64) -> c_int;
+    fn fg_selftest_mm_cols(
+        nth: c_int,
+        max_w: c_int,
+        bitwise_out: *mut c_int,
+        maxd_out: *mut f64,
+    ) -> c_int;
+    fn fg_pf_bench_dense(
+        ty: c_int,
+        k: std::ffi::c_long,
+        r: std::ffi::c_long,
+        t: std::ffi::c_long,
+        nth: c_int,
+        reps: c_int,
+        out3: *mut f64,
+    ) -> c_int;
     fn fg_ctx_copy_state(dst: *mut FgCtx, src: *const FgCtx) -> c_int;
     fn fg_ctx_pos(c: *const FgCtx) -> u32;
     fn fg_ctx_state_data(c: *mut FgCtx) -> *mut c_void;
@@ -108,11 +134,22 @@ extern "C" {
     fn fg_ctx_recurrent_bytes(c: *const FgCtx) -> usize;
     fn fg_ctx_compact_bytes(c: *mut FgCtx, pos: u32) -> usize;
     fn fg_ctx_save_compact(c: *mut FgCtx, buf: *mut c_void);
-    fn fg_ctx_save_compact_cb(c: *mut FgCtx, cb: extern "C" fn(*mut c_void, *const c_char, usize) -> c_int, user: *mut c_void) -> c_int;
+    fn fg_ctx_save_compact_cb(
+        c: *mut FgCtx,
+        cb: extern "C" fn(*mut c_void, *const c_char, usize) -> c_int,
+        user: *mut c_void,
+    ) -> c_int;
     fn fg_ctx_load_compact(c: *mut FgCtx, buf: *const c_void, pos: u32) -> c_int;
     fn fg_ctx_save_recurrent(c: *const FgCtx, buf: *mut c_void);
     fn fg_ctx_restore_recurrent(c: *mut FgCtx, buf: *const c_void, pos: u32) -> c_int;
-    fn fg_decode(c: *mut FgCtx, tokens: *const i32, n: c_int, n_threads: c_int, logits: *mut f32, dump: *const FgDump) -> c_int;
+    fn fg_decode(
+        c: *mut FgCtx,
+        tokens: *const i32,
+        n: c_int,
+        n_threads: c_int,
+        logits: *mut f32,
+        dump: *const FgDump,
+    ) -> c_int;
     fn fg_ctx_set_abort(c: *mut FgCtx, flag: *const u8);
     fn fg_selftest_abort() -> c_int;
 }
@@ -135,20 +172,38 @@ fn map_file(p: &std::path::Path) -> Result<Mapped, String> {
     let f = File::open(p).map_err(|e| format!("{}: {e}", p.display()))?;
     let len = f.metadata().map_err(|e| e.to_string())?.len() as usize;
     // SAFETY: read-only shared mapping of a file we keep no writer to.
-    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, f.as_raw_fd(), 0) };
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            f.as_raw_fd(),
+            0,
+        )
+    };
     if ptr == libc::MAP_FAILED {
-        return Err(format!("mmap {}: {}", p.display(), std::io::Error::last_os_error()));
+        return Err(format!(
+            "mmap {}: {}",
+            p.display(),
+            std::io::Error::last_os_error()
+        ));
     }
     // SAFETY: advisory.
     unsafe { libc::madvise(ptr, len, libc::MADV_RANDOM) };
-    Ok(Mapped { ptr: ptr as *mut u8, len })
+    Ok(Mapped {
+        ptr: ptr as *mut u8,
+        len,
+    })
 }
 
 /// `[off, off + bytes)` inside a mapping of `len` bytes, without overflow.
 pub(crate) fn tensor_in_mapping(off: u64, bytes: u64, len: usize) -> Result<(), String> {
     match off.checked_add(bytes) {
         Some(end) if end <= len as u64 => Ok(()),
-        _ => Err(format!("data [{off}, +{bytes}) outside its {len}-byte mapping")),
+        _ => Err(format!(
+            "data [{off}, +{bytes}) outside its {len}-byte mapping"
+        )),
     }
 }
 
@@ -163,11 +218,21 @@ unsafe impl Sync for GraphModel {}
 impl GraphModel {
     /// `map_experts`: give the graph the routed experts from shard mappings (reference / prefill).
     pub fn new(s: &Shards, d: &Dense, map_experts: bool) -> Result<GraphModel, String> {
-        let maps: Vec<Mapped> = s.paths.iter().map(|p| map_file(p)).collect::<Result<_, _>>()?;
+        let maps: Vec<Mapped> = s
+            .paths
+            .iter()
+            .map(|p| map_file(p))
+            .collect::<Result<_, _>>()?;
         let (dbase, dlen) = d.region();
-        let mut regions = vec![FgRegion { base: dbase as *mut c_void, size: dlen }];
+        let mut regions = vec![FgRegion {
+            base: dbase as *mut c_void,
+            size: dlen,
+        }];
         for mp in &maps {
-            regions.push(FgRegion { base: mp.ptr as *mut c_void, size: mp.len });
+            regions.push(FgRegion {
+                base: mp.ptr as *mut c_void,
+                size: mp.len,
+            });
         }
         let mut names = Vec::new();
         let mut refs = Vec::new();
@@ -180,20 +245,35 @@ impl GraphModel {
             } else {
                 // REVIEW-v0.1.1 S1: check the range against the mapping we actually hold (the file
                 // can differ from the one Gguf::open checked), with checked arithmetic
-                let mp = maps.get(t.shard).ok_or_else(|| format!("{}: shard {} not mapped", t.name, t.shard))?;
-                tensor_in_mapping(t.off, t.bytes, mp.len).map_err(|e| format!("{}: {e}", t.name))?;
+                let mp = maps
+                    .get(t.shard)
+                    .ok_or_else(|| format!("{}: shard {} not mapped", t.name, t.shard))?;
+                tensor_in_mapping(t.off, t.bytes, mp.len)
+                    .map_err(|e| format!("{}: {e}", t.name))?;
                 // SAFETY: [off, off + bytes) lies inside the mapping of its shard (checked above).
-                (unsafe { mp.ptr.add(t.off as usize) } as *mut c_void, 1 + t.shard as i32)
+                (
+                    unsafe { mp.ptr.add(t.off as usize) } as *mut c_void,
+                    1 + t.shard as i32,
+                )
             };
             if t.shape.len() > 4 || t.shape.iter().any(|&x| x > i64::MAX as u64) {
-                return Err(format!("{}: shape {:?} is not a ggml shape", t.name, t.shape));
+                return Err(format!(
+                    "{}: shape {:?} is not a ggml shape",
+                    t.name, t.shape
+                ));
             }
             let mut ne = [1i64; 4];
             for (i, &x) in t.shape.iter().enumerate() {
                 ne[i] = x as i64;
             }
             let c = CString::new(t.name.clone()).unwrap();
-            refs.push(FgTensorRef { name: c.as_ptr(), ty: t.w.ggml_type(), ne, data, region });
+            refs.push(FgTensorRef {
+                name: c.as_ptr(),
+                ty: t.w.ggml_type(),
+                ne,
+                data,
+                region,
+            });
             names.push(c);
         }
         let (offs, voc) = s.ple_heads();
@@ -201,19 +281,38 @@ impl GraphModel {
         if offs.len() < 16 || voc.len() < 16 || mult.len() < 3 {
             return Err("PLE metadata incomplete".into());
         }
-        let mut ple = FgPle { mult: [mult[0], mult[1], mult[2]], head_offsets: [0; 16], head_vocab: [0; 16], eos: 0 };
+        let mut ple = FgPle {
+            mult: [mult[0], mult[1], mult[2]],
+            head_offsets: [0; 16],
+            head_vocab: [0; 16],
+            eos: 0,
+        };
         for h in 0..16 {
             ple.head_offsets[h] = offs[h] as u32;
             ple.head_vocab[h] = voc[h] as u32;
         }
-        ple.eos = s.meta_u64_pub("qwen4exp.ple.eos_token_id").ok_or("ple eos")? as i32;
+        ple.eos = s
+            .meta_u64_pub("qwen4exp.ple.eos_token_id")
+            .ok_or("ple eos")? as i32;
         // SAFETY: refs/regions/ple outlive the call; the model keeps pointers into the arena and the
         // mappings, which GraphModel owns (the arena via the caller's Dense, which must outlive it).
-        let m = unsafe { fg_model_new(refs.as_ptr(), refs.len() as c_int, regions.as_ptr(), regions.len() as c_int, &ple) };
+        let m = unsafe {
+            fg_model_new(
+                refs.as_ptr(),
+                refs.len() as c_int,
+                regions.as_ptr(),
+                regions.len() as c_int,
+                &ple,
+            )
+        };
         if m.is_null() {
             return Err("fg_model_new failed".into());
         }
-        Ok(GraphModel { m, maps, _names: names })
+        Ok(GraphModel {
+            m,
+            maps,
+            _names: names,
+        })
     }
 }
 impl Drop for GraphModel {
@@ -251,7 +350,9 @@ impl GraphCtx {
         // SAFETY: valid model.
         let c = unsafe { fg_ctx_new(m.m, n_ctx) };
         if c.is_null() {
-            return Err(format!("fg_ctx_new failed (n_ctx {n_ctx}): context allocation"));
+            return Err(format!(
+                "fg_ctx_new failed (n_ctx {n_ctx}): context allocation"
+            ));
         }
         Ok(GraphCtx { c, abort: None })
     }
@@ -270,7 +371,11 @@ impl GraphCtx {
         txt.lines()
             .filter_map(|l| {
                 let mut it = l.split('\t');
-                Some((it.next()?.to_string(), it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+                Some((
+                    it.next()?.to_string(),
+                    it.next()?.parse().ok()?,
+                    it.next()?.parse().ok()?,
+                ))
             })
             .collect()
     }
@@ -332,7 +437,8 @@ impl GraphCtx {
             fg_ctx_get_tokens(self.c, toks.as_mut_ptr());
             std::slice::from_raw_parts(fg_ctx_state_data(self.c) as *const u8, sb)
         };
-        let mut f = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
+        let mut f =
+            std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
         let mut hdr = Vec::new();
         hdr.extend_from_slice(b"FGS1");
         for v in [n as u64, extra.len() as u64, sb as u64] {
@@ -354,17 +460,26 @@ impl GraphCtx {
         if b.len() < 28 || &b[..4] != b"FGS1" {
             return Err("not an FGS1 state file".into());
         }
-        let u = |i: usize| u64::from_le_bytes(b[4 + 8 * i..12 + 8 * i].try_into().unwrap()) as usize;
+        let u =
+            |i: usize| u64::from_le_bytes(b[4 + 8 * i..12 + 8 * i].try_into().unwrap()) as usize;
         let (n, ne, sb) = (u(0), u(1), u(2));
         if sb != self.state_bytes() || b.len() != 28 + 4 * n + 4 * ne + sb {
             return Err("state file does not match this context".into());
         }
-        let toks: Vec<i32> = (0..n).map(|i| i32::from_le_bytes(b[28 + 4 * i..32 + 4 * i].try_into().unwrap())).collect();
+        let toks: Vec<i32> = (0..n)
+            .map(|i| i32::from_le_bytes(b[28 + 4 * i..32 + 4 * i].try_into().unwrap()))
+            .collect();
         let o = 28 + 4 * n;
-        let extra: Vec<f32> = (0..ne).map(|i| f32::from_le_bytes(b[o + 4 * i..o + 4 + 4 * i].try_into().unwrap())).collect();
+        let extra: Vec<f32> = (0..ne)
+            .map(|i| f32::from_le_bytes(b[o + 4 * i..o + 4 + 4 * i].try_into().unwrap()))
+            .collect();
         // SAFETY: sizes checked above.
         unsafe {
-            std::ptr::copy_nonoverlapping(b[o + 4 * ne..].as_ptr(), fg_ctx_state_data(self.c) as *mut u8, sb);
+            std::ptr::copy_nonoverlapping(
+                b[o + 4 * ne..].as_ptr(),
+                fg_ctx_state_data(self.c) as *mut u8,
+                sb,
+            );
             fg_ctx_set_tokens(self.c, toks.as_ptr(), n as u32);
         }
         Ok((toks, extra))
@@ -454,7 +569,10 @@ impl GraphCtx {
             return Err(e);
         }
         if rc != 0 || st.n != nb {
-            return Err(std::io::Error::other(format!("compact state stream: {} of {nb} bytes (rc {rc})", st.n)));
+            return Err(std::io::Error::other(format!(
+                "compact state stream: {} of {nb} bytes (rc {rc})",
+                st.n
+            )));
         }
         Ok(())
     }
@@ -502,13 +620,27 @@ impl GraphCtx {
     pub unsafe fn set_expert_fn(&mut self, f: Option<ExpertFn>, ud: *mut c_void) {
         fg_ctx_set_expert_fn(self.c, f, ud)
     }
-    pub fn decode(&mut self, tokens: &[i32], n_threads: usize, logits: &mut [f32], dump: Option<&Dump>) -> Result<(), String> {
+    pub fn decode(
+        &mut self,
+        tokens: &[i32],
+        n_threads: usize,
+        logits: &mut [f32],
+        dump: Option<&Dump>,
+    ) -> Result<(), String> {
         let (_cs, _ps, d);
         let dp = if let Some(dm) = dump {
             let dir = CString::new(dm.dir.clone()).unwrap();
-            let cs: Vec<CString> = dm.names.iter().map(|n| CString::new(n.clone()).unwrap()).collect();
+            let cs: Vec<CString> = dm
+                .names
+                .iter()
+                .map(|n| CString::new(n.clone()).unwrap())
+                .collect();
             let ps: Vec<*const c_char> = cs.iter().map(|c| c.as_ptr()).collect();
-            d = FgDump { dir: dir.as_ptr(), names: ps.as_ptr(), n_names: ps.len() as c_int };
+            d = FgDump {
+                dir: dir.as_ptr(),
+                names: ps.as_ptr(),
+                n_names: ps.len() as c_int,
+            };
             _cs = (dir, cs);
             _ps = ps;
             &d as *const FgDump
@@ -517,11 +649,22 @@ impl GraphCtx {
         };
         assert!(logits.len() >= crate::model::N_VOCAB);
         // SAFETY: valid context, buffers sized above.
-        let r = unsafe { fg_decode(self.c, tokens.as_ptr(), tokens.len() as c_int, n_threads as c_int, logits.as_mut_ptr(), dp) };
+        let r = unsafe {
+            fg_decode(
+                self.c,
+                tokens.as_ptr(),
+                tokens.len() as c_int,
+                n_threads as c_int,
+                logits.as_mut_ptr(),
+                dp,
+            )
+        };
         match r {
             0 => Ok(()),
             -6 => Err(DECODE_ABORTED.to_string()),
-            -7 => Err("fg_decode: -7 (state dirty: an aborted decode was not rolled back)".to_string()),
+            -7 => Err(
+                "fg_decode: -7 (state dirty: an aborted decode was not rolled back)".to_string(),
+            ),
             r => Err(format!("fg_decode: {r}")),
         }
     }
@@ -530,7 +673,9 @@ impl GraphCtx {
     /// `DECODE_ABORTED`. None = off.
     pub fn set_abort(&mut self, flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) {
         // AtomicBool has bool's layout (one byte, 0 / 1): the C side reads it as a volatile byte between graph nodes
-        let p = flag.as_ref().map_or(std::ptr::null(), |a| a.as_ptr() as *const u8);
+        let p = flag
+            .as_ref()
+            .map_or(std::ptr::null(), |a| a.as_ptr() as *const u8);
         // SAFETY: the Arc stays in self.abort while registered.
         unsafe { fg_ctx_set_abort(self.c, p) };
         self.abort = flag;
@@ -567,19 +712,49 @@ pub fn attn_tile_units(reset: bool) -> i64 {
 
 /// Model-free check of the tile path against the graph port's tiled path on one fixture (patterns 0-2): (bitwise
 /// equal and tile path taken, ms off, ms on).
-pub fn selftest_attn_tile(n_kv: usize, n_rows: usize, nth: usize, pattern: usize, reps: usize) -> (bool, f64, f64) {
+pub fn selftest_attn_tile(
+    n_kv: usize,
+    n_rows: usize,
+    nth: usize,
+    pattern: usize,
+    reps: usize,
+) -> (bool, f64, f64) {
     let mut o = [0f64; 4];
     // SAFETY: self-contained; four doubles.
-    let rc = unsafe { fg_pf_selftest_attn(n_kv as c_int, n_rows as c_int, nth as c_int, pattern as c_int, reps as c_int, o.as_mut_ptr()) };
+    let rc = unsafe {
+        fg_pf_selftest_attn(
+            n_kv as c_int,
+            n_rows as c_int,
+            nth as c_int,
+            pattern as c_int,
+            reps as c_int,
+            o.as_mut_ptr(),
+        )
+    };
     (rc == 0, o[0], o[1])
 }
 
 /// As [`selftest_attn_tile`], all timings: (bitwise incl. the fused node == merge(part), [ms part off, ms part tiles,
 /// ms part + merge (tiles), ms fused node]).
-pub fn selftest_attn_tile4(n_kv: usize, n_rows: usize, nth: usize, pattern: usize, reps: usize) -> (bool, [f64; 4]) {
+pub fn selftest_attn_tile4(
+    n_kv: usize,
+    n_rows: usize,
+    nth: usize,
+    pattern: usize,
+    reps: usize,
+) -> (bool, [f64; 4]) {
     let mut o = [0f64; 4];
     // SAFETY: self-contained; four doubles.
-    let rc = unsafe { fg_pf_selftest_attn(n_kv as c_int, n_rows as c_int, nth as c_int, pattern as c_int, reps as c_int, o.as_mut_ptr()) };
+    let rc = unsafe {
+        fg_pf_selftest_attn(
+            n_kv as c_int,
+            n_rows as c_int,
+            nth as c_int,
+            pattern as c_int,
+            reps as c_int,
+            o.as_mut_ptr(),
+        )
+    };
     (rc == 0, o)
 }
 
@@ -641,21 +816,48 @@ pub fn selftest_mm_cols(nth: usize, max_w: usize) -> [Vec<(usize, f64)>; 2] {
     let mut d = vec![0f64; 2 * max_w];
     // SAFETY: self-contained; both arrays hold 2 x max_w entries.
     unsafe { fg_selftest_mm_cols(nth as c_int, max_w as c_int, b.as_mut_ptr(), d.as_mut_ptr()) };
-    let row = |t: usize| (0..max_w).map(|w| (b[t * max_w + w] as usize, d[t * max_w + w])).collect::<Vec<_>>();
+    let row = |t: usize| {
+        (0..max_w)
+            .map(|w| (b[t * max_w + w] as usize, d[t * max_w + w]))
+            .collect::<Vec<_>>()
+    };
     [row(0), row(1)]
 }
 
 /// Model-free timing of one shape (ggml type id): (ms ggml_mul_mat, ms multi-column, bitwise equal).
-pub fn bench_dense_gemm(ty: i32, k: usize, r: usize, t: usize, nth: usize, reps: usize) -> (f64, f64, bool) {
+pub fn bench_dense_gemm(
+    ty: i32,
+    k: usize,
+    r: usize,
+    t: usize,
+    nth: usize,
+    reps: usize,
+) -> (f64, f64, bool) {
     let mut o = [0f64; 3];
     // SAFETY: self-contained; three doubles.
-    unsafe { fg_pf_bench_dense(ty, k as _, r as _, t as _, nth as c_int, reps as c_int, o.as_mut_ptr()) };
+    unsafe {
+        fg_pf_bench_dense(
+            ty,
+            k as _,
+            r as _,
+            t as _,
+            nth as c_int,
+            reps as c_int,
+            o.as_mut_ptr(),
+        )
+    };
     (o[0], o[1], o[2] == 1.0)
 }
 
 /// S-c fused phases self-tests (synthetic, no model): bitwise equal to the ggml subgraphs.
 pub fn selftest_fuse(nth: usize) -> (bool, bool, bool) {
-    unsafe { (fg_selftest_fuse_hc(nth as c_int) == 0, fg_selftest_fuse_ffn(nth as c_int) == 0, fg_selftest_fuse_hcpost(nth as c_int) == 0) }
+    unsafe {
+        (
+            fg_selftest_fuse_hc(nth as c_int) == 0,
+            fg_selftest_fuse_ffn(nth as c_int) == 0,
+            fg_selftest_fuse_hcpost(nth as c_int) == 0,
+        )
+    }
 }
 
 /// S-c P3/P4 (GDN pre/post) self-test (synthetic, no model): bitwise equal to build_layer_attn_linear's nodes.
@@ -709,7 +911,8 @@ mod s1_tests {
     /// every tensor lies inside its shard file.
     #[test]
     fn real_flash_shards_pass_the_range_check() {
-        let dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS");
+        let dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+            .join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS");
         if !dir.is_dir() {
             eprintln!("skip: no Flash shards");
             return;

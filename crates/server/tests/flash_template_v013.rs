@@ -44,30 +44,62 @@ fn thinking_on_reasoning_returned_is_a_full_prefix_hit_by_default() {
     assert!(p1.ends_with("<|im_start|>assistant\n<think>\n"), "{p1}");
     // what the model generated after the generation prompt
     let gen = format!("{R1}\n</think>\n\n{A1}");
-    let p2 = render(turn2(json!({"role": "assistant", "content": A1, "reasoning_content": R1})), json!({}));
-    assert!(p2.starts_with(&format!("{p1}{gen}<|im_end|>\n")), "turn 2 must extend turn 1 + its generation:\n{p2}");
+    let p2 = render(
+        turn2(json!({"role": "assistant", "content": A1, "reasoning_content": R1})),
+        json!({}),
+    );
+    assert!(
+        p2.starts_with(&format!("{p1}{gen}<|im_end|>\n")),
+        "turn 2 must extend turn 1 + its generation:\n{p2}"
+    );
     // preserve_thinking=true renders the same
-    assert_eq!(p2, render(turn2(json!({"role": "assistant", "content": A1, "reasoning_content": R1})), json!({"preserve_thinking": true})));
+    assert_eq!(
+        p2,
+        render(
+            turn2(json!({"role": "assistant", "content": A1, "reasoning_content": R1})),
+            json!({"preserve_thinking": true})
+        )
+    );
 }
 
 #[test]
 fn thinking_on_reasoning_dropped_breaks_at_the_newest_think_block() {
     let p1 = render(turn1(), json!({}));
     let gen = format!("{R1}\n</think>\n\n{A1}");
-    let p2 = render(turn2(json!({"role": "assistant", "content": A1})), json!({}));
+    let p2 = render(
+        turn2(json!({"role": "assistant", "content": A1})),
+        json!({}),
+    );
     // the previous answer comes back with an EMPTY think block: the prefix holds through turn 1's generation prompt
-    assert!(p2.contains("<|im_start|>assistant\n<think>\n\n</think>\n\nHere they are.<|im_end|>"), "{p2}");
-    assert_eq!(common(&p2, &format!("{p1}{gen}")), p1.len(), "the hit must end exactly at turn 1's generation prompt");
+    assert!(
+        p2.contains("<|im_start|>assistant\n<think>\n\n</think>\n\nHere they are.<|im_end|>"),
+        "{p2}"
+    );
+    assert_eq!(
+        common(&p2, &format!("{p1}{gen}")),
+        p1.len(),
+        "the hit must end exactly at turn 1's generation prompt"
+    );
 }
 
 #[test]
 fn preserve_thinking_false_breaks_one_block_earlier() {
     let p1 = render(turn1(), json!({"preserve_thinking": false}));
     let gen = format!("{R1}\n</think>\n\n{A1}");
-    let p2 = render(turn2(json!({"role": "assistant", "content": A1, "reasoning_content": R1})), json!({"preserve_thinking": false}));
+    let p2 = render(
+        turn2(json!({"role": "assistant", "content": A1, "reasoning_content": R1})),
+        json!({"preserve_thinking": false}),
+    );
     // an earlier turn (before the last user query) loses its think block entirely
-    assert!(p2.contains("<|im_start|>assistant\nHere they are.<|im_end|>"), "{p2}");
-    assert_eq!(common(&p2, &format!("{p1}{gen}")), p1.len() - "<think>\n".len(), "the hit ends at turn 1's assistant header");
+    assert!(
+        p2.contains("<|im_start|>assistant\nHere they are.<|im_end|>"),
+        "{p2}"
+    );
+    assert_eq!(
+        common(&p2, &format!("{p1}{gen}")),
+        p1.len() - "<think>\n".len(),
+        "the hit ends at turn 1's assistant header"
+    );
 }
 
 #[test]
@@ -80,9 +112,18 @@ fn tool_loop_keeps_reasoning_whatever_preserve_thinking_says() {
          "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "ls", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "c1", "content": "a.rs"}
     ]);
-    for kw in [json!({}), json!({"preserve_thinking": false}), json!({"preserve_thinking": true})] {
+    for kw in [
+        json!({}),
+        json!({"preserve_thinking": false}),
+        json!({"preserve_thinking": true}),
+    ] {
         let p = render(msgs.clone(), kw.clone());
-        assert!(p.contains(&format!("<|im_start|>assistant\n<think>\n{R1}\n</think>\n\n")), "{kw}: {p}");
+        assert!(
+            p.contains(&format!(
+                "<|im_start|>assistant\n<think>\n{R1}\n</think>\n\n"
+            )),
+            "{kw}: {p}"
+        );
     }
 }
 
@@ -90,7 +131,10 @@ fn tool_loop_keeps_reasoning_whatever_preserve_thinking_says() {
 fn thinking_off_is_a_full_prefix_hit_without_reasoning() {
     let kw = json!({"enable_thinking": false});
     let p1 = render(turn1(), kw.clone());
-    assert!(p1.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"), "{p1}");
+    assert!(
+        p1.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+        "{p1}"
+    );
     let p2 = render(turn2(json!({"role": "assistant", "content": A1})), kw);
     assert!(p2.starts_with(&format!("{p1}{A1}<|im_end|>\n")), "{p2}");
 }

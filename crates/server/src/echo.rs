@@ -72,7 +72,12 @@ pub struct EchoConfig {
 
 impl Default for EchoConfig {
     fn default() -> Self {
-        EchoConfig { enabled: true, max_tokens: 4 << 20, ttl: Duration::from_secs(7 * 24 * 3600), compact_bytes: 4 << 20 }
+        EchoConfig {
+            enabled: true,
+            max_tokens: 4 << 20,
+            ttl: Duration::from_secs(7 * 24 * 3600),
+            compact_bytes: 4 << 20,
+        }
     }
 }
 
@@ -84,13 +89,22 @@ impl EchoConfig {
         if let Ok(v) = std::env::var("OXE_ECHO") {
             c.enabled = !matches!(v.as_str(), "0" | "off" | "false" | "no");
         }
-        if let Some(n) = std::env::var("OXE_ECHO_MAX_TOKENS").ok().and_then(|v| v.parse().ok()) {
+        if let Some(n) = std::env::var("OXE_ECHO_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
             c.max_tokens = n;
         }
-        if let Some(s) = std::env::var("OXE_ECHO_TTL_SECS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if let Some(s) = std::env::var("OXE_ECHO_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
             c.ttl = Duration::from_secs(s);
         }
-        if let Some(b) = std::env::var("OXE_ECHO_COMPACT_BYTES").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if let Some(b) = std::env::var("OXE_ECHO_COMPACT_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
             c.compact_bytes = b;
         }
         c
@@ -177,7 +191,13 @@ impl SpliceReport {
     }
     /// The class of the latest unspliced turn that matters most: a mismatch before no-record.
     pub fn miss_class(&self) -> Option<&'static str> {
-        for c in [MISS_LAYOUT, MISS_CONTENT, MISS_TOOL, MISS_REASONING, MISS_NO_RECORD] {
+        for c in [
+            MISS_LAYOUT,
+            MISS_CONTENT,
+            MISS_TOOL,
+            MISS_REASONING,
+            MISS_NO_RECORD,
+        ] {
             if self.misses.iter().any(|(k, _)| *k == c) {
                 return Some(c);
             }
@@ -195,7 +215,11 @@ impl SpliceReport {
         q.max(0) as usize
     }
     pub fn to_json(&self) -> Json {
-        let misses: serde_json::Map<String, Json> = self.misses.iter().map(|(c, n)| (c.to_string(), json!(n))).collect();
+        let misses: serde_json::Map<String, Json> = self
+            .misses
+            .iter()
+            .map(|(c, n)| (c.to_string(), json!(n)))
+            .collect();
         json!({
             "echo_blocks": self.blocks, "echo_n": self.hits, "echo_fixed": self.fixed,
             "echo_tokens": self.echo_tokens, "roundtrip_miss": self.roundtrip_miss,
@@ -233,11 +257,17 @@ pub fn prefix_key(identity: &str, t: &[Token]) -> String {
 
 /// Wall-clock milliseconds (records outlive the process in P2).
 pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn first_diff(a: &[Token], b: &[Token]) -> usize {
-    a.iter().zip(b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()))
+    a.iter()
+        .zip(b)
+        .position(|(x, y)| x != y)
+        .unwrap_or(a.len().min(b.len()))
 }
 
 /// Tool arguments as a JSON value for the equality check. A text whose numbers may not survive a
@@ -268,13 +298,16 @@ fn numbers_exact(s: &str) -> bool {
             b'-' | b'0'..=b'9' => {
                 let st = i;
                 i += 1;
-                while i < b.len() && matches!(b[i], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-') {
+                while i < b.len() && matches!(b[i], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+                {
                     i += 1;
                 }
                 let lit = &s[st..i];
                 // a decimal of at most 15 significant digits maps to one f64 no other such decimal
                 // maps to (DBL_DIG); more digits (or an integer past 64 bits) can collide
-                let ok = lit.parse::<u64>().is_ok() || lit.parse::<i64>().is_ok() || sig_digits(lit) <= 15;
+                let ok = lit.parse::<u64>().is_ok()
+                    || lit.parse::<i64>().is_ok()
+                    || sig_digits(lit) <= 15;
                 if !ok {
                     return false;
                 }
@@ -299,7 +332,11 @@ const REASONING_ALIASES: &[&str] = &["reasoning", "thinking", "reasoning_text"];
 fn content_text(m: &Json) -> String {
     match m.get("content") {
         Some(Json::String(s)) => s.clone(),
-        Some(Json::Array(parts)) => parts.iter().filter_map(|p| p.get("text").and_then(Json::as_str)).collect::<Vec<_>>().join(""),
+        Some(Json::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(Json::as_str))
+            .collect::<Vec<_>>()
+            .join(""),
         _ => String::new(),
     }
 }
@@ -317,7 +354,11 @@ fn same_turn(r: &Record, m: &Json, sent: Option<&str>) -> Result<(), &'static st
             a.iter()
                 .map(|tc| {
                     let f = tc.get("function").unwrap_or(tc);
-                    let name = f.get("name").and_then(Json::as_str).unwrap_or("").to_string();
+                    let name = f
+                        .get("name")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     let args = match f.get("arguments") {
                         Some(Json::String(s)) => parse_args(s),
                         Some(a) => a.clone(),
@@ -386,8 +427,19 @@ fn parse_line(line: &str, idh: &str) -> Option<(Record, String)> {
     if v.get("v")?.as_u64()? != 1 || v.get("id")?.as_str()? != idh {
         return None;
     }
-    let toks = |k: &str| -> Option<Vec<Token>> { v.get(k)?.as_array()?.iter().map(|x| x.as_u64().and_then(|t| Token::try_from(t).ok())).collect() };
-    let tools = v.get("tools")?.as_array()?.iter().map(|t| Some((t.get(0)?.as_str()?.to_string(), t.get(1)?.clone()))).collect::<Option<Vec<_>>>()?;
+    let toks = |k: &str| -> Option<Vec<Token>> {
+        v.get(k)?
+            .as_array()?
+            .iter()
+            .map(|x| x.as_u64().and_then(|t| Token::try_from(t).ok()))
+            .collect()
+    };
+    let tools = v
+        .get("tools")?
+        .as_array()?
+        .iter()
+        .map(|t| Some((t.get(0)?.as_str()?.to_string(), t.get(1)?.clone())))
+        .collect::<Option<Vec<_>>>()?;
     // absent = a line of an older engine (0, the oldest); present, it must be a number
     let seq = match v.get("seq") {
         None => 0,
@@ -413,10 +465,16 @@ fn parse_line(line: &str, idh: &str) -> Option<(Record, String)> {
 fn append_line(p: &std::path::Path, line: &str) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let r = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(p).and_then(|mut f| {
-        f.write_all(line.as_bytes())?;
-        f.sync_data()
-    });
+    let r = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(p)
+        .and_then(|mut f| {
+            f.write_all(line.as_bytes())?;
+            f.sync_data()
+        });
     if let Err(e) = r {
         eprintln!("oxe-server: echo record not written: {e}");
     }
@@ -504,7 +562,21 @@ pub struct EchoStore {
 
 impl EchoStore {
     pub fn new(cfg: EchoConfig) -> EchoStore {
-        EchoStore { cfg, identity: String::new(), by_key: HashMap::new(), groups: HashMap::new(), clock: 0, n_tokens: 0, next_id: 0, next_seq: 1, attach_index_cap: ECHO_ATTACH_INDEX_CAP, dir: None, next_check: HashMap::new(), compactions: 0, io: Default::default() }
+        EchoStore {
+            cfg,
+            identity: String::new(),
+            by_key: HashMap::new(),
+            groups: HashMap::new(),
+            clock: 0,
+            n_tokens: 0,
+            next_id: 0,
+            next_seq: 1,
+            attach_index_cap: ECHO_ATTACH_INDEX_CAP,
+            dir: None,
+            next_check: HashMap::new(),
+            compactions: 0,
+            io: Default::default(),
+        }
     }
 
     /// Set the identity mixed into every key (drops records made under another identity).
@@ -534,7 +606,11 @@ impl EchoStore {
 
     /// Records of one session hint (diagnostics).
     pub fn n_session_records(&self, session: &str) -> usize {
-        self.by_key.values().flatten().filter(|r| r.session.as_deref() == Some(session)).count()
+        self.by_key
+            .values()
+            .flatten()
+            .filter(|r| r.session.as_deref() == Some(session))
+            .count()
     }
 
     /// Keep one finished turn. `prompt` is the prompt that was fed (after splicing), `asst` the
@@ -545,8 +621,21 @@ impl EchoStore {
     /// without one (`add_generation_prompt: false`), or one whose last opener text sits inside a
     /// user message, has a turn end after its last opener; such a record would hold other
     /// messages and is never made.
-    pub fn record(&mut self, prompt: &[Token], asst: &[Token], im_end: Token, msg: &ChatMsg, generated: &[Token], ended_on_eog: bool, session: Option<&str>) -> bool {
-        let end = if ended_on_eog { TurnEnd::Eog } else { TurnEnd::Other };
+    pub fn record(
+        &mut self,
+        prompt: &[Token],
+        asst: &[Token],
+        im_end: Token,
+        msg: &ChatMsg,
+        generated: &[Token],
+        ended_on_eog: bool,
+        session: Option<&str>,
+    ) -> bool {
+        let end = if ended_on_eog {
+            TurnEnd::Eog
+        } else {
+            TurnEnd::Other
+        };
         self.record_turn(prompt, asst, im_end, msg, generated, end, session)
     }
 
@@ -560,8 +649,18 @@ impl EchoStore {
     /// sequence) and no generated id is an EOG token; here a cut body holding the turn delimiter
     /// ids is refused too. The message must still parse equal at splice time, as for EOG turns.
     /// `TurnEnd::Other` (stop word, cancel, error): never kept.
-    pub fn record_turn(&mut self, prompt: &[Token], asst: &[Token], im_end: Token, msg: &ChatMsg, generated: &[Token], end: TurnEnd, session: Option<&str>) -> bool {
-        let (kept, pending) = self.record_deferred(prompt, asst, im_end, msg, generated, end, session);
+    pub fn record_turn(
+        &mut self,
+        prompt: &[Token],
+        asst: &[Token],
+        im_end: Token,
+        msg: &ChatMsg,
+        generated: &[Token],
+        end: TurnEnd,
+        session: Option<&str>,
+    ) -> bool {
+        let (kept, pending) =
+            self.record_deferred(prompt, asst, im_end, msg, generated, end, session);
         if let Some(p) = pending {
             p.write();
         }
@@ -575,21 +674,40 @@ impl EchoStore {
     /// (rare: a file of at least `compact_bytes` and twice its live records); it rewrites the file
     /// with every live record, this one included, so no line is pending after it.
     #[allow(clippy::too_many_arguments)]
-    pub fn record_deferred(&mut self, prompt: &[Token], asst: &[Token], im_end: Token, msg: &ChatMsg, generated: &[Token], end: TurnEnd, session: Option<&str>) -> (bool, Option<PendingAppend>) {
+    pub fn record_deferred(
+        &mut self,
+        prompt: &[Token],
+        asst: &[Token],
+        im_end: Token,
+        msg: &ChatMsg,
+        generated: &[Token],
+        end: TurnEnd,
+        session: Option<&str>,
+    ) -> (bool, Option<PendingAppend>) {
         if !self.cfg.enabled || generated.is_empty() || asst.is_empty() {
             return (false, None);
         }
         let body = match end {
             TurnEnd::Eog => &generated[..generated.len() - 1],
-            TurnEnd::Length if !generated.contains(&im_end) && !generated.contains(&asst[0]) => generated,
+            TurnEnd::Length if !generated.contains(&im_end) && !generated.contains(&asst[0]) => {
+                generated
+            }
             TurnEnd::Length | TurnEnd::Other => return (false, None),
         };
         // a turn whose own text holds the turn delimiters would make the span search ambiguous
         let delim = |s: &str| s.contains("<|im_start|>") || s.contains("<|im_end|>");
-        if delim(&msg.content) || delim(&msg.reasoning_content) || msg.tool_calls.iter().any(|t| delim(&t.arguments) || delim(&t.name)) {
+        if delim(&msg.content)
+            || delim(&msg.reasoning_content)
+            || msg
+                .tool_calls
+                .iter()
+                .any(|t| delim(&t.arguments) || delim(&t.name))
+        {
             return (false, None);
         }
-        let Some(start) = prompt.windows(asst.len()).rposition(|w| w == asst) else { return (false, None) };
+        let Some(start) = prompt.windows(asst.len()).rposition(|w| w == asst) else {
+            return (false, None);
+        };
         if prompt[start..].contains(&im_end) {
             return (false, None);
         }
@@ -609,20 +727,39 @@ impl EchoStore {
             body: body.to_vec(),
             content: msg.content.trim().to_string(),
             reasoning: msg.reasoning_content.trim().to_string(),
-            tools: msg.tool_calls.iter().map(|t| (t.name.clone(), parse_args(&t.arguments))).collect(),
+            tools: msg
+                .tool_calls
+                .iter()
+                .map(|t| (t.name.clone(), parse_args(&t.arguments)))
+                .collect(),
             session: session.map(str::to_string),
             group,
             at_ms: now_ms(),
         };
-        let line = self.dir.is_some().then(|| record_line(&self.identity, &key, &rec));
+        let line = self
+            .dir
+            .is_some()
+            .then(|| record_line(&self.identity, &key, &rec));
         let group = rec.group.clone();
         let kept = self.insert(key, rec);
         let pending = match (kept, line) {
             // a compaction that ran now wrote this record already
-            (true, Some(line)) if !self.maybe_compact(&group) => self.group_file(&group).map(|path| {
-                let epoch = self.io.lock().unwrap_or_else(|p| p.into_inner()).epoch(&group);
-                PendingAppend { path, line, group: group.clone(), epoch, io: self.io.clone() }
-            }),
+            (true, Some(line)) if !self.maybe_compact(&group) => {
+                self.group_file(&group).map(|path| {
+                    let epoch = self
+                        .io
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .epoch(&group);
+                    PendingAppend {
+                        path,
+                        line,
+                        group: group.clone(),
+                        epoch,
+                        io: self.io.clone(),
+                    }
+                })
+            }
             _ => None,
         };
         (kept, pending)
@@ -636,11 +773,15 @@ impl EchoStore {
     /// fed before. Returns whether the file was rewritten.
     pub fn maybe_compact(&mut self, group: &str) -> bool {
         let lim = self.cfg.compact_bytes;
-        let Some(p) = self.group_file(group) else { return false };
+        let Some(p) = self.group_file(group) else {
+            return false;
+        };
         if lim == 0 {
             return false;
         }
-        let Ok(md) = std::fs::symlink_metadata(&p) else { return false };
+        let Ok(md) = std::fs::symlink_metadata(&p) else {
+            return false;
+        };
         if !md.is_file() || md.len() < self.next_check.get(group).copied().unwrap_or(0).max(lim) {
             return false;
         }
@@ -654,7 +795,8 @@ impl EchoStore {
         let body: String = recs.into_iter().map(|r| r.1).collect();
         let live = body.len() as u64;
         // check again only once the file has grown to twice the live records
-        self.next_check.insert(group.to_string(), live.saturating_mul(2));
+        self.next_check
+            .insert(group.to_string(), live.saturating_mul(2));
         if live.saturating_mul(2) > md.len() {
             return false;
         }
@@ -666,7 +808,13 @@ impl EchoStore {
         let r = (|| -> std::io::Result<()> {
             use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;
-            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&pending)?;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&pending)?;
             f.write_all(body.as_bytes())?;
             f.sync_all()?;
             std::fs::rename(&pending, &p)?;
@@ -697,7 +845,10 @@ impl EchoStore {
         use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(dir)?;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-        self.io.lock().unwrap_or_else(|p| p.into_inner()).invalidate_all();
+        self.io
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .invalidate_all();
         self.dir = Some(dir.to_path_buf());
         let idh = crate::prefix_store::sha256_hex(self.identity.as_bytes());
         // ECHO-WRITE-ORDER: a deferred append can land after a newer record's line (or after a
@@ -713,22 +864,34 @@ impl EchoStore {
         let mut files: Vec<(std::path::PathBuf, bool)> = Vec::new();
         let cap = self.attach_index_cap.max(1);
         // min-heap on (seq, file, offset): the oldest entry is dropped first past the cap
-        let mut index: std::collections::BinaryHeap<std::cmp::Reverse<(u64, usize, u64, u32)>> = std::collections::BinaryHeap::new();
+        let mut index: std::collections::BinaryHeap<std::cmp::Reverse<(u64, usize, u64, u32)>> =
+            std::collections::BinaryHeap::new();
         let mut dropped = 0usize;
         // files with a line past the cap: kept on disk even when nothing of them was read back
         let mut capped: Vec<bool> = Vec::new();
         let now = now_ms();
         for de in std::fs::read_dir(dir)?.flatten() {
             let p = de.path();
-            if p.extension().and_then(|e| e.to_str()) != Some("jsonl") || de.file_type().map_or(true, |t| !t.is_file()) {
+            if p.extension().and_then(|e| e.to_str()) != Some("jsonl")
+                || de.file_type().map_or(true, |t| !t.is_file())
+            {
                 continue;
             }
             // bounded (Codex P2/P3 review): an echo file over the cap is skipped unread, never parsed whole
-            if de.metadata().map_or(true, |m| m.len() > MAX_ECHO_FILE_BYTES) {
-                eprintln!("oxe-server: echo records: {} over {} MiB, skipped", p.display(), MAX_ECHO_FILE_BYTES >> 20);
+            if de
+                .metadata()
+                .map_or(true, |m| m.len() > MAX_ECHO_FILE_BYTES)
+            {
+                eprintln!(
+                    "oxe-server: echo records: {} over {} MiB, skipped",
+                    p.display(),
+                    MAX_ECHO_FILE_BYTES >> 20
+                );
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&p) else { continue };
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
             if !text.is_empty() && !text.ends_with('\n') {
                 // a line torn by a kill: end it, or the next record would be appended to it and lost
                 append_line(&p, "\n");
@@ -774,15 +937,28 @@ impl EchoStore {
         for std::cmp::Reverse((_, fi, at, len)) in order.into_iter().rev() {
             use std::os::unix::fs::FileExt;
             if open.as_ref().map(|o| o.0) != Some(fi) {
-                let Ok(f) = std::fs::File::open(&files[fi].0) else { continue };
+                let Ok(f) = std::fs::File::open(&files[fi].0) else {
+                    continue;
+                };
                 open = Some((fi, f));
             }
             buf.resize(len as usize, 0);
-            if open.as_ref().unwrap().1.read_exact_at(&mut buf, at).is_err() {
+            if open
+                .as_ref()
+                .unwrap()
+                .1
+                .read_exact_at(&mut buf, at)
+                .is_err()
+            {
                 continue;
             }
             // checked again (the line is the one indexed, or nothing is read)
-            let Some((rec, key)) = std::str::from_utf8(&buf).ok().and_then(|l| parse_line(l, &idh)) else { continue };
+            let Some((rec, key)) = std::str::from_utf8(&buf)
+                .ok()
+                .and_then(|l| parse_line(l, &idh))
+            else {
+                continue;
+            };
             if self.insert(key, rec) {
                 live[fi] += 1;
                 n += 1;
@@ -798,9 +974,10 @@ impl EchoStore {
     }
 
     fn group_file(&self, group: &str) -> Option<std::path::PathBuf> {
-        self.dir.as_ref().map(|d| d.join(format!("{}.jsonl", group_stem(group))))
+        self.dir
+            .as_ref()
+            .map(|d| d.join(format!("{}.jsonl", group_stem(group))))
     }
-
 
     /// Add a record (made now or read back from disk); the budget and the TTL apply.
     fn insert(&mut self, key: String, mut rec: Record) -> bool {
@@ -809,8 +986,14 @@ impl EchoStore {
         }
         // a copy older than a same turn already held (a re-attach, a late line) never replaces it
         if rec.seq != 0 {
-            let same = |r: &Record| r.content == rec.content && r.tools == rec.tools && r.reasoning == rec.reasoning;
-            if self.by_key.get(&key).is_some_and(|v| v.iter().any(|r| same(r) && r.seq > rec.seq)) {
+            let same = |r: &Record| {
+                r.content == rec.content && r.tools == rec.tools && r.reasoning == rec.reasoning
+            };
+            if self
+                .by_key
+                .get(&key)
+                .is_some_and(|v| v.iter().any(|r| same(r) && r.seq > rec.seq))
+            {
                 return false;
             }
         }
@@ -819,8 +1002,14 @@ impl EchoStore {
         // a retry that produced the same turn replaces the older record (Codex P1 review 2: no
         // bookkeeping is left behind for it)
         if let Some(v) = self.by_key.get_mut(&key) {
-            let same = |r: &Record| r.content == rec.content && r.tools == rec.tools && r.reasoning == rec.reasoning;
-            let gone: Vec<(String, usize)> = v.iter().filter(|r| same(r)).map(|r| (r.group.clone(), r.n_tokens())).collect();
+            let same = |r: &Record| {
+                r.content == rec.content && r.tools == rec.tools && r.reasoning == rec.reasoning
+            };
+            let gone: Vec<(String, usize)> = v
+                .iter()
+                .filter(|r| same(r))
+                .map(|r| (r.group.clone(), r.n_tokens()))
+                .collect();
             v.retain(|r| !same(r));
             for (g, n) in gone {
                 self.untrack(&g, n);
@@ -875,12 +1064,21 @@ impl EchoStore {
             self.untrack(&g, n);
         }
         while self.n_tokens > self.cfg.max_tokens {
-            let victim = self.groups.iter().filter(|(k, _)| Some(k.as_str()) != protect).min_by_key(|(_, g)| g.used).map(|(k, _)| k.clone());
+            let victim = self
+                .groups
+                .iter()
+                .filter(|(k, _)| Some(k.as_str()) != protect)
+                .min_by_key(|(_, g)| g.used)
+                .map(|(k, _)| k.clone());
             match victim {
                 Some(g) => self.drop_group(&g),
                 None => {
                     // only the protected session is left: its oldest record goes
-                    let oldest = self.by_key.iter().flat_map(|(k, v)| v.iter().map(move |r| (r.id, k.clone()))).min();
+                    let oldest = self
+                        .by_key
+                        .iter()
+                        .flat_map(|(k, v)| v.iter().map(move |r| (r.id, k.clone())))
+                        .min();
                     let Some((id, k)) = oldest else { break };
                     self.remove(&k, id);
                 }
@@ -892,7 +1090,10 @@ impl EchoStore {
     /// Drop every record of one session (eviction group), on disk too.
     fn drop_group(&mut self, group: &str) {
         // a deferred append of this group that has not run yet must not bring the file back (N4)
-        self.io.lock().unwrap_or_else(|p| p.into_inner()).invalidate(group);
+        self.io
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .invalidate(group);
         if let Some(p) = self.group_file(group) {
             let _ = std::fs::remove_file(p);
         }
@@ -907,8 +1108,12 @@ impl EchoStore {
     }
 
     fn remove(&mut self, k: &str, id: u64) {
-        let Some(v) = self.by_key.get_mut(k) else { return };
-        let Some(i) = v.iter().position(|r| r.id == id) else { return };
+        let Some(v) = self.by_key.get_mut(k) else {
+            return;
+        };
+        let Some(i) = v.iter().position(|r| r.id == id) else {
+            return;
+        };
         let r = v.remove(i);
         if v.is_empty() {
             self.by_key.remove(k);
@@ -919,13 +1124,21 @@ impl EchoStore {
     /// Drop every record of the session hint whose [`crate::state_store::hint_hash`] is `h`, in
     /// RAM and its file (session clear). Returns the records dropped.
     pub fn drop_hint_hash(&mut self, h: &str) -> usize {
-        let groups: Vec<String> = self.groups.keys().filter(|g| group_stem(g) == h).cloned().collect();
+        let groups: Vec<String> = self
+            .groups
+            .keys()
+            .filter(|g| group_stem(g) == h)
+            .cloned()
+            .collect();
         let n0 = self.n_records();
         for g in groups {
             self.drop_group(&g);
         }
         if let Some(d) = &self.dir {
-            if h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()) && std::fs::remove_file(d.join(format!("{h}.jsonl"))).is_ok() {
+            if h.len() == 32
+                && h.bytes().all(|b| b.is_ascii_hexdigit())
+                && std::fs::remove_file(d.join(format!("{h}.jsonl"))).is_ok()
+            {
                 // the removal is durable before the clear answers (no resurrection after a crash)
                 crate::state_store::fsync_dir(d);
             }
@@ -937,7 +1150,10 @@ impl EchoStore {
     /// means no conversation state on disk (Codex P2/P3 review 2). Returns the previous directory.
     pub fn set_disk(&mut self, dir: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
         // budget 0 means nothing more on disk, deferred appends included (N4)
-        self.io.lock().unwrap_or_else(|p| p.into_inner()).invalidate_all();
+        self.io
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .invalidate_all();
         std::mem::replace(&mut self.dir, dir)
     }
 
@@ -972,9 +1188,23 @@ impl EchoStore {
     /// text inside a message is not counted). None = a layout the caller could not map. Returns
     /// the prompt to feed and a report. With no records or an unknown layout the render comes
     /// back unchanged (never a guess).
-    pub fn splice(&mut self, rendered: &[Token], msgs: &Json, sent: &[Option<String>], spans: Option<&[(usize, usize)]>) -> (Vec<Token>, SpliceReport) {
+    pub fn splice(
+        &mut self,
+        rendered: &[Token],
+        msgs: &Json,
+        sent: &[Option<String>],
+        spans: Option<&[(usize, usize)]>,
+    ) -> (Vec<Token>, SpliceReport) {
         let mut rep = SpliceReport::default();
-        let turns: Vec<(usize, &Json)> = msgs.as_array().map(|a| a.iter().enumerate().filter(|(_, m)| m.get("role").and_then(Json::as_str) == Some("assistant")).collect()).unwrap_or_default();
+        let turns: Vec<(usize, &Json)> = msgs
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.get("role").and_then(Json::as_str) == Some("assistant"))
+                    .collect()
+            })
+            .unwrap_or_default();
         rep.blocks = turns.len();
         if turns.is_empty() {
             return (rendered.to_vec(), rep);
@@ -987,7 +1217,13 @@ impl EchoStore {
         }
         self.evict();
         let spans = match spans {
-            Some(sp) if sp.len() == turns.len() && sp.iter().all(|&(s, e)| s < e && e <= rendered.len()) && sp.windows(2).all(|w| w[0].1 <= w[1].0) => sp,
+            Some(sp)
+                if sp.len() == turns.len()
+                    && sp.iter().all(|&(s, e)| s < e && e <= rendered.len())
+                    && sp.windows(2).all(|w| w[0].1 <= w[1].0) =>
+            {
+                sp
+            }
             _ => {
                 for _ in &turns {
                     rep.miss(MISS_LAYOUT);
@@ -1022,12 +1258,16 @@ impl EchoStore {
                     // that parse to the same message (same answer, other reasoning)
                     // (ECHO-WRITE-ORDER: by seq, the RAM order kept across restarts; seq-less records
                     // read back from an older engine by insertion order, as before)
-                    let mut cands: Vec<&Record> = v.iter().filter(|r| r.prefix_len == out.len()).collect();
+                    let mut cands: Vec<&Record> =
+                        v.iter().filter(|r| r.prefix_len == out.len()).collect();
                     cands.sort_by_key(|r| std::cmp::Reverse((r.seq, r.id)));
                     for r in cands {
                         match same_turn(r, m, sent_r) {
                             Ok(()) => {
-                                hit = Some(([r.opener.as_slice(), r.body.as_slice()].concat(), r.group.clone()));
+                                hit = Some((
+                                    [r.opener.as_slice(), r.body.as_slice()].concat(),
+                                    r.group.clone(),
+                                ));
                                 break;
                             }
                             Err(c) if class == MISS_NO_RECORD => class = c,
@@ -1075,12 +1315,21 @@ impl EchoStore {
     /// differently once a later user message exists (Qwen templates drop the think block of turns
     /// before the last user query). Same matching rule as a generated turn's record (content, tool
     /// calls, reasoning when sent); same eviction budget. `prompt` is the prompt that was fed.
-    pub fn adopt(&mut self, prompt: &[Token], unspliced: &[(usize, usize, usize)], msgs: &Json, sent: &[Option<String>], session: Option<&str>) -> Vec<PendingAppend> {
+    pub fn adopt(
+        &mut self,
+        prompt: &[Token],
+        unspliced: &[(usize, usize, usize)],
+        msgs: &Json,
+        sent: &[Option<String>],
+        session: Option<&str>,
+    ) -> Vec<PendingAppend> {
         let mut out = Vec::new();
         if !self.cfg.enabled {
             return out;
         }
-        let Some(all) = msgs.as_array() else { return out };
+        let Some(all) = msgs.as_array() else {
+            return out;
+        };
         for &(mi, s, e) in unspliced {
             let Some(m) = all.get(mi) else { continue };
             if s >= e || e > prompt.len() {
@@ -1092,7 +1341,13 @@ impl EchoStore {
             if delim(&content) {
                 continue;
             }
-            let reasoning = sent.get(mi).and_then(|x| x.as_deref()).or_else(|| m.get("reasoning_content").and_then(Json::as_str)).unwrap_or("").trim().to_string();
+            let reasoning = sent
+                .get(mi)
+                .and_then(|x| x.as_deref())
+                .or_else(|| m.get("reasoning_content").and_then(Json::as_str))
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let tools: Vec<(String, Json)> = m
                 .get("tool_calls")
                 .and_then(Json::as_array)
@@ -1100,7 +1355,11 @@ impl EchoStore {
                     a.iter()
                         .map(|tc| {
                             let f = tc.get("function").unwrap_or(tc);
-                            let name = f.get("name").and_then(Json::as_str).unwrap_or("").to_string();
+                            let name = f
+                                .get("name")
+                                .and_then(Json::as_str)
+                                .unwrap_or("")
+                                .to_string();
                             let args = match f.get("arguments") {
                                 Some(Json::String(x)) => parse_args(x),
                                 Some(a) => a.clone(),
@@ -1134,14 +1393,27 @@ impl EchoStore {
                 group,
                 at_ms: now_ms(),
             };
-            let line = self.dir.is_some().then(|| record_line(&self.identity, &key, &rec));
+            let line = self
+                .dir
+                .is_some()
+                .then(|| record_line(&self.identity, &key, &rec));
             let group = rec.group.clone();
             if self.insert(key, rec) {
                 if let Some(line) = line {
                     if !self.maybe_compact(&group) {
                         if let Some(path) = self.group_file(&group) {
-                            let epoch = self.io.lock().unwrap_or_else(|p| p.into_inner()).epoch(&group);
-                            out.push(PendingAppend { path, line, group: group.clone(), epoch, io: self.io.clone() });
+                            let epoch = self
+                                .io
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .epoch(&group);
+                            out.push(PendingAppend {
+                                path,
+                                line,
+                                group: group.clone(),
+                                epoch,
+                                io: self.io.clone(),
+                            });
                         }
                     }
                 }

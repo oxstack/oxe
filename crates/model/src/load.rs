@@ -13,11 +13,18 @@ pub struct Loaded {
 }
 
 /// `n_ctx` is the KV-cache capacity (positions); `nthreads` the decode thread count.
-pub fn open(model: &Path, nthreads: usize, n_ctx: usize, opt: &LoadOptions) -> Result<Loaded, String> {
+pub fn open(
+    model: &Path,
+    nthreads: usize,
+    n_ctx: usize,
+    opt: &LoadOptions,
+) -> Result<Loaded, String> {
     // O-174: the model engine runs on the aarch64 kernels only (a non-aarch64 build has the stub
     // engine; kernels-sys has no kernels there)
     if !cfg!(target_arch = "aarch64") {
-        return Err("the oxe model engine needs aarch64 (this build serves --engine stub only)".into());
+        return Err(
+            "the oxe model engine needs aarch64 (this build serves --engine stub only)".into(),
+        );
     }
     let g = Gguf::open(model).map_err(|e| e.to_string())?;
     let desc = ModelDesc::from_header(&g.header)?;
@@ -30,7 +37,12 @@ pub fn open(model: &Path, nthreads: usize, n_ctx: usize, opt: &LoadOptions) -> R
 
 /// Open and leak the plan and weights (a server process owns them for its whole life), so
 /// an `Engine<'static>` can be built from them.
-pub fn open_static(model: &Path, nthreads: usize, n_ctx: usize, opt: &LoadOptions) -> Result<(&'static Plan, &'static WeightStore), String> {
+pub fn open_static(
+    model: &Path,
+    nthreads: usize,
+    n_ctx: usize,
+    opt: &LoadOptions,
+) -> Result<(&'static Plan, &'static WeightStore), String> {
     let l = open(model, nthreads, n_ctx, opt)?;
     Ok((Box::leak(Box::new(l.plan)), Box::leak(Box::new(l.ws))))
 }
@@ -42,7 +54,10 @@ pub fn memory_report() -> Vec<(String, u64)> {
         for l in s.lines() {
             for k in ["VmHWM", "VmRSS", "RssAnon", "RssFile"] {
                 if let Some(v) = l.strip_prefix(&format!("{k}:")) {
-                    out.push((k.to_string(), v.trim().trim_end_matches(" kB").trim().parse().unwrap_or(0)));
+                    out.push((
+                        k.to_string(),
+                        v.trim().trim_end_matches(" kB").trim().parse().unwrap_or(0),
+                    ));
                 }
             }
         }
@@ -51,7 +66,10 @@ pub fn memory_report() -> Vec<(String, u64)> {
         for l in s.lines() {
             for k in ["AnonHugePages", "FilePmdMapped", "ShmemPmdMapped", "Rss"] {
                 if let Some(v) = l.strip_prefix(&format!("{k}:")) {
-                    out.push((format!("smaps.{k}"), v.trim().trim_end_matches(" kB").trim().parse().unwrap_or(0)));
+                    out.push((
+                        format!("smaps.{k}"),
+                        v.trim().trim_end_matches(" kB").trim().parse().unwrap_or(0),
+                    ));
                 }
             }
         }
@@ -72,4 +90,3 @@ pub fn lease_free(path: &Path) -> bool {
         Err(_) => true,
     }
 }
-

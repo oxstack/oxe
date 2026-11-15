@@ -33,8 +33,12 @@ fn parse(args: &[String]) -> Result<HashMap<String, String>, String> {
     let mut m = HashMap::new();
     let mut i = 0;
     while i < args.len() {
-        let k = args[i].strip_prefix("--").ok_or_else(|| format!("unexpected argument '{}'", args[i]))?;
-        let v = args.get(i + 1).ok_or_else(|| format!("--{k} needs a value"))?;
+        let k = args[i]
+            .strip_prefix("--")
+            .ok_or_else(|| format!("unexpected argument '{}'", args[i]))?;
+        let v = args
+            .get(i + 1)
+            .ok_or_else(|| format!("--{k} needs a value"))?;
         m.insert(k.to_string(), v.clone());
         i += 2;
     }
@@ -43,11 +47,18 @@ fn parse(args: &[String]) -> Result<HashMap<String, String>, String> {
 
 fn real_main() -> Result<(), TeError> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let (cmd, rest) = argv.split_first().ok_or_else(|| TeError::Other("usage: qwen3-te tokens|encode --gguf F --prompt-file P ...".into()))?;
+    let (cmd, rest) = argv.split_first().ok_or_else(|| {
+        TeError::Other("usage: qwen3-te tokens|encode --gguf F --prompt-file P ...".into())
+    })?;
     let a = parse(rest)?;
-    let req = |k: &str| a.get(k).cloned().ok_or_else(|| TeError::Other(format!("--{k} is required")));
+    let req = |k: &str| {
+        a.get(k)
+            .cloned()
+            .ok_or_else(|| TeError::Other(format!("--{k} is required")))
+    };
     let gguf = req("gguf")?;
-    let prompt = std::fs::read_to_string(req("prompt-file")?).map_err(|e| TeError::Other(format!("prompt file: {e}")))?;
+    let prompt = std::fs::read_to_string(req("prompt-file")?)
+        .map_err(|e| TeError::Other(format!("prompt file: {e}")))?;
     match cmd.as_str() {
         "tokens" => {
             let tok = tokenizer::Tokenizer::from_gguf(&gguf).map_err(|e| TeError::Other(e.0))?;
@@ -56,13 +67,22 @@ fn real_main() -> Result<(), TeError> {
                 qwen3_te::prompt::PromptError::NeedsReference(s) => TeError::NeedsReference(s),
                 o => TeError::Other(o.to_string()),
             })?;
-            println!("{}", json!({"n": e.tokens.len(), "n_real": e.n_real, "ids": &e.tokens[..e.n_real]}));
+            println!(
+                "{}",
+                json!({"n": e.tokens.len(), "n_real": e.n_real, "ids": &e.tokens[..e.n_real]})
+            );
             Ok(())
         }
         "encode" => {
-            let threads: usize = a.get("threads").map_or(Ok(12), |v| v.parse()).map_err(|_| TeError::Other("--threads".into()))?;
+            let threads: usize = a
+                .get("threads")
+                .map_or(Ok(12), |v| v.parse())
+                .map_err(|_| TeError::Other("--threads".into()))?;
             let backend = backend_from_opts(&|k| a.get(k).cloned())?;
-            let max_n: usize = a.get("max-tokens").map_or(Ok(0), |v| v.parse()).map_err(|_| TeError::Other("--max-tokens".into()))?;
+            let max_n: usize = a
+                .get("max-tokens")
+                .map_or(Ok(0), |v| v.parse())
+                .map_err(|_| TeError::Other("--max-tokens".into()))?;
             let out = encode_prompt(Path::new(&gguf), &prompt, backend, threads, max_n)?;
             let mut s = out.summary.clone();
             if let Some(p) = a.get("out") {
@@ -71,7 +91,14 @@ fn real_main() -> Result<(), TeError> {
             if let Some(p) = a.get("ref") {
                 let r = read_f32(Path::new(p))?;
                 let spec = qwen3_te::config::KleinSpec::klein();
-                let rep = metrics::report(&out.ctx, &r, out.n, out.n_real, out.ctx_dim / spec.out_layers.len(), &spec.out_layers)?;
+                let rep = metrics::report(
+                    &out.ctx,
+                    &r,
+                    out.n,
+                    out.n_real,
+                    out.ctx_dim / spec.out_layers.len(),
+                    &spec.out_layers,
+                )?;
                 s["compare"] = rep;
             }
             let text = serde_json::to_string_pretty(&s).unwrap();
@@ -81,6 +108,8 @@ fn real_main() -> Result<(), TeError> {
             println!("{text}");
             Ok(())
         }
-        o => Err(TeError::Other(format!("unknown command '{o}' (tokens|encode)"))),
+        o => Err(TeError::Other(format!(
+            "unknown command '{o}' (tokens|encode)"
+        ))),
     }
 }

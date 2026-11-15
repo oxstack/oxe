@@ -66,7 +66,6 @@ jobs:
       build_oxa: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
   rustfmt:
-    # oxa only: the engine tree predates rustfmt enforcement (formatting it is a separate change).
     name: rustfmt (oxa)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -80,6 +79,9 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --no-self-update
       - name: oxa
         working-directory: oxa
+        run: cargo fmt --all -- --check
+      - name: engine
+        working-directory: engine
         run: cargo fmt --all -- --check
 
   clippy:

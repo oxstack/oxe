@@ -57,7 +57,10 @@ pub struct CountingBackend {
 }
 
 impl CountingBackend {
-    pub fn new(inner: Box<dyn Backend>, bytes: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Self {
+    pub fn new(
+        inner: Box<dyn Backend>,
+        bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
         CountingBackend { inner, bytes }
     }
 }
@@ -74,7 +77,8 @@ impl Backend for CountingBackend {
     }
     fn alloc(&mut self, session: usize, bytes: usize) -> Result<oxn::Buf, String> {
         let b = self.inner.alloc(session, bytes)?;
-        self.bytes.fetch_add(b.len as u64, std::sync::atomic::Ordering::Relaxed);
+        self.bytes
+            .fetch_add(b.len as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(b)
     }
     fn gemm(&mut self, session: usize, a: &oxn::GemmArgs) -> Result<oxn::GemmStats, String> {
@@ -87,7 +91,12 @@ const F16_MAX: f32 = 65504.0;
 
 impl<'w, 'a> NpuLinears<'w, 'a> {
     /// Place every linear of `w` (in block order, Q K V O gate up down) that fits `opts.budget_bytes`.
-    pub fn new(w: &'w TeWeights<'a>, backend: Box<dyn Backend>, opts: NpuOpts, cpu_threads: usize) -> Result<Self, String> {
+    pub fn new(
+        w: &'w TeWeights<'a>,
+        backend: Box<dyn Backend>,
+        opts: NpuOpts,
+        cpu_threads: usize,
+    ) -> Result<Self, String> {
         let t = Instant::now();
         let mut ctx = NpuCtx::new(
             backend,
@@ -114,7 +123,8 @@ impl<'w, 'a> NpuLinears<'w, 'a> {
                     (WFmt::Fp16, _) => ctx.add_linear_rows(&name, m)?,
                 };
                 if let Some(nl) = r {
-                    placed_bytes += (m.o() * m.k()) as u64 * if opts.weights == WFmt::Fp16 { 2 } else { 1 };
+                    placed_bytes +=
+                        (m.o() * m.k()) as u64 * if opts.weights == WFmt::Fp16 { 2 } else { 1 };
                     placed.insert((l, kd), nl);
                 }
             }
@@ -122,7 +132,11 @@ impl<'w, 'a> NpuLinears<'w, 'a> {
         Ok(NpuLinears {
             inner: Mutex::new(ctx),
             placed,
-            cpu: CpuLinears { w, threads: cpu_threads, mode: CpuMode::F32 },
+            cpu: CpuLinears {
+                w,
+                threads: cpu_threads,
+                mode: CpuMode::F32,
+            },
             opts,
             stats: Mutex::new(Stats::default()),
             place_s: t.elapsed().as_secs_f64(),
@@ -134,7 +148,14 @@ impl<'w, 'a> NpuLinears<'w, 'a> {
         self.placed.len()
     }
 
-    fn cpu_one(&self, layer: usize, kd: Kind, x: &[f32], n: usize, out: &mut Vec<f32>) -> Result<(), String> {
+    fn cpu_one(
+        &self,
+        layer: usize,
+        kd: Kind,
+        x: &[f32],
+        n: usize,
+        out: &mut Vec<f32>,
+    ) -> Result<(), String> {
         self.stats.lock().unwrap().cpu_calls += 1;
         let mut tmp = vec![std::mem::take(out)];
         self.cpu.project(layer, &[kd], x, n, &mut tmp)?;
@@ -145,10 +166,24 @@ impl<'w, 'a> NpuLinears<'w, 'a> {
 
 impl Linears for NpuLinears<'_, '_> {
     fn name(&self) -> String {
-        format!("npu-{}", if self.opts.weights == WFmt::Fp16 { "fp16" } else { "w8" })
+        format!(
+            "npu-{}",
+            if self.opts.weights == WFmt::Fp16 {
+                "fp16"
+            } else {
+                "w8"
+            }
+        )
     }
 
-    fn project(&self, layer: usize, kinds: &[Kind], x: &[f32], n: usize, outs: &mut [Vec<f32>]) -> Result<(), String> {
+    fn project(
+        &self,
+        layer: usize,
+        kinds: &[Kind],
+        x: &[f32],
+        n: usize,
+        outs: &mut [Vec<f32>],
+    ) -> Result<(), String> {
         let in_range = x.iter().all(|v| v.is_finite() && v.abs() <= F16_MAX);
         let ctx = self.inner.lock().map_err(|_| "npu: context poisoned")?;
         let mut act: Option<(usize, usize, oxn::linear::NpuAct)> = None; // (session, kc, view)
@@ -164,11 +199,18 @@ impl Linears for NpuLinears<'_, '_> {
             }
             let k = nl.k;
             if x.len() != n * k {
-                return Err(format!("npu: {}: input {} values for n {n} k {k}", nl.name, x.len()));
+                return Err(format!(
+                    "npu: {}: input {} values for n {n} k {k}",
+                    nl.name,
+                    x.len()
+                ));
             }
             let mut st = Stats::default();
             // one activation per (session, kc): q/k/v and gate/up share it when placed together
-            if act.as_ref().map_or(true, |a| a.0 != nl.session || a.1 != nl.kc) {
+            if act
+                .as_ref()
+                .map_or(true, |a| a.0 != nl.session || a.1 != nl.kc)
+            {
                 let t = Instant::now();
                 let a = ctx.act(nl.session, 0, n, k, nl.kc)?;
                 let full = n / 32;

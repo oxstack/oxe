@@ -32,27 +32,52 @@ fn check(name: &str, bytes: &[u8], w: usize, h: usize) {
 
 #[test]
 fn stored_deflate_filter0() {
-    check("rgb_stored_f0", include_bytes!("fixtures/rgb_stored_f0.png"), 40, 12);
+    check(
+        "rgb_stored_f0",
+        include_bytes!("fixtures/rgb_stored_f0.png"),
+        40,
+        12,
+    );
 }
 
 #[test]
 fn dynamic_huffman_all_filters() {
-    check("rgb_mixed_dyn", include_bytes!("fixtures/rgb_mixed_dyn.png"), 120, 64);
+    check(
+        "rgb_mixed_dyn",
+        include_bytes!("fixtures/rgb_mixed_dyn.png"),
+        120,
+        64,
+    );
 }
 
 #[test]
 fn fixed_or_dynamic_paeth_only() {
-    check("rgb_paeth_fixed", include_bytes!("fixtures/rgb_paeth_fixed.png"), 16, 8);
+    check(
+        "rgb_paeth_fixed",
+        include_bytes!("fixtures/rgb_paeth_fixed.png"),
+        16,
+        8,
+    );
 }
 
 #[test]
 fn multiple_idat_chunks() {
-    check("rgb_split_idat", include_bytes!("fixtures/rgb_split_idat.png"), 64, 32);
+    check(
+        "rgb_split_idat",
+        include_bytes!("fixtures/rgb_split_idat.png"),
+        64,
+        32,
+    );
 }
 
 #[test]
 fn tiny_all_filters_fixed_block() {
-    check("rgb_tiny_all_filters", include_bytes!("fixtures/rgb_tiny_all_filters.png"), 5, 5);
+    check(
+        "rgb_tiny_all_filters",
+        include_bytes!("fixtures/rgb_tiny_all_filters.png"),
+        5,
+        5,
+    );
 }
 
 #[test]
@@ -80,7 +105,9 @@ fn write_then_read_round_trip() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("roundtrip.png");
     let (w, h) = (300usize, 70usize); // > 65535 bytes raw, exercises several stored blocks
-    let data: Vec<u8> = (0..w * h * 3).map(|i| ((i * 2654435761usize) >> 7) as u8).collect();
+    let data: Vec<u8> = (0..w * h * 3)
+        .map(|i| ((i * 2654435761usize) >> 7) as u8)
+        .collect();
     let img = Rgb {
         width: w,
         height: h,

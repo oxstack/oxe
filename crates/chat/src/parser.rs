@@ -34,7 +34,10 @@ impl ChatMsg {
         m.insert("role".into(), "assistant".into());
         m.insert("content".into(), Json::String(self.content.clone()));
         if !self.reasoning_content.is_empty() {
-            m.insert("reasoning_content".into(), Json::String(self.reasoning_content.clone()));
+            m.insert(
+                "reasoning_content".into(),
+                Json::String(self.reasoning_content.clone()),
+            );
         }
         if !self.tool_calls.is_empty() {
             let v = self
@@ -62,7 +65,11 @@ impl ChatMsg {
     pub fn set_tool_call_ids(&mut self, cache: &mut Vec<String>, mut gen: impl FnMut() -> String) {
         for (i, tc) in self.tool_calls.iter_mut().enumerate() {
             if cache.len() <= i {
-                let id = if tc.id.is_empty() { gen() } else { tc.id.clone() };
+                let id = if tc.id.is_empty() {
+                    gen()
+                } else {
+                    tc.id.clone()
+                };
                 cache.push(id);
             }
             tc.id = cache[i].clone();
@@ -83,7 +90,10 @@ impl MsgDiff {
     pub fn to_delta_json(&self) -> Json {
         let mut d = Map::new();
         if !self.reasoning_content_delta.is_empty() {
-            d.insert("reasoning_content".into(), Json::String(self.reasoning_content_delta.clone()));
+            d.insert(
+                "reasoning_content".into(),
+                Json::String(self.reasoning_content_delta.clone()),
+            );
         }
         if !self.content_delta.is_empty() {
             d.insert("content".into(), Json::String(self.content_delta.clone()));
@@ -98,10 +108,16 @@ impl MsgDiff {
             if !self.tool_call_delta.name.is_empty() || !self.tool_call_delta.arguments.is_empty() {
                 let mut f = Map::new();
                 if !self.tool_call_delta.name.is_empty() {
-                    f.insert("name".into(), Json::String(self.tool_call_delta.name.clone()));
+                    f.insert(
+                        "name".into(),
+                        Json::String(self.tool_call_delta.name.clone()),
+                    );
                 }
                 if !self.tool_call_delta.arguments.is_empty() {
-                    f.insert("arguments".into(), Json::String(self.tool_call_delta.arguments.clone()));
+                    f.insert(
+                        "arguments".into(),
+                        Json::String(self.tool_call_delta.arguments.clone()),
+                    );
                 }
                 tc.insert("function".into(), Json::Object(f));
             }
@@ -122,7 +138,9 @@ fn string_diff(last: &str, cur: &str) -> Result<String, DiffError> {
         if last.starts_with(cur) {
             return Ok(String::new());
         }
-        return Err(DiffError(format!("Invalid diff: '{last}' not found at start of '{cur}'")));
+        return Err(DiffError(format!(
+            "Invalid diff: '{last}' not found at start of '{cur}'"
+        )));
     }
     Ok(cur[last.len()..].to_string())
 }
@@ -131,13 +149,21 @@ fn string_diff(last: &str, cur: &str) -> Result<String, DiffError> {
 pub fn compute_diffs(prv: &ChatMsg, new: &ChatMsg) -> Result<Vec<MsgDiff>, DiffError> {
     let mut out = Vec::new();
     if prv.reasoning_content != new.reasoning_content {
-        out.push(MsgDiff { reasoning_content_delta: string_diff(&prv.reasoning_content, &new.reasoning_content)?, ..Default::default() });
+        out.push(MsgDiff {
+            reasoning_content_delta: string_diff(&prv.reasoning_content, &new.reasoning_content)?,
+            ..Default::default()
+        });
     }
     if prv.content != new.content {
-        out.push(MsgDiff { content_delta: string_diff(&prv.content, &new.content)?, ..Default::default() });
+        out.push(MsgDiff {
+            content_delta: string_diff(&prv.content, &new.content)?,
+            ..Default::default()
+        });
     }
     if new.tool_calls.len() < prv.tool_calls.len() {
-        return Err(DiffError("Invalid diff: now finding less tool calls!".into()));
+        return Err(DiffError(
+            "Invalid diff: now finding less tool calls!".into(),
+        ));
     }
     if !prv.tool_calls.is_empty() {
         let idx = prv.tool_calls.len() - 1;
@@ -147,7 +173,10 @@ pub fn compute_diffs(prv: &ChatMsg, new: &ChatMsg) -> Result<Vec<MsgDiff>, DiffE
         }
         let args = string_diff(&p.arguments, &n.arguments)?;
         if !args.is_empty() || p.id != n.id || p.name != n.name {
-            let mut d = MsgDiff { tool_call_index: Some(idx), ..Default::default() };
+            let mut d = MsgDiff {
+                tool_call_index: Some(idx),
+                ..Default::default()
+            };
             if p.id != n.id || p.name != n.name {
                 d.tool_call_delta.id = n.id.clone();
                 d.tool_call_delta.name = n.name.clone();
@@ -157,7 +186,11 @@ pub fn compute_diffs(prv: &ChatMsg, new: &ChatMsg) -> Result<Vec<MsgDiff>, DiffE
         }
     }
     for idx in prv.tool_calls.len()..new.tool_calls.len() {
-        out.push(MsgDiff { tool_call_index: Some(idx), tool_call_delta: new.tool_calls[idx].clone(), ..Default::default() });
+        out.push(MsgDiff {
+            tool_call_index: Some(idx),
+            tool_call_delta: new.tool_calls[idx].clone(),
+            ..Default::default()
+        });
     }
     Ok(out)
 }
@@ -215,11 +248,15 @@ fn value_types(s: &Json, root: &Json, depth: usize) -> u8 {
         return T_ALL; // `true` schema etc.
     };
     if let Some(r) = o.get("$ref").and_then(Json::as_str) {
-        return resolve_ref(root, r).map(|t| value_types(t, root, depth + 1)).unwrap_or(0);
+        return resolve_ref(root, r)
+            .map(|t| value_types(t, root, depth + 1))
+            .unwrap_or(0);
     }
     for k in ["oneOf", "anyOf"] {
         if let Some(a) = o.get(k).and_then(Json::as_array) {
-            return a.iter().fold(0, |acc, c| acc | value_types(c, root, depth + 1));
+            return a
+                .iter()
+                .fold(0, |acc, c| acc | value_types(c, root, depth + 1));
         }
     }
     match o.get("type") {
@@ -227,7 +264,9 @@ fn value_types(s: &Json, root: &Json, depth: usize) -> u8 {
             if a.is_empty() {
                 return T_ALL;
             }
-            return a.iter().fold(0, |acc, t| acc | t.as_str().map(type_name).unwrap_or(0));
+            return a
+                .iter()
+                .fold(0, |acc, t| acc | t.as_str().map(type_name).unwrap_or(0));
         }
         Some(Json::String(_)) | None => {}
         Some(_) => return T_ALL,
@@ -244,19 +283,27 @@ fn value_types(s: &Json, root: &Json, depth: usize) -> u8 {
             return T_OBJ;
         }
         if let Some(a) = o.get("allOf").and_then(Json::as_array) {
-            return a.iter().fold(T_ALL, |acc, c| acc & value_types(c, root, depth + 1));
+            return a
+                .iter()
+                .fold(T_ALL, |acc, c| acc & value_types(c, root, depth + 1));
         }
         if o.contains_key("items") || o.contains_key("prefixItems") {
             return T_ARR;
         }
-        if o.contains_key("pattern") || o.contains_key("minLength") || o.contains_key("maxLength") || o.contains_key("format") {
+        if o.contains_key("pattern")
+            || o.contains_key("minLength")
+            || o.contains_key("maxLength")
+            || o.contains_key("format")
+        {
             return T_STR;
         }
         return T_ALL;
     }
     if tn == "object" && !o.contains_key("properties") {
         if let Some(a) = o.get("allOf").and_then(Json::as_array) {
-            return a.iter().fold(T_ALL, |acc, c| acc & value_types(c, root, depth + 1));
+            return a
+                .iter()
+                .fold(T_ALL, |acc, c| acc & value_types(c, root, depth + 1));
         }
     }
     type_name(tn)
@@ -272,11 +319,19 @@ fn tool_params(t: &Tool) -> Vec<Param> {
     // common_chat_tool_parameters: missing / null / {} -> no parameters
     let p = &t.parameters;
     let props = p.get("properties").and_then(Json::as_object);
-    let req: Vec<&str> = p.get("required").and_then(Json::as_array).map(|a| a.iter().filter_map(Json::as_str).collect()).unwrap_or_default();
+    let req: Vec<&str> = p
+        .get("required")
+        .and_then(Json::as_array)
+        .map(|a| a.iter().filter_map(Json::as_str).collect())
+        .unwrap_or_default();
     let mut out = Vec::new();
     if let Some(props) = props {
         for (k, s) in props {
-            out.push(Param { name: k.clone(), required: req.contains(&k.as_str()), types: value_types(s, p, 0) });
+            out.push(Param {
+                name: k.clone(),
+                required: req.contains(&k.as_str()),
+                types: value_types(s, p, 0),
+            });
         }
     }
     out
@@ -615,7 +670,12 @@ pub(crate) fn content_ends(cfg: &ParserConfig) -> Vec<String> {
 /// a delimiter, which cannot contain a complete tool-call opener). For string arguments,
 /// `escape_inner` maps each char independently and `end` is a char boundary, so the escape
 /// of the longer slice is the old escape plus the escape of the new part.
-pub(crate) fn parse_step(cfg: &ParserConfig, s: &str, tail: &Tail, prev: &ChatMsg) -> Option<(ChatMsg, Tail, usize)> {
+pub(crate) fn parse_step(
+    cfg: &ParserConfig,
+    s: &str,
+    tail: &Tail,
+    prev: &ChatMsg,
+) -> Option<(ChatMsg, Tail, usize)> {
     match *tail {
         Tail::Reasoning { q, end } => {
             let (e, hit) = until_one_of(s, end, &reasoning_ends(cfg), true);
@@ -627,13 +687,29 @@ pub(crate) fn parse_step(cfg: &ParserConfig, s: &str, tail: &Tail, prev: &ChatMs
             debug_assert_eq!(m.reasoning_content, &s[q..e]);
             Some((m, Tail::Reasoning { q, end: e }, 0))
         }
-        Tail::Content { p, end, tools: false } => {
+        Tail::Content {
+            p,
+            end,
+            tools: false,
+        } => {
             let mut m = prev.clone();
             m.content.push_str(&s[end..]);
             debug_assert_eq!(m.content, &s[p..]);
-            Some((m, Tail::Content { p, end: s.len(), tools: false }, 0))
+            Some((
+                m,
+                Tail::Content {
+                    p,
+                    end: s.len(),
+                    tools: false,
+                },
+                0,
+            ))
         }
-        Tail::Content { p, end, tools: true } => {
+        Tail::Content {
+            p,
+            end,
+            tools: true,
+        } => {
             let (e, hit) = until_one_of(s, end, &content_ends(cfg), true);
             if hit.is_some() {
                 return None;
@@ -641,7 +717,15 @@ pub(crate) fn parse_step(cfg: &ParserConfig, s: &str, tail: &Tail, prev: &ChatMs
             let mut m = prev.clone();
             m.content.push_str(&s[end..e]);
             debug_assert_eq!(m.content, &s[p..e]);
-            Some((m, Tail::Content { p, end: e, tools: true }, 0))
+            Some((
+                m,
+                Tail::Content {
+                    p,
+                    end: e,
+                    tools: true,
+                },
+                0,
+            ))
         }
         Tail::StrArg { q, end } => {
             let (e, hit) = until_one_of(s, end, &[PARAM_CLOSE.to_string()], true);
@@ -660,7 +744,12 @@ pub(crate) fn parse_step(cfg: &ParserConfig, s: &str, tail: &Tail, prev: &ChatMs
 
 /// Parse the output of a Qwen3-Coder-format template. `text` is the model output only;
 /// `generation_prompt` is prepended like llama.cpp does.
-pub fn parse(cfg: &ParserConfig, generation_prompt: &str, text: &str, partial: bool) -> Result<ChatMsg, ParseError> {
+pub fn parse(
+    cfg: &ParserConfig,
+    generation_prompt: &str,
+    text: &str,
+    partial: bool,
+) -> Result<ChatMsg, ParseError> {
     let full = format!("{generation_prompt}{text}");
     parse_full(cfg, &full, partial).map(|r| r.0)
 }
@@ -670,7 +759,11 @@ pub fn parse(cfg: &ParserConfig, generation_prompt: &str, text: &str, partial: b
 /// The third value is the number of complete tool calls (closed `</tool_call>`, or every call of
 /// a final parse): a partial parse's last call can still vanish or change when text is appended
 /// (e.g. the model writes a parameter the grammar rejects), complete ones cannot.
-pub(crate) fn parse_full(cfg: &ParserConfig, s: &str, partial: bool) -> Result<(ChatMsg, Option<Tail>, usize), ParseError> {
+pub(crate) fn parse_full(
+    cfg: &ParserConfig,
+    s: &str,
+    partial: bool,
+) -> Result<(ChatMsg, Option<Tail>, usize), ParseError> {
     let mut msg = ChatMsg::default();
 
     let (st, mut p) = lit(s, 0, GEN_PREFIX, partial);
@@ -678,7 +771,9 @@ pub(crate) fn parse_full(cfg: &ParserConfig, s: &str, partial: bool) -> Result<(
         St::Ok => {}
         St::More => return Ok((msg, None, 0)),
         St::Fail => {
-            return Err(ParseError("The model produced output that does not match the expected format".into()));
+            return Err(ParseError(
+                "The model produced output that does not match the expected format".into(),
+            ));
         }
     }
 
@@ -697,7 +792,11 @@ pub(crate) fn parse_full(cfg: &ParserConfig, s: &str, partial: bool) -> Result<(
                     Some(k) => {
                         msg.reasoning_content = body.to_string();
                         // close: "\n</think>" | "</think>" | peek("<tool_call>")
-                        p = if ends[k] == "<tool_call>" { end } else { end + ends[k].len() };
+                        p = if ends[k] == "<tool_call>" {
+                            end
+                        } else {
+                            end + ends[k].len()
+                        };
                     }
                     None => {
                         // unclosed think block: everything so far is reasoning (lenient parse,
@@ -721,7 +820,11 @@ pub(crate) fn parse_full(cfg: &ParserConfig, s: &str, partial: bool) -> Result<(
     let tools_active = qwen3_coder && !cfg.tools.is_empty() && cfg.tool_choice != ToolChoice::None;
     if !tools_active {
         msg.content = s[p..].to_string();
-        let tail = (partial && p < s.len()).then_some(Tail::Content { p, end: s.len(), tools: false });
+        let tail = (partial && p < s.len()).then_some(Tail::Content {
+            p,
+            end: s.len(),
+            tools: false,
+        });
         return Ok((msg, tail, 0));
     }
 
@@ -729,16 +832,31 @@ pub(crate) fn parse_full(cfg: &ParserConfig, s: &str, partial: bool) -> Result<(
     let content_ends = content_ends(cfg);
     let (end, hit) = until_one_of(s, p, &content_ends, partial);
     msg.content = s[p..end].to_string();
-    let content_tail = (partial && hit.is_none() && p < s.len()).then_some(Tail::Content { p, end, tools: true });
+    let content_tail = (partial && hit.is_none() && p < s.len()).then_some(Tail::Content {
+        p,
+        end,
+        tools: true,
+    });
     p = skip_space(s, end);
 
-    let max_calls = if cfg.parallel_tool_calls { usize::MAX } else { 1 };
+    let max_calls = if cfg.parallel_tool_calls {
+        usize::MAX
+    } else {
+        1
+    };
     let mut ncalls = 0;
     let mut tail = None;
     while ncalls < max_calls {
         let first = ncalls == 0;
         let mut str_tail = None;
-        let (st, q, call) = parse_call(cfg, s, p, partial, first && is_qwen3_coder_model, &mut str_tail);
+        let (st, q, call) = parse_call(
+            cfg,
+            s,
+            p,
+            partial,
+            first && is_qwen3_coder_model,
+            &mut str_tail,
+        );
         match st {
             St::Ok => {
                 msg.tool_calls.push(call.unwrap());
@@ -763,12 +881,20 @@ pub(crate) fn parse_full(cfg: &ParserConfig, s: &str, partial: bool) -> Result<(
         // instead of dropping it
         msg.content.push_str(&s[p..]);
     }
-    let complete = if partial { ncalls } else { msg.tool_calls.len() };
+    let complete = if partial {
+        ncalls
+    } else {
+        msg.tool_calls.len()
+    };
     Ok((msg, tail, complete))
 }
 
 fn clear_ws_reasoning(msg: &mut ChatMsg) {
-    if msg.reasoning_content.bytes().all(|c| matches!(c, b' ' | b'\n' | b'\r' | b'\t')) {
+    if msg
+        .reasoning_content
+        .bytes()
+        .all(|c| matches!(c, b' ' | b'\n' | b'\r' | b'\t'))
+    {
         msg.reasoning_content.clear();
     }
 }
@@ -785,11 +911,16 @@ fn normalize_int(v: &str, types: u8) -> Result<Option<String>, ()> {
         return Ok(None);
     }
     let b = v.as_bytes();
-    if b.is_empty() || !(b[0] == b'-' || b[0].is_ascii_digit()) || !b.iter().any(|c| matches!(c, b'.' | b'e' | b'E')) {
+    if b.is_empty()
+        || !(b[0] == b'-' || b[0].is_ascii_digit())
+        || !b.iter().any(|c| matches!(c, b'.' | b'e' | b'E'))
+    {
         return Ok(None);
     }
     match v.parse::<f64>() {
-        Ok(f) if f.is_finite() && f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_992.0 => Ok(Some(format!("{}", f as i64))),
+        Ok(f) if f.is_finite() && f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_992.0 => {
+            Ok(Some(format!("{}", f as i64)))
+        }
         _ => Err(()),
     }
 }
@@ -809,7 +940,11 @@ fn normalize_int(v: &str, types: u8) -> Result<Option<String>, ()> {
 /// Python containers (`['a']`), text after the value.
 fn coerce_value(raw: &str, types: u8) -> Option<String> {
     let t = raw.trim_matches(is_space_char);
-    let (t, quoted) = if t.starts_with('"') { (serde_json::from_str::<String>(t).ok()?, true) } else { (t.to_string(), false) };
+    let (t, quoted) = if t.starts_with('"') {
+        (serde_json::from_str::<String>(t).ok()?, true)
+    } else {
+        (t.to_string(), false)
+    };
     let t = t.trim_matches(is_space_char);
     if t.is_empty() || (quoted && t.starts_with('"')) {
         return None; // one level of quoting only
@@ -842,7 +977,14 @@ fn coerce_value(raw: &str, types: u8) -> Option<String> {
 /// the end position, and the (possibly partial) call.
 /// `str_tail` is set to (q, end) when the call stops inside an open string-only argument
 /// value (`arguments` ends with `escape_inner(s[q..end])`), see [`Tail::StrArg`].
-fn parse_call(cfg: &ParserConfig, s: &str, p0: usize, partial: bool, opt_open: bool, str_tail: &mut Option<(usize, usize)>) -> (St, usize, Option<ToolCall>) {
+fn parse_call(
+    cfg: &ParserConfig,
+    s: &str,
+    p0: usize,
+    partial: bool,
+    opt_open: bool,
+    str_tail: &mut Option<(usize, usize)>,
+) -> (St, usize, Option<ToolCall>) {
     let mut p = p0;
     let (st, q) = lit(s, p, "<tool_call>\n", partial);
     match st {
@@ -867,9 +1009,17 @@ fn parse_call(cfg: &ParserConfig, s: &str, p0: usize, partial: bool, opt_open: b
         }
     }
     let Some(tool) = chosen else {
-        return if any_more { (St::More, s.len(), None) } else { (St::Fail, p0, None) };
+        return if any_more {
+            (St::More, s.len(), None)
+        } else {
+            (St::Fail, p0, None)
+        };
     };
-    let mut call = ToolCall { name: tool.name.trim_end().to_string(), arguments: "{".into(), id: String::new() };
+    let mut call = ToolCall {
+        name: tool.name.trim_end().to_string(),
+        arguments: "{".into(),
+        id: String::new(),
+    };
     let params = tool_params(tool);
     let n_req = params.iter().filter(|x| x.required).count();
     let mut used = vec![false; params.len()];
@@ -884,7 +1034,11 @@ fn parse_call(cfg: &ParserConfig, s: &str, p0: usize, partial: bool, opt_open: b
             // `lenient` an unused parameter is also accepted out of that order (the
             // model wrote a valid call in another order); inputs the grammar accepts parse the
             // same, since at one position at most one `<parameter=NAME>` literal matches.
-            let in_phase = (if req_done < n_req { prm.required && !used[i] } else { !prm.required }) || (cfg.lenient && !used[i]);
+            let in_phase = (if req_done < n_req {
+                prm.required && !used[i]
+            } else {
+                !prm.required
+            }) || (cfg.lenient && !used[i]);
             if !in_phase {
                 continue;
             }
@@ -907,7 +1061,11 @@ fn parse_call(cfg: &ParserConfig, s: &str, p0: usize, partial: bool, opt_open: b
             break;
         }
         let prm = &params[i];
-        let key = format!("{}{}:", if n_args > 0 { "," } else { "" }, Json::String(prm.name.trim().to_string()));
+        let key = format!(
+            "{}{}:",
+            if n_args > 0 { "," } else { "" },
+            Json::String(prm.name.trim().to_string())
+        );
         let close = PARAM_CLOSE;
         let types = prm.types;
         let string_only = types == T_STR;
@@ -966,7 +1124,11 @@ fn parse_call(cfg: &ParserConfig, s: &str, p0: usize, partial: bool, opt_open: b
                 // the whole value up to the close tag, atomic: withheld until closed
                 let (end, hit) = until_one_of(s, q, &[close.to_string()], partial);
                 if hit.is_none() {
-                    return if partial { (St::More, s.len(), Some(call)) } else { (St::Fail, p0, None) };
+                    return if partial {
+                        (St::More, s.len(), Some(call))
+                    } else {
+                        (St::Fail, p0, None)
+                    };
                 }
                 let Some(v) = coerce_value(&s[q..end], types) else {
                     return (St::Fail, p0, None); // ambiguous: a failure, as before
@@ -1009,7 +1171,11 @@ fn parse_call(cfg: &ParserConfig, s: &str, p0: usize, partial: bool, opt_open: b
     }
     if req_done < n_req {
         // permute needs all required args
-        return if partial && p >= s.len() { (St::More, s.len(), Some(call)) } else { (St::Fail, p0, None) };
+        return if partial && p >= s.len() {
+            (St::More, s.len(), Some(call))
+        } else {
+            (St::Fail, p0, None)
+        };
     }
     if !partial && cfg.lenient {
         // repair: the stream ended inside the closing tags (unambiguous: every required

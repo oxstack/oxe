@@ -70,7 +70,9 @@ pub fn round_activation(arith: Arith, wt: WType, x: &mut [f32]) {
     match wt {
         WType::Q8_0 => round_q8_0(x),
         WType::Bf16 => round_bf16(x),
-        WType::F16 => x.iter_mut().for_each(|v| *v = f16_bits_to_f32(f32_to_f16_bits(*v))),
+        WType::F16 => x
+            .iter_mut()
+            .for_each(|v| *v = f16_bits_to_f32(f32_to_f16_bits(*v))),
         WType::F32 => {}
     }
 }
@@ -78,7 +80,11 @@ pub fn round_activation(arith: Arith, wt: WType, x: &mut [f32]) {
 /// `quantize_row_q8_0` (ARM NEON) then dequantise: per 32 values, `d = amax / 127` (f32),
 /// `q = round_half_even(x * (1/d))`, stored scale `f16(d)`; each value becomes `q * f16(d)`.
 pub fn round_q8_0(x: &mut [f32]) {
-    assert!(x.len() % 32 == 0, "Q8_0 rounding needs whole 32-value blocks, got {}", x.len());
+    assert!(
+        x.len() % 32 == 0,
+        "Q8_0 rounding needs whole 32-value blocks, got {}",
+        x.len()
+    );
     for blk in x.chunks_exact_mut(32) {
         let amax = blk.iter().fold(0f32, |m, v| m.max(v.abs()));
         let d = amax / 127.0;
@@ -143,7 +149,15 @@ mod tests {
 
     #[test]
     fn f16_round_trip_and_rounding() {
-        for v in [0.0f32, 1.0, -2.5, 65504.0, 6.103_515_6e-5, 5.960_464_5e-8, 0.333_333_34] {
+        for v in [
+            0.0f32,
+            1.0,
+            -2.5,
+            65504.0,
+            6.103_515_6e-5,
+            5.960_464_5e-8,
+            0.333_333_34,
+        ] {
             let r = f16_bits_to_f32(f32_to_f16_bits(v));
             assert!((r - v).abs() <= v.abs() * 1e-3 + 6e-8, "{v} -> {r}");
         }
@@ -186,7 +200,9 @@ mod tests {
         let mut z = vec![0f32; 32];
         round_q8_0(&mut z);
         assert!(z.iter().all(|&v| v == 0.0));
-        let mut s: Vec<f32> = (0..64).map(|i| ((i * 37 % 64) as f32 - 31.7) * 0.013).collect();
+        let mut s: Vec<f32> = (0..64)
+            .map(|i| ((i * 37 % 64) as f32 - 31.7) * 0.013)
+            .collect();
         let orig = s.clone();
         round_q8_0(&mut s);
         for (blk_o, blk_r) in orig.chunks(32).zip(s.chunks(32)) {
@@ -194,7 +210,10 @@ mod tests {
             let d = amax / 127.0;
             for (a, b) in blk_o.iter().zip(blk_r) {
                 // |x - q d| <= d/2 from the rounding, plus |q| |f16(d) - d| <= 127 d 2^-11 from the f16 scale
-                assert!((a - b).abs() <= 0.5 * d + 127.0 * d / 2048.0 + 1e-7, "{a} vs {b}");
+                assert!(
+                    (a - b).abs() <= 0.5 * d + 127.0 * d / 2048.0 + 1e-7,
+                    "{a} vs {b}"
+                );
             }
         }
     }

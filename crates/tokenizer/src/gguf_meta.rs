@@ -71,7 +71,8 @@ impl<T: Read> R<T> {
         let mut v = vec![0u8; n as usize];
         self.0.read_exact(&mut v)?;
         // GGUF strings are UTF-8; keep lossy rather than failing on a bad one.
-        Ok(String::from_utf8(v).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+        Ok(String::from_utf8(v)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
     }
     fn value(&mut self, ty: u32) -> io::Result<Meta> {
         Ok(match ty {

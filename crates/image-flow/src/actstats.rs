@@ -45,7 +45,9 @@ pub fn channel_rms(xm: &[f32], n: usize, h: usize) -> Vec<f32> {
             *a += (*v as f64).powi(2);
         }
     }
-    acc.iter().map(|a| (a / n.max(1) as f64).sqrt() as f32).collect()
+    acc.iter()
+        .map(|a| (a / n.max(1) as f64).sqrt() as f32)
+        .collect()
 }
 
 /// Channel arrangement of a quantisation experiment.
@@ -59,13 +61,32 @@ pub enum Arrange {
 /// (plain, balanced) relative error of int8 quantisation with one max-based scale per token per `chunk`
 /// channels, under the given arrangement. `mag` is the per-channel magnitude used for sorting,
 /// equalising and for the balanced measure.
-pub fn quant_error(xm: &[f32], n: usize, h: usize, mag: &[f32], chunk: usize, arr: Arrange) -> (f64, f64) {
+pub fn quant_error(
+    xm: &[f32],
+    n: usize,
+    h: usize,
+    mag: &[f32],
+    chunk: usize,
+    arr: Arrange,
+) -> (f64, f64) {
     assert!(chunk > 0 && h % chunk == 0);
     let mut order: Vec<usize> = (0..h).collect();
     if arr == Arrange::Sorted {
-        order.sort_by(|a, b| mag[*a].partial_cmp(&mag[*b]).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|a, b| {
+            mag[*a]
+                .partial_cmp(&mag[*b])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
-    let div: Vec<f32> = (0..h).map(|k| if arr == Arrange::Equalized && mag[k] > 0.0 { mag[k] } else { 1.0 }).collect();
+    let div: Vec<f32> = (0..h)
+        .map(|k| {
+            if arr == Arrange::Equalized && mag[k] > 0.0 {
+                mag[k]
+            } else {
+                1.0
+            }
+        })
+        .collect();
     let (mut e_plain, mut s_plain, mut e_bal, mut s_bal) = (0f64, 0f64, 0f64, 0f64);
     let mut buf = vec![0f32; chunk];
     for t in 0..n {
@@ -92,7 +113,10 @@ pub fn quant_error(xm: &[f32], n: usize, h: usize, mag: &[f32], chunk: usize, ar
             }
         }
     }
-    ((e_plain / s_plain.max(f64::MIN_POSITIVE)).sqrt(), (e_bal / s_bal.max(f64::MIN_POSITIVE)).sqrt())
+    (
+        (e_plain / s_plain.max(f64::MIN_POSITIVE)).sqrt(),
+        (e_bal / s_bal.max(f64::MIN_POSITIVE)).sqrt(),
+    )
 }
 
 /// Spread of the channel magnitudes: (largest / median, share of the total energy in the 8 largest channels).

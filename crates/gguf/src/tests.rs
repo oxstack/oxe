@@ -3,15 +3,19 @@ use serde_json::Value as J;
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> J {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(format!("{name}.json"));
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(format!("{name}.json"));
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 
 /// Model path: env override, else the laptop's model directory; None (test skipped) if absent.
 fn model_path(env: &str, file: &str) -> Option<PathBuf> {
-    let p = std::env::var_os(env)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap()).join(".local/share/ai-stack/models/llm").join(file));
+    let p = std::env::var_os(env).map(PathBuf::from).unwrap_or_else(|| {
+        PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".local/share/ai-stack/models/llm")
+            .join(file)
+    });
     p.is_file().then_some(p)
 }
 
@@ -19,7 +23,9 @@ fn json_eq(ours: &Value, theirs: &J) -> bool {
     match (ours, theirs) {
         (Value::Str(a), J::String(b)) => a == b,
         (Value::Bool(a), J::Bool(b)) => a == b,
-        (Value::Array(a), J::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| json_eq(x, y)),
+        (Value::Array(a), J::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| json_eq(x, y))
+        }
         (v, J::Number(n)) => match (v.as_f64(), n.as_f64()) {
             (Some(a), Some(b)) => a == b,
             _ => false,
@@ -40,12 +46,18 @@ fn compare_with_fixture(env: &str, key: &str) {
     assert_eq!(g.file_bytes, fx["file_bytes"].as_u64().unwrap());
     assert_eq!(h.version as u64, fx["gguf_version"].as_u64().unwrap());
     assert_eq!(h.data_offset, fx["data_offset"].as_u64().unwrap());
-    assert_eq!(h.header_bytes_read, fx["header_bytes_read"].as_u64().unwrap());
+    assert_eq!(
+        h.header_bytes_read,
+        fx["header_bytes_read"].as_u64().unwrap()
+    );
     assert_eq!(h.metadata.len() as u64, fx["n_metadata"].as_u64().unwrap());
     assert_eq!(h.architecture(), fx["architecture"].as_str());
     for (k, v) in fx["metadata"].as_object().unwrap() {
         let ours = h.get(k).unwrap_or_else(|| panic!("missing metadata {k}"));
-        assert!(json_eq(ours, v), "metadata {k}: ours {ours:?} model_inspect {v}");
+        assert!(
+            json_eq(ours, v),
+            "metadata {k}: ours {ours:?} model_inspect {v}"
+        );
     }
     let tensors = fx["tensors"].as_array().unwrap();
     assert_eq!(h.tensors.len(), tensors.len());
@@ -54,14 +66,23 @@ fn compare_with_fixture(env: &str, key: &str) {
         let r = r.as_array().unwrap();
         assert_eq!(t.name, r[0].as_str().unwrap());
         assert_eq!(t.ty.name(), r[1].as_str().unwrap(), "{}", t.name);
-        let shape: Vec<u64> = r[2].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+        let shape: Vec<u64> = r[2]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
         assert_eq!(t.shape, shape, "{}", t.name);
         assert_eq!(t.offset, r[3].as_u64().unwrap(), "{}", t.name);
         assert_eq!(t.bytes(), r[4].as_u64().unwrap(), "{}", t.name);
         total += t.bytes();
     }
     assert_eq!(total, fx["tensor_bytes"].as_u64().unwrap());
-    eprintln!("{key}: {} tensors, {} metadata keys match model_inspect.py", h.tensors.len(), h.metadata.len());
+    eprintln!(
+        "{key}: {} tensors, {} metadata keys match model_inspect.py",
+        h.tensors.len(),
+        h.metadata.len()
+    );
 }
 
 #[test]
@@ -128,8 +149,21 @@ fn parses_synthetic_gguf() {
     assert_eq!(h.version, 3);
     assert_eq!(h.architecture(), Some("qwen35moe"));
     assert_eq!(h.get("x.eps"), Some(&Value::F32(1e-6)));
-    assert_eq!(h.get("x.sections"), Some(&Value::Array(vec![Value::I32(11), Value::I32(11), Value::I32(10)])));
-    assert_eq!(h.get("x.long"), Some(&Value::LongArray { item_type: 8, len: 5000 }));
+    assert_eq!(
+        h.get("x.sections"),
+        Some(&Value::Array(vec![
+            Value::I32(11),
+            Value::I32(11),
+            Value::I32(10)
+        ]))
+    );
+    assert_eq!(
+        h.get("x.long"),
+        Some(&Value::LongArray {
+            item_type: 8,
+            len: 5000
+        })
+    );
     assert_eq!(h.header_bytes_read, header_end);
     assert_eq!(h.data_offset, header_end.div_ceil(64) * 64);
     assert_eq!(h.tensors[0].ty, GgmlType::Q4_K);
@@ -155,7 +189,14 @@ fn type_table_round_trips_names() {
 
 /// A GGUF image with one kv (`general.alignment` if given) and one tensor `t` of `shape`,
 /// type `ty`, data offset `offset`, followed by `data` bytes of tensor data.
-fn crafted(n_tensors: u64, align: Option<u64>, shape: &[u64], ty: u32, offset: u64, data: usize) -> Vec<u8> {
+fn crafted(
+    n_tensors: u64,
+    align: Option<u64>,
+    shape: &[u64],
+    ty: u32,
+    offset: u64,
+    data: usize,
+) -> Vec<u8> {
     let mut b = b"GGUF".to_vec();
     b.extend(3u32.to_le_bytes());
     b.extend(n_tensors.to_le_bytes());
@@ -266,11 +307,19 @@ fn zero_or_odd_alignment_is_an_error() {
 /// bounds check accepts.
 #[test]
 fn accessors_saturate_on_overflow() {
-    let t = TensorInfo { name: "x".into(), shape: vec![1 << 40, 1 << 40], ty: GgmlType(0), offset: 0 };
+    let t = TensorInfo {
+        name: "x".into(),
+        shape: vec![1 << 40, 1 << 40],
+        ty: GgmlType(0),
+        offset: 0,
+    };
     assert_eq!(t.checked_elements(), None);
     assert_eq!(t.elements(), u64::MAX);
     assert_eq!(t.bytes(), u64::MAX);
-    let h = Header { tensors: vec![t], ..Default::default() };
+    let h = Header {
+        tensors: vec![t],
+        ..Default::default()
+    };
     assert!(check_bounds(&h, u64::MAX).is_err());
 }
 

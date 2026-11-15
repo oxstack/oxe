@@ -24,7 +24,10 @@ pub const F16_NAN: u16 = 0x7e00;
 pub struct Lcg(pub u64);
 impl Lcg {
     pub fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) as u32
     }
     /// uniform in [-1, 1]
@@ -91,7 +94,15 @@ pub enum Kind {
 }
 
 impl Case {
-    pub fn new(n_ctx: usize, nl: usize, pos0: usize, kind: Kind, qs: f32, seed: u64, spikes: &[usize]) -> Case {
+    pub fn new(
+        n_ctx: usize,
+        nl: usize,
+        pos0: usize,
+        kind: Kind,
+        qs: f32,
+        seed: u64,
+        spikes: &[usize],
+    ) -> Case {
         assert!(nl >= 1 && nl <= MAX_LANES && pos0 + nl <= n_ctx);
         let last = pos0 + nl - 1;
         let cpk = (nl + 1) * GROUP;
@@ -127,14 +138,19 @@ impl Case {
                     for d in 0..HD {
                         for p in 0..n_ctx {
                             // beyond last: finite garbage (weights there are +0)
-                            vf[(h * HD + d) * v_stride + p] = if p > last { 1000.0 * r.f() } else { (p % HD == d) as u8 as f32 };
+                            vf[(h * HD + d) * v_stride + p] = if p > last {
+                                1000.0 * r.f()
+                            } else {
+                                (p % HD == d) as u8 as f32
+                            };
                         }
                     }
                 }
                 if kind == Kind::Spikes {
                     for h in 0..NKV {
                         for c in 0..cpk {
-                            qf[(h * cpk + c) * HD..(h * cpk + c + 1) * HD].copy_from_slice(&u[h * HD..(h + 1) * HD]);
+                            qf[(h * cpk + c) * HD..(h * cpk + c + 1) * HD]
+                                .copy_from_slice(&u[h * HD..(h + 1) * HD]);
                         }
                         let mut put = |p: usize, s: f32| {
                             if p <= last {
@@ -171,7 +187,18 @@ impl Case {
                 }
             }
         }
-        Case { n_ctx, nl, pos0, cpk, v_stride, k, k_local, vt: f16s(&vf), q16: f16s(&qf), gate }
+        Case {
+            n_ctx,
+            nl,
+            pos0,
+            cpk,
+            v_stride,
+            k,
+            k_local,
+            vt: f16s(&vf),
+            q16: f16s(&qf),
+            gate,
+        }
     }
 
     pub fn last(&self) -> usize {
@@ -210,7 +237,10 @@ pub fn ref_f64(c: &Case) -> Vec<f64> {
             let np = c.pos0 + ln + 1;
             for g in 0..GROUP {
                 let col = kvh * c.cpk + ln * GROUP + g;
-                let q: Vec<f64> = c.q16[col * HD..(col + 1) * HD].iter().map(|&h| h2f(h)).collect();
+                let q: Vec<f64> = c.q16[col * HD..(col + 1) * HD]
+                    .iter()
+                    .map(|&h| h2f(h))
+                    .collect();
                 let mut s = vec![0f64; np];
                 let mut m = f64::NEG_INFINITY;
                 for p in 0..np {
@@ -244,7 +274,9 @@ pub fn ref_f64(c: &Case) -> Vec<f64> {
 
 /// CPUs for a pool of n threads: the top of the allowed range (as the model unit tests do).
 pub fn cpus(n: usize) -> Vec<usize> {
-    let avail = std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1);
+    let avail = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1);
     (0..n).map(|i| avail - 1 - i % avail).collect()
 }
 
@@ -277,10 +309,20 @@ impl FusedRun {
     pub fn new(c: &Case, nth: usize) -> FusedRun {
         let lanes = c.cpk / GROUP;
         FusedRun {
-            part: Shared::new(vec![0f32; model::engine::fattn::part_len(c.n_ctx, NKV, GROUP, HD, lanes)]),
-            ml: Shared::new(vec![0f32; model::engine::fattn::ml_len(c.n_ctx, NKV, GROUP, lanes)]),
+            part: Shared::new(vec![
+                0f32;
+                model::engine::fattn::part_len(
+                    c.n_ctx, NKV, GROUP, HD, lanes
+                )
+            ]),
+            ml: Shared::new(vec![
+                0f32;
+                model::engine::fattn::ml_len(c.n_ctx, NKV, GROUP, lanes)
+            ]),
             out: Shared::new(vec![f32::NAN; c.out_len()]),
-            scr: (0..nth).map(|_| Shared::new(vec![FaScratch::default()])).collect(),
+            scr: (0..nth)
+                .map(|_| Shared::new(vec![FaScratch::default()]))
+                .collect(),
         }
     }
 
@@ -343,17 +385,24 @@ impl OldRun {
             akq: Shared::new(vec![0f32; NKV * c.cpk * acs]),
             ap16: Shared::new(vec![0u16; NKV * c.cpk * acs]),
             out: Shared::new(vec![f32::NAN; c.out_len()]),
-            scr: (0..nth).map(|_| Shared::new(vec![0f32; 2 * c.n_ctx + 32 * c.cpk])).collect(),
+            scr: (0..nth)
+                .map(|_| Shared::new(vec![0f32; 2 * c.n_ctx + 32 * c.cpk]))
+                .collect(),
         }
     }
 
     /// Replica of the engine's f16 `attn_core_tiled` steps [1] scores, barrier, [2] softmax rows,
     /// barrier, [3] V^T p + gate (the phase's own barrier follows in the engine).
     pub fn run(&self, pool: &sched::Pool, c: &Case) {
-        let (hd, group, nkv, nl, pos0, n_ctx, acs) = (HD, GROUP, NKV, c.nl, c.pos0, c.n_ctx, self.acs);
+        let (hd, group, nkv, nl, pos0, n_ctx, acs) =
+            (HD, GROUP, NKV, c.nl, c.pos0, c.n_ctx, self.acs);
         let scale = 1.0 / (hd as f32).sqrt();
         let last = c.last();
-        let (akq, ap16, out) = (self.akq.ptr() as usize, self.ap16.ptr() as usize, self.out.ptr() as usize);
+        let (akq, ap16, out) = (
+            self.akq.ptr() as usize,
+            self.ap16.ptr() as usize,
+            self.out.ptr() as usize,
+        );
         pool.run(|ctx| {
             let (tid, nth) = (ctx.tid, ctx.nthreads);
             let (akq, ap16, out) = (akq as *mut f32, ap16 as *mut u16, out as *mut f32);
@@ -373,12 +422,36 @@ impl OldRun {
                     let mut p = a;
                     while p < b.min(pos0) {
                         let pe = (p + RB).min(b.min(pos0));
-                        ffi::oxe_dot_f16_tile(hd as i32, c.k.as_ptr().add(kbase + p * hd), hd as i64, (pe - p) as i32, c.q16.as_ptr().add(c0 * hd), hd as i64, (nl * group) as i32, akq.add(c0 * acs + p), 1, acs as i64, std::ptr::null());
+                        ffi::oxe_dot_f16_tile(
+                            hd as i32,
+                            c.k.as_ptr().add(kbase + p * hd),
+                            hd as i64,
+                            (pe - p) as i32,
+                            c.q16.as_ptr().add(c0 * hd),
+                            hd as i64,
+                            (nl * group) as i32,
+                            akq.add(c0 * acs + p),
+                            1,
+                            acs as i64,
+                            std::ptr::null(),
+                        );
                         p = pe;
                     }
                     for p in a.max(pos0)..b {
                         let i = p - pos0;
-                        ffi::oxe_dot_f16_tile(hd as i32, c.k_local[i].as_ptr().add(kvh * hd), hd as i64, 1, c.q16.as_ptr().add((c0 + i * group) * hd), hd as i64, ((nl - i) * group) as i32, akq.add((c0 + i * group) * acs + p), 1, acs as i64, std::ptr::null());
+                        ffi::oxe_dot_f16_tile(
+                            hd as i32,
+                            c.k_local[i].as_ptr().add(kvh * hd),
+                            hd as i64,
+                            1,
+                            c.q16.as_ptr().add((c0 + i * group) * hd),
+                            hd as i64,
+                            ((nl - i) * group) as i32,
+                            akq.add((c0 + i * group) * acs + p),
+                            1,
+                            acs as i64,
+                            std::ptr::null(),
+                        );
                     }
                 }
                 ctx.barrier();
@@ -389,7 +462,16 @@ impl OldRun {
                     let (ln, h) = (r / NHEAD, r % NHEAD);
                     let pos = pos0 + ln;
                     let col = (h / group) * c.cpk + ln * group + h % group;
-                    ffi::oxe_attn_softmax_row_f16(akq.add(col * acs), pos as i32, padded_n_kv(pos, n_ctx) as i32, scale, scr, scr.add(n_ctx), ap16.add(col * acs), n32 as i32);
+                    ffi::oxe_attn_softmax_row_f16(
+                        akq.add(col * acs),
+                        pos as i32,
+                        padded_n_kv(pos, n_ctx) as i32,
+                        scale,
+                        scr,
+                        scr.add(n_ctx),
+                        ap16.add(col * acs),
+                        n32 as i32,
+                    );
                 }
                 ctx.barrier();
                 // [3]
@@ -408,12 +490,25 @@ impl OldRun {
                     let mut r = a;
                     while r < b {
                         let re = (r + DB).min(b);
-                        ffi::oxe_dot_f16_tile(n32 as i32, c.vt.as_ptr().add((kvh * hd + r) * c.v_stride), c.v_stride as i64, (re - r) as i32, ap16.add(c0 * acs), acs as i64, ncol as i32, tmp, ncol as i64, 1, nf.as_ptr());
+                        ffi::oxe_dot_f16_tile(
+                            n32 as i32,
+                            c.vt.as_ptr().add((kvh * hd + r) * c.v_stride),
+                            c.v_stride as i64,
+                            (re - r) as i32,
+                            ap16.add(c0 * acs),
+                            acs as i64,
+                            ncol as i32,
+                            tmp,
+                            ncol as i64,
+                            1,
+                            nf.as_ptr(),
+                        );
                         for col in 0..ncol {
                             let (ln, g) = (col / group, col % group);
                             let h = kvh * group + g;
                             for dd in r..re {
-                                *out.add((ln * NHEAD + h) * hd + dd) = *tmp.add((dd - r) * ncol + col) * c.gate[(c0 + col) * hd + dd];
+                                *out.add((ln * NHEAD + h) * hd + dd) =
+                                    *tmp.add((dd - r) * ncol + col) * c.gate[(c0 + col) * hd + dd];
                             }
                         }
                         r = re;

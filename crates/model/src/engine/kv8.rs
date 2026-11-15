@@ -44,7 +44,8 @@ impl KvType {
     pub fn from_env() -> Result<KvType, String> {
         match std::env::var("OXE_KV_TYPE") {
             Err(_) => Ok(KvType::F16),
-            Ok(v) => KvType::parse(&v).ok_or_else(|| format!("OXE_KV_TYPE={v}: expected f16, k8, v8 or kv8")),
+            Ok(v) => KvType::parse(&v)
+                .ok_or_else(|| format!("OXE_KV_TYPE={v}: expected f16, k8, v8 or kv8")),
         }
     }
     pub fn name(self) -> &'static str {
@@ -149,12 +150,26 @@ impl Kv8Scratch {
             part: vec![0.0; QK * nc],
             // the largest of the V . p kernels' scratches (reference, fast: floats; integer: bytes)
             // SAFETY: a pure size computation.
-            pscr: vec![0.0; (2 * PV_CHUNK * nc.div_ceil(4) * 4).max(unsafe { ffi::oxe_pv_q8_int_scratch(hd as i32, PV_CHUNK as i32, nc as i32) } as usize / 4 + 1)],
+            pscr: vec![
+                0.0;
+                (2 * PV_CHUNK * nc.div_ceil(4) * 4).max(
+                    unsafe { ffi::oxe_pv_q8_int_scratch(hd as i32, PV_CHUNK as i32, nc as i32) }
+                        as usize
+                        / 4
+                        + 1
+                )
+            ],
             pacc: vec![0.0; nc * hd],
         }
     }
     pub fn empty() -> Kv8Scratch {
-        Kv8Scratch { f32s: Vec::new(), f16s: Vec::new(), part: Vec::new(), pscr: Vec::new(), pacc: Vec::new() }
+        Kv8Scratch {
+            f32s: Vec::new(),
+            f16s: Vec::new(),
+            part: Vec::new(),
+            pscr: Vec::new(),
+            pacc: Vec::new(),
+        }
     }
 }
 
@@ -164,7 +179,9 @@ pub const PV_CHUNK: usize = 256;
 
 /// `OXE_KV8_FUSED=0`: the first-version reads (dequantise to f16 scratch + f16 tiles) for A/B.
 pub fn fused_from_env() -> bool {
-    std::env::var("OXE_KV8_FUSED").map(|v| v.trim() != "0").unwrap_or(true)
+    std::env::var("OXE_KV8_FUSED")
+        .map(|v| v.trim() != "0")
+        .unwrap_or(true)
 }
 
 /// Kernel of the fused V . p (`OXE_KV8_PV=fast|ref|i16|i8`, read at engine construction).
@@ -223,15 +240,67 @@ pub fn pv_mode_from_env() -> PvMode {
 /// vrows holds rows < p1 (`row_bytes(hd)` apart); probs has ncol columns `ps` apart readable on
 /// [p0, p1); out has ncol * hd floats; sc from `Kv8Scratch::new(hd, >= ncol)`.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn pv_chunk(mode: PvMode, vrows: *const u8, hd: usize, p0: usize, p1: usize, probs: *const u16, ps: usize, ncol: usize, out: *mut f32, sc: &mut Kv8Scratch) {
+pub unsafe fn pv_chunk(
+    mode: PvMode,
+    vrows: *const u8,
+    hd: usize,
+    p0: usize,
+    p1: usize,
+    probs: *const u16,
+    ps: usize,
+    ncol: usize,
+    out: *mut f32,
+    sc: &mut Kv8Scratch,
+) {
     debug_assert!(p1 - p0 <= PV_CHUNK && sc.pscr.len() >= 2 * (p1 - p0) * ncol.div_ceil(4) * 4);
-    let (hd_, rb, a, b, ps_, nc) = (hd as i32, row_bytes(hd) as i64, p0 as i32, p1 as i32, ps as i64, ncol as i32);
+    let (hd_, rb, a, b, ps_, nc) = (
+        hd as i32,
+        row_bytes(hd) as i64,
+        p0 as i32,
+        p1 as i32,
+        ps as i64,
+        ncol as i32,
+    );
     match mode {
-        PvMode::Fast => ffi::oxe_pv_q8_fast(hd_, vrows, rb, a, b, probs, ps_, nc, out, sc.pscr.as_mut_ptr()),
-        PvMode::Ref => ffi::oxe_pv_q8(hd_, vrows, rb, a, b, probs, ps_, nc, out, sc.pscr.as_mut_ptr()),
+        PvMode::Fast => ffi::oxe_pv_q8_fast(
+            hd_,
+            vrows,
+            rb,
+            a,
+            b,
+            probs,
+            ps_,
+            nc,
+            out,
+            sc.pscr.as_mut_ptr(),
+        ),
+        PvMode::Ref => ffi::oxe_pv_q8(
+            hd_,
+            vrows,
+            rb,
+            a,
+            b,
+            probs,
+            ps_,
+            nc,
+            out,
+            sc.pscr.as_mut_ptr(),
+        ),
         PvMode::I16 | PvMode::I8 => {
             debug_assert!(sc.pscr.len() * 4 >= ffi::oxe_pv_q8_int_scratch(hd_, b - a, nc) as usize);
-            ffi::oxe_pv_q8_int(hd_, vrows, rb, a, b, probs, ps_, nc, out, sc.pscr.as_mut_ptr() as *mut core::ffi::c_void, if mode == PvMode::I16 { 16 } else { 8 })
+            ffi::oxe_pv_q8_int(
+                hd_,
+                vrows,
+                rb,
+                a,
+                b,
+                probs,
+                ps_,
+                nc,
+                out,
+                sc.pscr.as_mut_ptr() as *mut core::ffi::c_void,
+                if mode == PvMode::I16 { 16 } else { 8 },
+            )
         }
     }
 }
@@ -244,7 +313,18 @@ pub unsafe fn pv_chunk(mode: PvMode, vrows: *const u8, hd: usize, p0: usize, p1:
 /// krows holds rows < p1; q has ncol columns of hd halves `qs` apart; out is writable at every
 /// (p - p0) + c * oy.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn scores_q8(krows: *const u8, hd: usize, p0: usize, p1: usize, q: *const u16, qs: usize, ncol: usize, out: *mut f32, oy: usize, sc: &mut Kv8Scratch) {
+pub unsafe fn scores_q8(
+    krows: *const u8,
+    hd: usize,
+    p0: usize,
+    p1: usize,
+    q: *const u16,
+    qs: usize,
+    ncol: usize,
+    out: *mut f32,
+    oy: usize,
+    sc: &mut Kv8Scratch,
+) {
     let rb = row_bytes(hd);
     let mut p = p0;
     while p < p1 {
@@ -253,7 +333,19 @@ pub unsafe fn scores_q8(krows: *const u8, hd: usize, p0: usize, p1: usize, q: *c
         // rows of one KV head are contiguous: one dequantisation run for the chunk
         let src = std::slice::from_raw_parts(krows.add(p * rb), (pe - p) * rb);
         deq_f16(src, n, &mut sc.f32s, &mut sc.f16s);
-        ffi::oxe_dot_f16_tile(hd as i32, sc.f16s.as_ptr(), hd as i64, (pe - p) as i32, q, qs as i64, ncol as i32, out.add(p - p0), 1, oy as i64, std::ptr::null());
+        ffi::oxe_dot_f16_tile(
+            hd as i32,
+            sc.f16s.as_ptr(),
+            hd as i64,
+            (pe - p) as i32,
+            q,
+            qs as i64,
+            ncol as i32,
+            out.add(p - p0),
+            1,
+            oy as i64,
+            std::ptr::null(),
+        );
         p = pe;
     }
 }
@@ -267,7 +359,18 @@ pub unsafe fn scores_q8(krows: *const u8, hd: usize, p0: usize, p1: usize, q: *c
 /// vrows holds rows < n (`row_bytes(hd)` apart); probs has ncol columns `ps` apart readable on
 /// [0, n); out has (d1 - d0) * ncol floats.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn outputs_q8(vrows: *const u8, hd: usize, d0: usize, d1: usize, n: usize, probs: *const u16, ps: usize, ncol: usize, out: *mut f32, sc: &mut Kv8Scratch) {
+pub unsafe fn outputs_q8(
+    vrows: *const u8,
+    hd: usize,
+    d0: usize,
+    d1: usize,
+    n: usize,
+    probs: *const u16,
+    ps: usize,
+    ncol: usize,
+    out: *mut f32,
+    sc: &mut Kv8Scratch,
+) {
     let rb = row_bytes(hd);
     if d1 <= d0 {
         return;
@@ -291,7 +394,10 @@ pub unsafe fn outputs_q8(vrows: *const u8, hd: usize, d0: usize, d1: usize, n: u
                 }
             }
             for j in a - bi * QK..b - bi * QK {
-                ops::fp32_to_fp16(&sc.f32s[j * V_POS..j * V_POS + len], &mut sc.f16s[j * V_POS..j * V_POS + len]);
+                ops::fp32_to_fp16(
+                    &sc.f32s[j * V_POS..j * V_POS + len],
+                    &mut sc.f16s[j * V_POS..j * V_POS + len],
+                );
             }
             ffi::oxe_dot_f16_tile(
                 len as i32,

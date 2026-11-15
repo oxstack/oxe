@@ -29,14 +29,22 @@ pub(crate) fn synthetic_tokenizer() -> tokenizer::Tokenizer {
     md.insert("tokenizer.ggml.token_type".to_string(), Meta::Array(types));
     md.insert("tokenizer.ggml.merges".to_string(), Meta::Array(vec![]));
     md.insert("tokenizer.ggml.eos_token_id".to_string(), Meta::Int(257));
-    md.insert("tokenizer.chat_template".to_string(), Meta::Str(TEMPLATE.into()));
+    md.insert(
+        "tokenizer.chat_template".to_string(),
+        Meta::Str(TEMPLATE.into()),
+    );
     tokenizer::Tokenizer::from_metadata(&md).unwrap()
 }
 
 /// A server state whose stub engine answers `reply` (then EOS) to every request.
 fn synthetic_state(reply: &str, n_ctx: usize, stall: Option<Duration>) -> Arc<State<StubEngine>> {
     let tok = synthetic_tokenizer();
-    let eng = StubEngine::new(n_ctx, tok.n_vocab(), tok.eos.unwrap(), tok.encode(reply, false, false));
+    let eng = StubEngine::new(
+        n_ctx,
+        tok.n_vocab(),
+        tok.eos.unwrap(),
+        tok.encode(reply, false, false),
+    );
     let cfg = Config {
         model_name: "synthetic".into(),
         model_path: "/m.gguf".into(),
@@ -63,10 +71,20 @@ fn chat_body(extra: Json) -> Json {
 
 async fn status_of(st: &Arc<State<StubEngine>>, path: &str, body: Json) -> u16 {
     let b = serde_json::to_vec(&body).unwrap();
-    match tokio::time::timeout(Duration::from_secs(30), handle(st.clone(), "POST", path, "", &b)).await.expect("request hung") {
+    match tokio::time::timeout(
+        Duration::from_secs(30),
+        handle(st.clone(), "POST", path, "", &b),
+    )
+    .await
+    .expect("request hung")
+    {
         Reply::Json(c, _) => c,
         Reply::Stream(mut rx) => {
-            while tokio::time::timeout(Duration::from_secs(30), rx.recv()).await.expect("stream hung").is_some() {}
+            while tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .expect("stream hung")
+                .is_some()
+            {}
             200
         }
     }
@@ -82,9 +100,17 @@ async fn min_p_above_one_is_a_400_not_an_abort() {
     let st = synthetic_state("ok", 4096, None);
     for stream in [false, true] {
         let b = chat_body(json!({"temperature": 1, "min_p": 2, "stream": stream}));
-        assert_eq!(status_of(&st, "/v1/chat/completions", b).await, 400, "chat stream={stream}");
+        assert_eq!(
+            status_of(&st, "/v1/chat/completions", b).await,
+            400,
+            "chat stream={stream}"
+        );
         let b = json!({"prompt": "hi", "temperature": 1, "min_p": 2, "stream": stream});
-        assert_eq!(status_of(&st, "/completion", b).await, 400, "completion stream={stream}");
+        assert_eq!(
+            status_of(&st, "/completion", b).await,
+            400,
+            "completion stream={stream}"
+        );
     }
     // the server still answers, and in-range sampling works
     let b = chat_body(json!({"temperature": 1, "min_p": 0.1, "top_p": 0.9, "top_k": 5}));
@@ -111,7 +137,10 @@ fn sampling_ranges_are_checked() {
         json!({"n_probs": 1_000_000}),
     ];
     for b in bad {
-        assert!(crate::api::gen_params(&b, true).is_err(), "{b} must be refused");
+        assert!(
+            crate::api::gen_params(&b, true).is_err(),
+            "{b} must be refused"
+        );
     }
     let good = [
         json!({}),
@@ -125,7 +154,10 @@ fn sampling_ranges_are_checked() {
         json!({"logprobs": true, "top_logprobs": 20}),
     ];
     for b in good {
-        assert!(crate::api::gen_params(&b, true).is_ok(), "{b} must be accepted");
+        assert!(
+            crate::api::gen_params(&b, true).is_ok(),
+            "{b} must be accepted"
+        );
     }
 }
 
@@ -133,10 +165,26 @@ fn sampling_ranges_are_checked() {
 #[tokio::test(flavor = "multi_thread")]
 async fn non_canonical_paths_are_404() {
     let st = synthetic_state("ok", 4096, None);
-    for p in ["/v1/chat/completions/", "//v1/chat/completions", "/completion/"] {
-        assert_eq!(status_of(&st, p, chat_body(json!({"n_predict": 1}))).await, 404, "{p}");
+    for p in [
+        "/v1/chat/completions/",
+        "//v1/chat/completions",
+        "/completion/",
+    ] {
+        assert_eq!(
+            status_of(&st, p, chat_body(json!({"n_predict": 1}))).await,
+            404,
+            "{p}"
+        );
     }
-    assert_eq!(status_of(&st, "/v1/chat/completions", chat_body(json!({"n_predict": 1}))).await, 200);
+    assert_eq!(
+        status_of(
+            &st,
+            "/v1/chat/completions",
+            chat_body(json!({"n_predict": 1}))
+        )
+        .await,
+        200
+    );
 }
 
 /// Token ids above u32 used to wrap (`as`) onto valid ids and pass the vocabulary check.
@@ -144,9 +192,18 @@ async fn non_canonical_paths_are_404() {
 async fn token_ids_above_u32_are_refused() {
     let st = synthetic_state("ok", 4096, None);
     let wrapped = (1u64 << 32) + 97; // == 'a' after `as u32`
-    assert_eq!(status_of(&st, "/completion", json!({"prompt": [wrapped]})).await, 400);
-    assert_eq!(status_of(&st, "/detokenize", json!({"tokens": [wrapped]})).await, 400);
-    assert_eq!(status_of(&st, "/completion", json!({"prompt": [97], "n_predict": 2})).await, 200);
+    assert_eq!(
+        status_of(&st, "/completion", json!({"prompt": [wrapped]})).await,
+        400
+    );
+    assert_eq!(
+        status_of(&st, "/detokenize", json!({"tokens": [wrapped]})).await,
+        400
+    );
+    assert_eq!(
+        status_of(&st, "/completion", json!({"prompt": [97], "n_predict": 2})).await,
+        200
+    );
 }
 
 /// Idle re-prefill on a history whose length is an exact multiple of the ubatch sliced
@@ -175,8 +232,16 @@ async fn stalled_stream_client_does_not_block_the_worker() {
     };
     let t0 = Instant::now();
     let b = chat_body(json!({"temperature": 0, "n_predict": 4}));
-    let second = tokio::time::timeout(Duration::from_secs(20), status_of(&st, "/v1/chat/completions", b)).await;
-    assert_eq!(second.ok(), Some(200), "second request blocked behind a stalled stream");
+    let second = tokio::time::timeout(
+        Duration::from_secs(20),
+        status_of(&st, "/v1/chat/completions", b),
+    )
+    .await;
+    assert_eq!(
+        second.ok(),
+        Some(200),
+        "second request blocked behind a stalled stream"
+    );
     assert!(t0.elapsed() < Duration::from_secs(10));
     drop(rx);
 }
@@ -187,12 +252,21 @@ fn send_frame_gives_up_on_a_full_channel() {
     let stall = Duration::from_millis(100);
     assert!(crate::service::send_frame(&tx, "a".into(), stall));
     let t0 = Instant::now();
-    assert!(!crate::service::send_frame(&tx, "b".into(), stall), "full channel must time out");
+    assert!(
+        !crate::service::send_frame(&tx, "b".into(), stall),
+        "full channel must time out"
+    );
     assert!(t0.elapsed() >= stall && t0.elapsed() < Duration::from_secs(5));
     assert_eq!(rx.try_recv().ok().as_deref(), Some("a"));
-    assert!(crate::service::send_frame(&tx, "c".into(), stall), "room again");
+    assert!(
+        crate::service::send_frame(&tx, "c".into(), stall),
+        "room again"
+    );
     drop(rx);
-    assert!(!crate::service::send_frame(&tx, "d".into(), stall), "closed channel");
+    assert!(
+        !crate::service::send_frame(&tx, "d".into(), stall),
+        "closed channel"
+    );
 }
 
 // ------------------------------------------------------------------------------------- B1
@@ -206,7 +280,11 @@ fn raw(port: u16, req: &str) -> (u16, String, String) {
     let _ = s.read_to_end(&mut out);
     let text = String::from_utf8_lossy(&out).into_owned();
     let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-    let status = head.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
     (status, head.to_ascii_lowercase(), body.to_string())
 }
 
@@ -230,9 +308,18 @@ fn post(port: u16, path: &str, headers: &[&str], body: &Json) -> (u16, String, S
 }
 
 /// Start the HTTP front end on an ephemeral loopback port (default access rules, or `access`).
-pub(crate) fn start(st: Arc<State<StubEngine>>, access: Option<Access>) -> (u16, tokio::runtime::Runtime) {
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let l = rt.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+pub(crate) fn start(
+    st: Arc<State<StubEngine>>,
+    access: Option<Access>,
+) -> (u16, tokio::runtime::Runtime) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let l = rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
     let port = l.local_addr().unwrap().port();
     match access {
         None => rt.spawn(http::serve(st, l)),
@@ -253,11 +340,18 @@ fn foreign_host_and_cross_site_origin_are_refused_without_cors() {
     let (c, h, _) = get(p, "/props", &[&host]);
     assert_eq!(c, 200);
     assert!(!h.contains("access-control-"), "no CORS headers: {h}");
-    for hh in [format!("Host: localhost:{p}"), format!("Host: [::1]:{p}"), format!("Host: LOCALHOST:{p}")] {
+    for hh in [
+        format!("Host: localhost:{p}"),
+        format!("Host: [::1]:{p}"),
+        format!("Host: LOCALHOST:{p}"),
+    ] {
         assert_eq!(get(p, "/health", &[&hh]).0, 200, "{hh}");
     }
     // a local page of the controller (another loopback port) is same-site
-    assert_eq!(get(p, "/props", &[&host, "Origin: http://127.0.0.1:8092"]).0, 200);
+    assert_eq!(
+        get(p, "/props", &[&host, "Origin: http://127.0.0.1:8092"]).0,
+        200
+    );
     for bad in [
         vec!["Host: x.example".to_string()],
         vec![format!("Host: x.example:{p}")],
@@ -275,14 +369,22 @@ fn foreign_host_and_cross_site_origin_are_refused_without_cors() {
         assert!(!h.contains("access-control-"), "{bad:?}: {h}");
     }
     // a cross-site simple POST (no preflight) never reaches the engine
-    let (c, h, _) = post(p, "/v1/chat/completions", &[&host, "Origin: https://x.example"], &chat_body(json!({"n_predict": 1})));
+    let (c, h, _) = post(
+        p,
+        "/v1/chat/completions",
+        &[&host, "Origin: https://x.example"],
+        &chat_body(json!({"n_predict": 1})),
+    );
     assert_eq!(c, 403);
     assert!(!h.contains("access-control-"));
     // a preflight gets no CORS grant
     let (c, h, _) = raw(p, &format!("OPTIONS /v1/chat/completions HTTP/1.1\r\n{host}\r\nOrigin: https://x.example\r\nAccess-Control-Request-Method: POST\r\nConnection: close\r\n\r\n"));
     assert_eq!(c, 403);
     assert!(!h.contains("access-control-"));
-    let (c, h, _) = raw(p, &format!("OPTIONS /props HTTP/1.1\r\n{host}\r\nConnection: close\r\n\r\n"));
+    let (c, h, _) = raw(
+        p,
+        &format!("OPTIONS /props HTTP/1.1\r\n{host}\r\nConnection: close\r\n\r\n"),
+    );
     assert_eq!(c, 204);
     assert!(!h.contains("access-control-"));
 }
@@ -290,35 +392,88 @@ fn foreign_host_and_cross_site_origin_are_refused_without_cors() {
 #[test]
 fn api_key_guards_every_route() {
     let keys = http::parse_key_file("\n  test-key-not-secret-0123456789  \nsecond-key\n").unwrap();
-    let (p, _rt) = start(synthetic_state("ok", 4096, None), Some(Access { keys, ..Default::default() }));
+    let (p, _rt) = start(
+        synthetic_state("ok", 4096, None),
+        Some(Access {
+            keys,
+            ..Default::default()
+        }),
+    );
     let host = format!("Host: 127.0.0.1:{p}");
     // the controller sends the key on its health polls too: no unauthenticated route at all
     assert_eq!(get(p, "/health", &[&host]).0, 401);
     assert_eq!(get(p, "/v1/health", &[&host]).0, 401);
-    assert_eq!(get(p, "/health", &[&host, "Authorization: Bearer test-key-not-secret-0123456789"]).0, 200);
+    assert_eq!(
+        get(
+            p,
+            "/health",
+            &[
+                &host,
+                "Authorization: Bearer test-key-not-secret-0123456789"
+            ]
+        )
+        .0,
+        200
+    );
     let (c, h, body) = get(p, "/props", &[&host]);
     assert_eq!(c, 401);
     assert!(h.contains("www-authenticate: bearer"), "{h}");
     assert!(body.contains("Invalid API Key"));
-    for bad in ["Authorization: Bearer wrong", "Authorization: Bearer test-key-not-secret-012345678", "Authorization: Basic czNjcmV0", "X-Api-Key: nope", "Authorization: Bearer "] {
+    for bad in [
+        "Authorization: Bearer wrong",
+        "Authorization: Bearer test-key-not-secret-012345678",
+        "Authorization: Basic czNjcmV0",
+        "X-Api-Key: nope",
+        "Authorization: Bearer ",
+    ] {
         assert_eq!(get(p, "/props", &[&host, bad]).0, 401, "{bad}");
         assert_eq!(get(p, "/v1/models", &[&host, bad]).0, 401, "{bad}");
     }
-    for good in ["Authorization: Bearer test-key-not-secret-0123456789", "authorization: bearer test-key-not-secret-0123456789", format!("X-Api-Key: {}", ["second", "key"].join("-")).as_str()] {
+    for good in [
+        "Authorization: Bearer test-key-not-secret-0123456789",
+        "authorization: bearer test-key-not-secret-0123456789",
+        format!("X-Api-Key: {}", ["second", "key"].join("-")).as_str(),
+    ] {
         assert_eq!(get(p, "/props", &[&host, good]).0, 200, "{good}");
     }
     let body = chat_body(json!({"n_predict": 2, "temperature": 0}));
     assert_eq!(post(p, "/v1/chat/completions", &[&host], &body).0, 401);
-    assert_eq!(post(p, "/v1/chat/completions", &[&host, "Authorization: Bearer test-key-not-secret-0123456789"], &body).0, 200);
+    assert_eq!(
+        post(
+            p,
+            "/v1/chat/completions",
+            &[
+                &host,
+                "Authorization: Bearer test-key-not-secret-0123456789"
+            ],
+            &body
+        )
+        .0,
+        200
+    );
     // the key does not open the door for a foreign Host
-    assert_eq!(get(p, "/props", &["Host: x.example", "Authorization: Bearer test-key-not-secret-0123456789"]).0, 403);
+    assert_eq!(
+        get(
+            p,
+            "/props",
+            &[
+                "Host: x.example",
+                "Authorization: Bearer test-key-not-secret-0123456789"
+            ]
+        )
+        .0,
+        403
+    );
 }
 
 #[test]
 fn key_file_and_compare_rules() {
     assert!(http::parse_key_file("").is_err());
     assert!(http::parse_key_file(" \n\t\n").is_err());
-    assert_eq!(http::parse_key_file("k1\r\nk2").unwrap(), vec![b"k1".to_vec(), b"k2".to_vec()]);
+    assert_eq!(
+        http::parse_key_file("k1\r\nk2").unwrap(),
+        vec![b"k1".to_vec(), b"k2".to_vec()]
+    );
     assert!(http::ct_eq(b"abc", b"abc"));
     assert!(!http::ct_eq(b"abc", b"abd"));
     assert!(!http::ct_eq(b"abc", b"abcd"));
@@ -328,11 +483,29 @@ fn key_file_and_compare_rules() {
 
 #[test]
 fn non_loopback_bind_needs_a_key() {
-    for h in ["127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost", "LocalHost", " 127.0.0.1 "] {
+    for h in [
+        "127.0.0.1",
+        "127.1.2.3",
+        "::1",
+        "[::1]",
+        "localhost",
+        "LocalHost",
+        " 127.0.0.1 ",
+    ] {
         assert!(http::bind_is_loopback(h), "{h}");
         assert!(http::check_bind(h, false).is_ok(), "{h}");
     }
-    for h in ["0.0.0.0", "::", "[::]", "192.0.2.20", "198.51.100.5", "fe80::1", "myhost.lan", "", "localhost.evil.example"] {
+    for h in [
+        "0.0.0.0",
+        "::",
+        "[::]",
+        "192.0.2.20",
+        "198.51.100.5",
+        "fe80::1",
+        "myhost.lan",
+        "",
+        "localhost.evil.example",
+    ] {
         assert!(!http::bind_is_loopback(h), "{h}");
         let e = http::check_bind(h, false).unwrap_err();
         assert!(e.contains("--api-key-file"), "{e}");
@@ -343,7 +516,11 @@ fn non_loopback_bind_needs_a_key() {
 #[test]
 fn access_rules_unit() {
     use hyper::header::{HeaderMap, HeaderValue};
-    let a = Access { port: 8093, extra_hosts: vec!["192.0.2.5".into()], keys: vec![] };
+    let a = Access {
+        port: 8093,
+        extra_hosts: vec!["192.0.2.5".into()],
+        keys: vec![],
+    };
     let check = |pairs: &[(&'static str, &str)]| {
         let mut h = HeaderMap::new();
         for (k, v) in pairs {
@@ -355,7 +532,10 @@ fn access_rules_unit() {
     assert!(check(&[("host", "127.0.0.1:8093")]).is_ok());
     assert!(check(&[("host", "[::1]:8093")]).is_ok());
     assert!(check(&[("host", "192.0.2.5:8093")]).is_ok());
-    assert!(check(&[("host", "127.0.0.1")]).is_err(), "port-less only on port 80");
+    assert!(
+        check(&[("host", "127.0.0.1")]).is_err(),
+        "port-less only on port 80"
+    );
     assert!(check(&[("host", "127.0.0.1:8093"), ("host", "x.example:8093")]).is_err());
     assert!(check(&[("host", "[::1]x:8093")]).is_err());
     assert!(check(&[("origin", "http://localhost:3000")]).is_ok());
@@ -364,7 +544,10 @@ fn access_rules_unit() {
     assert!(check(&[("origin", "file://")]).is_err());
     assert!(check(&[("sec-fetch-site", "same-origin")]).is_ok());
     assert!(check(&[("sec-fetch-site", "Cross-Site")]).is_err());
-    let a80 = Access { port: 80, ..Default::default() };
+    let a80 = Access {
+        port: 80,
+        ..Default::default()
+    };
     let mut h = HeaderMap::new();
     h.insert("host", HeaderValue::from_static("localhost"));
     assert!(a80.check("GET", "/", &h).is_ok());

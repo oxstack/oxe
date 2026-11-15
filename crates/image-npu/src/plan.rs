@@ -104,7 +104,13 @@ impl Order {
         self.segment += 1;
     }
 
-    fn lin(&mut self, name: &str, in_dim: usize, out_dim: usize, resolve: &mut Resolve) -> Result<(), String> {
+    fn lin(
+        &mut self,
+        name: &str,
+        in_dim: usize,
+        out_dim: usize,
+        resolve: &mut Resolve,
+    ) -> Result<(), String> {
         let (offset, bytes) = resolve(name, in_dim, out_dim)?;
         self.out.push(Linear {
             name: name.to_string(),
@@ -126,9 +132,18 @@ pub fn q8_bytes(in_dim: usize, out_dim: usize) -> u64 {
 
 /// Execution order of the block linears: double block = qkv pair | attention | proj pair,
 /// mlp.0 pair, mlp.2 pair; single block = linear1 | attention | linear2.
-fn sequence(n_double: usize, n_single: usize, d: Dims, resolve: &mut Resolve) -> Result<Vec<Linear>, String> {
+fn sequence(
+    n_double: usize,
+    n_single: usize,
+    d: Dims,
+    resolve: &mut Resolve,
+) -> Result<Vec<Linear>, String> {
     let (h, m) = (d.hidden, d.mlp);
-    let mut o = Order { out: Vec::new(), segment: 0, stage: 0 };
+    let mut o = Order {
+        out: Vec::new(),
+        segment: 0,
+        stage: 0,
+    };
     for i in 0..n_double {
         let p = format!("double_blocks.{i}.");
         o.next_stage();
@@ -175,19 +190,31 @@ pub fn klein_linear_order(rows: &[TensorRow]) -> Result<Vec<Linear>, String> {
     d.check();
     let by_name: HashMap<&str, &TensorRow> = rows.iter().map(|r| (r.name.as_str(), r)).collect();
     let mut resolve = |name: &str, i: usize, o: usize| -> Result<(u64, u64), String> {
-        let row = by_name.get(name).copied().ok_or_else(|| format!("tensor {name} missing from table"))?;
+        let row = by_name
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("tensor {name} missing from table"))?;
         if row.dtype != "Q8_0" {
-            return Err(format!("tensor {name} has type {}, expected Q8_0", row.dtype));
+            return Err(format!(
+                "tensor {name} has type {}, expected Q8_0",
+                row.dtype
+            ));
         }
         if row.dims != [i as u64, o as u64] {
-            return Err(format!("tensor {name} dims {:?}, expected [{i}, {o}]", row.dims));
+            return Err(format!(
+                "tensor {name} dims {:?}, expected [{i}, {o}]",
+                row.dims
+            ));
         }
         if i as u64 % Q8_0_BLOCK_ELEMS != 0 {
             return Err(format!("tensor {name}: in_dim {i} not a multiple of 32"));
         }
         let expect = q8_bytes(i, o);
         if row.bytes != expect {
-            return Err(format!("tensor {name}: {} bytes, Q8_0 arithmetic gives {expect}", row.bytes));
+            return Err(format!(
+                "tensor {name}: {} bytes, Q8_0 arithmetic gives {expect}",
+                row.bytes
+            ));
         }
         Ok((row.offset, row.bytes))
     };
@@ -196,9 +223,20 @@ pub fn klein_linear_order(rows: &[TensorRow]) -> Result<Vec<Linear>, String> {
 
 /// The same execution order for any block shapes, bytes from Q8_0 arithmetic (no table). Used by
 /// the tiny-model tests. `in` widths must be multiples of 32.
-pub fn block_linear_order(n_double: usize, n_single: usize, hidden: usize, mlp: usize) -> Vec<Linear> {
-    let d = Dims { hidden, heads: 1, head_dim: hidden, mlp };
-    let mut resolve = |_: &str, i: usize, o: usize| -> Result<(u64, u64), String> { Ok((0, q8_bytes(i, o))) };
+pub fn block_linear_order(
+    n_double: usize,
+    n_single: usize,
+    hidden: usize,
+    mlp: usize,
+) -> Vec<Linear> {
+    let d = Dims {
+        hidden,
+        heads: 1,
+        head_dim: hidden,
+        mlp,
+    };
+    let mut resolve =
+        |_: &str, i: usize, o: usize| -> Result<(u64, u64), String> { Ok((0, q8_bytes(i, o))) };
     sequence(n_double, n_single, d, &mut resolve).expect("arithmetic order cannot fail")
 }
 
@@ -310,7 +348,11 @@ fn io_bytes(l: &Linear, cfg: &PlanConfig) -> u64 {
 fn act_bytes<'a, I: IntoIterator<Item = &'a Linear>>(members: I, cfg: &PlanConfig) -> u64 {
     match cfg.act_reserve {
         ActReserve::Sum => members.into_iter().map(|l| io_bytes(l, cfg)).sum(),
-        ActReserve::PeakPerLinear => members.into_iter().map(|l| io_bytes(l, cfg)).max().unwrap_or(0),
+        ActReserve::PeakPerLinear => members
+            .into_iter()
+            .map(|l| io_bytes(l, cfg))
+            .max()
+            .unwrap_or(0),
     }
 }
 
@@ -435,7 +477,13 @@ pub struct ResidencyConfig {
 pub fn assign_slots(n_windows: usize, sessions: usize) -> Vec<usize> {
     assert!(sessions >= 1, "at least one session");
     (0..n_windows)
-        .map(|w| if sessions >= n_windows || w + 1 < sessions { w } else { sessions - 1 })
+        .map(|w| {
+            if sessions >= n_windows || w + 1 < sessions {
+                w
+            } else {
+                sessions - 1
+            }
+        })
         .collect()
 }
 
@@ -471,7 +519,11 @@ fn load_ms(bytes: u64, cfg: &PlanConfig) -> f64 {
     cfg.remap_fixed_ms + bytes as f64 / (cfg.load_gbps * 1e9) * 1e3
 }
 
-pub fn estimate_residency(windows: &[Window], cfg: &PlanConfig, sessions: usize) -> ResidencyEstimate {
+pub fn estimate_residency(
+    windows: &[Window],
+    cfg: &PlanConfig,
+    sessions: usize,
+) -> ResidencyEstimate {
     let n = windows.len();
     let slots = assign_slots(n, sessions);
     let mut reloads = 0usize;
@@ -514,7 +566,13 @@ pub fn residency_report(windows: &[Window], cfg: &PlanConfig, sessions: &[usize]
     let _ = writeln!(
         s,
         "{:>8} {:>7} {:>8} {:>12} {:>14} {:>12} {:>16}",
-        "sessions", "pinned", "reloads", "reload_MiB", "reload_ms/step", "cold_ms", "pinned_chg_MiB"
+        "sessions",
+        "pinned",
+        "reloads",
+        "reload_MiB",
+        "reload_ms/step",
+        "cold_ms",
+        "pinned_chg_MiB"
     );
     for &k in sessions {
         let e = estimate_residency(windows, cfg, k);
@@ -629,7 +687,10 @@ fn mib(b: u64) -> f64 {
 pub fn plan_report(windows: &[Window], cfg: &PlanConfig) -> String {
     let mut s = String::new();
     let e = estimate_step(windows, cfg);
-    let _ = writeln!(s, "klein linear window plan (planning arithmetic; timings are ESTIMATES)");
+    let _ = writeln!(
+        s,
+        "klein linear window plan (planning arithmetic; timings are ESTIMATES)"
+    );
     let _ = writeln!(
         s,
         "config: tokens={} budget={} B ({:.2} MiB) chunk={} MiB cap={} MiB act={}B/elem reserve={:?} overhead={} MiB floor={} ms tops={} cpu_attn={} ms remap_fixed={} ms load_gbps={} act_gbps={}",
@@ -651,7 +712,17 @@ pub fn plan_report(windows: &[Window], cfg: &PlanConfig) -> String {
     let _ = writeln!(
         s,
         "{:>3} {:>3} {:<34} {:<34} {:>10} {:>9} {:>9} {:>4} {:>4} {:>4} {:>9}",
-        "win", "n", "first", "last", "weight_MiB", "act_MiB", "resv_MiB", "buf", "pub", "pubS", "disp_ms"
+        "win",
+        "n",
+        "first",
+        "last",
+        "weight_MiB",
+        "act_MiB",
+        "resv_MiB",
+        "buf",
+        "pub",
+        "pubS",
+        "disp_ms"
     );
     for w in windows {
         let first = &w.members[0];
@@ -677,7 +748,10 @@ pub fn plan_report(windows: &[Window], cfg: &PlanConfig) -> String {
             let _ = writeln!(s, "WARNING window {}: {}", w.index, warn);
         }
     }
-    let _ = writeln!(s, "members (rel offset = data-section offset, bytes, segment, stage):");
+    let _ = writeln!(
+        s,
+        "members (rel offset = data-section offset, bytes, segment, stage):"
+    );
     for w in windows {
         for l in &w.members {
             let _ = writeln!(
@@ -695,13 +769,22 @@ pub fn plan_report(windows: &[Window], cfg: &PlanConfig) -> String {
     }
     let _ = writeln!(s, "ESTIMATE per denoising step:");
     let _ = writeln!(s, "  windows (loads per step)      {}", e.windows);
-    let _ = writeln!(s, "  weight bytes loaded per step  {} ({:.2} MiB)", e.weight_bytes_loaded, mib(e.weight_bytes_loaded));
+    let _ = writeln!(
+        s,
+        "  weight bytes loaded per step  {} ({:.2} MiB)",
+        e.weight_bytes_loaded,
+        mib(e.weight_bytes_loaded)
+    );
     let _ = writeln!(s, "  publishes (attention rule)    {}", e.publishes);
     let _ = writeln!(s, "  publishes (per stage, bound)  {}", e.stage_publishes);
     let _ = writeln!(s, "  compute_ms   = {:.1}", e.compute_ms);
     let _ = writeln!(s, "  dispatch_ms  = {:.1}", e.dispatch_ms);
     let _ = writeln!(s, "  remap_ms     = {:.1}", e.remap_ms);
-    let _ = writeln!(s, "  npu_ms       = {:.1}  (compute + dispatch + remap)", e.npu_ms);
+    let _ = writeln!(
+        s,
+        "  npu_ms       = {:.1}  (compute + dispatch + remap)",
+        e.npu_ms
+    );
     let _ = writeln!(s, "  npu_ms, per-stage publishes = {:.1}", e.stage_npu_ms);
     let _ = writeln!(s, "  cpu_attn_ms  = {:.1}  (parameter)", e.cpu_attn_ms);
     let _ = writeln!(s, "  serial_ms    = {:.1}", e.serial_ms);
@@ -803,7 +886,10 @@ mod tests {
         assert_eq!(rows.len(), data_lines);
         assert_eq!(rows[0].name, "double_blocks.0.img_attn.norm.key_norm.scale");
         assert_eq!(rows[0].dims, vec![128]);
-        let qkv = rows.iter().find(|r| r.name == "double_blocks.0.img_attn.qkv.weight").unwrap();
+        let qkv = rows
+            .iter()
+            .find(|r| r.name == "double_blocks.0.img_attn.qkv.weight")
+            .unwrap();
         assert_eq!(qkv.dims, vec![3072, 9216]);
         assert_eq!(qkv.bytes, 30_081_024);
     }
@@ -811,7 +897,11 @@ mod tests {
     #[test]
     fn klein_order_covers_every_q8_linear_once() {
         let (rows, order) = klein();
-        let q8: Vec<&str> = rows.iter().filter(|r| r.dtype == "Q8_0").map(|r| r.name.as_str()).collect();
+        let q8: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.dtype == "Q8_0")
+            .map(|r| r.name.as_str())
+            .collect();
         assert_eq!(q8.len(), 80, "table has 80 Q8_0 tensors, all block linears");
         assert_eq!(order.len(), 80);
         let mut names: Vec<&str> = order.iter().map(|l| l.name.as_str()).collect();
@@ -852,7 +942,11 @@ mod tests {
                 let want: Vec<&str> = order.iter().map(|l| l.name.as_str()).collect();
                 assert_eq!(flat, want, "windows concatenate to the execution order");
                 for w in &a {
-                    assert!(w.weight_bytes + w.reserved_bytes <= cfg.budget_bytes, "window {} over budget", w.index);
+                    assert!(
+                        w.weight_bytes + w.reserved_bytes <= cfg.budget_bytes,
+                        "window {} over budget",
+                        w.index
+                    );
                     assert!(w.members.len() >= 1);
                 }
             }
@@ -874,7 +968,10 @@ mod tests {
         cfg.budget_bytes = 2 * GIB;
         let w = plan_windows(&linears, &cfg).unwrap();
         assert_eq!(w.len(), 1);
-        assert!(w[0].warnings.iter().any(|s| s.contains("single-tensor cap")));
+        assert!(w[0]
+            .warnings
+            .iter()
+            .any(|s| s.contains("single-tensor cap")));
     }
 
     #[test]

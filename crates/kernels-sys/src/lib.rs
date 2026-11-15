@@ -26,7 +26,11 @@ pub struct BlockQ8K {
 
 impl Default for BlockQ8K {
     fn default() -> Self {
-        BlockQ8K { d: 0.0, qs: [0; QK_K], bsums: [0; QK_K / 16] }
+        BlockQ8K {
+            d: 0.0,
+            qs: [0; QK_K],
+            bsums: [0; QK_K / 16],
+        }
     }
 }
 
@@ -512,7 +516,12 @@ impl QType {
 /// expect (exactly ggml's `repack_<t>_to_<t>_<n>_bl` loop).
 pub fn repack(ty: QType, src: &[u8], dst: &mut [u8], nrows: usize, k: usize) {
     let bytes = nrows * ty.row_bytes(k);
-    assert!(nrows % ty.nr() == 0 && k % ty.qk() == 0, "repack needs nrows % {} == 0 and k % {} == 0", ty.nr(), ty.qk());
+    assert!(
+        nrows % ty.nr() == 0 && k % ty.qk() == 0,
+        "repack needs nrows % {} == 0 and k % {} == 0",
+        ty.nr(),
+        ty.qk()
+    );
     assert!(src.len() >= bytes && dst.len() >= bytes);
     // SAFETY: both buffers hold at least nrows*k worth of blocks (checked above).
     let rc = unsafe {
@@ -604,7 +613,16 @@ pub unsafe fn interleave_rows4_raw(at: ActType, rows: &[*const u8; 4], out: *mut
 /// # Safety
 /// As [`gemv_raw`], with `a` holding `nr/4` 4-row interleaved groups and `s` `nr` rows of stride `bs`.
 #[inline]
-pub unsafe fn gemm_raw(ty: QType, k: usize, s: *mut f32, bs: usize, w: *const u8, a: *const u8, nr: usize, nc: usize) {
+pub unsafe fn gemm_raw(
+    ty: QType,
+    k: usize,
+    s: *mut f32,
+    bs: usize,
+    w: *const u8,
+    a: *const u8,
+    nr: usize,
+    nc: usize,
+) {
     debug_assert!(nr % 4 == 0 && nc % ty.nr() == 0 && k % ty.qk() == 0);
     let (k, nr, nc) = (k as c_int, nr as c_int, nc as c_int);
     match ty {
@@ -631,7 +649,16 @@ pub fn gemm_tile_has(ty: QType) -> bool {
 /// # Safety
 /// As [`gemm_raw`].
 #[inline]
-pub unsafe fn gemm_tile_raw(ty: QType, k: usize, s: *mut f32, bs: usize, w: *const u8, a: *const u8, nr: usize, nc: usize) {
+pub unsafe fn gemm_tile_raw(
+    ty: QType,
+    k: usize,
+    s: *mut f32,
+    bs: usize,
+    w: *const u8,
+    a: *const u8,
+    nr: usize,
+    nc: usize,
+) {
     debug_assert!(nr % 4 == 0 && nc % ty.nr() == 0 && k % ty.qk() == 0);
     match ty {
         QType::Q4K => ffi::oxe_pf_gemm_q4_K(k as c_int, s, bs, w, a, nr as c_int, nc as c_int),
@@ -647,7 +674,8 @@ pub const PF_XBLK_BYTES: usize = 688;
 /// Whether [`mmid_tile_raw`] has a multi-token tile kernel for the MUL_MAT_ID of `ty`.
 pub fn mmid_tile_has(ty: QType) -> bool {
     // SAFETY: no arguments.
-    matches!(ty, QType::Q3K | QType::Q4K | QType::Q5K | QType::Q6K) && unsafe { ffi::oxe_pf_tiles_available() } != 0
+    matches!(ty, QType::Q3K | QType::Q4K | QType::Q5K | QType::Q6K)
+        && unsafe { ffi::oxe_pf_tiles_available() } != 0
 }
 
 /// Pack `rows.len()` from_float q8_K activation rows of `k` values into pairs for
@@ -668,7 +696,14 @@ pub unsafe fn mmid_tile_pack_raw(rows: &[*const u8], k: usize, out: *mut u8) {
 /// `w` as [`gemv_raw`] for `nc` rows; `xq` from [`mmid_tile_pack_raw`] with `orow.len()` rows;
 /// each `orow[t]` must hold `nc` writable floats; `nc % 8 == 0`.
 #[inline]
-pub unsafe fn mmid_tile_raw(ty: QType, k: usize, orow: &[*mut f32], w: *const u8, xq: *const u8, nc: usize) -> bool {
+pub unsafe fn mmid_tile_raw(
+    ty: QType,
+    k: usize,
+    orow: &[*mut f32],
+    w: *const u8,
+    xq: *const u8,
+    nc: usize,
+) -> bool {
     debug_assert!(nc % 8 == 0 && k % QK_K == 0);
     let t = match ty {
         QType::Q3K => 3,
@@ -677,7 +712,15 @@ pub unsafe fn mmid_tile_raw(ty: QType, k: usize, orow: &[*mut f32], w: *const u8
         QType::Q6K => 6,
         _ => return false,
     };
-    ffi::oxe_pf_mmid_tile(t, k as c_int, orow.as_ptr(), w, xq, orow.len() as c_int, nc as c_int) != 0
+    ffi::oxe_pf_mmid_tile(
+        t,
+        k as c_int,
+        orow.as_ptr(),
+        w,
+        xq,
+        orow.len() as c_int,
+        nc as c_int,
+    ) != 0
 }
 
 /// The MUL_MAT_ID gemm (`gemm_mmid`): the MUL_MAT gemm, except Q4_K/Q5_K 8x8 which use the
@@ -686,11 +729,36 @@ pub unsafe fn mmid_tile_raw(ty: QType, k: usize, orow: &[*mut f32], w: *const u8
 /// # Safety
 /// As [`gemm_raw`].
 #[inline]
-pub unsafe fn gemm_mmid_raw(ty: QType, k: usize, s: *mut f32, bs: usize, w: *const u8, a: *const u8, nr: usize, nc: usize) {
+pub unsafe fn gemm_mmid_raw(
+    ty: QType,
+    k: usize,
+    s: *mut f32,
+    bs: usize,
+    w: *const u8,
+    a: *const u8,
+    nr: usize,
+    nc: usize,
+) {
     debug_assert!(nr % 4 == 0 && nc % ty.nr() == 0 && k % ty.qk() == 0);
     match ty {
-        QType::Q4K => ffi::ggml_gemm_q4_K_8x8_q8_K_gemv_order(k as c_int, s, bs, w, a, nr as c_int, nc as c_int),
-        QType::Q5K => ffi::ggml_gemm_q5_K_8x8_q8_K_gemv_order(k as c_int, s, bs, w, a, nr as c_int, nc as c_int),
+        QType::Q4K => ffi::ggml_gemm_q4_K_8x8_q8_K_gemv_order(
+            k as c_int,
+            s,
+            bs,
+            w,
+            a,
+            nr as c_int,
+            nc as c_int,
+        ),
+        QType::Q5K => ffi::ggml_gemm_q5_K_8x8_q8_K_gemv_order(
+            k as c_int,
+            s,
+            bs,
+            w,
+            a,
+            nr as c_int,
+            nc as c_int,
+        ),
         _ => gemm_raw(ty, k, s, bs, w, a, nr, nc),
     }
 }
@@ -699,7 +767,16 @@ pub unsafe fn gemm_mmid_raw(ty: QType, k: usize, s: *mut f32, bs: usize, w: *con
 ///
 /// # Safety
 /// As [`gemm_raw`].
-pub unsafe fn gemm_generic_raw(ty: QType, k: usize, s: *mut f32, bs: usize, w: *const u8, a: *const u8, nr: usize, nc: usize) {
+pub unsafe fn gemm_generic_raw(
+    ty: QType,
+    k: usize,
+    s: *mut f32,
+    bs: usize,
+    w: *const u8,
+    a: *const u8,
+    nr: usize,
+    nc: usize,
+) {
     let (k, nr, nc) = (k as c_int, nr as c_int, nc as c_int);
     match ty {
         QType::Q3K => ffi::ggml_gemm_q3_K_8x8_q8_K_generic(k, s, bs, w, a, nr, nc),
@@ -725,7 +802,14 @@ pub const VL_MAX_LANES: usize = 4;
 /// `ty.act().bytes(k)` readable bytes, every `outs[l]` at `nc` writable floats (lanes must not
 /// overlap); `outs.len() == acts.len()`.
 #[inline]
-pub unsafe fn gemv_lanes_raw(ty: QType, k: usize, outs: &[*mut f32], w: *const u8, acts: &[*const u8], nc: usize) -> bool {
+pub unsafe fn gemv_lanes_raw(
+    ty: QType,
+    k: usize,
+    outs: &[*mut f32],
+    w: *const u8,
+    acts: &[*const u8],
+    nc: usize,
+) -> bool {
     debug_assert!(outs.len() == acts.len() && nc % ty.nr() == 0 && k % ty.qk() == 0);
     let nl = outs.len();
     if !(1..=VL_MAX_LANES).contains(&nl) || nc == 0 {
@@ -738,7 +822,15 @@ pub unsafe fn gemv_lanes_raw(ty: QType, k: usize, outs: &[*mut f32], w: *const u
         QType::Q6K => 6,
         QType::Q8_0 => 80,
     };
-    ffi::oxe_vl_gemv(t, k as c_int, outs.as_ptr(), w, acts.as_ptr(), nl as c_int, nc as c_int) != 0
+    ffi::oxe_vl_gemv(
+        t,
+        k as c_int,
+        outs.as_ptr(),
+        w,
+        acts.as_ptr(),
+        nl as c_int,
+        nc as c_int,
+    ) != 0
 }
 
 /// Whether [`gemv_lanes_raw`] has a kernel for `ty` in this build.
@@ -749,7 +841,16 @@ pub fn gemv_lanes_has(ty: QType) -> bool {
     let mut o = [[0f32; 8]; 2];
     let (o0, o1) = o.split_at_mut(1);
     // SAFETY: one zeroed row group of k weights, two zeroed activations, two 8-float outputs (>= nr).
-    unsafe { gemv_lanes_raw(ty, k, &[o0[0].as_mut_ptr(), o1[0].as_mut_ptr()], w.as_ptr(), &[a.as_ptr(), a.as_ptr()], ty.nr()) }
+    unsafe {
+        gemv_lanes_raw(
+            ty,
+            k,
+            &[o0[0].as_mut_ptr(), o1[0].as_mut_ptr()],
+            w.as_ptr(),
+            &[a.as_ptr(), a.as_ptr()],
+            ty.nr(),
+        )
+    }
 }
 
 /// Safe wrapper of [`gemv_raw`] over a repacked weight slice and activation bytes.
@@ -834,7 +935,9 @@ pub mod ops {
     /// y = rms_norm(x) * w (llama.cpp's fused RMS_NORM + MUL).
     pub fn rms_norm_mul(x: &[f32], w: &[f32], y: &mut [f32], eps: f32) {
         assert!(y.len() >= x.len() && w.len() >= x.len());
-        unsafe { ffi::oxe_rms_norm_mul_f32(x.as_ptr(), w.as_ptr(), y.as_mut_ptr(), x.len() as i64, eps) }
+        unsafe {
+            ffi::oxe_rms_norm_mul_f32(x.as_ptr(), w.as_ptr(), y.as_mut_ptr(), x.len() as i64, eps)
+        }
     }
     pub fn gdn_l2_norm(x: &mut [f32], eps: f32) {
         unsafe { ffi::oxe_gdn_l2_norm_f32(x.as_mut_ptr(), x.len() as i64, eps) }
@@ -856,7 +959,14 @@ pub mod ops {
     }
     pub fn swiglu(gate: &[f32], up: &[f32], y: &mut [f32]) {
         assert!(y.len() >= gate.len() && up.len() >= gate.len());
-        unsafe { ffi::oxe_swiglu_f32(gate.len() as i32, y.as_mut_ptr(), gate.as_ptr(), up.as_ptr()) }
+        unsafe {
+            ffi::oxe_swiglu_f32(
+                gate.len() as i32,
+                y.as_mut_ptr(),
+                gate.as_ptr(),
+                up.as_ptr(),
+            )
+        }
     }
     pub fn sigmoid(x: &[f32], y: &mut [f32]) {
         assert!(y.len() >= x.len());
@@ -878,15 +988,36 @@ pub mod ops {
     pub fn soft_max(x: &[f32], y: &mut [f32], wp: &mut [f32]) {
         let n = x.len();
         assert!(y.len() >= n && wp.len() >= n);
-        unsafe { ffi::oxe_soft_max_f32(n as i32, y.as_mut_ptr(), x.as_ptr(), 1.0, std::ptr::null(), wp.as_mut_ptr()) }
+        unsafe {
+            ffi::oxe_soft_max_f32(
+                n as i32,
+                y.as_mut_ptr(),
+                x.as_ptr(),
+                1.0,
+                std::ptr::null(),
+                wp.as_mut_ptr(),
+            )
+        }
     }
     /// ggml_argsort_top_k (descending, std::sort tie order); scratch >= x.len(). `k == x.len()`
     /// is the full descending order (an MoE that routes every token to all its experts,
     /// `expert_used_count == expert_count`, as ggml_argsort_top_k allows); `k > x.len()` is a
     /// caller bug (the model loader refuses such a GGUF with an error).
     pub fn argsort_top_k(x: &[f32], k: usize, out: &mut [i32], scratch: &mut [i32]) {
-        assert!(out.len() >= k && scratch.len() >= x.len() && k <= x.len(), "argsort_top_k: k {k} > n {}", x.len());
-        unsafe { ffi::oxe_argsort_top_k_f32(x.as_ptr(), x.len() as i32, k as i32, out.as_mut_ptr(), scratch.as_mut_ptr()) }
+        assert!(
+            out.len() >= k && scratch.len() >= x.len() && k <= x.len(),
+            "argsort_top_k: k {k} > n {}",
+            x.len()
+        );
+        unsafe {
+            ffi::oxe_argsort_top_k_f32(
+                x.as_ptr(),
+                x.len() as i32,
+                k as i32,
+                out.as_mut_ptr(),
+                scratch.as_mut_ptr(),
+            )
+        }
     }
 }
 
@@ -895,60 +1026,146 @@ mod tests;
 
 /// Scalar correctness oracle: native packed expert -> one temporary HMX tile.
 /// No allocation or resident format change. Not a performance implementation.
-pub fn native_expert_tile(ty: QType, src: &[u8], k: usize, rows: usize, experts: usize,
-        expert: usize, row0: usize, k0: usize, out: &mut [u16;1024]) -> Result<(), &'static str> {
-    let kind=match ty {QType::Q3K=>3,QType::Q4K=>4,_=>return Err("native expert type unsupported")};
-    let cv=|n|u32::try_from(n).map_err(|_|"native expert geometry exceeds protocol");
-    let (k,rows,experts,expert,row0,k0)=(cv(k)?,cv(rows)?,cv(experts)?,cv(expert)?,cv(row0)?,cv(k0)?);
+pub fn native_expert_tile(
+    ty: QType,
+    src: &[u8],
+    k: usize,
+    rows: usize,
+    experts: usize,
+    expert: usize,
+    row0: usize,
+    k0: usize,
+    out: &mut [u16; 1024],
+) -> Result<(), &'static str> {
+    let kind = match ty {
+        QType::Q3K => 3,
+        QType::Q4K => 4,
+        _ => return Err("native expert type unsupported"),
+    };
+    let cv = |n| u32::try_from(n).map_err(|_| "native expert geometry exceeds protocol");
+    let (k, rows, experts, expert, row0, k0) = (
+        cv(k)?,
+        cv(rows)?,
+        cv(experts)?,
+        cv(expert)?,
+        cv(row0)?,
+        cv(k0)?,
+    );
     // SAFETY: source/output slices are disjoint and live; C validates all geometry,
     // source bounds and fixed tile capacity before indexing either slice.
-    let rc=unsafe{ffi::oxe_native_expert_tile(out.as_mut_ptr(),1024,src.as_ptr(),src.len(),kind,k,rows,experts,expert,row0,k0)};
-    match rc {0=>Ok(()),-2=>Err("non-finite native expert tile"),_=>Err("native expert tile geometry/bounds")}
+    let rc = unsafe {
+        ffi::oxe_native_expert_tile(
+            out.as_mut_ptr(),
+            1024,
+            src.as_ptr(),
+            src.len(),
+            kind,
+            k,
+            rows,
+            experts,
+            expert,
+            row0,
+            k0,
+        )
+    };
+    match rc {
+        0 => Ok(()),
+        -2 => Err("non-finite native expert tile"),
+        _ => Err("native expert tile geometry/bounds"),
+    }
 }
 
 #[cfg(test)]
 mod native_expert_tests {
     use super::*;
-    fn source(ty:QType,k:usize,rows:usize,experts:usize,seed:u32)->Vec<u8>{
-        let block=ty.block_bytes();let mut data=vec![0u8;ty.row_bytes(k)*rows*experts];let mut rng=seed;
-        for b in data.chunks_exact_mut(block){
-            for v in b.iter_mut(){rng=rng.wrapping_mul(1664525).wrapping_add(1013904223);*v=(rng>>24)as u8;}
-            let put=|b:&mut[u8],at:usize,h:u16|b[at..at+2].copy_from_slice(&h.to_le_bytes());
+    fn source(ty: QType, k: usize, rows: usize, experts: usize, seed: u32) -> Vec<u8> {
+        let block = ty.block_bytes();
+        let mut data = vec![0u8; ty.row_bytes(k) * rows * experts];
+        let mut rng = seed;
+        for b in data.chunks_exact_mut(block) {
+            for v in b.iter_mut() {
+                rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
+                *v = (rng >> 24) as u8;
+            }
+            let put =
+                |b: &mut [u8], at: usize, h: u16| b[at..at + 2].copy_from_slice(&h.to_le_bytes());
             // finite scales with varied mantissas/exponents, including subnormals
-            let h=if rng&7==0{(rng as u16&0x03ff)|1}else{0x1000|(rng as u16&0x0fff)};
-            if ty==QType::Q3K{put(b,108,h);}else{put(b,0,h);put(b,2,0x0c00|(rng as u16&0x03ff));}
+            let h = if rng & 7 == 0 {
+                (rng as u16 & 0x03ff) | 1
+            } else {
+                0x1000 | (rng as u16 & 0x0fff)
+            };
+            if ty == QType::Q3K {
+                put(b, 108, h);
+            } else {
+                put(b, 0, h);
+                put(b, 2, 0x0c00 | (rng as u16 & 0x03ff));
+            }
         }
         data
     }
     #[test]
-    fn native_tiles_equal_original_row_dequantization_for_all_elements(){
-        for ty in [QType::Q3K,QType::Q4K]{for (k,rows,experts,seed) in [(256,32,1,1),(512,64,3,29),(1024,96,2,149)]{
-            let raw=source(ty,k,rows,experts,seed);let mut packed=vec![0u8;raw.len()];
-            repack(ty,&raw,&mut packed,rows*experts,k);
-            let mut reference=vec![0f32;k*rows*experts];
-            for (r,row) in reference.chunks_exact_mut(k).enumerate(){let bytes=ty.row_bytes(k);dequantize_row(ty,&raw[r*bytes..(r+1)*bytes],row);}
-            let mut expected=vec![0u16;reference.len()];f32_to_f16(&reference,&mut expected);
-            for e in 0..experts{for row0 in (0..rows).step_by(32){for k0 in (0..k).step_by(32){
-                let mut tile=[0u16;1024];native_expert_tile(ty,&packed,k,rows,experts,e,row0,k0,&mut tile).unwrap();
-                for n in 0..32{for c in 0..32{
-                    let at=(c/2)*64+2*n+c%2;
-                    assert_eq!(tile[at],expected[(e*rows+row0+n)*k+k0+c],"{ty:?} e{e} row{} k{}",row0+n,k0+c);
-                }}
-            }}}
-        }}
+    fn native_tiles_equal_original_row_dequantization_for_all_elements() {
+        for ty in [QType::Q3K, QType::Q4K] {
+            for (k, rows, experts, seed) in [(256, 32, 1, 1), (512, 64, 3, 29), (1024, 96, 2, 149)]
+            {
+                let raw = source(ty, k, rows, experts, seed);
+                let mut packed = vec![0u8; raw.len()];
+                repack(ty, &raw, &mut packed, rows * experts, k);
+                let mut reference = vec![0f32; k * rows * experts];
+                for (r, row) in reference.chunks_exact_mut(k).enumerate() {
+                    let bytes = ty.row_bytes(k);
+                    dequantize_row(ty, &raw[r * bytes..(r + 1) * bytes], row);
+                }
+                let mut expected = vec![0u16; reference.len()];
+                f32_to_f16(&reference, &mut expected);
+                for e in 0..experts {
+                    for row0 in (0..rows).step_by(32) {
+                        for k0 in (0..k).step_by(32) {
+                            let mut tile = [0u16; 1024];
+                            native_expert_tile(
+                                ty, &packed, k, rows, experts, e, row0, k0, &mut tile,
+                            )
+                            .unwrap();
+                            for n in 0..32 {
+                                for c in 0..32 {
+                                    let at = (c / 2) * 64 + 2 * n + c % 2;
+                                    assert_eq!(
+                                        tile[at],
+                                        expected[(e * rows + row0 + n) * k + k0 + c],
+                                        "{ty:?} e{e} row{} k{}",
+                                        row0 + n,
+                                        k0 + c
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     #[test]
-    fn malformed_geometry_refused_without_output_write(){
-        let src=vec![0u8;3520];
-        for (ty,k,rows,experts,e,r,c,len) in [
-            (QType::Q5K,256,32,1,0,0,0,3520),(QType::Q3K,0,32,1,0,0,0,3520),
-            (QType::Q3K,256,31,1,0,0,0,3520),(QType::Q3K,256,32,0,0,0,0,3520),
-            (QType::Q3K,256,32,1,1,0,0,3520),(QType::Q3K,256,32,1,0,1,0,3520),
-            (QType::Q3K,256,32,1,0,0,1,3520),(QType::Q3K,256,32,1,0,32,0,3520),
-            (QType::Q3K,256,32,1,0,0,256,3520),(QType::Q3K,256,32,1,0,0,0,3519),
-            (QType::Q3K,usize::MAX,32,1,0,0,0,3520),
-        ]{
-            let mut out=[0x2a2a;1024];assert!(native_expert_tile(ty,&src[..len],k,rows,experts,e,r,c,&mut out).is_err());assert_eq!(out,[0x2a2a;1024]);
+    fn malformed_geometry_refused_without_output_write() {
+        let src = vec![0u8; 3520];
+        for (ty, k, rows, experts, e, r, c, len) in [
+            (QType::Q5K, 256, 32, 1, 0, 0, 0, 3520),
+            (QType::Q3K, 0, 32, 1, 0, 0, 0, 3520),
+            (QType::Q3K, 256, 31, 1, 0, 0, 0, 3520),
+            (QType::Q3K, 256, 32, 0, 0, 0, 0, 3520),
+            (QType::Q3K, 256, 32, 1, 1, 0, 0, 3520),
+            (QType::Q3K, 256, 32, 1, 0, 1, 0, 3520),
+            (QType::Q3K, 256, 32, 1, 0, 0, 1, 3520),
+            (QType::Q3K, 256, 32, 1, 0, 32, 0, 3520),
+            (QType::Q3K, 256, 32, 1, 0, 0, 256, 3520),
+            (QType::Q3K, 256, 32, 1, 0, 0, 0, 3519),
+            (QType::Q3K, usize::MAX, 32, 1, 0, 0, 0, 3520),
+        ] {
+            let mut out = [0x2a2a; 1024];
+            assert!(
+                native_expert_tile(ty, &src[..len], k, rows, experts, e, r, c, &mut out).is_err()
+            );
+            assert_eq!(out, [0x2a2a; 1024]);
         }
     }
 }

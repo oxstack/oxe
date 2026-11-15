@@ -19,8 +19,8 @@ pub mod handoff;
 pub mod latent;
 pub mod noise;
 pub mod pe;
-pub mod schedule;
 pub mod sampler;
+pub mod schedule;
 pub mod sha256;
 pub mod txtstats;
 

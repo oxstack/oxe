@@ -120,22 +120,45 @@ pub struct FlashOptions {
 }
 
 /// `--flash-cache-gib auto` / `--flash-cache-pref`: the decision for a load now (MemAvailable read here), and its log line.
-pub fn cache_auto_now(n_ctx: usize, harness_gib: Option<f64>, pref_gib: Option<f64>) -> (qwen4exp::pf_plan::CacheDecision, String) {
-    cache_decide_now(n_ctx, harness_gib, pref_gib, qwen4exp::pf_plan::DESKTOP_FLOOR_GIB)
+pub fn cache_auto_now(
+    n_ctx: usize,
+    harness_gib: Option<f64>,
+    pref_gib: Option<f64>,
+) -> (qwen4exp::pf_plan::CacheDecision, String) {
+    cache_decide_now(
+        n_ctx,
+        harness_gib,
+        pref_gib,
+        qwen4exp::pf_plan::DESKTOP_FLOOR_GIB,
+    )
 }
 
 /// As [`cache_auto_now`], with the opt-in swap-tolerant rule for an explicit 20 / 18 preference (MemTotal-based,
 /// `desktop_floor_gib` = the active-desktop resident floor); auto / 16 / 14 are unchanged.
-pub fn cache_decide_now(n_ctx: usize, harness_gib: Option<f64>, pref_gib: Option<f64>, desktop_floor_gib: f64) -> (qwen4exp::pf_plan::CacheDecision, String) {
+pub fn cache_decide_now(
+    n_ctx: usize,
+    harness_gib: Option<f64>,
+    pref_gib: Option<f64>,
+    desktop_floor_gib: f64,
+) -> (qwen4exp::pf_plan::CacheDecision, String) {
     let gib = |b: u64| b as f64 / (1u64 << 30) as f64;
     let avail = qwen4exp::pf_plan::mem_available_bytes().map_or(f64::NAN, gib);
     let total = qwen4exp::pf_plan::mem_total_bytes().map_or(f64::NAN, gib);
     let swap_free = qwen4exp::pf_plan::swap_free_bytes().map_or(f64::NAN, gib);
     let inp = qwen4exp::pf_plan::AdmitInputs::measured(avail, n_ctx, harness_gib);
-    let (d, seen) = qwen4exp::pf_plan::cache_select_swap_tolerant(&inp, pref_gib, total, desktop_floor_gib, swap_free);
+    let (d, seen) = qwen4exp::pf_plan::cache_select_swap_tolerant(
+        &inp,
+        pref_gib,
+        total,
+        desktop_floor_gib,
+        swap_free,
+    );
     let mut line = d.log_line(&inp);
     if !seen.is_empty() {
-        let parts: Vec<String> = seen.iter().map(|(t, b)| format!("{t:.0}: budget {b:+.2}")).collect();
+        let parts: Vec<String> = seen
+            .iter()
+            .map(|(t, b)| format!("{t:.0}: budget {b:+.2}"))
+            .collect();
         line += &format!(
             "; swap-tolerant (explicit pref, MemTotal {total:.2} - cache - dense/base - model growth - desktop floor {desktop_floor_gib:.2}; SwapFree {swap_free:.2} must cover the RAM overflow + {:.1}): [{}]{}",
             qwen4exp::pf_plan::SWAP_MARGIN_GIB,
@@ -178,7 +201,15 @@ fn read_hot(r: &mut dyn std::io::Read) -> Result<Vec<(u16, u16)>> {
     }
     let mut hb = vec![0u8; nh * 4];
     r.read_exact(&mut hb).map_err(e)?;
-    Ok(hb.chunks(4).map(|c| (u16::from_le_bytes([c[0], c[1]]), u16::from_le_bytes([c[2], c[3]]))).collect())
+    Ok(hb
+        .chunks(4)
+        .map(|c| {
+            (
+                u16::from_le_bytes([c[0], c[1]]),
+                u16::from_le_bytes([c[2], c[3]]),
+            )
+        })
+        .collect())
 }
 
 /// Slots of a layer pool the per-token expert op must leave free (same margin as the wave op's sizing).
@@ -217,14 +248,31 @@ impl FlashEngine {
         } else {
             o.cache_gib
         };
-        let dir = if model.is_dir() { model.to_path_buf() } else { model.parent().ok_or("model path")?.to_path_buf() };
+        let dir = if model.is_dir() {
+            model.to_path_buf()
+        } else {
+            model.parent().ok_or("model path")?.to_path_buf()
+        };
         let s: &'static Shards = Box::leak(Box::new(Shards::open(&dir)?));
         let d: &'static Dense = Box::leak(Box::new(Dense::load(s, DenseMode::VecDot)?));
         // the expert shard mappings are only used by the exact path's mapped-expert prefill
         let gm: &'static GraphModel = Box::leak(Box::new(GraphModel::new(s, d, o.exact)?));
-        let sidecar = o.sidecar.clone().unwrap_or_else(qwen4exp::sidecar::default_path);
-        let cfg = StreamConfig { cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize, qd: 32, io_cpu: o.io_cpu, prefault: true };
-        let mut stb = Box::new(Stream::new_with(s, &sidecar, &cfg, o.quota_weights.as_deref())?);
+        let sidecar = o
+            .sidecar
+            .clone()
+            .unwrap_or_else(qwen4exp::sidecar::default_path);
+        let cfg = StreamConfig {
+            cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize,
+            qd: 32,
+            io_cpu: o.io_cpu,
+            prefault: true,
+        };
+        let mut stb = Box::new(Stream::new_with(
+            s,
+            &sidecar,
+            &cfg,
+            o.quota_weights.as_deref(),
+        )?);
         stb.resident_first = !o.exact;
         if o.cache_lfu {
             stb.cache.policy = qwen4exp::cache::Policy::Lfu;
@@ -272,9 +320,23 @@ impl FlashEngine {
         let min_quota = st.cache.quota.iter().copied().min().unwrap_or(0);
         let bmin = batch_min_tokens_for(min_quota);
         eprintln!("oxe-server: flash: smallest expert pool {min_quota} slots/layer; batched expert op from {bmin} tokens");
-        let opts = if o.exact { FgOptions::default() } else { FgOptions { fixed_attn: 1, shexp_first: 1, batch_min_tokens: bmin, rs_view: 1, fuse: o.fuse, ..FgOptions::default() } };
+        let opts = if o.exact {
+            FgOptions::default()
+        } else {
+            FgOptions {
+                fixed_attn: 1,
+                shexp_first: 1,
+                batch_min_tokens: bmin,
+                rs_view: 1,
+                fuse: o.fuse,
+                ..FgOptions::default()
+            }
+        };
         if o.fuse != 0 && !o.exact {
-            eprintln!("oxe-server: flash: fused decode phases --flash-fuse {} (bitwise; fast path only)", o.fuse);
+            eprintln!(
+                "oxe-server: flash: fused decode phases --flash-fuse {} (bitwise; fast path only)",
+                o.fuse
+            );
         }
         ctx.set_options(&opts);
         Ok(FlashEngine {
@@ -287,7 +349,9 @@ impl FlashEngine {
             io_cpu_prefill: o.io_cpu_prefill.clone(),
             io_cpu_decode: o.io_cpu,
             pf_admit: o.pf_admit,
-            admit_harness_gib: o.admit_harness_gib.unwrap_or(qwen4exp::pf_plan::ADMIT_HARNESS_GIB),
+            admit_harness_gib: o
+                .admit_harness_gib
+                .unwrap_or(qwen4exp::pf_plan::ADMIT_HARNESS_GIB),
             pf_high_water: 0,
             psi_some: o.psi_some,
             psi_full: o.psi_full,
@@ -304,12 +368,17 @@ impl FlashEngine {
         // SAFETY: the stream is leaked ('static).
         unsafe {
             if streaming {
-                self.ctx.set_expert_fn(Some(Stream::callback()), self.st as *const Stream as *mut std::ffi::c_void);
+                self.ctx.set_expert_fn(
+                    Some(Stream::callback()),
+                    self.st as *const Stream as *mut std::ffi::c_void,
+                );
             } else {
                 self.ctx.set_expert_fn(None, std::ptr::null_mut());
             }
         }
-        self.ctx.decode(toks, threads, &mut self.logits, None).map_err(EngineError)?;
+        self.ctx
+            .decode(toks, threads, &mut self.logits, None)
+            .map_err(EngineError)?;
         // an expert read failed or timed out during this decode: its logits are invalid; fail the request, not the
         // server (the failed slots are re-read by the next lookup)
         match self.st.take_error() {
@@ -363,23 +432,43 @@ impl Engine for FlashEngine {
             let plan = if self.pf_max_pass == 0 || self.exact {
                 qwen4exp::pf_plan::plan_ubatches(toks.len(), self.ubatch, 0)
             } else {
-                let budget = qwen4exp::pf_plan::mem_available_bytes().map_or(0, |b| b.saturating_sub(3 << 29));
+                let budget = qwen4exp::pf_plan::mem_available_bytes()
+                    .map_or(0, |b| b.saturating_sub(3 << 29));
                 let n_past = self.ctx.pos();
-                let admitted = qwen4exp::pf_plan::max_pass_tokens(self.ubatch, self.pf_max_pass, n_past, budget, qwen4exp::graph::attn_tile_mode() == 2);
+                let admitted = qwen4exp::pf_plan::max_pass_tokens(
+                    self.ubatch,
+                    self.pf_max_pass,
+                    n_past,
+                    budget,
+                    qwen4exp::graph::attn_tile_mode() == 2,
+                );
                 qwen4exp::pf_plan::plan_ubatches(toks.len(), self.ubatch, admitted)
             };
             // W5-C long-prompt guard: a pass whose NEW memory (above the high water already allocated) exceeds
             // MemAvailable - harness allowance - floor is split into even halves (>= 256 tokens; lossless class, QC-FP8)
             let plan = if self.pf_admit && !self.exact {
-                let reserve = ((self.admit_harness_gib + qwen4exp::pf_plan::ADMIT_FLOOR_GIB) * (1u64 << 30) as f64) as u64;
-                let budget = qwen4exp::pf_plan::mem_available_bytes().map_or(0, |b| b.saturating_sub(reserve));
+                let reserve = ((self.admit_harness_gib + qwen4exp::pf_plan::ADMIT_FLOOR_GIB)
+                    * (1u64 << 30) as f64) as u64;
+                let budget = qwen4exp::pf_plan::mem_available_bytes()
+                    .map_or(0, |b| b.saturating_sub(reserve));
                 let fused = qwen4exp::graph::attn_tile_mode() == 2;
                 let n_past = self.ctx.pos();
-                let mut admitted = qwen4exp::pf_plan::admit_passes(&plan, n_past, budget, self.pf_high_water, fused);
+                let mut admitted = qwen4exp::pf_plan::admit_passes(
+                    &plan,
+                    n_past,
+                    budget,
+                    self.pf_high_water,
+                    fused,
+                );
                 // O-27: memory pressure (e.g. the desktop being paged out next to a 20 GiB cache): smaller passes,
                 // less new scratch; logged; never touches other processes
                 if let Some((some10, full10)) = qwen4exp::pf_plan::memory_psi() {
-                    if let Some(cap) = qwen4exp::pf_plan::psi_pass_cap(some10, full10, self.psi_some, self.psi_full) {
+                    if let Some(cap) = qwen4exp::pf_plan::psi_pass_cap(
+                        some10,
+                        full10,
+                        self.psi_some,
+                        self.psi_full,
+                    ) {
                         let capped = qwen4exp::pf_plan::cap_passes(&admitted, cap);
                         if capped != admitted {
                             eprintln!(
@@ -402,7 +491,9 @@ impl Engine for FlashEngine {
                 }
                 let mut np = n_past;
                 for &n in &admitted {
-                    self.pf_high_water = self.pf_high_water.max(qwen4exp::pf_plan::pass_bytes_est(n, np, fused));
+                    self.pf_high_water = self
+                        .pf_high_water
+                        .max(qwen4exp::pf_plan::pass_bytes_est(n, np, fused));
                     np += n;
                 }
                 admitted
@@ -436,9 +527,14 @@ impl Engine for FlashEngine {
                 }
             }
             if let Err(e) = res {
-                if let (Some((pos, rec)), true) = (&snap, e.0.contains(qwen4exp::graph::DECODE_ABORTED)) {
+                if let (Some((pos, rec)), true) =
+                    (&snap, e.0.contains(qwen4exp::graph::DECODE_ABORTED))
+                {
                     self.ctx.restore_recurrent(*pos, rec).map_err(EngineError)?;
-                    return Err(EngineError(format!("{} flash prefill aborted at the cancel; state back at {pos}", crate::engine::CANCELLED_MARK)));
+                    return Err(EngineError(format!(
+                        "{} flash prefill aborted at the cancel; state back at {pos}",
+                        crate::engine::CANCELLED_MARK
+                    )));
                 }
                 return Err(e);
             }
@@ -453,7 +549,10 @@ impl Engine for FlashEngine {
         Ok(FlashSnapshot { pos, rec })
     }
     fn state_id(&self) -> Option<String> {
-        Some(format!("flash-state-v2 n_ctx={} exact={} opts={:?}", self.n_ctx, self.exact, self.opts))
+        Some(format!(
+            "flash-state-v2 n_ctx={} exact={} opts={:?}",
+            self.n_ctx, self.exact, self.opts
+        ))
     }
     fn save_state(&mut self, w: &mut dyn std::io::Write) -> Result<()> {
         let e = |e: std::io::Error| EngineError(format!("save state: {e}"));
@@ -461,7 +560,8 @@ impl Engine for FlashEngine {
         // cache, PrefixStore::save_stream) never holds the ~285 MB anchor state in RAM
         self.ctx.save_compact_to(w).map_err(e)?;
         for c in self.logits.chunks(16384) {
-            w.write_all(&c.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>()).map_err(e)?;
+            w.write_all(&c.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
+                .map_err(e)?;
         }
         // SAFETY: engine thread, no compute in progress.
         let hot = unsafe { self.st.hot_list() };
@@ -504,23 +604,39 @@ impl Engine for FlashEngine {
         }
         // SAFETY: engine thread, no compute in progress.
         let issued = unsafe { self.st.warm(&hot) };
-        Ok(format!("hot-set restore: {issued} expert reads queued ({} listed)", hot.len()))
+        Ok(format!(
+            "hot-set restore: {issued} expert reads queued ({} listed)",
+            hot.len()
+        ))
     }
     fn load_state(&mut self, r: &mut dyn std::io::Read, n_pos: usize) -> Result<()> {
         let e = |e: std::io::Error| EngineError(format!("load state: {e}"));
         // every length is checked against this context's layout BEFORE any allocation (a corrupt or crafted
         // file must miss + reset, not request a huge buffer)
-        let expect = self.ctx.compact_bytes_at(n_pos, self.n_ctx).ok_or_else(|| EngineError(format!("load state: {n_pos} positions > n_ctx {}", self.n_ctx)))?;
+        let expect = self
+            .ctx
+            .compact_bytes_at(n_pos, self.n_ctx)
+            .ok_or_else(|| {
+                EngineError(format!(
+                    "load state: {n_pos} positions > n_ctx {}",
+                    self.n_ctx
+                ))
+            })?;
         let mut u = [0u8; 8];
         r.read_exact(&mut u).map_err(e)?;
         let n = u64::from_le_bytes(u);
         if n != expect as u64 {
-            return Err(EngineError(format!("load state: compact length {n} != {expect} for {n_pos} positions of this context")));
+            return Err(EngineError(format!(
+                "load state: compact length {n} != {expect} for {n_pos} positions of this context"
+            )));
         }
         let n = expect;
         let mut tb = vec![0u8; n_pos * 4];
         r.read_exact(&mut tb).map_err(e)?;
-        let toks: Vec<i32> = tb.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect();
+        let toks: Vec<i32> = tb
+            .chunks(4)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
         let mut b = vec![0u8; n];
         r.read_exact(&mut b).map_err(e)?;
         let mut lb = vec![0u8; N_VOCAB * 4];
@@ -540,7 +656,10 @@ impl Engine for FlashEngine {
         if resident * 2 < hot.len() {
             // SAFETY: as above.
             let issued = unsafe { self.st.warm(&hot) };
-            eprintln!("oxe-server: flash: hot-set restore: {issued} expert reads queued ({} listed)", hot.len());
+            eprintln!(
+                "oxe-server: flash: hot-set restore: {issued} expert reads queued ({} listed)",
+                hot.len()
+            );
         } else {
             eprintln!("oxe-server: flash: hot-set restore skipped: cache warm ({resident} resident, {} listed)", hot.len());
         }
@@ -548,9 +667,13 @@ impl Engine for FlashEngine {
     }
     fn restore(&mut self, s: &FlashSnapshot) -> Result<()> {
         if s.pos > self.ctx.pos() {
-            return Err(EngineError("restore of a snapshot ahead of the current position".into()));
+            return Err(EngineError(
+                "restore of a snapshot ahead of the current position".into(),
+            ));
         }
-        self.ctx.restore_recurrent(s.pos, &s.rec).map_err(EngineError)
+        self.ctx
+            .restore_recurrent(s.pos, &s.rec)
+            .map_err(EngineError)
     }
 }
 
@@ -567,9 +690,21 @@ mod tests {
 
     /// A cache of `quota` 4 KiB slots per layer over a synthetic layout; no sidecar, no IO thread.
     fn tiny_cache(quota: usize) -> Cache {
-        let g = ExpertGeom { gate_w: W::Q8_0, down_w: W::Q8_0, gate_bytes: 1024, down_bytes: 1024, record: 3072, slot: 4096 };
+        let g = ExpertGeom {
+            gate_w: W::Q8_0,
+            down_w: W::Q8_0,
+            gate_bytes: 1024,
+            down_bytes: 1024,
+            record: 3072,
+            slot: 4096,
+        };
         let base = (0..N_LAYER).map(|l| (l * 4096 * N_EXPERT) as u64).collect();
-        let layout = Layout { geom: vec![g; N_LAYER], base, total: (N_LAYER * 4096 * N_EXPERT) as u64, r4: false };
+        let layout = Layout {
+            geom: vec![g; N_LAYER],
+            base,
+            total: (N_LAYER * 4096 * N_EXPERT) as u64,
+            r4: false,
+        };
         Cache::new(layout, &vec![quota; N_LAYER], -1, true, false).unwrap()
     }
     /// One lookup as the engine does it, then the read "completes" (there is no IO thread here).
@@ -590,7 +725,10 @@ mod tests {
             let b = batch_min_tokens_for(q) as usize;
             assert!((2..=17).contains(&b), "quota {q}: {b}");
             // the largest chunk the per-token op still gets fits the pool; a single token always does
-            assert!((b - 1) * TOP_K + POOL_MARGIN <= q || b == 2, "quota {q}: {b}");
+            assert!(
+                (b - 1) * TOP_K + POOL_MARGIN <= q || b == 2,
+                "quota {q}: {b}"
+            );
             // and it is not smaller than it has to be
             assert!(b == 17 || b * TOP_K + POOL_MARGIN > q, "quota {q}: {b}");
         }
@@ -640,9 +778,21 @@ mod tests {
     #[test]
     fn reread_of_a_failed_slot_is_protected_for_the_current_chunk() {
         use qwen4exp::cache::FAILED;
-        let g = ExpertGeom { gate_w: W::Q8_0, down_w: W::Q8_0, gate_bytes: 1024, down_bytes: 1024, record: 3072, slot: 4096 };
+        let g = ExpertGeom {
+            gate_w: W::Q8_0,
+            down_w: W::Q8_0,
+            gate_bytes: 1024,
+            down_bytes: 1024,
+            record: 3072,
+            slot: 4096,
+        };
         let base = (0..N_LAYER).map(|l| (l * 4096 * N_EXPERT) as u64).collect();
-        let layout = Layout { geom: vec![g; N_LAYER], base, total: (N_LAYER * 4096 * N_EXPERT) as u64, r4: false };
+        let layout = Layout {
+            geom: vec![g; N_LAYER],
+            base,
+            total: (N_LAYER * 4096 * N_EXPERT) as u64,
+            r4: false,
+        };
         // no_io = false: the FAILED path only exists with IO; reads are queued and never run (no IO thread)
         let c = Cache::new(layout, &vec![16; N_LAYER], -1, false, false).unwrap();
         let io = IoQueue::new();
@@ -659,16 +809,22 @@ mod tests {
             }
             let first = first.unwrap();
             (*first.state).store(FAILED, Release); // the read of expert 0 failed
-            // chunk 2: expert 0 again (re-read, completes), then a new expert that needs a victim
+                                                   // chunk 2: expert 0 again (re-read, completes), then a new expert that needs a victim
             let (again, _) = c.lookup_protect(&io, 0, 0, 2, 2, ReqClass::Demand);
             assert_eq!(again.ptr, first.ptr);
             (*again.state).store(READY, Release);
             let (new, miss) = c.lookup_protect(&io, 0, 100, 2, 2, ReqClass::Demand);
             assert!(miss);
             (*new.state).store(READY, Release);
-            assert_ne!(new.ptr, first.ptr, "the re-read slot of the current chunk was evicted");
+            assert_ne!(
+                new.ptr, first.ptr,
+                "the re-read slot of the current chunk was evicted"
+            );
             let (still, miss) = c.lookup_protect(&io, 0, 0, 2, 2, ReqClass::Demand);
-            assert!(!miss, "expert 0 is no longer resident in the chunk that re-read it");
+            assert!(
+                !miss,
+                "expert 0 is no longer resident in the chunk that re-read it"
+            );
             assert_eq!(still.ptr, first.ptr);
         }
     }

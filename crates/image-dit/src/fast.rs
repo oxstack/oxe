@@ -49,7 +49,14 @@ pub struct FastConfig {
 
 impl Default for FastConfig {
     fn default() -> Self {
-        FastConfig { chunk1: 256, chunk2: 256, batch_groups: 4, lin2_row_block: 64, key_chunk: 256, attn_prec: AttnPrec::Int8 }
+        FastConfig {
+            chunk1: 256,
+            chunk2: 256,
+            batch_groups: 4,
+            lin2_row_block: 64,
+            key_chunk: 256,
+            attn_prec: AttnPrec::Int8,
+        }
     }
 }
 
@@ -100,7 +107,8 @@ fn partition(costs: &[usize], parts: usize) -> Vec<Range<usize>> {
     for p in 0..parts {
         let target = total * (p + 1) / parts;
         let mut end = start;
-        while end < costs.len() && (acc + costs[end] <= target || (end == start && p + 1 == parts)) {
+        while end < costs.len() && (acc + costs[end] <= target || (end == start && p + 1 == parts))
+        {
             acc += costs[end];
             end += 1;
         }
@@ -120,7 +128,10 @@ pub fn exp_fast(x: f32) -> f32 {
     let x = x.clamp(-87.0, 87.0);
     let n = (x * std::f32::consts::LOG2_E).round();
     let r = x - n * 0.693_359_4 + n * 2.121_944_4e-4;
-    let p = ((((1.987_569_1e-4 * r + 1.398_2e-3) * r + 8.333_452e-3) * r + 4.166_579_6e-2) * r + 1.666_666_5e-1) * r + 0.5;
+    let p = ((((1.987_569_1e-4 * r + 1.398_2e-3) * r + 8.333_452e-3) * r + 4.166_579_6e-2) * r
+        + 1.666_666_5e-1)
+        * r
+        + 0.5;
     let y = p * r * r + r + 1.0;
     y * f32::from_bits(((n as i32 + 127) as u32) << 23)
 }
@@ -152,13 +163,33 @@ pub struct FastBlock<'p> {
 
 impl<'p> FastBlock<'p> {
     /// `w1_q8`: Q8_0 bytes of linear1 (`lin1_out` rows of `hidden`), `w2_q8`: linear2 (`hidden` rows of `lin2_in`).
-    pub fn new(dims: Dims, w1_q8: &[u8], w2_q8: &[u8], q_scale: &[f32], k_scale: &[f32], cfg: FastConfig, pool: &'p Pool) -> FastBlock<'p> {
+    pub fn new(
+        dims: Dims,
+        w1_q8: &[u8],
+        w2_q8: &[u8],
+        q_scale: &[f32],
+        k_scale: &[f32],
+        cfg: FastConfig,
+        pool: &'p Pool,
+    ) -> FastBlock<'p> {
         dims.check();
         let (h, hd, mlp) = (dims.hidden, dims.head_dim, dims.mlp);
         assert!(hd % 8 == 0 && h % 32 == 0 && mlp % 32 == 0);
-        assert!(cfg.chunk1 % 32 == 0 && h % cfg.chunk1 == 0, "chunk1 must be a multiple of 32 dividing hidden");
-        assert!(cfg.chunk2 % 32 == 0 && h % cfg.chunk2 == 0 && mlp % cfg.chunk2 == 0, "chunk2 must be a multiple of 32 dividing hidden and mlp");
-        assert!(cfg.key_chunk % 8 == 0 && cfg.key_chunk > 0 && cfg.lin2_row_block % 8 == 0 && cfg.lin2_row_block > 0 && cfg.batch_groups > 0);
+        assert!(
+            cfg.chunk1 % 32 == 0 && h % cfg.chunk1 == 0,
+            "chunk1 must be a multiple of 32 dividing hidden"
+        );
+        assert!(
+            cfg.chunk2 % 32 == 0 && h % cfg.chunk2 == 0 && mlp % cfg.chunk2 == 0,
+            "chunk2 must be a multiple of 32 dividing hidden and mlp"
+        );
+        assert!(
+            cfg.key_chunk % 8 == 0
+                && cfg.key_chunk > 0
+                && cfg.lin2_row_block % 8 == 0
+                && cfg.lin2_row_block > 0
+                && cfg.batch_groups > 0
+        );
         assert_eq!(q_scale.len(), hd);
         assert_eq!(k_scale.len(), hd);
         // MLP unit: a multiple of chunk2 (so a unit can be quantised on its own), about head_dim or more.
@@ -171,16 +202,32 @@ impl<'p> FastBlock<'p> {
         // Row order of the packed linear1 and its units.
         let mut perm: Vec<u32> = Vec::with_capacity(dims.lin1_out());
         let mut units = Vec::new();
-        let mut push = |kind: UnitKind, rows: &mut dyn Iterator<Item = usize>, perm: &mut Vec<u32>| {
-            let g0 = perm.len() / G;
-            perm.extend(rows.map(|r| r as u32));
-            assert!(perm.len() % G == 0);
-            units.push(Unit { kind, rg: g0..perm.len() / G });
-        };
+        let mut push =
+            |kind: UnitKind, rows: &mut dyn Iterator<Item = usize>, perm: &mut Vec<u32>| {
+                let g0 = perm.len() / G;
+                perm.extend(rows.map(|r| r as u32));
+                assert!(perm.len() % G == 0);
+                units.push(Unit {
+                    kind,
+                    rg: g0..perm.len() / G,
+                });
+            };
         for head in 0..dims.heads {
-            push(UnitKind::Q(head), &mut (head * hd..(head + 1) * hd), &mut perm);
-            push(UnitKind::K(head), &mut (h + head * hd..h + (head + 1) * hd), &mut perm);
-            push(UnitKind::V(head), &mut (2 * h + head * hd..2 * h + (head + 1) * hd), &mut perm);
+            push(
+                UnitKind::Q(head),
+                &mut (head * hd..(head + 1) * hd),
+                &mut perm,
+            );
+            push(
+                UnitKind::K(head),
+                &mut (h + head * hd..h + (head + 1) * hd),
+                &mut perm,
+            );
+            push(
+                UnitKind::V(head),
+                &mut (2 * h + head * hd..2 * h + (head + 1) * hd),
+                &mut perm,
+            );
         }
         for u in 0..mlp / mlp_unit {
             let gate = 3 * h + u * mlp_unit..3 * h + (u + 1) * mlp_unit;
@@ -196,7 +243,20 @@ impl<'p> FastBlock<'p> {
         let unit_plan = partition(&unit_costs, nt);
         let head_plan = partition(&vec![1; dims.heads], nt);
         let lin2_plan = partition(&vec![1; h / G], nt);
-        FastBlock { dims, cfg, pool, w1, w2, q_scale: q_scale.to_vec(), k_scale: k_scale.to_vec(), mlp_unit, units, unit_plan, head_plan, lin2_plan }
+        FastBlock {
+            dims,
+            cfg,
+            pool,
+            w1,
+            w2,
+            q_scale: q_scale.to_vec(),
+            k_scale: k_scale.to_vec(),
+            mlp_unit,
+            units,
+            unit_plan,
+            head_plan,
+            lin2_plan,
+        }
     }
 
     pub fn config(&self) -> FastConfig {
@@ -205,7 +265,10 @@ impl<'p> FastBlock<'p> {
 
     /// Bytes of packed weights (codes + scales).
     pub fn weight_bytes(&self) -> usize {
-        self.w1.data().len() + self.w1.scales().len() * 4 + self.w2.data().len() + self.w2.scales().len() * 4
+        self.w1.data().len()
+            + self.w1.scales().len() * 4
+            + self.w2.data().len()
+            + self.w2.scales().len() * 4
     }
 }
 
@@ -214,7 +277,11 @@ impl SingleBlockBackend for FastBlock<'_> {
         "cpu-int8-smmla"
     }
 
-    fn forward(&mut self, input: &BlockInput, want_intermediates: bool) -> (BlockOutput, StageTimes) {
+    fn forward(
+        &mut self,
+        input: &BlockInput,
+        want_intermediates: bool,
+    ) -> (BlockOutput, StageTimes) {
         let dims = self.dims;
         let (h, hd, mlp, heads) = (dims.hidden, dims.head_dim, dims.mlp, dims.heads);
         let n = input.n_tokens;
@@ -260,7 +327,11 @@ impl SingleBlockBackend for FastBlock<'_> {
         // ---- stage 2: linear1 with fused sinks ----
         let nsteps_keys = n_pad / G;
         let float = cfg.attn_prec.is_float();
-        let fstore = if float { Some(FloatStore::new(heads, hd, n, cfg.attn_prec)) } else { None };
+        let fstore = if float {
+            Some(FloatStore::new(heads, hd, n, cfg.attn_prec))
+        } else {
+            None
+        };
         let store: Vec<HeadStore> = (0..if float { 0 } else { heads })
             .map(|_| HeadStore {
                 q: Packed::zeroed(n, hd, hd),
@@ -270,11 +341,21 @@ impl SingleBlockBackend for FastBlock<'_> {
             })
             .collect();
         let x2 = Packed::zeroed(n, dims.lin2_in(), cfg.chunk2);
-        let mut mlp_out = if want_intermediates { vec![0.0f32; n * mlp] } else { Vec::new() };
+        let mut mlp_out = if want_intermediates {
+            vec![0.0f32; n * mlp]
+        } else {
+            Vec::new()
+        };
         let mlp_ptr = SyncPtr(mlp_out.as_mut_ptr());
         let inv_sqrt_hd = 1.0 / (hd as f32).sqrt();
         let mlp_unit = self.mlp_unit;
-        let (w1, units, unit_plan, q_scale, k_scale) = (&self.w1, &self.units, &self.unit_plan, &self.q_scale, &self.k_scale);
+        let (w1, units, unit_plan, q_scale, k_scale) = (
+            &self.w1,
+            &self.units,
+            &self.unit_plan,
+            &self.q_scale,
+            &self.k_scale,
+        );
         let fstore_ref = fstore.as_ref();
         let t0 = Instant::now();
         self.pool.run(|ctx| {
@@ -282,87 +363,109 @@ impl SingleBlockBackend for FastBlock<'_> {
             let mut vals = vec![0.0f32; hd.max(mlp_unit)];
             for unit in &units[unit_plan[ctx.tid].clone()] {
                 let nr = unit.rg.len() * G;
-                gemm_blocked(&x1, w1, 0..groups, unit.rg.clone(), cfg.batch_groups, Order::MulAdd, &mut scratch, |t0, ntok, block| {
-                    for ti in 0..ntok {
-                        let t = t0 + ti;
-                        if t >= n {
-                            break;
-                        }
-                        let row = &block[ti * nr..(ti + 1) * nr];
-                        match unit.kind {
-                            UnitKind::Q(head) | UnitKind::K(head) => {
-                                let is_q = matches!(unit.kind, UnitKind::Q(_));
-                                let sc = if is_q { q_scale } else { k_scale };
-                                let mut ms = 0.0f32;
-                                for &v in row {
-                                    ms += v * v;
+                gemm_blocked(
+                    &x1,
+                    w1,
+                    0..groups,
+                    unit.rg.clone(),
+                    cfg.batch_groups,
+                    Order::MulAdd,
+                    &mut scratch,
+                    |t0, ntok, block| {
+                        for ti in 0..ntok {
+                            let t = t0 + ti;
+                            if t >= n {
+                                break;
+                            }
+                            let row = &block[ti * nr..(ti + 1) * nr];
+                            match unit.kind {
+                                UnitKind::Q(head) | UnitKind::K(head) => {
+                                    let is_q = matches!(unit.kind, UnitKind::Q(_));
+                                    let sc = if is_q { q_scale } else { k_scale };
+                                    let mut ms = 0.0f32;
+                                    for &v in row {
+                                        ms += v * v;
+                                    }
+                                    let mut r = 1.0 / (ms / hd as f32 + 1e-6).sqrt();
+                                    if is_q {
+                                        r *= inv_sqrt_hd; // the 1/sqrt(d) of the logits lives in q
+                                    }
+                                    let pe = &input.pe[t * (hd / 2) * 4..(t + 1) * (hd / 2) * 4];
+                                    for i in 0..hd / 2 {
+                                        let a = row[2 * i] * r * sc[2 * i];
+                                        let b = row[2 * i + 1] * r * sc[2 * i + 1];
+                                        let p = &pe[i * 4..i * 4 + 4];
+                                        vals[2 * i] = p[0] * a + p[1] * b;
+                                        vals[2 * i + 1] = p[2] * a + p[3] * b;
+                                    }
+                                    // SAFETY: (head, q|k) is one unit, owned by this thread; token t is
+                                    // visited once per unit.
+                                    if let Some(fs) = fstore_ref {
+                                        unsafe {
+                                            if is_q {
+                                                fs.put_q(head, t, &vals[..hd])
+                                            } else {
+                                                fs.put_k(head, t, &vals[..hd])
+                                            }
+                                        };
+                                        continue;
+                                    }
+                                    let dst = if is_q { &store[head].q } else { &store[head].k };
+                                    unsafe { dst.quantize_unsync(t, 0, &vals[..hd]) };
                                 }
-                                let mut r = 1.0 / (ms / hd as f32 + 1e-6).sqrt();
-                                if is_q {
-                                    r *= inv_sqrt_hd; // the 1/sqrt(d) of the logits lives in q
-                                }
-                                let pe = &input.pe[t * (hd / 2) * 4..(t + 1) * (hd / 2) * 4];
-                                for i in 0..hd / 2 {
-                                    let a = row[2 * i] * r * sc[2 * i];
-                                    let b = row[2 * i + 1] * r * sc[2 * i + 1];
-                                    let p = &pe[i * 4..i * 4 + 4];
-                                    vals[2 * i] = p[0] * a + p[1] * b;
-                                    vals[2 * i + 1] = p[2] * a + p[3] * b;
-                                }
-                                // SAFETY: (head, q|k) is one unit, owned by this thread; token t is
-                                // visited once per unit.
-                                if let Some(fs) = fstore_ref {
-                                    unsafe {
-                                        if is_q {
-                                            fs.put_q(head, t, &vals[..hd])
-                                        } else {
-                                            fs.put_k(head, t, &vals[..hd])
-                                        }
+                                UnitKind::V(head) => {
+                                    if let Some(fs) = fstore_ref {
+                                        // SAFETY: unit (head, v) is owned by this thread; token t once.
+                                        unsafe { fs.put_v(head, t, row) };
+                                        continue;
+                                    }
+                                    let mut amax = 0.0f32;
+                                    for &v in row {
+                                        amax = amax.max(v.abs());
+                                    }
+                                    let (scale, inv) = if amax > 0.0 && amax.is_finite() {
+                                        (amax / 127.0, 127.0 / amax)
+                                    } else {
+                                        (0.0, 0.0)
                                     };
-                                    continue;
-                                }
-                                let dst = if is_q { &store[head].q } else { &store[head].k };
-                                unsafe { dst.quantize_unsync(t, 0, &vals[..hd]) };
-                            }
-                            UnitKind::V(head) => {
-                                if let Some(fs) = fstore_ref {
-                                    // SAFETY: unit (head, v) is owned by this thread; token t once.
-                                    unsafe { fs.put_v(head, t, row) };
-                                    continue;
-                                }
-                                let mut amax = 0.0f32;
-                                for &v in row {
-                                    amax = amax.max(v.abs());
-                                }
-                                let (scale, inv) = if amax > 0.0 && amax.is_finite() { (amax / 127.0, 127.0 / amax) } else { (0.0, 0.0) };
-                                let hs = &store[head];
-                                // SAFETY: unit (head, v) is owned by this thread; writes go to key
-                                // column t of this head only.
-                                unsafe {
-                                    *(hs.sv.as_ptr() as *mut f32).add(t) = scale;
-                                    let vt = hs.vt.as_ptr() as *mut u8;
-                                    for d in 0..hd {
-                                        let code = (row[d] * inv).round().clamp(-127.0, 127.0) as i8;
-                                        *vt.add(((d / G) * nsteps_keys + t / G) * 64 + (d % G) * G + t % G) = code as u8;
+                                    let hs = &store[head];
+                                    // SAFETY: unit (head, v) is owned by this thread; writes go to key
+                                    // column t of this head only.
+                                    unsafe {
+                                        *(hs.sv.as_ptr() as *mut f32).add(t) = scale;
+                                        let vt = hs.vt.as_ptr() as *mut u8;
+                                        for d in 0..hd {
+                                            let code =
+                                                (row[d] * inv).round().clamp(-127.0, 127.0) as i8;
+                                            *vt.add(
+                                                ((d / G) * nsteps_keys + t / G) * 64
+                                                    + (d % G) * G
+                                                    + t % G,
+                                            ) = code as u8;
+                                        }
                                     }
                                 }
-                            }
-                            UnitKind::Mlp(u) => {
-                                for j in 0..mlp_unit {
-                                    vals[j] = silu(row[j]) * row[mlp_unit + j];
-                                }
-                                // SAFETY: MLP unit u is owned by this thread; it covers columns
-                                // h + u*U .. h + (u+1)*U of token t (whole chunks of chunk2).
-                                unsafe {
-                                    x2.quantize_unsync(t, h + u * mlp_unit, &vals[..mlp_unit]);
-                                    if want_intermediates {
-                                        std::ptr::copy_nonoverlapping(vals.as_ptr(), mlp_ptr.get().add(t * mlp + u * mlp_unit), mlp_unit);
+                                UnitKind::Mlp(u) => {
+                                    for j in 0..mlp_unit {
+                                        vals[j] = silu(row[j]) * row[mlp_unit + j];
+                                    }
+                                    // SAFETY: MLP unit u is owned by this thread; it covers columns
+                                    // h + u*U .. h + (u+1)*U of token t (whole chunks of chunk2).
+                                    unsafe {
+                                        x2.quantize_unsync(t, h + u * mlp_unit, &vals[..mlp_unit]);
+                                        if want_intermediates {
+                                            std::ptr::copy_nonoverlapping(
+                                                vals.as_ptr(),
+                                                mlp_ptr.get().add(t * mlp + u * mlp_unit),
+                                                mlp_unit,
+                                            );
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                });
+                    },
+                );
             }
         });
         times.linear1 = t0.elapsed().as_secs_f64();
@@ -380,88 +483,124 @@ impl SingleBlockBackend for FastBlock<'_> {
                     for g in 0..groups {
                         fs.attend(head, g, cfg.key_chunk, &mut sc, |t, row| {
                             // SAFETY: columns head*hd..(head+1)*hd of row t are written by this thread only.
-                            let dst = unsafe { std::slice::from_raw_parts_mut(attn_ptr.get().add(t * h + head * hd), hd) };
+                            let dst = unsafe {
+                                std::slice::from_raw_parts_mut(
+                                    attn_ptr.get().add(t * h + head * hd),
+                                    hd,
+                                )
+                            };
                             dst.copy_from_slice(row);
                         });
                     }
                 }
             });
         } else {
-        self.pool.run(|ctx| {
-            let mut scores = vec![0.0f32; G * kc_max];
-            let mut pcodes = vec![0u8; (kc_max / G) * 64];
-            let mut o = vec![0.0f32; G * hd];
+            self.pool.run(|ctx| {
+                let mut scores = vec![0.0f32; G * kc_max];
+                let mut pcodes = vec![0u8; (kc_max / G) * 64];
+                let mut o = vec![0.0f32; G * hd];
                 let ones = [1.0f32; G];
-            for head in head_plan[ctx.tid].clone() {
-                let hs = &store[head];
-                // SAFETY: stage 2 has finished (barrier); from here sv is read-only.
-                let sv = unsafe { std::slice::from_raw_parts(hs.sv.as_ptr() as *const f32, n_pad) };
-                for g in 0..groups {
-                    let mut m = [f32::NEG_INFINITY; G];
-                    let mut l = [0.0f64; G];
-                    o.iter_mut().for_each(|v| *v = 0.0);
-                    let mut c0 = 0;
-                    while c0 < n_pad {
-                        let kc = cfg.key_chunk.min(n_pad - c0);
-                        gemm(&hs.q, &hs.k, g..g + 1, c0 / G..(c0 + kc) / G, &mut scores[..(G - 1) * kc_max + kc], kc_max, Order::MulAdd, false);
-                        let mut sp = [0.0f32; G];
+                for head in head_plan[ctx.tid].clone() {
+                    let hs = &store[head];
+                    // SAFETY: stage 2 has finished (barrier); from here sv is read-only.
+                    let sv =
+                        unsafe { std::slice::from_raw_parts(hs.sv.as_ptr() as *const f32, n_pad) };
+                    for g in 0..groups {
+                        let mut m = [f32::NEG_INFINITY; G];
+                        let mut l = [0.0f64; G];
+                        o.iter_mut().for_each(|v| *v = 0.0);
+                        let mut c0 = 0;
+                        while c0 < n_pad {
+                            let kc = cfg.key_chunk.min(n_pad - c0);
+                            gemm(
+                                &hs.q,
+                                &hs.k,
+                                g..g + 1,
+                                c0 / G..(c0 + kc) / G,
+                                &mut scores[..(G - 1) * kc_max + kc],
+                                kc_max,
+                                Order::MulAdd,
+                                false,
+                            );
+                            let mut sp = [0.0f32; G];
+                            for qi in 0..G {
+                                let s = &mut scores[qi * kc_max..qi * kc_max + kc];
+                                if c0 + kc > n {
+                                    for key in n.saturating_sub(c0)..kc {
+                                        s[key] = f32::NEG_INFINITY; // padding keys
+                                    }
+                                }
+                                // SAFETY: s holds kc floats, kc is a multiple of 8.
+                                let cmax = unsafe { raw::i8g_row_max(s.as_ptr(), kc) };
+                                if cmax > m[qi] {
+                                    let f = if m[qi] == f32::NEG_INFINITY {
+                                        0.0
+                                    } else {
+                                        exp_fast(m[qi] - cmax)
+                                    };
+                                    for v in &mut o[qi * hd..(qi + 1) * hd] {
+                                        *v *= f;
+                                    }
+                                    l[qi] *= f as f64;
+                                    m[qi] = cmax;
+                                }
+                                let (mut sum, mut scale) = (0.0f32, 0.0f32);
+                                // SAFETY: s and sv[c0..] hold kc floats; pcodes holds kc/8 steps of 64 bytes; qi < 8.
+                                unsafe {
+                                    raw::i8g_softmax_pack(
+                                        s.as_mut_ptr(),
+                                        kc,
+                                        m[qi],
+                                        sv.as_ptr().add(c0),
+                                        pcodes.as_mut_ptr(),
+                                        qi,
+                                        &mut sum,
+                                        &mut scale,
+                                    )
+                                };
+                                l[qi] += sum as f64;
+                                sp[qi] = scale;
+                            }
+                            for dg in 0..hd / G {
+                                // SAFETY: pcodes holds kc/8 steps; vt holds (hd/8) x nsteps_keys steps and
+                                // c0/8 + kc/8 <= nsteps_keys; o is 8 x hd with stride hd.
+                                unsafe {
+                                    raw::i8g_utile8x8(
+                                        pcodes.as_ptr(),
+                                        (hs.vt.as_ptr() as *const i8)
+                                            .add((dg * nsteps_keys + c0 / G) * 64),
+                                        kc / G,
+                                        1,
+                                        sp.as_ptr(),
+                                        ones.as_ptr(),
+                                        o.as_mut_ptr().add(dg * G),
+                                        hd as isize,
+                                        1,
+                                    );
+                                }
+                            }
+                            c0 += kc;
+                        }
                         for qi in 0..G {
-                            let s = &mut scores[qi * kc_max..qi * kc_max + kc];
-                            if c0 + kc > n {
-                                for key in n.saturating_sub(c0)..kc {
-                                    s[key] = f32::NEG_INFINITY; // padding keys
-                                }
+                            let t = g * G + qi;
+                            if t >= n {
+                                break;
                             }
-                            // SAFETY: s holds kc floats, kc is a multiple of 8.
-                        let cmax = unsafe { raw::i8g_row_max(s.as_ptr(), kc) };
-                        if cmax > m[qi] {
-                                let f = if m[qi] == f32::NEG_INFINITY { 0.0 } else { exp_fast(m[qi] - cmax) };
-                                for v in &mut o[qi * hd..(qi + 1) * hd] {
-                                    *v *= f;
-                                }
-                                l[qi] *= f as f64;
-                                m[qi] = cmax;
+                            let inv = (1.0 / l[qi]) as f32;
+                            // SAFETY: columns head*hd..(head+1)*hd of row t are written by this thread only.
+                            let dst = unsafe {
+                                std::slice::from_raw_parts_mut(
+                                    attn_ptr.get().add(t * h + head * hd),
+                                    hd,
+                                )
+                            };
+                            for d in 0..hd {
+                                dst[d] = o[qi * hd + d] * inv;
                             }
-                            let (mut sum, mut scale) = (0.0f32, 0.0f32);
-                        // SAFETY: s and sv[c0..] hold kc floats; pcodes holds kc/8 steps of 64 bytes; qi < 8.
-                        unsafe { raw::i8g_softmax_pack(s.as_mut_ptr(), kc, m[qi], sv.as_ptr().add(c0), pcodes.as_mut_ptr(), qi, &mut sum, &mut scale) };
-                        l[qi] += sum as f64;
-                        sp[qi] = scale;
-                    }
-                        for dg in 0..hd / G {
-                            // SAFETY: pcodes holds kc/8 steps; vt holds (hd/8) x nsteps_keys steps and
-                            // c0/8 + kc/8 <= nsteps_keys; o is 8 x hd with stride hd.
-                            unsafe {
-                                raw::i8g_utile8x8(
-                                    pcodes.as_ptr(),
-                                    (hs.vt.as_ptr() as *const i8).add((dg * nsteps_keys + c0 / G) * 64),
-                                    kc / G,
-                                    1,
-                                    sp.as_ptr(),
-                                    ones.as_ptr(),
-                                    o.as_mut_ptr().add(dg * G),
-                                    hd as isize,
-                                    1,
-                                );
-                            }
-                        }
-                        c0 += kc;
-                    }
-                    for qi in 0..G {
-                        let t = g * G + qi;
-                        if t >= n {
-                            break;
-                        }
-                        let inv = (1.0 / l[qi]) as f32;
-                        // SAFETY: columns head*hd..(head+1)*hd of row t are written by this thread only.
-                        let dst = unsafe { std::slice::from_raw_parts_mut(attn_ptr.get().add(t * h + head * hd), hd) };
-                        for d in 0..hd {
-                            dst[d] = o[qi * hd + d] * inv;
                         }
                     }
                 }
-            }
-        });
+            });
         }
         times.attention = t0.elapsed().as_secs_f64();
         drop(fstore);
@@ -481,7 +620,11 @@ impl SingleBlockBackend for FastBlock<'_> {
 
         // ---- stage 5: linear2 + gate + residual ----
         let mut out = vec![0.0f32; n * h];
-        let mut z = if want_intermediates { vec![0.0f32; n * h] } else { Vec::new() };
+        let mut z = if want_intermediates {
+            vec![0.0f32; n * h]
+        } else {
+            Vec::new()
+        };
         let (out_ptr, z_ptr) = (SyncPtr(out.as_mut_ptr()), SyncPtr(z.as_mut_ptr()));
         let (w2, lin2_plan) = (&self.w2, &self.lin2_plan);
         let rb = cfg.lin2_row_block / G;
@@ -493,26 +636,42 @@ impl SingleBlockBackend for FastBlock<'_> {
             while r0 < mine.end {
                 let r1 = (r0 + rb).min(mine.end);
                 let nr = (r1 - r0) * G;
-                gemm_blocked(&x2, w2, 0..groups, r0..r1, cfg.batch_groups, Order::MulAdd, &mut scratch, |t0, ntok, block| {
-                    for ti in 0..ntok {
-                        let t = t0 + ti;
-                        if t >= n {
-                            break;
-                        }
-                        let zr = &block[ti * nr..(ti + 1) * nr];
-                        let c0 = r0 * G;
-                        // SAFETY: columns c0..c0+nr belong to this thread's row range.
-                        unsafe {
-                            let dst = std::slice::from_raw_parts_mut(out_ptr.get().add(t * h + c0), nr);
-                            for j in 0..nr {
-                                dst[j] = input.x[t * h + c0 + j] + input.gate[c0 + j] * zr[j];
+                gemm_blocked(
+                    &x2,
+                    w2,
+                    0..groups,
+                    r0..r1,
+                    cfg.batch_groups,
+                    Order::MulAdd,
+                    &mut scratch,
+                    |t0, ntok, block| {
+                        for ti in 0..ntok {
+                            let t = t0 + ti;
+                            if t >= n {
+                                break;
                             }
-                            if want_intermediates {
-                                std::ptr::copy_nonoverlapping(zr.as_ptr(), z_ptr.get().add(t * h + c0), nr);
+                            let zr = &block[ti * nr..(ti + 1) * nr];
+                            let c0 = r0 * G;
+                            // SAFETY: columns c0..c0+nr belong to this thread's row range.
+                            unsafe {
+                                let dst = std::slice::from_raw_parts_mut(
+                                    out_ptr.get().add(t * h + c0),
+                                    nr,
+                                );
+                                for j in 0..nr {
+                                    dst[j] = input.x[t * h + c0 + j] + input.gate[c0 + j] * zr[j];
+                                }
+                                if want_intermediates {
+                                    std::ptr::copy_nonoverlapping(
+                                        zr.as_ptr(),
+                                        z_ptr.get().add(t * h + c0),
+                                        nr,
+                                    );
+                                }
                             }
                         }
-                    }
-                });
+                    },
+                );
                 r0 = r1;
             }
         });
@@ -520,7 +679,15 @@ impl SingleBlockBackend for FastBlock<'_> {
         times.total = t_all.elapsed().as_secs_f64();
 
         let attn = if want_intermediates { attn } else { Vec::new() };
-        (BlockOutput { out, attn, mlp: mlp_out, z }, times)
+        (
+            BlockOutput {
+                out,
+                attn,
+                mlp: mlp_out,
+                z,
+            },
+            times,
+        )
     }
 }
 
@@ -542,7 +709,10 @@ mod tests {
 
     #[test]
     fn partition_is_contiguous_and_balanced() {
-        let costs = vec![16usize; 72].into_iter().chain(vec![32usize; 72]).collect::<Vec<_>>();
+        let costs = vec![16usize; 72]
+            .into_iter()
+            .chain(vec![32usize; 72])
+            .collect::<Vec<_>>();
         for parts in [1, 3, 10, 12] {
             let p = partition(&costs, parts);
             assert_eq!(p.len(), parts);
@@ -554,7 +724,10 @@ mod tests {
             }
             for r in &p {
                 let c: usize = costs[r.clone()].iter().sum();
-                assert!(c * parts <= total + 32 * parts && c * parts + 32 * parts >= total, "parts {parts}: {c}");
+                assert!(
+                    c * parts <= total + 32 * parts && c * parts + 32 * parts >= total,
+                    "parts {parts}: {c}"
+                );
             }
         }
         // more parts than items: every item exactly once

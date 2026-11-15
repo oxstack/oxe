@@ -213,9 +213,16 @@ pub struct ActLayout {
 impl ActLayout {
     pub fn new(t: usize, k: usize, kc: usize) -> ActLayout {
         assert!(k % TILE == 0, "ActLayout: k={k} not a multiple of 32");
-        assert!(kc > 0 && kc % TILE == 0, "ActLayout: kc={kc} not a positive multiple of 32");
+        assert!(
+            kc > 0 && kc % TILE == 0,
+            "ActLayout: kc={kc} not a positive multiple of 32"
+        );
         assert!(k % kc == 0, "ActLayout: kc={kc} does not divide k={k}");
-        ActLayout { t_pad: t.div_ceil(TILE) * TILE, k, kc }
+        ActLayout {
+            t_pad: t.div_ceil(TILE) * TILE,
+            k,
+            kc,
+        }
     }
 
     pub fn nchunks(&self) -> usize {
@@ -242,8 +249,15 @@ const ROW_PIECE: usize = 256;
 /// `dst` must point to `lay.bytes()` writable bytes, 2-byte aligned. Concurrent calls
 /// for different `m` are fine: they write disjoint u16 elements.
 pub unsafe fn write_act_row(dst: *mut u16, lay: &ActLayout, m: usize, k0: usize, row: &[f32]) {
-    assert!(m < lay.t_pad, "write_act_row: row {m} >= t_pad {}", lay.t_pad);
-    assert!(k0 % TILE == 0 && row.len() % TILE == 0, "write_act_row: unaligned k0/len");
+    assert!(
+        m < lay.t_pad,
+        "write_act_row: row {m} >= t_pad {}",
+        lay.t_pad
+    );
+    assert!(
+        k0 % TILE == 0 && row.len() % TILE == 0,
+        "write_act_row: unaligned k0/len"
+    );
     assert!(k0 + row.len() <= lay.k, "write_act_row: columns exceed k");
     let kct = lay.kc / TILE;
     let rtiles = lay.t_pad / TILE;
@@ -300,7 +314,11 @@ impl OutLayout {
 /// # Safety
 /// `src` must point to `lay.bytes()` readable bytes, 2-byte aligned.
 pub unsafe fn read_out_row(src: *const u16, lay: &OutLayout, m: usize, n0: usize, out: &mut [f32]) {
-    assert!(m < lay.t_pad, "read_out_row: row {m} >= t_pad {}", lay.t_pad);
+    assert!(
+        m < lay.t_pad,
+        "read_out_row: row {m} >= t_pad {}",
+        lay.t_pad
+    );
     assert!(n0 + out.len() <= lay.o, "read_out_row: columns exceed o");
     assert!(lay.nchunks >= 1, "read_out_row: nchunks must be >= 1");
     let len = out.len();
@@ -321,7 +339,11 @@ pub unsafe fn read_out_row(src: *const u16, lay: &OutLayout, m: usize, n0: usize
             let ot = n / TILE;
             let nl = n % TILE;
             let cnt = core::cmp::min(TILE - nl, len - i);
-            let tile = if lay.ycol { ot * rtiles + rt } else { rt * ot_n + ot };
+            let tile = if lay.ycol {
+                ot * rtiles + rt
+            } else {
+                rt * ot_n + ot
+            };
             let base = c * chunk_elems + tile * TILE_ELMS + row_off + 2 * nl;
             for (j, hj) in h[..cnt].iter_mut().enumerate() {
                 // SAFETY: caller guarantees src covers lay.bytes(); index < lay.bytes()/2.
@@ -346,14 +368,23 @@ pub unsafe fn read_out_row(src: *const u16, lay: &OutLayout, m: usize, n0: usize
 
 fn check_read_tile(lay: &OutLayout, rt: usize, n0: usize, len: usize, out_len: usize) {
     assert!(lay.nchunks >= 1, "read_out_tile_rows: nchunks must be >= 1");
-    assert!(rt < lay.t_pad / TILE, "read_out_tile_rows: row tile {rt} out of range");
+    assert!(
+        rt < lay.t_pad / TILE,
+        "read_out_tile_rows: row tile {rt} out of range"
+    );
     assert!(n0 + len <= lay.o, "read_out_tile_rows: columns exceed o");
     assert_eq!(out_len, TILE * len, "read_out_tile_rows: out length");
 }
 
 fn check_write_tile(lay: &ActLayout, rt: usize, k0: usize, len: usize, rows_len: usize) {
-    assert!(rt < lay.t_pad / TILE, "write_act_tile_rows: row tile {rt} out of range");
-    assert!(k0 % TILE == 0 && len % TILE == 0, "write_act_tile_rows: unaligned k0/len");
+    assert!(
+        rt < lay.t_pad / TILE,
+        "write_act_tile_rows: row tile {rt} out of range"
+    );
+    assert!(
+        k0 % TILE == 0 && len % TILE == 0,
+        "write_act_tile_rows: unaligned k0/len"
+    );
     assert!(k0 + len <= lay.k, "write_act_tile_rows: columns exceed k");
     assert_eq!(rows_len, TILE * len, "write_act_tile_rows: rows length");
 }
@@ -367,7 +398,14 @@ fn check_write_tile(lay: &ActLayout, rt: usize, k0: usize, len: usize, rows_len:
 /// # Safety
 /// `src` must point to `lay.bytes()` readable bytes, 2-byte aligned. `rt < lay.t_pad / 32`, `n0 + len <= lay.o`.
 #[cfg(target_arch = "aarch64")]
-pub unsafe fn read_out_tile_rows(src: *const u16, lay: &OutLayout, rt: usize, n0: usize, len: usize, out: &mut [f32]) {
+pub unsafe fn read_out_tile_rows(
+    src: *const u16,
+    lay: &OutLayout,
+    rt: usize,
+    n0: usize,
+    len: usize,
+    out: &mut [f32],
+) {
     check_read_tile(lay, rt, n0, len, out.len());
     if len == 0 {
         return;
@@ -379,7 +417,11 @@ pub unsafe fn read_out_tile_rows(src: *const u16, lay: &OutLayout, rt: usize, n0
     let mut odd = [0f32; TILE];
     for c in 0..lay.nchunks {
         for ot in n0 / TILE..=(n0 + len - 1) / TILE {
-            let tile = if lay.ycol { ot * rtiles + rt } else { rt * ot_n + ot };
+            let tile = if lay.ycol {
+                ot * rtiles + rt
+            } else {
+                rt * ot_n + ot
+            };
             // SAFETY: tile < rtiles * ot_n and c < nchunks, so the tile lies inside lay.bytes().
             let tp = unsafe { src.add(c * chunk_elems + tile * TILE_ELMS) };
             let col0 = ot * TILE;
@@ -391,8 +433,16 @@ pub unsafe fn read_out_tile_rows(src: *const u16, lay: &OutLayout, rt: usize, n0
                 // SAFETY: p < 16, so line p (64 halfs) lies inside the tile.
                 unsafe { line_to_f32(tp.add(p * 64), even.as_mut_ptr(), odd.as_mut_ptr()) };
                 let re = 2 * p;
-                assign_or_add(&mut out[re * len + d0..re * len + d0 + cnt], &even[j0..j1], c == 0);
-                assign_or_add(&mut out[(re + 1) * len + d0..(re + 1) * len + d0 + cnt], &odd[j0..j1], c == 0);
+                assign_or_add(
+                    &mut out[re * len + d0..re * len + d0 + cnt],
+                    &even[j0..j1],
+                    c == 0,
+                );
+                assign_or_add(
+                    &mut out[(re + 1) * len + d0..(re + 1) * len + d0 + cnt],
+                    &odd[j0..j1],
+                    c == 0,
+                );
             }
         }
     }
@@ -400,7 +450,14 @@ pub unsafe fn read_out_tile_rows(src: *const u16, lay: &OutLayout, rt: usize, n0
 
 /// Portable version: one `read_out_row` per token row.
 #[cfg(not(target_arch = "aarch64"))]
-pub unsafe fn read_out_tile_rows(src: *const u16, lay: &OutLayout, rt: usize, n0: usize, len: usize, out: &mut [f32]) {
+pub unsafe fn read_out_tile_rows(
+    src: *const u16,
+    lay: &OutLayout,
+    rt: usize,
+    n0: usize,
+    len: usize,
+    out: &mut [f32],
+) {
     // SAFETY: the portable implementation has the same contract.
     unsafe { read_out_tile_rows_portable(src, lay, rt, n0, len, out) };
 }
@@ -408,11 +465,26 @@ pub unsafe fn read_out_tile_rows(src: *const u16, lay: &OutLayout, rt: usize, n0
 // Also compile the portable branch on ARM in tests, so both implementations are checked
 // against the same row-wise oracle without needing a second machine.
 #[cfg(any(not(target_arch = "aarch64"), test))]
-unsafe fn read_out_tile_rows_portable(src: *const u16, lay: &OutLayout, rt: usize, n0: usize, len: usize, out: &mut [f32]) {
+unsafe fn read_out_tile_rows_portable(
+    src: *const u16,
+    lay: &OutLayout,
+    rt: usize,
+    n0: usize,
+    len: usize,
+    out: &mut [f32],
+) {
     check_read_tile(lay, rt, n0, len, out.len());
     for r in 0..TILE {
         // SAFETY: forwarded from the caller's contract (row 32*rt + r < t_pad).
-        unsafe { read_out_row(src, lay, TILE * rt + r, n0, &mut out[r * len..(r + 1) * len]) };
+        unsafe {
+            read_out_row(
+                src,
+                lay,
+                TILE * rt + r,
+                n0,
+                &mut out[r * len..(r + 1) * len],
+            )
+        };
     }
 }
 
@@ -425,7 +497,14 @@ unsafe fn read_out_tile_rows_portable(src: *const u16, lay: &OutLayout, rt: usiz
 /// As `write_act_row`: `dst` must point to `lay.bytes()` writable bytes, 2-byte aligned. Concurrent calls for
 /// different `rt` are fine: they write disjoint u16 elements.
 #[cfg(target_arch = "aarch64")]
-pub unsafe fn write_act_tile_rows(dst: *mut u16, lay: &ActLayout, rt: usize, k0: usize, len: usize, rows: &[f32]) {
+pub unsafe fn write_act_tile_rows(
+    dst: *mut u16,
+    lay: &ActLayout,
+    rt: usize,
+    k0: usize,
+    len: usize,
+    rows: &[f32],
+) {
     check_write_tile(lay, rt, k0, len, rows.len());
     let kct = lay.kc / TILE;
     let rtiles = lay.t_pad / TILE;
@@ -447,7 +526,14 @@ pub unsafe fn write_act_tile_rows(dst: *mut u16, lay: &ActLayout, rt: usize, k0:
 
 /// Portable version: one `write_act_row` per token row.
 #[cfg(not(target_arch = "aarch64"))]
-pub unsafe fn write_act_tile_rows(dst: *mut u16, lay: &ActLayout, rt: usize, k0: usize, len: usize, rows: &[f32]) {
+pub unsafe fn write_act_tile_rows(
+    dst: *mut u16,
+    lay: &ActLayout,
+    rt: usize,
+    k0: usize,
+    len: usize,
+    rows: &[f32],
+) {
     check_write_tile(lay, rt, k0, len, rows.len());
     for r in 0..TILE {
         // SAFETY: forwarded from the caller's contract (token 32*rt + r < t_pad).
@@ -563,7 +649,10 @@ unsafe fn f32s_to_line(even: *const f32, odd: *const f32, line: *mut u16) {
 
 /// Bytes of a W8 buffer for an O x K weight (independent of kc).
 pub fn w8_bytes(o: usize, k: usize) -> usize {
-    assert!(o % TILE == 0 && k % TILE == 0, "w8_bytes: o={o}, k={k} must be multiples of 32");
+    assert!(
+        o % TILE == 0 && k % TILE == 0,
+        "w8_bytes: o={o}, k={k} must be multiples of 32"
+    );
     (o / TILE) * (k / TILE) * W8_TILE_BYTES
 }
 
@@ -579,10 +668,22 @@ pub fn w8_strip_bytes(kc: usize) -> usize {
 /// Record `ktl` of the strip occupies `dst[ktl * 1152 ..]`. Packed row n takes source row perm[n]
 /// (identity if None). Every byte of `dst` is written (padding zeroed).
 #[allow(clippy::too_many_arguments)]
-pub fn pack_w8_strip(dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize, perm: Option<&[u32]>, chunk: usize, ot: usize) {
+pub fn pack_w8_strip(
+    dst: &mut [u8],
+    q8: &[u8],
+    o: usize,
+    k: usize,
+    kc: usize,
+    perm: Option<&[u32]>,
+    chunk: usize,
+    ot: usize,
+) {
     assert!(o % TILE == 0, "pack_w8: o={o} not a multiple of 32");
     assert!(k % TILE == 0, "pack_w8: k={k} not a multiple of 32");
-    assert!(kc > 0 && kc % TILE == 0 && k % kc == 0, "pack_w8: bad kc={kc} for k={k}");
+    assert!(
+        kc > 0 && kc % TILE == 0 && k % kc == 0,
+        "pack_w8: bad kc={kc} for k={k}"
+    );
     assert_eq!(q8.len(), o * (k / TILE) * 34, "pack_w8: q8 length");
     if let Some(p) = perm {
         assert_eq!(p.len(), o, "pack_w8: perm length");
@@ -606,7 +707,9 @@ pub fn pack_w8_strip(dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize, p
                 None => n,
             };
             // one read of the 34-byte Q8_0 block: scale, then 32 codes scattered with a fixed stride
-            let blk: &[u8; 34] = (&q8[(s * nb + kt) * 34..(s * nb + kt + 1) * 34]).try_into().expect("Q8_0 block");
+            let blk: &[u8; 34] = (&q8[(s * nb + kt) * 34..(s * nb + kt + 1) * 34])
+                .try_into()
+                .expect("Q8_0 block");
             scales[2 * nl..2 * nl + 2].copy_from_slice(&blk[0..2]);
             let qs: &[u8; TILE] = (&blk[2..]).try_into().expect("Q8_0 codes");
             // element (kl, nl) is at (kl / 2) * 64 + 2 * nl + kl % 2, see `wt_elem_idx`
@@ -620,10 +723,20 @@ pub fn pack_w8_strip(dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize, p
 
 /// Pack GGUF Q8_0 rows into chunked W8 records. Packed row n takes source row perm[n]
 /// (identity if None). Every byte of `dst` is written (padding zeroed).
-pub fn pack_w8_from_q8_0(dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize, perm: Option<&[u32]>) {
+pub fn pack_w8_from_q8_0(
+    dst: &mut [u8],
+    q8: &[u8],
+    o: usize,
+    k: usize,
+    kc: usize,
+    perm: Option<&[u32]>,
+) {
     assert!(o % TILE == 0, "pack_w8: o={o} not a multiple of 32");
     assert!(k % TILE == 0, "pack_w8: k={k} not a multiple of 32");
-    assert!(kc > 0 && kc % TILE == 0 && k % kc == 0, "pack_w8: bad kc={kc} for k={k}");
+    assert!(
+        kc > 0 && kc % TILE == 0 && k % kc == 0,
+        "pack_w8: bad kc={kc} for k={k}"
+    );
     assert_eq!(q8.len(), o * (k / TILE) * 34, "pack_w8: q8 length");
     if let Some(p) = perm {
         assert_eq!(p.len(), o, "pack_w8: perm length");
@@ -771,7 +884,11 @@ mod tests {
         let mut fs = vec![0f32; hs.len()];
         halfs_to_f32s(&hs, &mut fs);
         for h in 0..=65535u16 {
-            assert_eq!(fs[h as usize].to_bits(), half_to_f32(h).to_bits(), "h={h:04x}");
+            assert_eq!(
+                fs[h as usize].to_bits(),
+                half_to_f32(h).to_bits(),
+                "h={h:04x}"
+            );
         }
         for len in 0..40 {
             let mut f = vec![0f32; len];
@@ -836,7 +953,11 @@ mod tests {
         // padding rows stay zero
         for m in t..lay.t_pad {
             for kk in 0..k {
-                assert_eq!(buf[ref_act_index(lay.t_pad, k, kc, m, kk)], 0, "pad row {m}");
+                assert_eq!(
+                    buf[ref_act_index(lay.t_pad, k, kc, m, kk)],
+                    0,
+                    "pad row {m}"
+                );
             }
         }
     }
@@ -851,11 +972,18 @@ mod tests {
     }
 
     fn check_read_out(t_pad: usize, o: usize, nchunks: usize, ycol: bool, seed: u64) {
-        let lay = OutLayout { t_pad, o, nchunks, ycol };
+        let lay = OutLayout {
+            t_pad,
+            o,
+            nchunks,
+            ycol,
+        };
         assert_eq!(lay.bytes(), nchunks * t_pad * o * 2);
         assert_eq!(lay.chunk_bytes(), t_pad * o * 2);
         let mut rng = Rng::new(seed);
-        let buf: Vec<u16> = (0..lay.bytes() / 2).map(|_| f32_to_half(rng.range(-50.0, 50.0))).collect();
+        let buf: Vec<u16> = (0..lay.bytes() / 2)
+            .map(|_| f32_to_half(rng.range(-50.0, 50.0)))
+            .collect();
         let combos = [(0usize, o), (8, 24), (40, 200), (o - 8, 8)];
         for m in 0..t_pad {
             for &(n0, len) in &combos {
@@ -866,7 +994,10 @@ mod tests {
                 unsafe { read_out_row(buf.as_ptr(), &lay, m, n0, &mut out) };
                 let mut r = vec![0f32; len];
                 ref_read_out(&buf, t_pad, o, nchunks, ycol, m, n0, &mut r);
-                assert_eq!(out, r, "t_pad={t_pad} o={o} nc={nchunks} ycol={ycol} m={m} n0={n0} len={len}");
+                assert_eq!(
+                    out, r,
+                    "t_pad={t_pad} o={o} nc={nchunks} ycol={ycol} m={m} n0={n0} len={len}"
+                );
             }
         }
     }
@@ -883,13 +1014,24 @@ mod tests {
 
     #[test]
     fn out_tile_rows_match_row_reads() {
-        for &(t_pad, o, nchunks) in &[(32usize, 64usize, 1usize), (64, 96, 3), (96, 1056, 2), (1536, 256, 2)] {
+        for &(t_pad, o, nchunks) in &[
+            (32usize, 64usize, 1usize),
+            (64, 96, 3),
+            (96, 1056, 2),
+            (1536, 256, 2),
+        ] {
             for &ycol in &[false, true] {
-                let lay = OutLayout { t_pad, o, nchunks, ycol };
+                let lay = OutLayout {
+                    t_pad,
+                    o,
+                    nchunks,
+                    ycol,
+                };
                 let mut rng = Rng::new(0x51 + o as u64 + 7 * nchunks as u64 + ycol as u64);
                 let buf: Vec<u16> = (0..lay.bytes() / 2).map(|_| rand_half(&mut rng)).collect();
                 for rt in 0..t_pad / TILE {
-                    for &(n0, len) in &[(0, o), (8, 24), (40, 200), (o - 8, 8), (32, 32), (31, 34)] {
+                    for &(n0, len) in &[(0, o), (8, 24), (40, 200), (o - 8, 8), (32, 32), (31, 34)]
+                    {
                         if n0 + len > o {
                             continue;
                         }
@@ -897,13 +1039,30 @@ mod tests {
                         unsafe { read_out_tile_rows(buf.as_ptr(), &lay, rt, n0, len, &mut got) };
                         let mut want = vec![0f32; TILE * len];
                         for r in 0..TILE {
-                            unsafe { read_out_row(buf.as_ptr(), &lay, TILE * rt + r, n0, &mut want[r * len..(r + 1) * len]) };
+                            unsafe {
+                                read_out_row(
+                                    buf.as_ptr(),
+                                    &lay,
+                                    TILE * rt + r,
+                                    n0,
+                                    &mut want[r * len..(r + 1) * len],
+                                )
+                            };
                         }
                         let g: Vec<u32> = got.iter().map(|x| x.to_bits()).collect();
                         let w: Vec<u32> = want.iter().map(|x| x.to_bits()).collect();
                         assert_eq!(g, w, "t_pad={t_pad} o={o} nc={nchunks} ycol={ycol} rt={rt} n0={n0} len={len}");
                         let mut portable = vec![0f32; TILE * len];
-                        unsafe { read_out_tile_rows_portable(buf.as_ptr(), &lay, rt, n0, len, &mut portable) };
+                        unsafe {
+                            read_out_tile_rows_portable(
+                                buf.as_ptr(),
+                                &lay,
+                                rt,
+                                n0,
+                                len,
+                                &mut portable,
+                            )
+                        };
                         assert_eq!(portable.iter().map(|x|x.to_bits()).collect::<Vec<_>>(), w,
                             "portable t_pad={t_pad} o={o} nc={nchunks} ycol={ycol} rt={rt} n0={n0} len={len}");
                     }
@@ -926,11 +1085,21 @@ mod tests {
 
     #[test]
     fn act_tile_rows_match_row_writes() {
-        for &(t, k, kc) in &[(64usize, 128usize, 32usize), (70, 3072, 1536), (96, 12288, 3072)] {
+        for &(t, k, kc) in &[
+            (64usize, 128usize, 32usize),
+            (70, 3072, 1536),
+            (96, 12288, 3072),
+        ] {
             let lay = ActLayout::new(t, k, kc);
             let mut rng = Rng::new(0x77 + k as u64);
             let vals: Vec<f32> = (0..t * k)
-                .map(|i| if i % 5 == 0 { f32::from_bits(rng.next_u32()) } else { rng.range(-60000.0, 60000.0) })
+                .map(|i| {
+                    if i % 5 == 0 {
+                        f32::from_bits(rng.next_u32())
+                    } else {
+                        rng.range(-60000.0, 60000.0)
+                    }
+                })
                 .collect();
             let n16 = lay.bytes() / 2;
             let mut want = vec![0u16; n16];
@@ -962,9 +1131,16 @@ mod tests {
     fn bench_read_out() {
         use std::time::Instant;
         let (t_pad, o) = (1536usize, 27648usize);
-        let lay = OutLayout { t_pad, o, nchunks: 1, ycol: true };
+        let lay = OutLayout {
+            t_pad,
+            o,
+            nchunks: 1,
+            ycol: true,
+        };
         let mut rng = Rng::new(0xbe7c_0001);
-        let buf: Vec<u16> = (0..lay.bytes() / 2).map(|_| rng.next_u64() as u16).collect();
+        let buf: Vec<u16> = (0..lay.bytes() / 2)
+            .map(|_| rng.next_u64() as u16)
+            .collect();
         let elems = (t_pad * o) as f64;
         let mut out = vec![0f32; TILE * 128];
         let mut acc = 0u32;
@@ -983,12 +1159,16 @@ mod tests {
             for rt in 0..t_pad / TILE {
                 for n0 in (0..o).step_by(128) {
                     let len = (o - n0).min(128);
-                    unsafe { read_out_tile_rows(buf.as_ptr(), &lay, rt, n0, len, &mut out[..TILE * len]) };
+                    unsafe {
+                        read_out_tile_rows(buf.as_ptr(), &lay, rt, n0, len, &mut out[..TILE * len])
+                    };
                     acc ^= out[0].to_bits();
                 }
             }
             let ns_b = t1.elapsed().as_nanos() as f64 / elems;
-            println!("rep {rep}: read_out_row {ns_a:.3} ns/elem, read_out_tile_rows {ns_b:.3} ns/elem");
+            println!(
+                "rep {rep}: read_out_row {ns_a:.3} ns/elem, read_out_tile_rows {ns_b:.3} ns/elem"
+            );
         }
         std::hint::black_box(acc);
     }
@@ -1013,7 +1193,11 @@ mod tests {
                 q8.push(rng.byte());
             }
         }
-        let perm = if use_perm { Some(random_perm(&mut rng, o)) } else { None };
+        let perm = if use_perm {
+            Some(random_perm(&mut rng, o))
+        } else {
+            None
+        };
         let perm_ref = perm.as_deref();
 
         let mut dst = vec![0xA5u8; w8_bytes(o, k)]; // dirty: every byte must be overwritten
@@ -1060,7 +1244,11 @@ mod tests {
             for &use_perm in &[false, true] {
                 let mut rng = Rng::new(500 + o as u64 + use_perm as u64);
                 let q8 = random_q8(&mut rng, o, k);
-                let perm = if use_perm { Some(random_perm(&mut rng, o)) } else { None };
+                let perm = if use_perm {
+                    Some(random_perm(&mut rng, o))
+                } else {
+                    None
+                };
                 let perm_ref = perm.as_deref();
                 let sb = w8_strip_bytes(kc);
                 let ntile_o = o / TILE;
@@ -1087,9 +1275,15 @@ mod tests {
                 for ot in 0..o / TILE {
                     let mut strip = vec![0xEEu8; w8_strip_bytes(kc)];
                     pack_w8_strip(&mut strip, &q8, o, k, kc, Some(&perm[..]), chunk, ot);
-                    assert!(!strip.contains(&0xEE), "o={o} k={k} kc={kc} chunk={chunk} ot={ot}: unwritten byte");
+                    assert!(
+                        !strip.contains(&0xEE),
+                        "o={o} k={k} kc={kc} chunk={chunk} ot={ot}: unwritten byte"
+                    );
                     for rec in strip.chunks(W8_TILE_BYTES) {
-                        assert!(rec[W8_SCALE_OFF + 2 * TILE..].iter().all(|&b| b == 0), "padding not zero");
+                        assert!(
+                            rec[W8_SCALE_OFF + 2 * TILE..].iter().all(|&b| b == 0),
+                            "padding not zero"
+                        );
                     }
                 }
             }
@@ -1114,7 +1308,9 @@ mod tests {
                 seen_o[o] = true;
             }
         }
-        assert!(seen_a.iter().all(|&b| b) && seen_w.iter().all(|&b| b) && seen_o.iter().all(|&b| b));
+        assert!(
+            seen_a.iter().all(|&b| b) && seen_w.iter().all(|&b| b) && seen_o.iter().all(|&b| b)
+        );
         assert_eq!(act_elem_idx(0, 0), 0);
         assert_eq!(act_elem_idx(1, 0), 1);
         assert_eq!(act_elem_idx(0, 1), 2);

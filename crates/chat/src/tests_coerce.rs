@@ -34,7 +34,11 @@ fn typed_text(param: &str, raw: &str) -> String {
 /// Is `raw` a value the strict grammar (llama.cpp parity) accepts for these types?
 fn strict_ok(param: &str, raw: &str) -> bool {
     let strict = cfg_with(vec![typed_tool()], false);
-    parser::parse(&strict, GP, &typed_text(param, raw), false).unwrap().tool_calls.len() == 1
+    parser::parse(&strict, GP, &typed_text(param, raw), false)
+        .unwrap()
+        .tool_calls
+        .len()
+        == 1
 }
 
 /// Feed `output` char by char; at every step the streamed calls must equal the final message's
@@ -47,23 +51,45 @@ fn stream_never_shrinks(cfg: &ParserConfig, gp: &str, output: &str) -> ChatMsg {
     let mut seen: Vec<(String, String)> = Vec::new();
     let mut buf = [0u8; 4];
     for c in output.chars() {
-        let d = s.feed(c.encode_utf8(&mut buf), false).unwrap_or_else(|e| panic!("stream error {e:?} on {output:?}"));
+        let d = s
+            .feed(c.encode_utf8(&mut buf), false)
+            .unwrap_or_else(|e| panic!("stream error {e:?} on {output:?}"));
         for d in &d {
             if let Some(i) = d.tool_call_index {
                 // only complete calls stream, each in one piece: a delta on an earlier call
                 // would mean it changed
-                assert_eq!(i, seen.len(), "a streamed call changed at index {i} on {output:?}");
-                seen.push((d.tool_call_delta.name.clone(), d.tool_call_delta.arguments.clone()));
+                assert_eq!(
+                    i,
+                    seen.len(),
+                    "a streamed call changed at index {i} on {output:?}"
+                );
+                seen.push((
+                    d.tool_call_delta.name.clone(),
+                    d.tool_call_delta.arguments.clone(),
+                ));
             }
         }
         steps.push(Json::Array(d.iter().map(|d| d.to_delta_json()).collect()));
     }
-    let d = s.feed("", true).unwrap_or_else(|e| panic!("final error {e:?} on {output:?}"));
+    let d = s
+        .feed("", true)
+        .unwrap_or_else(|e| panic!("final error {e:?} on {output:?}"));
     steps.push(Json::Array(d.iter().map(|d| d.to_delta_json()).collect()));
     let fin = s.msg().clone();
-    assert_eq!(assemble(&steps), msg_view(&fin), "stream != final on {output:?}");
-    let fc: Vec<(String, String)> = fin.tool_calls.iter().map(|c| (c.name.clone(), c.arguments.clone())).collect();
-    assert!(seen.len() <= fc.len() && fc[..seen.len()] == seen[..], "final calls {fc:?} drop or change streamed {seen:?}");
+    assert_eq!(
+        assemble(&steps),
+        msg_view(&fin),
+        "stream != final on {output:?}"
+    );
+    let fc: Vec<(String, String)> = fin
+        .tool_calls
+        .iter()
+        .map(|c| (c.name.clone(), c.arguments.clone()))
+        .collect();
+    assert!(
+        seen.len() <= fc.len() && fc[..seen.len()] == seen[..],
+        "final calls {fc:?} drop or change streamed {seen:?}"
+    );
     fin
 }
 
@@ -76,14 +102,25 @@ fn check(param: &str, raw: &str, want: Option<Json>) {
     match &want {
         Some(w) => {
             assert_eq!(m.tool_calls.len(), 1, "{param}={raw:?}: {m:?}");
-            let args: Json = serde_json::from_str(&m.tool_calls[0].arguments).unwrap_or_else(|e| panic!("{param}={raw:?}: bad JSON {e}: {}", m.tool_calls[0].arguments));
+            let args: Json = serde_json::from_str(&m.tool_calls[0].arguments).unwrap_or_else(|e| {
+                panic!(
+                    "{param}={raw:?}: bad JSON {e}: {}",
+                    m.tool_calls[0].arguments
+                )
+            });
             assert_eq!(&args[param], w, "{param}={raw:?}");
             assert_eq!(args["s"], "x");
             assert_eq!(m.content, "Calling.");
         }
         None => {
-            assert!(m.tool_calls.is_empty(), "{param}={raw:?} must stay a failure: {m:?}");
-            assert!(m.content.contains("<tool_call>") && m.content.contains(raw.trim()), "{param}={raw:?}: text fallback {m:?}");
+            assert!(
+                m.tool_calls.is_empty(),
+                "{param}={raw:?} must stay a failure: {m:?}"
+            );
+            assert!(
+                m.content.contains("<tool_call>") && m.content.contains(raw.trim()),
+                "{param}={raw:?}: text fallback {m:?}"
+            );
         }
     }
     let fin = stream_never_shrinks(&cfg, GP, &text);
@@ -102,10 +139,23 @@ fn check(param: &str, raw: &str, want: Option<Json>) {
     let sm = parser::parse(&strict, GP, &text, false).unwrap();
     if strict_ok(param, raw) {
         let sv: Json = serde_json::from_str(&sm.tool_calls[0].arguments).unwrap();
-        let w = want.as_ref().unwrap_or_else(|| panic!("{param}={raw:?}: strict accepts what lenient rejects"));
-        assert!(&sv[param] == w || (sv[param].as_f64().is_some() && sv[param].as_f64() == w.as_f64()), "strict {param}={raw:?}: {sm:?}");
-        if !sm.tool_calls[0].arguments.contains(&format!("\"{param}\":\"")) {
-            assert!(sm.tool_calls[0].arguments.contains(&format!("\"{param}\":{raw}")), "strict is verbatim: {param}={raw:?}: {sm:?}");
+        let w = want
+            .as_ref()
+            .unwrap_or_else(|| panic!("{param}={raw:?}: strict accepts what lenient rejects"));
+        assert!(
+            &sv[param] == w || (sv[param].as_f64().is_some() && sv[param].as_f64() == w.as_f64()),
+            "strict {param}={raw:?}: {sm:?}"
+        );
+        if !sm.tool_calls[0]
+            .arguments
+            .contains(&format!("\"{param}\":\""))
+        {
+            assert!(
+                sm.tool_calls[0]
+                    .arguments
+                    .contains(&format!("\"{param}\":{raw}")),
+                "strict is verbatim: {param}={raw:?}: {sm:?}"
+            );
         }
     } else {
         assert!(sm.tool_calls.is_empty(), "strict {param}={raw:?}: {sm:?}");
@@ -125,7 +175,10 @@ fn coerce_integer() {
         ("\"2.000\"", Some(json!(2))),
         ("-0.0", Some(json!(0))),
         ("9007199254740992.0", Some(json!(9007199254740992i64))),
-        ("123456789012345678901234567890", Some(json!(123456789012345678901234567890.0f64))), // strict-valid, verbatim
+        (
+            "123456789012345678901234567890",
+            Some(json!(123456789012345678901234567890.0f64)),
+        ), // strict-valid, verbatim
         // the strict grammar accepts any JSON number for an integer (as llama.cpp does): a
         // non-integral one is passed on verbatim, as before (`1e400` too, not tested: not JSON-
         // representable as f64 by serde)
@@ -206,7 +259,11 @@ fn coerce_nested_json_from_string() {
         ("a", "  [\"x\"]  ", Some(json!(["x"]))),
         ("o", "{\"k\": 1}", Some(json!({"k": 1}))),
         ("o", "\"{\\\"k\\\": 1}\"", Some(json!({"k": 1}))),
-        ("o", "\"{\\\"k\\\": {\\\"deep\\\": [1, true, null]}}\"", Some(json!({"k": {"deep": [1, true, null]}}))),
+        (
+            "o",
+            "\"{\\\"k\\\": {\\\"deep\\\": [1, true, null]}}\"",
+            Some(json!({"k": {"deep": [1, true, null]}})),
+        ),
         // Python containers, wrong container type, broken JSON, double quoting: failures
         ("a", "['x', 'y']", None),
         ("a", "\"{\\\"k\\\": 1}\"", None),
@@ -237,11 +294,27 @@ fn coerce_enum() {
 #[test]
 fn string_typed_parameters_are_never_coerced() {
     // string-only: the text verbatim (no trimming, no unquoting)
-    for raw in ["\"5\"", "True", "None", "1.0", "\"[1]\"", "  padded  ", "{\"k\": 1}", "null"] {
+    for raw in [
+        "\"5\"",
+        "True",
+        "None",
+        "1.0",
+        "\"[1]\"",
+        "  padded  ",
+        "{\"k\": 1}",
+        "null",
+    ] {
         check("str", raw, Some(json!(raw)));
     }
     // string-capable mixed type: JSON of the other type when it parses strictly, else the text
-    for (raw, want) in [("\"5\"", json!("\"5\"")), ("True", json!("True")), ("1.0", json!(1.0)), ("5", json!(5)), (" 5 ", json!(" 5 ")), ("\"[1]\"", json!("\"[1]\""))] {
+    for (raw, want) in [
+        ("\"5\"", json!("\"5\"")),
+        ("True", json!("True")),
+        ("1.0", json!(1.0)),
+        ("5", json!(5)),
+        (" 5 ", json!(" 5 ")),
+        ("\"[1]\"", json!("\"[1]\"")),
+    ] {
         check("ms", raw, Some(want));
     }
 }
@@ -272,7 +345,13 @@ fn coerce_whitespace_trimming() {
 fn coerce_needs_the_close_tag() {
     let cfg = cfg_with(vec![typed_tool()], true);
     for raw in ["False", "\"5\"", " 5", "\"[\\\"x\\\"]\""] {
-        let p = if raw.contains('[') { "a" } else if raw == "False" { "b" } else { "i" };
+        let p = if raw.contains('[') {
+            "a"
+        } else if raw == "False" {
+            "b"
+        } else {
+            "i"
+        };
         let full = typed_text(p, raw);
         let vstart = full.find(&format!("<parameter={p}>\n")).unwrap() + p.len() + 13;
         let close = full.find("\n</parameter>\n</function>").unwrap();
@@ -281,10 +360,16 @@ fn coerce_needs_the_close_tag() {
             if !full.is_char_boundary(cut) {
                 continue;
             }
-            let (m, _, complete) = parser::parse_full(&cfg, &format!("{GP}{}", &full[..cut]), true).unwrap();
+            let (m, _, complete) =
+                parser::parse_full(&cfg, &format!("{GP}{}", &full[..cut]), true).unwrap();
             assert_eq!(complete, 0, "{raw:?} cut {cut}");
             if let Some(c) = m.tool_calls.first() {
-                assert!(c.arguments.ends_with(&format!("\"{p}\":")) || c.arguments.ends_with(&format!("\"{p}\":{}", &full[vstart..cut])), "{raw:?} cut {cut}: {c:?}");
+                assert!(
+                    c.arguments.ends_with(&format!("\"{p}\":"))
+                        || c.arguments
+                            .ends_with(&format!("\"{p}\":{}", &full[vstart..cut])),
+                    "{raw:?} cut {cut}: {c:?}"
+                );
             }
             // a final parse there: no call (the value is not closed), its text is kept
             let fm = parser::parse(&cfg, GP, &full[..cut], false).unwrap();
@@ -301,7 +386,17 @@ fn coerce_needs_the_close_tag() {
 fn g0prime_replace_all_spellings_stream() {
     let cfg = cfg_with(vec![agent_edit_tool()], true);
     let strict = cfg_with(vec![agent_edit_tool()], false);
-    for (b, want) in [("False", Some("false")), ("True", Some("true")), ("false", Some("false")), ("\"false\"", Some("false")), ("FALSE", Some("false")), (" False ", Some("false")), ("Fals", None), ("False.", None), ("0", None)] {
+    for (b, want) in [
+        ("False", Some("false")),
+        ("True", Some("true")),
+        ("false", Some("false")),
+        ("\"false\"", Some("false")),
+        ("FALSE", Some("false")),
+        (" False ", Some("false")),
+        ("Fals", None),
+        ("False.", None),
+        ("0", None),
+    ] {
         let text = g0prime_text(b);
         let fin = stream_never_shrinks(&cfg, GP, &text);
         match want {
@@ -336,7 +431,11 @@ fn g0prime_corpus() -> (Vec<Tool>, Vec<String>) {
         match v["kind"].as_str() {
             Some("tools") => {
                 for t in v["tools"].as_array().unwrap() {
-                    tools.push(Tool { name: t["name"].as_str().unwrap().into(), description: String::new(), parameters: t["parameters"].clone() });
+                    tools.push(Tool {
+                        name: t["name"].as_str().unwrap().into(),
+                        description: String::new(),
+                        parameters: t["parameters"].clone(),
+                    });
                 }
             }
             Some("output") => outs.push(v["output"].as_str().unwrap().to_string()),
@@ -349,10 +448,32 @@ fn g0prime_corpus() -> (Vec<Tool>, Vec<String>) {
 /// Spellings per parameter type: (raw, expected JSON or None = the call must fail).
 fn spellings(schema: &Json) -> Vec<(&'static str, Option<Json>)> {
     match schema["type"].as_str() {
-        Some("boolean") => vec![("True", Some(json!(true))), ("False", Some(json!(false))), ("\"true\"", Some(json!(true))), (" false\r", Some(json!(false))), ("yes", None), ("Tru", None)],
-        Some("integer") => vec![("\"5\"", Some(json!(5))), ("5.0", Some(json!(5))), ("\" 12 \"", Some(json!(12))), ("\"5.5\"", None), ("05", None), ("None", None)],
-        Some("number") => vec![("\"2.5\"", Some(json!(2.5))), ("30", Some(json!(30))), ("\"x\"", None)],
-        Some("array") => vec![("\"[]\"", Some(json!([]))), ("[]", Some(json!([]))), ("['a']", None)],
+        Some("boolean") => vec![
+            ("True", Some(json!(true))),
+            ("False", Some(json!(false))),
+            ("\"true\"", Some(json!(true))),
+            (" false\r", Some(json!(false))),
+            ("yes", None),
+            ("Tru", None),
+        ],
+        Some("integer") => vec![
+            ("\"5\"", Some(json!(5))),
+            ("5.0", Some(json!(5))),
+            ("\" 12 \"", Some(json!(12))),
+            ("\"5.5\"", None),
+            ("05", None),
+            ("None", None),
+        ],
+        Some("number") => vec![
+            ("\"2.5\"", Some(json!(2.5))),
+            ("30", Some(json!(30))),
+            ("\"x\"", None),
+        ],
+        Some("array") => vec![
+            ("\"[]\"", Some(json!([]))),
+            ("[]", Some(json!([]))),
+            ("['a']", None),
+        ],
         _ => vec![],
     }
 }
@@ -388,38 +509,81 @@ fn fuzz_g0prime_corpus_typed_spellings() {
         let ends: Vec<usize> = out.match_indices("</function>").map(|(i, _)| i).collect();
         assert_eq!(ends.len(), base.tool_calls.len(), "{out:?}");
         for (ci, &end) in ends.iter().enumerate() {
-            let tool = tools.iter().find(|t| t.name == base.tool_calls[ci].name).unwrap();
+            let tool = tools
+                .iter()
+                .find(|t| t.name == base.tool_calls[ci].name)
+                .unwrap();
             for (pname, schema) in tool.parameters["properties"].as_object().unwrap() {
-                if out[..end].rfind("<function=").map(|f| out[f..end].contains(&format!("<parameter={pname}>"))).unwrap_or(false) {
+                if out[..end]
+                    .rfind("<function=")
+                    .map(|f| out[f..end].contains(&format!("<parameter={pname}>")))
+                    .unwrap_or(false)
+                {
                     continue; // already written by the model
                 }
                 for (raw, want) in spellings(schema) {
-                    let text = format!("{}<parameter={pname}>\n{raw}\n</parameter>\n{}", &out[..end], &out[end..]);
+                    let text = format!(
+                        "{}<parameter={pname}>\n{raw}\n</parameter>\n{}",
+                        &out[..end],
+                        &out[end..]
+                    );
                     let m = parser::parse(&lenient, GP, &text, false).unwrap();
                     match &want {
                         Some(w) => {
-                            assert_eq!(m.tool_calls.len(), base.tool_calls.len(), "{pname}={raw:?} in {text:?}");
-                            let args: Json = serde_json::from_str(&m.tool_calls[ci].arguments).unwrap();
+                            assert_eq!(
+                                m.tool_calls.len(),
+                                base.tool_calls.len(),
+                                "{pname}={raw:?} in {text:?}"
+                            );
+                            let args: Json =
+                                serde_json::from_str(&m.tool_calls[ci].arguments).unwrap();
                             assert_eq!(&args[pname.as_str()], w, "{pname}={raw:?}");
-                            for (k, v) in serde_json::from_str::<Json>(&base.tool_calls[ci].arguments).unwrap().as_object().unwrap() {
-                                assert_eq!(&args[k.as_str()], v, "{pname}={raw:?}: other argument {k} changed");
+                            for (k, v) in
+                                serde_json::from_str::<Json>(&base.tool_calls[ci].arguments)
+                                    .unwrap()
+                                    .as_object()
+                                    .unwrap()
+                            {
+                                assert_eq!(
+                                    &args[k.as_str()],
+                                    v,
+                                    "{pname}={raw:?}: other argument {k} changed"
+                                );
                             }
                             n_ok += 1;
                         }
                         None => {
                             // the call and everything after it come back as text, nothing lost
                             assert_eq!(m.tool_calls.len(), ci, "{pname}={raw:?}");
-                            assert!(m.content.contains(&format!("<parameter={pname}>\n{raw}")), "{pname}={raw:?}");
+                            assert!(
+                                m.content.contains(&format!("<parameter={pname}>\n{raw}")),
+                                "{pname}={raw:?}"
+                            );
                             n_fail += 1;
                         }
                     }
                     let fin = stream_never_shrinks(&lenient, GP, &text);
-                    assert_eq!(fin.tool_calls, m.tool_calls.iter().map(|c| ToolCall { id: "id".into(), ..c.clone() }).collect::<Vec<_>>(), "{pname}={raw:?}");
+                    assert_eq!(
+                        fin.tool_calls,
+                        m.tool_calls
+                            .iter()
+                            .map(|c| ToolCall {
+                                id: "id".into(),
+                                ..c.clone()
+                            })
+                            .collect::<Vec<_>>(),
+                        "{pname}={raw:?}"
+                    );
                     n_cuts += fuzz_truncations(&lenient, GP, &text);
                     // strict: the call carries the value only if the grammar accepts it verbatim
                     let sm = parser::parse(&strict, GP, &text, false).unwrap();
                     if sm.tool_calls.len() > ci {
-                        assert!(sm.tool_calls[ci].arguments.contains(&format!("\"{pname}\":{raw}")), "strict {pname}={raw:?}");
+                        assert!(
+                            sm.tool_calls[ci]
+                                .arguments
+                                .contains(&format!("\"{pname}\":{raw}")),
+                            "strict {pname}={raw:?}"
+                        );
                     }
                     n_cases += 1;
                 }

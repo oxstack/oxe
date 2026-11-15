@@ -5,10 +5,15 @@ fn main() {
     sched::cli::exit_zero_on_epipe(); // F-CI9: `| head` ends with status 0, not a core dump
     let args: Vec<String> = std::env::args().collect();
     let meta = args.iter().any(|a| a == "--meta");
-    let path = args.iter().skip(1).find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| {
-        eprintln!("usage: gguf-dump [--meta] MODEL.gguf");
-        std::process::exit(2)
-    });
+    let path = args
+        .iter()
+        .skip(1)
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .unwrap_or_else(|| {
+            eprintln!("usage: gguf-dump [--meta] MODEL.gguf");
+            std::process::exit(2)
+        });
     let g = gguf::Gguf::open(&path).unwrap_or_else(|e| {
         eprintln!("gguf-dump: {e}");
         std::process::exit(2)
@@ -16,7 +21,11 @@ fn main() {
     let h = &g.header;
     if meta {
         for (k, v) in &h.metadata {
-            if k.starts_with("tokenizer.ggml.") && !k.ends_with("_id") && !k.ends_with(".model") && !k.ends_with(".pre") {
+            if k.starts_with("tokenizer.ggml.")
+                && !k.ends_with("_id")
+                && !k.ends_with(".model")
+                && !k.ends_with(".pre")
+            {
                 continue;
             }
             let s = format!("{v:?}");

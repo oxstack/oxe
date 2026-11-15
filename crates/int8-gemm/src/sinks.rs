@@ -28,7 +28,11 @@ pub fn quant_chunk_ref(x: &[f32], dst: &mut [i8], stride: usize) -> f32 {
     for &a in x {
         amax = amax.max(a.abs()); // f32::max ignores a NaN operand
     }
-    let (scale, inv) = if amax > 0.0 && amax.is_finite() { (amax / 127.0, 127.0 / amax) } else { (0.0, 0.0) };
+    let (scale, inv) = if amax > 0.0 && amax.is_finite() {
+        (amax / 127.0, 127.0 / amax)
+    } else {
+        (0.0, 0.0)
+    };
     for (s, piece) in x.chunks_exact(8).enumerate() {
         for i in 0..8 {
             dst[s * stride + i] = (piece[i] * inv).round().clamp(-127.0, 127.0) as i8;
@@ -78,9 +82,15 @@ pub fn rope_scale_ref(row: &[f32], r: f32, scale: &[f32], pe: &[f32], vals: &mut
 /// `stride >= 8`, `dst.len() >= (x.len()/8 - 1) * stride + 8`.
 pub fn quant_chunk(x: &[f32], dst: &mut [i8], stride: usize) -> f32 {
     let n = x.len();
-    assert!(n >= 8 && n % 8 == 0, "quant_chunk: n must be a multiple of 8 and >= 8");
+    assert!(
+        n >= 8 && n % 8 == 0,
+        "quant_chunk: n must be a multiple of 8 and >= 8"
+    );
     assert!(stride >= 8, "quant_chunk: stride must be >= 8");
-    assert!(dst.len() >= (n / 8 - 1) * stride + 8, "quant_chunk: dst too short");
+    assert!(
+        dst.len() >= (n / 8 - 1) * stride + 8,
+        "quant_chunk: dst too short"
+    );
     // SAFETY: lengths checked above; x and dst are valid for the reads/writes the kernel performs.
     unsafe { raw::i8g_quant_chunk(x.as_ptr(), n, dst.as_mut_ptr(), stride as isize) }
 }
@@ -103,7 +113,16 @@ pub fn rope_scale(row: &[f32], r: f32, scale: &[f32], pe: &[f32], vals: &mut [f3
     assert_eq!(pe.len(), 2 * hd, "rope_scale: pe length");
     assert_eq!(vals.len(), hd, "rope_scale: vals length");
     // SAFETY: lengths checked above.
-    unsafe { raw::i8g_rope_scale(row.as_ptr(), hd, r, scale.as_ptr(), pe.as_ptr(), vals.as_mut_ptr()) }
+    unsafe {
+        raw::i8g_rope_scale(
+            row.as_ptr(),
+            hd,
+            r,
+            scale.as_ptr(),
+            pe.as_ptr(),
+            vals.as_mut_ptr(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -188,12 +207,23 @@ mod tests {
         let mut got = init.clone();
         let want_scale = quant_chunk_ref(x, &mut want[..used], stride);
         let got_scale = quant_chunk(x, &mut got[..used], stride);
-        assert_eq!(got_scale.to_bits(), want_scale.to_bits(), "{}: scale got {} want {}", what, got_scale, want_scale);
+        assert_eq!(
+            got_scale.to_bits(),
+            want_scale.to_bits(),
+            "{}: scale got {} want {}",
+            what,
+            got_scale,
+            want_scale
+        );
         assert_eq!(got, want, "{}: codes (stride {})", what, stride);
         for p in 0..total {
             let is_code = p < used && p / stride < nchunks && p % stride < 8;
             if !is_code {
-                assert_eq!(got[p], init[p], "{}: guard byte {} modified (stride {})", what, p, stride);
+                assert_eq!(
+                    got[p], init[p],
+                    "{}: guard byte {} modified (stride {})",
+                    what, p, stride
+                );
             }
         }
     }
@@ -241,13 +271,21 @@ mod tests {
                 // inf lanes mixed with finite values (scale 0, every code 0 or NaN->0)
                 let mut inf_mix: Vec<f32> = (0..n).map(|_| rng.unit() * 5.0).collect();
                 for i in (0..n).step_by(7) {
-                    inf_mix[i] = if i % 2 == 0 { f32::INFINITY } else { f32::NEG_INFINITY };
+                    inf_mix[i] = if i % 2 == 0 {
+                        f32::INFINITY
+                    } else {
+                        f32::NEG_INFINITY
+                    };
                 }
                 quant_case("inf lanes", &inf_mix, stride);
                 // huge and denormal magnitudes
-                let huge: Vec<f32> = (0..n).map(|i| if i % 2 == 0 { 3.0e38 } else { -2.5e38 }).collect();
+                let huge: Vec<f32> = (0..n)
+                    .map(|i| if i % 2 == 0 { 3.0e38 } else { -2.5e38 })
+                    .collect();
                 quant_case("huge", &huge, stride);
-                let tiny: Vec<f32> = (0..n).map(|i| if i % 2 == 0 { 1e-40 } else { -3e-41 }).collect();
+                let tiny: Vec<f32> = (0..n)
+                    .map(|i| if i % 2 == 0 { 1e-40 } else { -3e-41 })
+                    .collect();
                 quant_case("denormal", &tiny, stride);
                 // a mix of specials and random values
                 let mixed: Vec<f32> = (0..n)
@@ -317,7 +355,9 @@ mod tests {
             // every special value in both halves, plus random values with specials mixed in
             let row: Vec<f32> = (0..2 * u).map(|i| SPECIALS[i % SPECIALS.len()]).collect();
             silu_case("silu specials (rotating)", &row);
-            let row: Vec<f32> = (0..2 * u).map(|i| SPECIALS[(i / 2) % SPECIALS.len()]).collect();
+            let row: Vec<f32> = (0..2 * u)
+                .map(|i| SPECIALS[(i / 2) % SPECIALS.len()])
+                .collect();
             silu_case("silu specials (gate side)", &row);
             for _ in 0..8 {
                 let row: Vec<f32> = (0..2 * u)
@@ -333,7 +373,10 @@ mod tests {
             }
             // large |a| around the exp clamp, both signs
             let row: Vec<f32> = (0..2 * u)
-                .map(|i| [100.0, -100.0, 87.0, -87.0, 88.0, -88.0, 86.9, -86.9][i % 8] * (1.0 + (i % 3) as f32))
+                .map(|i| {
+                    [100.0, -100.0, 87.0, -87.0, 88.0, -88.0, 86.9, -86.9][i % 8]
+                        * (1.0 + (i % 3) as f32)
+                })
                 .collect();
             silu_case("silu clamp region", &row);
         }
@@ -350,14 +393,29 @@ mod tests {
     #[test]
     fn rope_scale_matches_scalar() {
         let mut rng = Rng(0x5151_7A7A_9393_1010);
-        let rs = [1.0f32, -0.0, 0.0, 3.7e-3, 1e4, -2.5, f32::NAN, f32::INFINITY];
+        let rs = [
+            1.0f32,
+            -0.0,
+            0.0,
+            3.7e-3,
+            1e4,
+            -2.5,
+            f32::NAN,
+            f32::INFINITY,
+        ];
         for &hd in &LENS {
             for &m in &MAGS {
                 for &r in &rs {
                     let row: Vec<f32> = (0..hd).map(|_| rng.unit() * m).collect();
                     let scale: Vec<f32> = (0..hd).map(|_| rng.unit().abs() * 2.0).collect();
                     let pe: Vec<f32> = (0..2 * hd).map(|_| rng.unit()).collect();
-                    rope_case(&format!("rope hd={} m={} r={}", hd, m, r), &row, r, &scale, &pe);
+                    rope_case(
+                        &format!("rope hd={} m={} r={}", hd, m, r),
+                        &row,
+                        r,
+                        &scale,
+                        &pe,
+                    );
                 }
             }
             // specials in row, scale and pe

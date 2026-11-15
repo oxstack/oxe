@@ -13,14 +13,22 @@
 
 use super::{long_engine, long_parts, rec_bytes, rel_diff, synth_state, synth_state_shift};
 use crate::engine::pfattn::{self, AutoPolicy, PfAttn, PfKernel, PfPath, PFA_MIN_KV};
-use crate::engine::{ctx_mem_with, ctx_mem_with_auto, Engine, KvType, ATTN_FUSED_1LANE_MIN_KV, ATTN_FUSED_MIN_KV};
+use crate::engine::{
+    ctx_mem_with, ctx_mem_with_auto, Engine, KvType, ATTN_FUSED_1LANE_MIN_KV, ATTN_FUSED_MIN_KV,
+};
 use crate::plan::Plan;
 use crate::tests::{bits_eq, fixture, header, kv_all, same_state};
 use crate::weights::WeightStore;
 
 const N_CTX: usize = 131_072;
 
-fn engine_mode<'a>(plan: &'a Plan, ws: &'a WeightStore, n_ctx: usize, kv: KvType, mode: PfAttn) -> Engine<'a> {
+fn engine_mode<'a>(
+    plan: &'a Plan,
+    ws: &'a WeightStore,
+    n_ctx: usize,
+    kv: KvType,
+    mode: PfAttn,
+) -> Engine<'a> {
     let mut e = long_engine(plan, ws, n_ctx, kv, 0, None);
     e.set_pf_attn(mode);
     e
@@ -28,7 +36,14 @@ fn engine_mode<'a>(plan: &'a Plan, ws: &'a WeightStore, n_ctx: usize, kv: KvType
 
 /// Loads `blob` (n_pos positions) into `e`, prefills `toks` in ubatches of `ub` with every row's
 /// hidden state; returns (hidden rows, logits after the last token).
-fn deep_prefill(e: &Engine, pool: &sched::Pool, blob: &[u8], n_pos: usize, toks: &[u32], ub: usize) -> (Vec<f32>, Vec<f32>) {
+fn deep_prefill(
+    e: &Engine,
+    pool: &sched::Pool,
+    blob: &[u8],
+    n_pos: usize,
+    toks: &[u32],
+    ub: usize,
+) -> (Vec<f32>, Vec<f32>) {
     e.read_state(&mut &blob[..], n_pos).unwrap();
     let mut h = Vec::new();
     e.prefill_ext(pool, toks, ub, Some(&mut h)).unwrap();
@@ -56,17 +71,36 @@ fn pf_fa2_matches_tiled_at_8k_40k_70k() {
         let f = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Fa2);
         assert!(f.pf_attn_fa2() && !t.pf_attn_fa2());
         let (hf, lf) = deep_prefill(&f, &pool, &blob, n_pos, &tk, 256);
-        assert!(hf.iter().chain(&lf).all(|x| x.is_finite()), "n_pos {n_pos}: non-finite fa2 output");
-        assert!(same_state(&t.dump_state(), &f.dump_state()), "n_pos {n_pos}: fa2 changed the KV / recurrent state");
+        assert!(
+            hf.iter().chain(&lf).all(|x| x.is_finite()),
+            "n_pos {n_pos}: non-finite fa2 output"
+        );
+        assert!(
+            same_state(&t.dump_state(), &f.dump_state()),
+            "n_pos {n_pos}: fa2 changed the KV / recurrent state"
+        );
         let (dh, dl) = (rel_diff(&hf, &ht), rel_diff(&lf, &lt));
         // sensitivity control: the tiled prefill over V misaligned by one position
         let z = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Tiled);
-        let (hz, lz) = deep_prefill(&z, &pool, &synth_state_shift(&z, n_pos, &rec, 1), n_pos, &tk, 256);
+        let (hz, lz) = deep_prefill(
+            &z,
+            &pool,
+            &synth_state_shift(&z, n_pos, &rec, 1),
+            n_pos,
+            &tk,
+            256,
+        );
         let (oh, ol) = (rel_diff(&hz, &ht), rel_diff(&lz, &lt));
         eprintln!("pf-fa2 n_pos {n_pos}: fa2 vs tiled hidden {dh:.2e} logits {dl:.2e}; off-by-one context hidden {oh:.2e} logits {ol:.2e}");
-        assert!(dh < 0.05 && dl < 0.05, "n_pos {n_pos}: fa2 vs tiled hidden {dh} logits {dl}");
+        assert!(
+            dh < 0.05 && dl < 0.05,
+            "n_pos {n_pos}: fa2 vs tiled hidden {dh} logits {dl}"
+        );
         assert!(ol > 5.0 * (dl + 1e-3), "n_pos {n_pos}: the comparison cannot see an off-by-one context (logits {ol} vs fa2 {dl})");
-        assert!(oh > 5.0 * dh, "n_pos {n_pos}: hidden rows cannot see an off-by-one context ({oh} vs fa2 {dh})");
+        assert!(
+            oh > 5.0 * dh,
+            "n_pos {n_pos}: hidden rows cannot see an off-by-one context ({oh} vs fa2 {dh})"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -96,11 +130,20 @@ fn pf_fa2_keeps_today_below_8k_bitwise() {
         let (fa, hf, rf, sf) = run(mode);
         let (ft, ht, rt, st) = run(PfAttn::Tiled);
         assert!(fa && !ft, "n_ctx {n_ctx}: mode {mode:?} must select fa2");
-        assert!(bits_eq(&hf, &ht), "n_ctx {n_ctx}: hidden rows differ below the fa2 cutoff");
+        assert!(
+            bits_eq(&hf, &ht),
+            "n_ctx {n_ctx}: hidden rows differ below the fa2 cutoff"
+        );
         for (i, (a, b)) in rf.iter().zip(&rt).enumerate() {
-            assert!(bits_eq(a, b), "n_ctx {n_ctx}: logits row {i} differs below the fa2 cutoff");
+            assert!(
+                bits_eq(a, b),
+                "n_ctx {n_ctx}: logits row {i} differs below the fa2 cutoff"
+            );
         }
-        assert!(same_state(&sf, &st), "n_ctx {n_ctx}: state differs below the fa2 cutoff");
+        assert!(
+            same_state(&sf, &st),
+            "n_ctx {n_ctx}: state differs below the fa2 cutoff"
+        );
     }
     // (b) crossing: ubatches at 7600 (n_kv 7936), 7856 (8192): tiled; from 8112 (8448): fa2
     let n_pos = 7_600;
@@ -113,9 +156,18 @@ fn pf_fa2_keeps_today_below_8k_bitwise() {
     let (hf, _) = deep_prefill(&f, &pool, &blob, n_pos, &tk, 256);
     let cut = 512;
     // (the ubatch's last token sets its n_kv)
-    assert!(crate::engine::padded_n_kv(n_pos + cut - 1, N_CTX) <= PFA_MIN_KV && crate::engine::padded_n_kv(n_pos + cut + 255, N_CTX) > PFA_MIN_KV);
-    assert!(bits_eq(&hf[..cut * ne], &ht[..cut * ne]), "rows with n_kv <= PFA_MIN_KV must keep the tiled bits");
-    assert!(!bits_eq(&hf[cut * ne..], &ht[cut * ne..]), "rows beyond PFA_MIN_KV did not run fa2");
+    assert!(
+        crate::engine::padded_n_kv(n_pos + cut - 1, N_CTX) <= PFA_MIN_KV
+            && crate::engine::padded_n_kv(n_pos + cut + 255, N_CTX) > PFA_MIN_KV
+    );
+    assert!(
+        bits_eq(&hf[..cut * ne], &ht[..cut * ne]),
+        "rows with n_kv <= PFA_MIN_KV must keep the tiled bits"
+    );
+    assert!(
+        !bits_eq(&hf[cut * ne..], &ht[cut * ne..]),
+        "rows beyond PFA_MIN_KV did not run fa2"
+    );
     assert!(rel_diff(&hf[cut * ne..], &ht[cut * ne..]) < 0.05);
     assert!(same_state(&t.dump_state(), &f.dump_state()));
     std::fs::remove_dir_all(&dir).ok();
@@ -131,15 +183,28 @@ fn pf_fa2_and_attn_threads_are_thread_invariant() {
     let mut want_tiled: Option<(Vec<f32>, Vec<f32>)> = None;
     for nt in [1usize, 3] {
         let (dir, plan, ws, _, pool) = long_parts(&format!("pfa2thr{nt}"), nt, false);
-        for (mode, attn_threads) in [(PfAttn::Fa2, 0usize), (PfAttn::Fa2, 1), (PfAttn::Fa2, 2), (PfAttn::Tiled, 0), (PfAttn::Tiled, 1)] {
+        for (mode, attn_threads) in [
+            (PfAttn::Fa2, 0usize),
+            (PfAttn::Fa2, 1),
+            (PfAttn::Fa2, 2),
+            (PfAttn::Tiled, 0),
+            (PfAttn::Tiled, 1),
+        ] {
             let mut e = engine_mode(&plan, &ws, N_CTX, KvType::F16, mode);
             e.set_pf_attn_threads(attn_threads);
             let rec = rec_bytes(&e, &pool);
             let blob = synth_state(&e, n_pos, &rec);
             let got = deep_prefill(&e, &pool, &blob, n_pos, &tk, 256);
-            let slot = if mode == PfAttn::Fa2 { &mut want } else { &mut want_tiled };
+            let slot = if mode == PfAttn::Fa2 {
+                &mut want
+            } else {
+                &mut want_tiled
+            };
             if let Some((h, l)) = slot.as_ref() {
-                assert!(bits_eq(&got.0, h) && bits_eq(&got.1, l), "{mode:?}: {nt} threads, attention on {attn_threads}: result differs");
+                assert!(
+                    bits_eq(&got.0, h) && bits_eq(&got.1, l),
+                    "{mode:?}: {nt} threads, attention on {attn_threads}: result differs"
+                );
             } else {
                 *slot = Some(got);
             }
@@ -156,19 +221,34 @@ fn pf_fa2_and_attn_threads_are_thread_invariant() {
 fn pf_fa2_scratch_is_o_chunk() {
     let (dir, plan, ws, _, pool) = long_parts("pfa2mem", 2, false);
     let d = &plan.desc;
-    let pp = |n: usize, kv: KvType, m: PfAttn| ctx_mem_with(d, n, kv, 1, 1, 1, m).prefill_per_thread;
+    let pp =
+        |n: usize, kv: KvType, m: PfAttn| ctx_mem_with(d, n, kv, 1, 1, 1, m).prefill_per_thread;
     let f128 = pp(131_072, KvType::F16, PfAttn::Fa2);
     let f256 = pp(262_144, KvType::F16, PfAttn::Fa2);
     assert_eq!(f128, f256, "fa2 prefill scratch grows with the context");
     let t8 = pp(PFA_MIN_KV, KvType::F16, PfAttn::Tiled);
-    assert!(f256 > t8 && f256 - t8 <= pfattn::Scratch::bytes(pfattn::PFA_MAX_COLS, d.head_dim), "fa2 {f256} vs capped tiled {t8}");
+    assert!(
+        f256 > t8 && f256 - t8 <= pfattn::Scratch::bytes(pfattn::PFA_MAX_COLS, d.head_dim),
+        "fa2 {f256} vs capped tiled {t8}"
+    );
     let t256 = pp(262_144, KvType::F16, PfAttn::Tiled);
     assert!(t256 > 16 * f256, "tiled {t256} vs fa2 {f256} at 262144");
-    assert_eq!(pp(131_072, KvType::F16, PfAttn::Auto), pp(131_072, KvType::F16, PfAttn::Tiled));
+    assert_eq!(
+        pp(131_072, KvType::F16, PfAttn::Auto),
+        pp(131_072, KvType::F16, PfAttn::Tiled)
+    );
     assert_eq!(pp(262_144, KvType::F16, PfAttn::Auto), f256);
-    assert_eq!(pp(262_144, KvType::KV8, PfAttn::Fa2), pp(262_144, KvType::KV8, PfAttn::Tiled));
+    assert_eq!(
+        pp(262_144, KvType::KV8, PfAttn::Fa2),
+        pp(262_144, KvType::KV8, PfAttn::Tiled)
+    );
     let tk = toks(300, 3, 2);
-    for (n_ctx, mode) in [(N_CTX, PfAttn::Tiled), (N_CTX, PfAttn::Fa2), (262_144, PfAttn::Fa2), (262_144, PfAttn::Auto)] {
+    for (n_ctx, mode) in [
+        (N_CTX, PfAttn::Tiled),
+        (N_CTX, PfAttn::Fa2),
+        (262_144, PfAttn::Fa2),
+        (262_144, PfAttn::Auto),
+    ] {
         let e = engine_mode(&plan, &ws, n_ctx, KvType::F16, mode);
         let rec = rec_bytes(&e, &pool);
         let blob = synth_state(&e, 9_000, &rec);
@@ -178,8 +258,23 @@ fn pf_fa2_scratch_is_o_chunk() {
         deep_prefill(&e, &pool, &blob, 9_000, &tk, 256);
         let after = e.ctx_mem().prefill_per_thread;
         let got = e.prefill_ctx_bytes_allocated().unwrap();
-        assert!(got == before || got == after, "n_ctx {n_ctx} {mode:?}: allocated {got} vs accounted {before} / {after}");
-        assert_eq!(after, ctx_mem_with(d, n_ctx, KvType::F16, e.n_att(), e.lanes(), e.verify_lanes(), mode).prefill_per_thread);
+        assert!(
+            got == before || got == after,
+            "n_ctx {n_ctx} {mode:?}: allocated {got} vs accounted {before} / {after}"
+        );
+        assert_eq!(
+            after,
+            ctx_mem_with(
+                d,
+                n_ctx,
+                KvType::F16,
+                e.n_att(),
+                e.lanes(),
+                e.verify_lanes(),
+                mode
+            )
+            .prefill_per_thread
+        );
     }
     for key in ["ornith", "qwen36"] {
         let rd = crate::desc::ModelDesc::from_header(&header(&fixture(key))).unwrap();
@@ -195,7 +290,13 @@ fn pf_fa2_scratch_is_o_chunk() {
 }
 
 /// A 32K f16 engine with 4 verify lanes, fused on / off and the given fused cutoffs.
-fn fused_engine<'a>(plan: &'a Plan, ws: &'a WeightStore, fused: bool, any: usize, one: usize) -> Engine<'a> {
+fn fused_engine<'a>(
+    plan: &'a Plan,
+    ws: &'a WeightStore,
+    fused: bool,
+    any: usize,
+    one: usize,
+) -> Engine<'a> {
     let mut e = long_engine(plan, ws, 32_768, KvType::F16, 4, None);
     e.set_attn_fused(fused);
     e.set_attn_fused_min_kv(any, one);
@@ -228,13 +329,23 @@ fn o70_fused_cutoffs_lane_policy_and_stats() {
         p.set_attn_stats(true);
         load(&p);
         let one_lane_fused = n_pos >= ATTN_FUSED_1LANE_MIN_KV;
-        assert_eq!(p.barriers_per_token(), base + if one_lane_fused { n_att } else { 2 * n_att }, "n_pos {n_pos}");
+        assert_eq!(
+            p.barriers_per_token(),
+            base + if one_lane_fused { n_att } else { 2 * n_att },
+            "n_pos {n_pos}"
+        );
         p.step(&pool, 7);
         if one_lane_fused {
-            assert!(!bits_eq(p.logits(), &lt), "n_pos {n_pos}: a single lane above the cutoff did not run fused");
+            assert!(
+                !bits_eq(p.logits(), &lt),
+                "n_pos {n_pos}: a single lane above the cutoff did not run fused"
+            );
             assert!(rel_diff(p.logits(), &lt) < 0.05);
         } else {
-            assert!(bits_eq(p.logits(), &lt), "n_pos {n_pos}: a single lane below 16K must stay tiled");
+            assert!(
+                bits_eq(p.logits(), &lt),
+                "n_pos {n_pos}: a single lane below 16K must stay tiled"
+            );
         }
         // stats: the same block totals as the tiled path (one column per query head)
         let (st, sp) = (t.attn_stats().unwrap(), p.attn_stats().unwrap());
@@ -242,7 +353,9 @@ fn o70_fused_cutoffs_lane_policy_and_stats() {
         assert_eq!(st.0, total, "tiled stats total");
         assert_eq!(sp.0, total, "n_pos {n_pos}: fused stats total");
         assert!(sp.1 <= sp.2 && sp.2 <= sp.0, "{sp:?}");
-        eprintln!("o70 stats n_pos {n_pos}: tiled {st:?} fused-path {sp:?} (fused={one_lane_fused})");
+        eprintln!(
+            "o70 stats n_pos {n_pos}: tiled {st:?} fused-path {sp:?} (fused={one_lane_fused})"
+        );
         // verify runs are fused at both depths: lane 0 equals a 1-lane run with the lane rule off
         let v = mk(true, ATTN_FUSED_MIN_KV, ATTN_FUSED_1LANE_MIN_KV);
         load(&v);
@@ -251,20 +364,33 @@ fn o70_fused_cutoffs_lane_policy_and_stats() {
         let f1 = mk(true, ATTN_FUSED_MIN_KV, ATTN_FUSED_MIN_KV);
         load(&f1);
         f1.step(&pool, 7);
-        assert!(bits_eq(f1.logits(), &lane0), "n_pos {n_pos}: verify lane 0 is not the fused 1-lane result");
-        assert!(!bits_eq(&lane0, &lt), "n_pos {n_pos}: the verify run did not take the fused path");
+        assert!(
+            bits_eq(f1.logits(), &lane0),
+            "n_pos {n_pos}: verify lane 0 is not the fused 1-lane result"
+        );
+        assert!(
+            !bits_eq(&lane0, &lt),
+            "n_pos {n_pos}: the verify run did not take the fused path"
+        );
         // own cutoff: fused below the tiled cutoff, and off above it when its cutoff is higher
         let mut lo = mk(true, 0, 0);
         lo.set_attn_tiled_min_kv(1 << 30);
         load(&lo);
-        assert_eq!(lo.barriers_per_token(), base + n_att, "fused must not ride the tiled cutoff");
+        assert_eq!(
+            lo.barriers_per_token(),
+            base + n_att,
+            "fused must not ride the tiled cutoff"
+        );
         lo.step(&pool, 7);
         assert!(bits_eq(lo.logits(), f1.logits()));
         let hi = mk(true, 1 << 30, 1 << 30);
         load(&hi);
         assert_eq!(hi.barriers_per_token(), base + 2 * n_att);
         hi.step(&pool, 7);
-        assert!(bits_eq(hi.logits(), &lt), "above its own cutoff the run must be tiled");
+        assert!(
+            bits_eq(hi.logits(), &lt),
+            "above its own cutoff the run must be tiled"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -276,7 +402,8 @@ fn vma_flags(addr: usize) -> Option<String> {
     for line in s.lines() {
         if let Some((range, _)) = line.split_once(' ') {
             if let Some((a, b)) = range.split_once('-') {
-                if let (Ok(a), Ok(b)) = (usize::from_str_radix(a, 16), usize::from_str_radix(b, 16)) {
+                if let (Ok(a), Ok(b)) = (usize::from_str_radix(a, 16), usize::from_str_radix(b, 16))
+                {
                     inside = a <= addr && addr < b;
                     continue;
                 }
@@ -303,11 +430,20 @@ fn lc8_v_region_thp_switch() {
     crate::engine::set_kv_v_thp(true);
     let (a2, len2) = off.v_region();
     let f_off = vma_flags(a2 + len2 / 2).expect("smaps entry of the V^T region");
-    eprintln!("lc8: default [{}] / OXE_KV_V_THP=0 [{}]", f_on.trim(), f_off.trim());
+    eprintln!(
+        "lc8: default [{}] / OXE_KV_V_THP=0 [{}]",
+        f_on.trim(),
+        f_off.trim()
+    );
     if f_on.contains(" hg ") {
-        assert!(f_off.contains(" nh ") && !f_off.contains(" hg "), "V^T region still THP: {f_off}");
+        assert!(
+            f_off.contains(" nh ") && !f_off.contains(" hg "),
+            "V^T region still THP: {f_off}"
+        );
     } else {
-        eprintln!("lc8: MADV_HUGEPAGE not visible on this kernel; only the result identity is checked");
+        eprintln!(
+            "lc8: MADV_HUGEPAGE not visible on this kernel; only the result identity is checked"
+        );
     }
     on.prefill(&pool, &tk, 256).unwrap();
     off.prefill(&pool, &tk, 256).unwrap();
@@ -346,8 +482,15 @@ fn lc6_mtp_prefill_batched_chunks_are_bitwise() {
         for chunk in [ub, 300, 512] {
             let got = run(chunk, ub);
             assert_eq!(got.0, want.0, "ub {ub} chunk {chunk}: ids differ");
-            assert!(got.1.len() == want.1.len() && got.1.iter().zip(&want.1).all(|(a, b)| bits_eq(a, b)), "ub {ub} chunk {chunk}: logits differ");
-            assert!(same_state(&got.2, &want.2) && got.3 == want.3, "ub {ub} chunk {chunk}: state differs");
+            assert!(
+                got.1.len() == want.1.len()
+                    && got.1.iter().zip(&want.1).all(|(a, b)| bits_eq(a, b)),
+                "ub {ub} chunk {chunk}: logits differ"
+            );
+            assert!(
+                same_state(&got.2, &want.2) && got.3 == want.3,
+                "ub {ub} chunk {chunk}: state differs"
+            );
         }
     }
     std::fs::remove_dir_all(&dir).ok();
@@ -381,7 +524,8 @@ fn numerics_epoch_golden_deep_tiled() {
     for kv in [KvType::F16, KvType::K8, KvType::V8, KvType::KV8] {
         let e = engine_mode(&plan, &ws, 16_384, kv, PfAttn::Tiled);
         let rec = rec_bytes(&e, &pool);
-        e.read_state(&mut &synth_state(&e, n_pos, &rec)[..], n_pos).unwrap();
+        e.read_state(&mut &synth_state(&e, n_pos, &rec)[..], n_pos)
+            .unwrap();
         let mut tok = e.prefill(&pool, &tk, 256).unwrap();
         for x in e.logits() {
             h.update(&x.to_bits().to_le_bytes());
@@ -437,20 +581,35 @@ fn pf_fa2x_engine_matches_tiled_thread_invariant_and_keeps_short_rows() {
                 x.set_pf_attn_threads(1);
             }
             let (hx, lx) = deep_prefill(&x, &pool, &blob, n_pos, &tk, 256);
-            assert!(hx.iter().chain(&lx).all(|v| v.is_finite()), "n_pos {n_pos}: non-finite fa2x output");
+            assert!(
+                hx.iter().chain(&lx).all(|v| v.is_finite()),
+                "n_pos {n_pos}: non-finite fa2x output"
+            );
             if nt == 1 {
                 let (ht, lt) = deep_prefill(&t, &pool, &blob, n_pos, &tk, 256);
-                assert!(same_state(&t.dump_state(), &x.dump_state()), "n_pos {n_pos}: fa2x changed the KV / recurrent state");
+                assert!(
+                    same_state(&t.dump_state(), &x.dump_state()),
+                    "n_pos {n_pos}: fa2x changed the KV / recurrent state"
+                );
                 let (dh, dl) = (rel_diff(&hx, &ht), rel_diff(&lx, &lt));
                 eprintln!("pf-fa2x n_pos {n_pos}: fa2x vs tiled hidden {dh:.2e} logits {dl:.2e}");
-                assert!(dh < 0.05 && dl < 0.05, "n_pos {n_pos}: fa2x vs tiled hidden {dh} logits {dl}");
+                assert!(
+                    dh < 0.05 && dl < 0.05,
+                    "n_pos {n_pos}: fa2x vs tiled hidden {dh} logits {dl}"
+                );
                 let f = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Fa2);
                 assert_eq!(f.pf_attn_kernel(), "fa2");
                 let (hf, _) = deep_prefill(&f, &pool, &blob, n_pos, &tk, 256);
-                assert!(!bits_eq(&hf, &hx), "n_pos {n_pos}: fa2x gave the fa2 bits (kernel not run?)");
+                assert!(
+                    !bits_eq(&hf, &hx),
+                    "n_pos {n_pos}: fa2x gave the fa2 bits (kernel not run?)"
+                );
                 want.push((hx, lx));
             } else {
-                assert!(bits_eq(&hx, &want[i].0) && bits_eq(&lx, &want[i].1), "n_pos {n_pos}: fa2x differs between 1 and 3 threads");
+                assert!(
+                    bits_eq(&hx, &want[i].0) && bits_eq(&lx, &want[i].1),
+                    "n_pos {n_pos}: fa2x differs between 1 and 3 threads"
+                );
             }
         }
         std::fs::remove_dir_all(&dir).ok();
@@ -466,8 +625,14 @@ fn pf_fa2x_engine_matches_tiled_thread_invariant_and_keeps_short_rows() {
     let x = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Fa2x);
     let (hx, _) = deep_prefill(&x, &pool, &blob, n_pos, &tk, 256);
     let cut = 512;
-    assert!(bits_eq(&hx[..cut * ne], &ht[..cut * ne]), "fa2x: rows with n_kv <= PFA_MIN_KV must keep the tiled bits");
-    assert!(!bits_eq(&hx[cut * ne..], &ht[cut * ne..]) && rel_diff(&hx[cut * ne..], &ht[cut * ne..]) < 0.05);
+    assert!(
+        bits_eq(&hx[..cut * ne], &ht[..cut * ne]),
+        "fa2x: rows with n_kv <= PFA_MIN_KV must keep the tiled bits"
+    );
+    assert!(
+        !bits_eq(&hx[cut * ne..], &ht[cut * ne..])
+            && rel_diff(&hx[cut * ne..], &ht[cut * ne..]) < 0.05
+    );
     assert!(same_state(&t.dump_state(), &x.dump_state()));
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -494,28 +659,77 @@ fn pf_auto_policy_min_kv_in_the_engine() {
     a.set_pf_auto(AutoPolicy::LEGACY);
     assert_eq!(a.pf_attn_path(), PfPath::TILED);
     let (ha, la) = deep_prefill(&a, &pool, &blob, n_pos, &tk, 256);
-    assert!(bits_eq(&ha, &ht) && bits_eq(&la, &lt), "legacy auto at 32K must be the tiled bits");
+    assert!(
+        bits_eq(&ha, &ht) && bits_eq(&la, &lt),
+        "legacy auto at 32K must be the tiled bits"
+    );
     for kernel in [PfAttn::Fa2x, PfAttn::Fa2] {
         let pol = AutoPolicy::new(Some(16_384), kernel).unwrap();
         let mut e = engine_mode(&plan, &ws, n_ctx, KvType::F16, PfAttn::Auto);
         e.set_pf_auto(pol);
-        let want_k = if kernel == PfAttn::Fa2x { PfKernel::Fa2x } else { PfKernel::Fa2 };
-        assert_eq!(e.pf_attn_path(), PfPath { kernel: want_k, cut: 16_384 });
+        let want_k = if kernel == PfAttn::Fa2x {
+            PfKernel::Fa2x
+        } else {
+            PfKernel::Fa2
+        };
+        assert_eq!(
+            e.pf_attn_path(),
+            PfPath {
+                kernel: want_k,
+                cut: 16_384
+            }
+        );
         assert_eq!(e.pf_attn_kernel(), kernel.name());
         assert_eq!(e.pf_attn_fa2x().is_some(), kernel == PfAttn::Fa2x);
         let (he, le) = deep_prefill(&e, &pool, &blob, n_pos, &tk, 256);
         assert!(he.iter().chain(&le).all(|v| v.is_finite()));
-        assert!(same_state(&t.dump_state(), &e.dump_state()), "{kernel:?}: auto changed the KV / recurrent state");
-        assert!(bits_eq(&he[..cut_rows * ne], &ht[..cut_rows * ne]), "{kernel:?}: rows with n_kv <= the cutoff must keep the tiled bits");
-        let (dh, dl) = (rel_diff(&he[cut_rows * ne..], &ht[cut_rows * ne..]), rel_diff(&le, &lt));
-        eprintln!("pf-auto {kernel:?} min-kv 16384: deep rows vs tiled hidden {dh:.2e} logits {dl:.2e}");
+        assert!(
+            same_state(&t.dump_state(), &e.dump_state()),
+            "{kernel:?}: auto changed the KV / recurrent state"
+        );
+        assert!(
+            bits_eq(&he[..cut_rows * ne], &ht[..cut_rows * ne]),
+            "{kernel:?}: rows with n_kv <= the cutoff must keep the tiled bits"
+        );
+        let (dh, dl) = (
+            rel_diff(&he[cut_rows * ne..], &ht[cut_rows * ne..]),
+            rel_diff(&le, &lt),
+        );
+        eprintln!(
+            "pf-auto {kernel:?} min-kv 16384: deep rows vs tiled hidden {dh:.2e} logits {dl:.2e}"
+        );
         assert!(!bits_eq(&he[cut_rows * ne..], &ht[cut_rows * ne..]) && dh < 0.05 && dl < 0.05);
         // the scratch is the cutoff-capped one, as accounted
-        let acc = ctx_mem_with_auto(d, n_ctx, KvType::F16, e.n_att(), e.lanes(), e.verify_lanes(), PfAttn::Auto, pol).prefill_per_thread;
+        let acc = ctx_mem_with_auto(
+            d,
+            n_ctx,
+            KvType::F16,
+            e.n_att(),
+            e.lanes(),
+            e.verify_lanes(),
+            PfAttn::Auto,
+            pol,
+        )
+        .prefill_per_thread;
         let got = e.prefill_ctx_bytes_allocated().unwrap();
         let (before, after) = (acc, e.ctx_mem().prefill_per_thread);
-        assert!(got == before || got == after, "{kernel:?}: allocated {got} vs accounted {before} / {after}");
-        assert!(acc < ctx_mem_with_auto(d, n_ctx, KvType::F16, e.n_att(), e.lanes(), e.verify_lanes(), PfAttn::Tiled, pol).prefill_per_thread);
+        assert!(
+            got == before || got == after,
+            "{kernel:?}: allocated {got} vs accounted {before} / {after}"
+        );
+        assert!(
+            acc < ctx_mem_with_auto(
+                d,
+                n_ctx,
+                KvType::F16,
+                e.n_att(),
+                e.lanes(),
+                e.verify_lanes(),
+                PfAttn::Tiled,
+                pol
+            )
+            .prefill_per_thread
+        );
         // int8 KV keeps its own kernels whatever the policy
         let mut k8 = engine_mode(&plan, &ws, n_ctx, KvType::KV8, PfAttn::Auto);
         k8.set_pf_auto(pol);
@@ -547,49 +761,114 @@ fn pf_pfg_engine_matches_tiled_invariant_and_keeps_short_rows() {
             let blob = synth_state(&t, n_pos, &rec);
             let mut g = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Pfg);
             g.set_pf_gparams(GParams::default());
-            assert!(g.pf_attn_fa2() && g.pf_attn_pfg().is_some() && g.pf_attn_fa2x().is_none() && g.pf_attn_kernel() == "pfg");
+            assert!(
+                g.pf_attn_fa2()
+                    && g.pf_attn_pfg().is_some()
+                    && g.pf_attn_fa2x().is_none()
+                    && g.pf_attn_kernel() == "pfg"
+            );
             if nt == 3 && i == 1 {
                 g.set_pf_attn_threads(1);
             }
             g.reset_pf_counts();
             g.reset_pf_kernel_units();
             let (hg, lg) = deep_prefill(&g, &pool, &blob, n_pos, &tk, 256);
-            assert!(hg.iter().chain(&lg).all(|v| v.is_finite()), "n_pos {n_pos}: non-finite pfg output");
+            assert!(
+                hg.iter().chain(&lg).all(|v| v.is_finite()),
+                "n_pos {n_pos}: non-finite pfg output"
+            );
             let (c, ku) = (g.pf_counts(), g.pf_kernel_units());
             // 300 tokens = 256 + 44: pfg units of 16 tokens x 1 KV head (mini model)
-            assert!(c.units_pfg > 0 && c.units_fa2 + c.units_fa2x + c.units_ref == 0, "{c:?}");
-            assert!(ku.pfg == c.units_pfg && ku.fa2 + ku.fa2x == 0 && ku.tiled == c.units_tiled, "{ku:?} vs {c:?}");
+            assert!(
+                c.units_pfg > 0 && c.units_fa2 + c.units_fa2x + c.units_ref == 0,
+                "{c:?}"
+            );
+            assert!(
+                ku.pfg == c.units_pfg && ku.fa2 + ku.fa2x == 0 && ku.tiled == c.units_tiled,
+                "{ku:?} vs {c:?}"
+            );
             if nt == 1 {
                 let (ht, lt) = deep_prefill(&t, &pool, &blob, n_pos, &tk, 256);
-                assert!(same_state(&t.dump_state(), &g.dump_state()), "n_pos {n_pos}: pfg changed the KV / recurrent state");
+                assert!(
+                    same_state(&t.dump_state(), &g.dump_state()),
+                    "n_pos {n_pos}: pfg changed the KV / recurrent state"
+                );
                 let (dh, dl) = (rel_diff(&hg, &ht), rel_diff(&lg, &lt));
                 eprintln!("pf-pfg n_pos {n_pos}: pfg vs tiled hidden {dh:.2e} logits {dl:.2e}");
-                assert!(dh < 0.05 && dl < 0.05, "n_pos {n_pos}: pfg vs tiled hidden {dh} logits {dl}");
+                assert!(
+                    dh < 0.05 && dl < 0.05,
+                    "n_pos {n_pos}: pfg vs tiled hidden {dh} logits {dl}"
+                );
                 let x = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Fa2x);
                 let (hx, _) = deep_prefill(&x, &pool, &blob, n_pos, &tk, 256);
-                assert!(!bits_eq(&hx, &hg), "n_pos {n_pos}: pfg gave the fa2x bits (kernel not run?)");
+                assert!(
+                    !bits_eq(&hx, &hg),
+                    "n_pos {n_pos}: pfg gave the fa2x bits (kernel not run?)"
+                );
                 // unit size and micro-kernel form never change a bit
-                for (tb, mk) in [(8usize, PgMk::Ld1r), (32, PgMk::Ld1r), (16, PgMk::Elem), (8, PgMk::Elem)] {
+                for (tb, mk) in [
+                    (8usize, PgMk::Ld1r),
+                    (32, PgMk::Ld1r),
+                    (16, PgMk::Elem),
+                    (8, PgMk::Elem),
+                ] {
                     let mut v = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Pfg);
-                    v.set_pf_gparams(GParams { tb, mk, ..GParams::default() });
+                    v.set_pf_gparams(GParams {
+                        tb,
+                        mk,
+                        ..GParams::default()
+                    });
                     let (hv, lv) = deep_prefill(&v, &pool, &blob, n_pos, &tk, 256);
-                    assert!(bits_eq(&hv, &hg) && bits_eq(&lv, &lg), "n_pos {n_pos}: pfg tb {tb} {mk:?} differs from tb 16 ld1r");
+                    assert!(
+                        bits_eq(&hv, &hg) && bits_eq(&lv, &lg),
+                        "n_pos {n_pos}: pfg tb {tb} {mk:?} differs from tb 16 ld1r"
+                    );
                 }
                 // the folds do (another f16 chain length): a fold-16 engine is another class
                 let mut f16 = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Pfg);
-                f16.set_pf_gparams(GParams { fold_qk: 16, fold_pv: 16, ..GParams::default() });
+                f16.set_pf_gparams(GParams {
+                    fold_qk: 16,
+                    fold_pv: 16,
+                    ..GParams::default()
+                });
                 let (hf, _) = deep_prefill(&f16, &pool, &blob, n_pos, &tk, 256);
                 assert!(rel_diff(&hf, &ht) < 0.05);
                 // scratch allocated == accounted
                 // (either side of a concurrent test's pf_tiles change, as the fa2 accounting test)
                 let (d, acc) = (&plan.desc, g.ctx_mem().prefill_per_thread);
-                let before = ctx_mem_with(d, N_CTX, KvType::F16, g.n_att(), g.lanes(), g.verify_lanes(), PfAttn::Pfg).prefill_per_thread;
+                let before = ctx_mem_with(
+                    d,
+                    N_CTX,
+                    KvType::F16,
+                    g.n_att(),
+                    g.lanes(),
+                    g.verify_lanes(),
+                    PfAttn::Pfg,
+                )
+                .prefill_per_thread;
                 let got = g.prefill_ctx_bytes_allocated().unwrap();
-                assert!(got == acc || got == before, "pfg prefill scratch allocated {got} vs accounted {acc} / {before}");
-                assert!(acc < ctx_mem_with(d, N_CTX, KvType::F16, g.n_att(), g.lanes(), g.verify_lanes(), PfAttn::Tiled).prefill_per_thread);
+                assert!(
+                    got == acc || got == before,
+                    "pfg prefill scratch allocated {got} vs accounted {acc} / {before}"
+                );
+                assert!(
+                    acc < ctx_mem_with(
+                        d,
+                        N_CTX,
+                        KvType::F16,
+                        g.n_att(),
+                        g.lanes(),
+                        g.verify_lanes(),
+                        PfAttn::Tiled
+                    )
+                    .prefill_per_thread
+                );
                 want.push((hg, lg));
             } else {
-                assert!(bits_eq(&hg, &want[i].0) && bits_eq(&lg, &want[i].1), "n_pos {n_pos}: pfg differs between 1 and 3 threads");
+                assert!(
+                    bits_eq(&hg, &want[i].0) && bits_eq(&lg, &want[i].1),
+                    "n_pos {n_pos}: pfg differs between 1 and 3 threads"
+                );
             }
         }
         std::fs::remove_dir_all(&dir).ok();
@@ -608,13 +887,25 @@ fn pf_pfg_engine_matches_tiled_invariant_and_keeps_short_rows() {
     let c = g.pf_counts();
     assert!(c.units_tiled > 0 && c.units_pfg > 0, "{c:?}");
     let cut = 512;
-    assert!(bits_eq(&hg[..cut * ne], &ht[..cut * ne]), "pfg: rows with n_kv <= PFA_MIN_KV must keep the tiled bits");
-    assert!(!bits_eq(&hg[cut * ne..], &ht[cut * ne..]) && rel_diff(&hg[cut * ne..], &ht[cut * ne..]) < 0.05);
+    assert!(
+        bits_eq(&hg[..cut * ne], &ht[..cut * ne]),
+        "pfg: rows with n_kv <= PFA_MIN_KV must keep the tiled bits"
+    );
+    assert!(
+        !bits_eq(&hg[cut * ne..], &ht[cut * ne..])
+            && rel_diff(&hg[cut * ne..], &ht[cut * ne..]) < 0.05
+    );
     assert!(same_state(&t.dump_state(), &g.dump_state()));
     // auto with the pfg kernel beyond a min-kv
     let mut a = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Auto);
     a.set_pf_auto(AutoPolicy::new(Some(16_384), PfAttn::Pfg).unwrap());
-    assert_eq!(a.pf_attn_path(), PfPath { kernel: PfKernel::Pfg, cut: 16_384 });
+    assert_eq!(
+        a.pf_attn_path(),
+        PfPath {
+            kernel: PfKernel::Pfg,
+            cut: 16_384
+        }
+    );
     // the default auto policy never picks pfg (behaviour unchanged)
     let d = engine_mode(&plan, &ws, N_CTX, KvType::F16, PfAttn::Auto);
     assert_ne!(d.pf_attn_path().kernel, PfKernel::Pfg);

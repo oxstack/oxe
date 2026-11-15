@@ -23,7 +23,14 @@ impl Agree {
 }
 
 /// Agreement over `rows` of segment `seg` (`None` = all segments).
-pub fn agree(a: &[f32], b: &[f32], width: usize, nseg: usize, seg: Option<usize>, rows: &[usize]) -> Agree {
+pub fn agree(
+    a: &[f32],
+    b: &[f32],
+    width: usize,
+    nseg: usize,
+    seg: Option<usize>,
+    rows: &[usize],
+) -> Agree {
     let ctx = width * nseg;
     let (c0, c1) = match seg {
         Some(s) => (s * width, (s + 1) * width),
@@ -44,19 +51,55 @@ pub fn agree(a: &[f32], b: &[f32], width: usize, nseg: usize, seg: Option<usize>
         ab += rab;
         aa += raa;
         bb += rbb;
-        let rc = if raa > 0.0 && rbb > 0.0 { rab / (raa.sqrt() * rbb.sqrt()) } else if raa == rbb { 1.0 } else { 0.0 };
+        let rc = if raa > 0.0 && rbb > 0.0 {
+            rab / (raa.sqrt() * rbb.sqrt())
+        } else if raa == rbb {
+            1.0
+        } else {
+            0.0
+        };
         worst = worst.min(rc);
     }
-    let cos = if aa > 0.0 && bb > 0.0 { ab / (aa.sqrt() * bb.sqrt()) } else if aa == bb { 1.0 } else { 0.0 };
-    let rel = if bb > 0.0 { (dd / bb).sqrt() } else if dd == 0.0 { 0.0 } else { f64::INFINITY };
-    Agree { cos, rel_rmse: rel, max_abs: mx, worst_row_cos: worst, rows: rows.len() }
+    let cos = if aa > 0.0 && bb > 0.0 {
+        ab / (aa.sqrt() * bb.sqrt())
+    } else if aa == bb {
+        1.0
+    } else {
+        0.0
+    };
+    let rel = if bb > 0.0 {
+        (dd / bb).sqrt()
+    } else if dd == 0.0 {
+        0.0
+    } else {
+        f64::INFINITY
+    };
+    Agree {
+        cos,
+        rel_rmse: rel,
+        max_abs: mx,
+        worst_row_cos: worst,
+        rows: rows.len(),
+    }
 }
 
 /// Full report: `{"layers": [..], "segments": [{"layer", "real", "pad", "all"}], "real", "all"}`.
-pub fn report(a: &[f32], b: &[f32], n: usize, n_real: usize, width: usize, layers: &[usize]) -> Result<Value, String> {
+pub fn report(
+    a: &[f32],
+    b: &[f32],
+    n: usize,
+    n_real: usize,
+    width: usize,
+    layers: &[usize],
+) -> Result<Value, String> {
     let nseg = layers.len();
     if a.len() != n * width * nseg || b.len() != a.len() {
-        return Err(format!("compare: {} vs {} values for n {n} x {} x {width}", a.len(), b.len(), nseg));
+        return Err(format!(
+            "compare: {} vs {} values for n {n} x {} x {width}",
+            a.len(),
+            b.len(),
+            nseg
+        ));
     }
     let real: Vec<usize> = (0..n_real.min(n)).collect();
     let pad: Vec<usize> = (n_real.min(n)..n).collect();
@@ -82,12 +125,18 @@ pub fn gate(rep: &Value, min_cos: f64, max_rel: f64) -> (bool, Vec<String>) {
     let mut why = Vec::new();
     for s in rep["segments"].as_array().into_iter().flatten() {
         for class in ["real", "all"] {
-            let (c, r) = (s[class]["cos"].as_f64().unwrap_or(0.0), s[class]["rel_rmse"].as_f64().unwrap_or(f64::INFINITY));
+            let (c, r) = (
+                s[class]["cos"].as_f64().unwrap_or(0.0),
+                s[class]["rel_rmse"].as_f64().unwrap_or(f64::INFINITY),
+            );
             if s[class]["rows"].as_u64().unwrap_or(0) == 0 {
                 continue;
             }
             if !(c >= min_cos) || !(r <= max_rel) {
-                why.push(format!("layer {} {class}: cos {c:.6} rel_rmse {r:.4e}", s["layer"]));
+                why.push(format!(
+                    "layer {} {class}: cos {c:.6} rel_rmse {r:.4e}",
+                    s["layer"]
+                ));
             }
         }
     }

@@ -30,7 +30,9 @@ use super::kv8::{self, Kv8Scratch, KvType};
 use super::pfattn;
 use super::*;
 use crate::plan::Tid;
-use kernels_sys::{gemm_mmid_raw, gemm_raw, interleave_rows4_raw, quantize_mat4_raw, quantize_row_raw};
+use kernels_sys::{
+    gemm_mmid_raw, gemm_raw, interleave_rows4_raw, quantize_mat4_raw, quantize_row_raw,
+};
 
 /// moe-prefill kernel switches (bit mask; default [`PF_TILES_DEFAULT`]; 0 = the vendored llama.cpp kernels). Every bit
 /// selects a kernel that is bitwise equal to the one it replaces, so the mask never changes a
@@ -109,7 +111,12 @@ pub(super) fn att_tt_want(d: &ModelDesc, mask: u32) -> usize {
 /// every expert with at least n rows (tests).
 fn mmid_use_tile(q: kernels_sys::QType, cnt: usize, mask: u32) -> bool {
     static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let o = *MIN.get_or_init(|| std::env::var("OXE_PF_MMID_MIN").ok().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0));
+    let o = *MIN.get_or_init(|| {
+        std::env::var("OXE_PF_MMID_MIN")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+    });
     if o > 0 {
         return cnt >= o;
     }
@@ -124,7 +131,10 @@ fn mmid_use_tile(q: kernels_sys::QType, cnt: usize, mask: u32) -> bool {
 fn attn_pb() -> usize {
     static PB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *PB.get_or_init(|| {
-        let v = std::env::var("OXE_PF_ATTN_PB").ok().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(512);
+        let v = std::env::var("OXE_PF_ATTN_PB")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(512);
         (v.max(32) / 32) * 32
     })
 }
@@ -169,7 +179,9 @@ pub fn pf_group_unaligned() -> bool {
     if v != usize::MAX {
         return v != 0;
     }
-    let on = std::env::var("OXE_PF_GROUP_UNALIGNED").map(|s| s.trim() != "0").unwrap_or(false);
+    let on = std::env::var("OXE_PF_GROUP_UNALIGNED")
+        .map(|s| s.trim() != "0")
+        .unwrap_or(false);
     PF_GROUP_UNALIGNED.store(on as usize, Relaxed);
     on
 }
@@ -178,7 +190,11 @@ pub fn pf_group() -> usize {
     if v != usize::MAX {
         return v;
     }
-    let g = std::env::var("OXE_PF_GROUP").ok().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0).min(16);
+    let g = std::env::var("OXE_PF_GROUP")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(16);
     PF_GROUP.store(g, Relaxed);
     g
 }
@@ -200,11 +216,18 @@ pub fn pf_group_thresholds() -> (usize, usize) {
         if v != usize::MAX {
             return v;
         }
-        let t = std::env::var(key).ok().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(def).min(usize::MAX - 1);
+        let t = std::env::var(key)
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(def)
+            .min(usize::MAX - 1);
         PF_GROUP_T[i].store(t, Relaxed);
         t
     };
-    (get(0, "OXE_PF_GROUP_T1", PF_GROUP_T1_DEFAULT), get(1, "OXE_PF_GROUP_T2", 0))
+    (
+        get(0, "OXE_PF_GROUP_T1", PF_GROUP_T1_DEFAULT),
+        get(1, "OXE_PF_GROUP_T2", 0),
+    )
 }
 /// The group a prefill call of `n_new` tokens asks for under the current setting (before the
 /// alignment rule of [`set_pf_group`]'s doc, which can still turn it into 1).
@@ -232,7 +255,8 @@ pub fn group_by_size(n_new: usize, t1: usize, t2: usize) -> usize {
 /// MP-3): `hist[c]` = number of (layer pass, expert) pairs that got c routed rows, c capped at 64;
 /// index 0 = experts not used in a pass. Passes over fewer than 16 rows are not counted (the last
 /// layer's single output row). Costs 256 increments per layer pass on thread 0.
-static ROWS_HIST: [std::sync::atomic::AtomicU64; 65] = [const { std::sync::atomic::AtomicU64::new(0) }; 65];
+static ROWS_HIST: [std::sync::atomic::AtomicU64; 65] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 65];
 pub fn prefill_rows_hist() -> Vec<u64> {
     ROWS_HIST.iter().map(|c| c.load(Relaxed)).collect()
 }
@@ -253,7 +277,11 @@ pub fn pf_tiles() -> u32 {
     if v != u32::MAX {
         return v;
     }
-    let m = std::env::var("OXE_PF_TILES").ok().and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(PF_TILES_DEFAULT) & 0x7fff_ffff;
+    let m = std::env::var("OXE_PF_TILES")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(PF_TILES_DEFAULT)
+        & 0x7fff_ffff;
     PF_TILES.store(m, Relaxed);
     m
 }
@@ -281,33 +309,33 @@ const MMID_COLS: usize = 256;
 /// the work of a phase is the time since the thread's previous barrier, its wait the time inside
 /// the barrier. Shared steps (norm + quantise, mixer output) take their caller's id.
 pub const PF_PHASES: &[&str] = &[
-    "embed",                  // PH_EMBED: embedding rows, end of the embed step
-    "hid_norm",               // PH_HID_NORM: output norm of every row (all_rows)
-    "rec_norm_quant",         // PH_REC_NORM_QUANT (pf_norm_act of a delta-net layer)
-    "rec_proj_dense",         // PH_REC_PROJ_DENSE: qkv / z / beta / alpha projections
-    "rec_conv_silu",          // PH_REC_CONV_SILU: causal conv + SiLU
-    "rec_l2_gates",           // PH_REC_L2_GATES: l2 norm of q / k, gates and beta
-    "rec_delta_rule",         // PH_REC_DELTA_RULE: gated delta rule + gated RMSNorm with z
-    "rec_out_quant",          // PH_REC_OUT_QUANT: quantise O (ssm_out)
-    "rec_out_dense",          // PH_REC_OUT_DENSE: ssm_out projection + residual
-    "att_norm_quant",         // PH_ATT_NORM_QUANT (pf_norm_act of an attention layer)
-    "att_proj_dense",         // PH_ATT_PROJ_DENSE: Q(+gate), K, V projections
-    "att_prep",               // PH_ATT_PREP: q/k norm, RoPE, K/V cache writes, f16 Q
-    "att_core_tiled",         // PH_ATT_CORE_TILED: tiled attention (K^T Q, softmax, V^T P)
-    "att_core",               // PH_ATT_CORE: per-(head, token block) attention
-    "att_out_quant",          // PH_ATT_OUT_QUANT: quantise the gated attention output
-    "att_out_dense",          // PH_ATT_OUT_DENSE: attn_output projection + residual
-    "moe_norm_quant",         // PH_MOE_NORM_QUANT: post-attention norm + activations
+    "embed",                   // PH_EMBED: embedding rows, end of the embed step
+    "hid_norm",                // PH_HID_NORM: output norm of every row (all_rows)
+    "rec_norm_quant",          // PH_REC_NORM_QUANT (pf_norm_act of a delta-net layer)
+    "rec_proj_dense",          // PH_REC_PROJ_DENSE: qkv / z / beta / alpha projections
+    "rec_conv_silu",           // PH_REC_CONV_SILU: causal conv + SiLU
+    "rec_l2_gates",            // PH_REC_L2_GATES: l2 norm of q / k, gates and beta
+    "rec_delta_rule",          // PH_REC_DELTA_RULE: gated delta rule + gated RMSNorm with z
+    "rec_out_quant",           // PH_REC_OUT_QUANT: quantise O (ssm_out)
+    "rec_out_dense",           // PH_REC_OUT_DENSE: ssm_out projection + residual
+    "att_norm_quant",          // PH_ATT_NORM_QUANT (pf_norm_act of an attention layer)
+    "att_proj_dense",          // PH_ATT_PROJ_DENSE: Q(+gate), K, V projections
+    "att_prep",                // PH_ATT_PREP: q/k norm, RoPE, K/V cache writes, f16 Q
+    "att_core_tiled",          // PH_ATT_CORE_TILED: tiled attention (K^T Q, softmax, V^T P)
+    "att_core",                // PH_ATT_CORE: per-(head, token block) attention
+    "att_out_quant",           // PH_ATT_OUT_QUANT: quantise the gated attention output
+    "att_out_dense",           // PH_ATT_OUT_DENSE: attn_output projection + residual
+    "moe_norm_quant",          // PH_MOE_NORM_QUANT: post-attention norm + activations
     "moe_router_shared_dense", // PH_MOE_ROUTER_SHARED: router, shared gate/up, shared gate
-    "moe_route_swiglu",       // PH_MOE_ROUTE_SWIGLU: routing per token, shared swiglu
-    "moe_units_build",        // PH_MOE_UNITS_BUILD: expert row lists and work units (thread 0)
-    "moe_gate_up",            // PH_MOE_GATE_UP: routed gate/up (MUL_MAT_ID) + shared down
-    "moe_swiglu_quant",       // PH_MOE_SWIGLU_QUANT: routed swiglu + from_float of down rows
-    "moe_down",               // PH_MOE_DOWN: routed down (MUL_MAT_ID)
-    "moe_sum_residual",       // PH_MOE_SUM_RESIDUAL: expert sum, shared expert, residual
-    "head_norm",              // PH_HEAD_NORM: output norm of the output row (thread 0)
-    "head",                   // PH_HEAD: head GEMV + argmax (work after the last barrier)
-    "trace",                  // PH_TRACE: trace-only barriers and snapshots
+    "moe_route_swiglu",        // PH_MOE_ROUTE_SWIGLU: routing per token, shared swiglu
+    "moe_units_build",         // PH_MOE_UNITS_BUILD: expert row lists and work units (thread 0)
+    "moe_gate_up",             // PH_MOE_GATE_UP: routed gate/up (MUL_MAT_ID) + shared down
+    "moe_swiglu_quant",        // PH_MOE_SWIGLU_QUANT: routed swiglu + from_float of down rows
+    "moe_down",                // PH_MOE_DOWN: routed down (MUL_MAT_ID)
+    "moe_sum_residual",        // PH_MOE_SUM_RESIDUAL: expert sum, shared expert, residual
+    "head_norm",               // PH_HEAD_NORM: output norm of the output row (thread 0)
+    "head",                    // PH_HEAD: head GEMV + argmax (work after the last barrier)
+    "trace",                   // PH_TRACE: trace-only barriers and snapshots
 ];
 const PH_EMBED: usize = 0;
 const PH_HID_NORM: usize = 1;
@@ -381,7 +409,11 @@ unsafe impl<T> Sync for Sb<T> {}
 impl<T: Clone + Default> Sb<T> {
     fn new(n: usize) -> Sb<T> {
         let mut v = vec![T::default(); n.max(1)];
-        Sb { ptr: v.as_mut_ptr(), len: n, _v: v }
+        Sb {
+            ptr: v.as_mut_ptr(),
+            len: n,
+            _v: v,
+        }
     }
 }
 impl<T> Sb<T> {
@@ -389,7 +421,11 @@ impl<T> Sb<T> {
     #[allow(clippy::mut_from_ref)]
     #[inline]
     unsafe fn s(&self, r: Range<usize>) -> &mut [T] {
-        debug_assert!(r.start <= r.end && r.end <= self.len, "{r:?} of {}", self.len);
+        debug_assert!(
+            r.start <= r.end && r.end <= self.len,
+            "{r:?} of {}",
+            self.len
+        );
         std::slice::from_raw_parts_mut(self.ptr.add(r.start), r.end - r.start)
     }
     #[inline]
@@ -498,7 +534,7 @@ pub(super) struct Pf {
     g: Sb<f32>,
     u: Sb<f32>,
     hq: Sb<u8>,
-    #[cfg(feature="f32-reference")]
+    #[cfg(feature = "f32-reference")]
     href: Sb<f32>,
     dn: Sb<f32>,
     sdn: Sb<f32>,
@@ -565,10 +601,22 @@ impl Iterator for Share<'_> {
 fn share<'p>(pf: &'p Pf, ts: &mut PfThread, n: usize, grain: usize, tid: usize) -> Share<'p> {
     let ctr = step_ctr(pf, ts);
     if pf.dyn_split.load(Relaxed) {
-        Share { ctr: Some(ctr), n, grain: grain.max(1), cur: 0, end: 0 }
+        Share {
+            ctr: Some(ctr),
+            n,
+            grain: grain.max(1),
+            cur: 0,
+            end: 0,
+        }
     } else {
         let r = split(n, tid, pf.nth);
-        Share { ctr: None, n, grain: 1, cur: r.start, end: r.end }
+        Share {
+            ctr: None,
+            n,
+            grain: 1,
+            cur: r.start,
+            end: r.end,
+        }
     }
 }
 
@@ -585,7 +633,12 @@ fn split(n: usize, tid: usize, nth: usize) -> Range<usize> {
 ///
 /// v0.1.4 PFG: with pfg units (`path.kernel` Pfg) the unit scratch is the pfg one
 /// ([`pfattn::Scratch::bytes_pfg`], sized for the largest unit any parameters ask for).
-pub(super) fn pf_ctx_bytes(d: &ModelDesc, n_ctx: usize, att_tt: usize, path: pfattn::PfPath) -> usize {
+pub(super) fn pf_ctx_bytes(
+    d: &ModelDesc,
+    n_ctx: usize,
+    att_tt: usize,
+    path: pfattn::PfPath,
+) -> usize {
     let cut = path.cut_opt();
     let cap = pf_scratch_cap(n_ctx, cut);
     let group = d.n_head / d.n_head_kv;
@@ -593,7 +646,9 @@ pub(super) fn pf_ctx_bytes(d: &ModelDesc, n_ctx: usize, att_tt: usize, path: pfa
     let f = match path.kernel {
         pfattn::PfKernel::Tiled => 0,
         pfattn::PfKernel::Pfg => pfattn::Scratch::bytes_pfg(d.head_dim, group),
-        pfattn::PfKernel::Fa2 | pfattn::PfKernel::Fa2x => pfattn::Scratch::bytes(att_tt * group, d.head_dim),
+        pfattn::PfKernel::Fa2 | pfattn::PfKernel::Fa2x => {
+            pfattn::Scratch::bytes(att_tt * group, d.head_dim)
+        }
     };
     tile * (4 + 2) + cap * 4 + (cap + d.head_dim) * 2 + cap * 4 + cap * 4 + f
 }
@@ -607,21 +662,39 @@ pub(super) fn pf_scratch_cap(n_ctx: usize, cut: Option<usize>) -> usize {
 }
 
 fn max_act(k: usize) -> usize {
-    ActType::Q8K.bytes(k.div_ceil(QK_K) * QK_K).max(ActType::Q8_0.bytes(k.div_ceil(32) * 32))
+    ActType::Q8K
+        .bytes(k.div_ceil(QK_K) * QK_K)
+        .max(ActType::Q8_0.bytes(k.div_ceil(32) * 32))
 }
 
 impl Pf {
     /// `n_ctx`: positions of the context-sized thread scratch ([`pf_scratch_cap`]); `fa2`: also
     /// the fa2 unit scratch (the caller passes the capped size then).
     #[allow(clippy::too_many_arguments)]
-    fn new(d: &ModelDesc, ub: usize, nth: usize, n_ctx: usize, head_chunk: usize, mask: u32, kv: KvType, reference:bool, fa2: bool, pfg: bool) -> Pf {
-        #[cfg(not(feature="f32-reference"))]
-        let _=reference;
+    fn new(
+        d: &ModelDesc,
+        ub: usize,
+        nth: usize,
+        n_ctx: usize,
+        head_chunk: usize,
+        mask: u32,
+        kv: KvType,
+        reference: bool,
+        fa2: bool,
+        pfg: bool,
+    ) -> Pf {
+        #[cfg(not(feature = "f32-reference"))]
+        let _ = reference;
         let att_tt = att_tt_want(d, mask);
         let att_w = d.n_head * d.head_dim;
         let nch = d.ssm_conv_channels();
         let ku = d.n_expert_used;
-        let wide = d.n_embd.max(d.ssm_d_inner).max(att_w).max(d.ff_shexp).max(d.ff_exp);
+        let wide = d
+            .n_embd
+            .max(d.ssm_d_inner)
+            .max(att_w)
+            .max(d.ff_shexp)
+            .max(d.ff_exp);
         let hv = d.ssm_head_v_dim();
         Pf {
             ub,
@@ -654,7 +727,11 @@ impl Pf {
             vr: Sb::new(ub * d.n_head_kv * d.head_dim),
             qf: Sb::new(ub * att_w),
             q16: Sb::new(ub * att_w),
-            q8: Sb::new(if kv.k8() { ub * d.n_head * kv8::row_bytes(d.head_dim) } else { 0 }),
+            q8: Sb::new(if kv.k8() {
+                ub * d.n_head * kv8::row_bytes(d.head_dim)
+            } else {
+                0
+            }),
             rope: Sb::new(ub * d.head_dim),
             router: Sb::new(ub * d.n_expert),
             probs: Sb::new(ub * d.n_expert),
@@ -668,17 +745,22 @@ impl Pf {
             g: Sb::new(ub * ku * d.ff_exp),
             u: Sb::new(ub * ku * d.ff_exp),
             hq: Sb::new(ub * ku * max_act(d.ff_exp)),
-            #[cfg(feature="f32-reference")]
-            href: Sb::new(if reference {ub*ku*d.ff_exp}else{0}),
+            #[cfg(feature = "f32-reference")]
+            href: Sb::new(if reference { ub * ku * d.ff_exp } else { 0 }),
             dn: Sb::new(ub * ku * (d.n_embd + DN_PAD)),
             sdn: Sb::new(ub * d.n_embd),
             off: Sb::new(d.n_expert + 1),
             order: Sb::new(ub * ku),
             units: Sb::new(d.n_expert * (2 + d.n_embd.div_ceil(DOWN_CU))),
-            n_units: [sched::Padded(AtomicUsize::new(0)), sched::Padded(AtomicUsize::new(0))],
+            n_units: [
+                sched::Padded(AtomicUsize::new(0)),
+                sched::Padded(AtomicUsize::new(0)),
+            ],
             argmax: Sb::new(nth * 16),
             hid: Sb::new(ub * d.n_embd),
-            ctrs: (0..4096).map(|_| sched::Padded(AtomicUsize::new(0))).collect(),
+            ctrs: (0..4096)
+                .map(|_| sched::Padded(AtomicUsize::new(0)))
+                .collect(),
             th: (0..nth)
                 .map(|_| {
                     UnsafeCell::new(PfThread {
@@ -702,7 +784,11 @@ impl Pf {
                         tmpn: vec![0.0; hv.max(d.head_dim)],
                         zs: vec![0.0; hv],
                         iscr: vec![0; d.n_expert],
-                        kv8s: if kv.any8() { Kv8Scratch::new(d.head_dim, att_tt * (d.n_head / d.n_head_kv)) } else { Kv8Scratch::empty() },
+                        kv8s: if kv.any8() {
+                            Kv8Scratch::new(d.head_dim, att_tt * (d.n_head / d.n_head_kv))
+                        } else {
+                            Kv8Scratch::empty()
+                        },
                         fa2: if pfg {
                             pfattn::Scratch::new_pfg(d.head_dim, d.n_head / d.n_head_kv)
                         } else if fa2 {
@@ -714,7 +800,9 @@ impl Pf {
                     })
                 })
                 .collect(),
-            prof: (0..nth).map(|_| UnsafeCell::new(PfProf::default())).collect(),
+            prof: (0..nth)
+                .map(|_| UnsafeCell::new(PfProf::default()))
+                .collect(),
         }
     }
 }
@@ -769,7 +857,12 @@ impl<'a> Engine<'a> {
     /// Leaves the KV cache and the recurrent state as llama.cpp's batched prefill does and
     /// returns the greedy argmax of the last token's logits (the full row is in
     /// [`Engine::logits`] when `cfg.logits`). `None` for an empty prompt.
-    pub fn prefill<P: Team + ?Sized>(&self, pool: &P, tokens: &[u32], ubatch: usize) -> Option<u32> {
+    pub fn prefill<P: Team + ?Sized>(
+        &self,
+        pool: &P,
+        tokens: &[u32],
+        ubatch: usize,
+    ) -> Option<u32> {
         self.prefill_ext(pool, tokens, ubatch, None)
     }
 
@@ -780,7 +873,13 @@ impl<'a> Engine<'a> {
     /// so the last layer of the last token is computed as in a llama-server with MTP drafting,
     /// and its logits can differ from [`Engine::prefill`]'s in the last bits. KV and recurrent
     /// state are the same either way.
-    pub fn prefill_ext<P: Team + ?Sized>(&self, pool: &P, tokens: &[u32], ubatch: usize, hidden: Option<&mut Vec<f32>>) -> Option<u32> {
+    pub fn prefill_ext<P: Team + ?Sized>(
+        &self,
+        pool: &P,
+        tokens: &[u32],
+        ubatch: usize,
+        hidden: Option<&mut Vec<f32>>,
+    ) -> Option<u32> {
         self.prefill_impl(pool, tokens, ubatch, hidden, false, false)
     }
 
@@ -789,7 +888,13 @@ impl<'a> Engine<'a> {
     /// h_nextn rows, the last layer's MoE of the output row is recomputed on its own
     /// (crop_before_nextn, from the unchanged x1 row), so MTP on gives the same greedy output
     /// as MTP off. Only the last row's h_nextn is the all-rows one (an MTP input: drafts only).
-    pub fn prefill_nextn<P: Team + ?Sized>(&self, pool: &P, tokens: &[u32], ubatch: usize, hidden: &mut Vec<f32>) -> Option<u32> {
+    pub fn prefill_nextn<P: Team + ?Sized>(
+        &self,
+        pool: &P,
+        tokens: &[u32],
+        ubatch: usize,
+        hidden: &mut Vec<f32>,
+    ) -> Option<u32> {
         self.prefill_impl(pool, tokens, ubatch, Some(hidden), true, false)
     }
 
@@ -827,7 +932,10 @@ impl<'a> Engine<'a> {
             work_s: work.iter().map(|&v| v as f64 / hz).collect(),
             wait_s: wait.iter().map(|&v| v as f64 / hz).collect(),
             sub_names: PF_SUBS.to_vec(),
-            sub_s: sub[..PF_SUBS.len()].iter().map(|&v| v as f64 / hz).collect(),
+            sub_s: sub[..PF_SUBS.len()]
+                .iter()
+                .map(|&v| v as f64 / hz)
+                .collect(),
             threads,
         })
     }
@@ -836,7 +944,11 @@ impl<'a> Engine<'a> {
     /// Token rows of the prefill scratch in use (the largest pass so far: ubatch x group, capped at
     /// the call length); tests read it to see that a group really applied.
     pub fn prefill_scratch_rows(&self) -> usize {
-        self.pf.iter().filter_map(|slot| slot.lock().unwrap().as_ref().map(|p| p.ub)).max().unwrap_or(0)
+        self.pf
+            .iter()
+            .filter_map(|slot| slot.lock().unwrap().as_ref().map(|p| p.ub))
+            .max()
+            .unwrap_or(0)
     }
 
     /// PREFILL-LONG: whether batched prefill builds its scratch for fa2 ([`pfattn`]): the
@@ -887,7 +999,15 @@ impl<'a> Engine<'a> {
                 let pf = g.as_ref()?;
                 // SAFETY: the `pf` lock is held and no run is in flight; lengths only.
                 let t = unsafe { &*pf.th[0].get() };
-                Some(t.akq.len() * 4 + t.ap16.len() * 2 + t.kq.len() * 4 + t.p16.len() * 2 + t.wp.len() * 4 + t.mask.len() * 4 + t.fa2.bytes_allocated())
+                Some(
+                    t.akq.len() * 4
+                        + t.ap16.len() * 2
+                        + t.kq.len() * 4
+                        + t.p16.len() * 2
+                        + t.wp.len() * 4
+                        + t.mask.len() * 4
+                        + t.fa2.bytes_allocated(),
+                )
             })
             .max()
     }
@@ -913,19 +1033,37 @@ impl<'a> Engine<'a> {
         self.prefill_impl(pool, tokens, ubatch, None, false, true);
     }
 
-    fn prefill_impl<P: Team + ?Sized>(&self, pool: &P, tokens: &[u32], ubatch: usize, mut hidden: Option<&mut Vec<f32>>, redo_last: bool, state_only: bool) -> Option<u32> {
+    fn prefill_impl<P: Team + ?Sized>(
+        &self,
+        pool: &P,
+        tokens: &[u32],
+        ubatch: usize,
+        mut hidden: Option<&mut Vec<f32>>,
+        redo_last: bool,
+        state_only: bool,
+    ) -> Option<u32> {
         if tokens.is_empty() {
             return None;
         }
         let ubatch = ubatch.max(1);
         let nth = pool.nthreads();
         let pos0 = self.pos.load(Relaxed);
-        assert!(pos0 + tokens.len() <= self.n_ctx, "context full ({} positions)", self.n_ctx);
+        assert!(
+            pos0 + tokens.len() <= self.n_ctx,
+            "context full ({} positions)",
+            self.n_ctx
+        );
         self.note_kv(pos0 + tokens.len());
-        let mut guard = self.pf[(nth != self.plan.nthreads) as usize].lock().unwrap();
+        let mut guard = self.pf[(nth != self.plan.nthreads) as usize]
+            .lock()
+            .unwrap();
         // several llama.cpp ubatches per pass (see PF_GROUP for why this is exact and when it applies)
         let aligned = ubatch % 256 == 0 && (pos0 % 256 == 0 || pf_group_unaligned());
-        let group = if aligned && self.attn_tiled && self.trace.is_none() { pf_group_for(tokens.len()) } else { 1 };
+        let group = if aligned && self.attn_tiled && self.trace.is_none() {
+            pf_group_for(tokens.len())
+        } else {
+            1
+        };
         let gsz = ubatch * group;
         let ub_cap = gsz.min(tokens.len());
         let mask = pf_tiles(); // one sample for the whole call
@@ -935,21 +1073,44 @@ impl<'a> Engine<'a> {
         let cap = pf_scratch_cap(self.n_ctx, path.cut_opt());
         let fits = matches!(&*guard, Some(p) if p.ub >= ub_cap && p.nth == nth && p.att_tt == att_tt_want(&self.plan.desc, mask) && p.fa2 == fa2 && p.pfg == pfg && p.cap == cap);
         if !fits {
-            #[cfg(feature="f32-reference")]
-            let reference=self.f32_reference.is_some();
-            #[cfg(not(feature="f32-reference"))]
-            let reference=false;
+            #[cfg(feature = "f32-reference")]
+            let reference = self.f32_reference.is_some();
+            #[cfg(not(feature = "f32-reference"))]
+            let reference = false;
             // drop the old scratch first: at 256K two of them would not fit side by side
             *guard = None;
-            *guard = Some(Box::new(Pf::new(&self.plan.desc, ub_cap, nth, cap, self.plan.head_chunk, mask, self.kv, reference, fa2, pfg)));
+            *guard = Some(Box::new(Pf::new(
+                &self.plan.desc,
+                ub_cap,
+                nth,
+                cap,
+                self.plan.head_chunk,
+                mask,
+                self.kv,
+                reference,
+                fa2,
+                pfg,
+            )));
         }
         let pf: &Pf = guard.as_ref().unwrap();
         pf.mask.store(mask, Relaxed);
-        pf.fa2x.store(self.pf_fa2x().map_or(0, |xp| xp.fold << 16 | xp.ch), Relaxed);
-        pf.pfgp.store(self.pf_pfg().map_or(0, |gp| gp.encode()), Relaxed);
-        pf.attn_nth.store(if self.pf_attn_threads == 0 { nth } else { self.pf_attn_threads.min(nth) }, Relaxed);
+        pf.fa2x.store(
+            self.pf_fa2x().map_or(0, |xp| xp.fold << 16 | xp.ch),
+            Relaxed,
+        );
+        pf.pfgp
+            .store(self.pf_pfg().map_or(0, |gp| gp.encode()), Relaxed);
+        pf.attn_nth.store(
+            if self.pf_attn_threads == 0 {
+                nth
+            } else {
+                self.pf_attn_threads.min(nth)
+            },
+            Relaxed,
+        );
         pf.lub.store(ubatch, Relaxed);
-        pf.dyn_split.store(mask & PF_DYN_SPLIT != 0 && self.trace.is_none(), Relaxed);
+        pf.dyn_split
+            .store(mask & PF_DYN_SPLIT != 0 && self.trace.is_none(), Relaxed);
         let de = self.plan.desc.n_embd;
         if let Some(h) = hidden.as_mut() {
             h.clear();
@@ -965,7 +1126,8 @@ impl<'a> Engine<'a> {
             if let Some(h) = hidden.as_mut() {
                 let o = (p - pos0) * de;
                 // SAFETY: run finished; hid rows 0..chunk.len() complete.
-                h[o..o + chunk.len() * de].copy_from_slice(unsafe { pf.hid.s(0..chunk.len() * de) });
+                h[o..o + chunk.len() * de]
+                    .copy_from_slice(unsafe { pf.hid.s(0..chunk.len() * de) });
             }
             p += chunk.len();
             self.pos.store(p, Relaxed);
@@ -974,7 +1136,16 @@ impl<'a> Engine<'a> {
         best
     }
 
-    fn prefill_ubatch<P: Team + ?Sized>(&self, pool: &P, pf: &Pf, toks: &[u32], p0: usize, last: bool, all_rows: bool, redo_last: bool) -> Option<u32> {
+    fn prefill_ubatch<P: Team + ?Sized>(
+        &self,
+        pool: &P,
+        pf: &Pf,
+        toks: &[u32],
+        p0: usize,
+        last: bool,
+        all_rows: bool,
+        redo_last: bool,
+    ) -> Option<u32> {
         let d = &self.plan.desc;
         let n = toks.len();
         // rope caches of the ubatch positions; dynamic-step counters
@@ -1024,9 +1195,17 @@ impl<'a> Engine<'a> {
         Some(best.1)
     }
 
-
     #[allow(clippy::too_many_arguments)]
-    fn pf_thread(&self, ctx: &mut Ctx, pf: &Pf, toks: &[u32], p0: usize, last: bool, all_rows: bool, redo_last: bool) {
+    fn pf_thread(
+        &self,
+        ctx: &mut Ctx,
+        pf: &Pf,
+        toks: &[u32],
+        p0: usize,
+        last: bool,
+        all_rows: bool,
+        redo_last: bool,
+    ) {
         let d = &self.plan.desc;
         let tid = ctx.tid;
         // SAFETY: PfThread `tid` is used only by this worker.
@@ -1063,7 +1242,14 @@ impl<'a> Engine<'a> {
             let w = self.ws.get(self.plan.out_norm).f32_slice();
             for t in share(pf, ts, n, 4, tid) {
                 // SAFETY: row t of hid owned; x read-only.
-                unsafe { ops::rms_norm_mul(pf.x.s(t * de..(t + 1) * de), w, pf.hid.s(t * de..(t + 1) * de), d.rms_eps) };
+                unsafe {
+                    ops::rms_norm_mul(
+                        pf.x.s(t * de..(t + 1) * de),
+                        w,
+                        pf.hid.s(t * de..(t + 1) * de),
+                        d.rms_eps,
+                    )
+                };
             }
             self.bar(ctx, pf, PH_HID_NORM);
             if last && redo_last {
@@ -1113,7 +1299,20 @@ impl<'a> Engine<'a> {
     /// `ats` (forward_mul_mat layout) and, if `routed`, per row with `from_float` into actr.
     /// Work split by 4-row groups. Ends with a barrier of phase `ph`.
     #[allow(clippy::too_many_arguments)]
-    fn pf_norm_act(&self, ctx: &mut Ctx, pf: &Pf, ts: &mut PfThread, src: &Sb<f32>, rows: Rows, wnorm: Tid, ats: &[ActType], routed: Option<ActType>, l: usize, name: &str, ph: usize) {
+    fn pf_norm_act(
+        &self,
+        ctx: &mut Ctx,
+        pf: &Pf,
+        ts: &mut PfThread,
+        src: &Sb<f32>,
+        rows: Rows,
+        wnorm: Tid,
+        ats: &[ActType],
+        routed: Option<ActType>,
+        l: usize,
+        name: &str,
+        ph: usize,
+    ) {
         let d = &self.plan.desc;
         let de = d.n_embd;
         let w = self.ws.get(wnorm).f32_slice();
@@ -1129,7 +1328,11 @@ impl<'a> Engine<'a> {
                 }
             }
             for &at in ats {
-                let buf = if at == ActType::Q8K { &pf.act_k } else { &pf.act_0 };
+                let buf = if at == ActType::Q8K {
+                    &pf.act_k
+                } else {
+                    &pf.act_0
+                };
                 let rb = at.bytes(de);
                 // SAFETY: activation rows a..b are owned by this thread.
                 unsafe {
@@ -1185,30 +1388,61 @@ impl<'a> Engine<'a> {
     fn dense_unit(&self, op: &Dense, n: usize, c0: usize, c1: usize) {
         let w = &op.w;
         let k = w.k;
-        #[cfg(feature="npu-prefill")]
-        if self.npu_prefill.as_ref().is_some_and(|p|unsafe{p.cpu_f32(w.ptr,false,n,c0,c1,op.xin,op.out.add(c0),op.os,if op.add.is_null(){op.add}else{op.add.add(c0)})}){return;}
-        #[cfg(feature="f32-reference")]
-        if let Some(reference)=&self.f32_reference {
-            if !w.is_f32(){
-                for c in c0..c1 {reference.with_row(w.ptr,0,c,|row|{
-                    for t in 0..n{
-                        // SAFETY: the unit owns these complete output columns;
-                        // inputs are f32 and immutable after the norm barrier.
-                        unsafe{
-                            let mut y=ffi::oxe_vec_dot_f32(k as i32,row.as_ptr(),op.xin.add(t*k));
-                            if !op.add.is_null(){y+=*op.add.add(t*op.os+c);}
-                            *op.out.add(t*op.os+c)=y;
+        #[cfg(feature = "npu-prefill")]
+        if self.npu_prefill.as_ref().is_some_and(|p| unsafe {
+            p.cpu_f32(
+                w.ptr,
+                false,
+                n,
+                c0,
+                c1,
+                op.xin,
+                op.out.add(c0),
+                op.os,
+                if op.add.is_null() {
+                    op.add
+                } else {
+                    op.add.add(c0)
+                },
+            )
+        }) {
+            return;
+        }
+        #[cfg(feature = "f32-reference")]
+        if let Some(reference) = &self.f32_reference {
+            if !w.is_f32() {
+                for c in c0..c1 {
+                    reference.with_row(w.ptr, 0, c, |row| {
+                        for t in 0..n {
+                            // SAFETY: the unit owns these complete output columns;
+                            // inputs are f32 and immutable after the norm barrier.
+                            unsafe {
+                                let mut y =
+                                    ffi::oxe_vec_dot_f32(k as i32, row.as_ptr(), op.xin.add(t * k));
+                                if !op.add.is_null() {
+                                    y += *op.add.add(t * op.os + c);
+                                }
+                                *op.out.add(t * op.os + c) = y;
+                            }
                         }
-                    }
-                });}return;
+                    });
+                }
+                return;
             }
         }
         #[cfg(feature = "npu-prefill")]
         if op.npu {
-            debug_assert!(c0==0 && c1==w.rows);
+            debug_assert!(c0 == 0 && c1 == w.rows);
             // SAFETY: this op is one indivisible work unit; complete inputs are
             // read-only until the phase barrier, and it alone owns all outputs.
-            if unsafe{self.npu_prefill.as_ref().expect("prepared registry").run(w.ptr,n,op.xin,op.out,op.os,op.add)} {return;}
+            if unsafe {
+                self.npu_prefill
+                    .as_ref()
+                    .expect("prepared registry")
+                    .run(w.ptr, n, op.xin, op.out, op.os, op.add)
+            } {
+                return;
+            }
             // A latched/failed accelerator keeps this SAME one-unit shape.
             // The CPU overwrites the entire projection before any consumer.
         }
@@ -1218,7 +1452,8 @@ impl<'a> Engine<'a> {
                 // ggml_compute_forward_mul_mat, vec_dot path (F32: one row per vec_dot)
                 for t in 0..n {
                     for c in c0..c1 {
-                        *op.out.add(t * op.os + c) = ffi::oxe_vec_dot_f32(k as i32, w.f32().add(c * k), op.xin.add(t * k));
+                        *op.out.add(t * op.os + c) =
+                            ffi::oxe_vec_dot_f32(k as i32, w.f32().add(c * k), op.xin.add(t * k));
                     }
                 }
             } else {
@@ -1227,13 +1462,38 @@ impl<'a> Engine<'a> {
                 let full = n - n % 4;
                 if full > 0 {
                     if op.tile {
-                        kernels_sys::gemm_tile_raw(q, k, op.out.add(c0), op.os, w.rows_ptr(0, c0), op.act, full, c1 - c0);
+                        kernels_sys::gemm_tile_raw(
+                            q,
+                            k,
+                            op.out.add(c0),
+                            op.os,
+                            w.rows_ptr(0, c0),
+                            op.act,
+                            full,
+                            c1 - c0,
+                        );
                     } else {
-                        gemm_raw(q, k, op.out.add(c0), op.os, w.rows_ptr(0, c0), op.act, full, c1 - c0);
+                        gemm_raw(
+                            q,
+                            k,
+                            op.out.add(c0),
+                            op.os,
+                            w.rows_ptr(0, c0),
+                            op.act,
+                            full,
+                            c1 - c0,
+                        );
                     }
                 }
                 for t in full..n {
-                    gemv_raw(q, k, op.out.add(t * op.os + c0), w.rows_ptr(0, c0), op.act.add(t * rb), c1 - c0);
+                    gemv_raw(
+                        q,
+                        k,
+                        op.out.add(t * op.os + c0),
+                        w.rows_ptr(0, c0),
+                        op.act.add(t * rb),
+                        c1 - c0,
+                    );
                 }
             }
             if !op.add.is_null() {
@@ -1269,21 +1529,53 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn dense(&self, pf: &Pf, n: usize, w: Tid, xin: *const f32, out: *mut f32, os: usize, add: *const f32) -> Dense {
+    fn dense(
+        &self,
+        pf: &Pf,
+        n: usize,
+        w: Tid,
+        xin: *const f32,
+        out: *mut f32,
+        os: usize,
+        add: *const f32,
+    ) -> Dense {
         let w = *self.ws.get(w);
-        let act = if w.is_f32() { std::ptr::null() } else { self.act_buf(pf, w.qtype().act()).p(0) as *const u8 };
+        let act = if w.is_f32() {
+            std::ptr::null()
+        } else {
+            self.act_buf(pf, w.qtype().act()).p(0) as *const u8
+        };
         let mask = pf.mask.load(Relaxed);
         let tile = !w.is_f32()
             && kernels_sys::gemm_tile_has(w.qtype())
-            && if w.qtype() == kernels_sys::QType::Q6K { mask & PF_Q6K_TILE != 0 } else { mask & PF_TILE_DENSE != 0 };
-        let cu = if w.is_f32() && mask & PF_F32_CU8 != 0 { 8 } else { CU };
+            && if w.qtype() == kernels_sys::QType::Q6K {
+                mask & PF_Q6K_TILE != 0
+            } else {
+                mask & PF_TILE_DENSE != 0
+            };
+        let cu = if w.is_f32() && mask & PF_F32_CU8 != 0 {
+            8
+        } else {
+            CU
+        };
         #[cfg(feature = "npu-prefill")]
-        let npu=self.npu_prefill.as_ref().is_some_and(|p|p.selected(w.ptr,n));
+        let npu = self
+            .npu_prefill
+            .as_ref()
+            .is_some_and(|p| p.selected(w.ptr, n));
         #[cfg(feature = "npu-prefill")]
-        let cu=if npu {w.rows}else{cu};
+        let cu = if npu { w.rows } else { cu };
         #[cfg(not(feature = "npu-prefill"))]
-        let _=n;
-        Dense { w, xin, act, out, os, add, tile, cu,
+        let _ = n;
+        Dense {
+            w,
+            xin,
+            act,
+            out,
+            os,
+            add,
+            tile,
+            cu,
             #[cfg(feature = "npu-prefill")]
             npu,
         }
@@ -1294,9 +1586,27 @@ impl<'a> Engine<'a> {
     fn pf_recurrent(&self, ctx: &mut Ctx, pf: &Pf, ts: &mut PfThread, l: usize, n: usize) {
         let d = &self.plan.desc;
         let lt = &self.plan.layers[l];
-        let Mixer::Recurrent { qkv, z, beta, alpha, conv1d, a, dt_bias, norm, out } = lt.mixer else { unreachable!() };
+        let Mixer::Recurrent {
+            qkv,
+            z,
+            beta,
+            alpha,
+            conv1d,
+            a,
+            dt_bias,
+            norm,
+            out,
+        } = lt.mixer
+        else {
+            unreachable!()
+        };
         let (tid, nth) = (ctx.tid, pf.nth);
-        let (ds, nk, nv, hv) = (d.ssm_d_state, d.ssm_n_kheads, d.ssm_n_vheads, d.ssm_head_v_dim());
+        let (ds, nk, nv, hv) = (
+            d.ssm_d_state,
+            d.ssm_n_kheads,
+            d.ssm_n_vheads,
+            d.ssm_head_v_dim(),
+        );
         let nch = d.ssm_conv_channels();
         let di = d.ssm_d_inner;
         let eps = d.rms_eps;
@@ -1304,7 +1614,19 @@ impl<'a> Engine<'a> {
 
         // [1] attn_norm + activations of qkv / z / beta / alpha
         let ats = self.acts_of(&[qkv, z, beta, alpha]);
-        self.pf_norm_act(ctx, pf, ts, &pf.x, Rows { r0: 0, n }, lt.attn_norm, &ats, None, l, "attn_norm", PH_REC_NORM_QUANT);
+        self.pf_norm_act(
+            ctx,
+            pf,
+            ts,
+            &pf.x,
+            Rows { r0: 0, n },
+            lt.attn_norm,
+            &ats,
+            None,
+            l,
+            "attn_norm",
+            PH_REC_NORM_QUANT,
+        );
 
         // [2] projections (with PF_WAIT_DIET the z projection moves to phase [5])
         let pmask = pf.mask.load(Relaxed);
@@ -1325,9 +1647,18 @@ impl<'a> Engine<'a> {
             // SAFETY: conv-state rows and conv output columns c0..c1 are owned by the caller's unit;
             // the qkv columns c0..c1 of all tokens are complete (same unit, or the barrier).
             unsafe {
-                let cs = self.conv_state.at(cb + ri * conv_len + c0 * (kc - 1)..cb + ri * conv_len + c1 * (kc - 1));
+                let cs = self
+                    .conv_state
+                    .at(cb + ri * conv_len + c0 * (kc - 1)..cb + ri * conv_len + c1 * (kc - 1));
                 for t in 0..n {
-                    ffi::oxe_ssm_conv_step_f32(cs.as_mut_ptr(), pf.qkv.p(t * nch + c0), wconv[c0 * kc..].as_ptr(), (c1 - c0) as i32, kc as i32, pf.conv.p(t * nch + c0));
+                    ffi::oxe_ssm_conv_step_f32(
+                        cs.as_mut_ptr(),
+                        pf.qkv.p(t * nch + c0),
+                        wconv[c0 * kc..].as_ptr(),
+                        (c1 - c0) as i32,
+                        kc as i32,
+                        pf.conv.p(t * nch + c0),
+                    );
                     // SiLU in place (ggml_vec_silu_f32 is element-wise; chunks that are multiples of
                     // 16 channels keep every element on the same NEON path as llama.cpp's full row)
                     let row = pf.conv.s(t * nch + c0..t * nch + c1);
@@ -1368,7 +1699,11 @@ impl<'a> Engine<'a> {
                     }
                 }
             } else {
-                let all: Vec<Dense> = ops.iter().chain(tail.iter()).map(|o| o.clone_op()).collect();
+                let all: Vec<Dense> = ops
+                    .iter()
+                    .chain(tail.iter())
+                    .map(|o| o.clone_op())
+                    .collect();
                 self.pf_dense(pf, ts, &all, n);
             }
         }
@@ -1427,7 +1762,11 @@ impl<'a> Engine<'a> {
             unsafe {
                 for g in 0..nk {
                     ops::gdn_l2_norm(pf.conv.s(t * nch + g * ds..t * nch + (g + 1) * ds), eps);
-                    ops::gdn_l2_norm(pf.conv.s(t * nch + nk * ds + g * ds..t * nch + nk * ds + (g + 1) * ds), eps);
+                    ops::gdn_l2_norm(
+                        pf.conv
+                            .s(t * nch + nk * ds + g * ds..t * nch + nk * ds + (g + 1) * ds),
+                        eps,
+                    );
                 }
                 for vh in 0..nv {
                     let ab = [*pf.alpha.p(t * nv + vh) + wdt[vh]];
@@ -1479,10 +1818,16 @@ impl<'a> Engine<'a> {
             let kh = vh % nk;
             // SAFETY: the state of value head vh and O columns of vh are owned by this unit.
             unsafe {
-                let s = self.ssm_state.at(sb + ri * ssm_len + vh * hv * hv..sb + ri * ssm_len + (vh + 1) * hv * hv);
+                let s = self
+                    .ssm_state
+                    .at(sb + ri * ssm_len + vh * hv * hv..sb + ri * ssm_len + (vh + 1) * hv * hv);
                 for t in 0..n {
                     let base = t * nch;
-                    let step = if gdn_x4 { ffi::oxe_gated_delta_net_step_f32_x4 } else { ffi::oxe_gated_delta_net_step_f32 };
+                    let step = if gdn_x4 {
+                        ffi::oxe_gated_delta_net_step_f32_x4
+                    } else {
+                        ffi::oxe_gated_delta_net_step_f32
+                    };
                     step(
                         s.as_mut_ptr(),
                         pf.conv.p(base + kh * ds),
@@ -1515,19 +1860,48 @@ impl<'a> Engine<'a> {
 
         // [6] ssm_out (+ residual) -> x1
         // (with PF_WAIT_DIET the SiLU(z) gate of [5] is applied there, row group by row group, before the quantise)
-        self.pf_mixer_out(ctx, pf, ts, l, n, out, di, "linear_attn_out", PH_REC_OUT_QUANT, PH_REC_OUT_DENSE, if diet { Some((nv, hv)) } else { None });
+        self.pf_mixer_out(
+            ctx,
+            pf,
+            ts,
+            l,
+            n,
+            out,
+            di,
+            "linear_attn_out",
+            PH_REC_OUT_QUANT,
+            PH_REC_OUT_DENSE,
+            if diet { Some((nv, hv)) } else { None },
+        );
     }
 
     /// Quantise O, project with `wout`, add the layer input: x1 = W.o + x (all n rows). The
     /// quantise and the projection end with barriers of phases `phq` and `phd`.
     #[allow(clippy::too_many_arguments)]
-    fn pf_mixer_out(&self, ctx: &mut Ctx, pf: &Pf, ts: &mut PfThread, l: usize, n: usize, wout: Tid, width: usize, name: &str, phq: usize, phd: usize, zgate: Option<(usize, usize)>) {
+    fn pf_mixer_out(
+        &self,
+        ctx: &mut Ctx,
+        pf: &Pf,
+        ts: &mut PfThread,
+        l: usize,
+        n: usize,
+        wout: Tid,
+        width: usize,
+        name: &str,
+        phq: usize,
+        phd: usize,
+        zgate: Option<(usize, usize)>,
+    ) {
         let de = self.plan.desc.n_embd;
         let w = *self.ws.get(wout);
         if !w.is_f32() || zgate.is_some() {
             // per 4-row group: (PF_WAIT_DIET) o *= SiLU(z) per (token, value head) exactly as phase [5]
             // does it, then the forward_mul_mat quantise of the group
-            let at = if w.is_f32() { None } else { Some(w.qtype().act()) };
+            let at = if w.is_f32() {
+                None
+            } else {
+                Some(w.qtype().act())
+            };
             let full = n - n % 4;
             for g in share(pf, ts, n.div_ceil(4), 1, ctx.tid) {
                 let (a, b) = (4 * g, (4 * g + 4).min(n));
@@ -1536,7 +1910,10 @@ impl<'a> Engine<'a> {
                     if let Some((nv, hv)) = zgate {
                         for t in a..b {
                             for vh in 0..nv {
-                                ops::silu(pf.z.s(t * width + vh * hv..t * width + (vh + 1) * hv), &mut ts.zs);
+                                ops::silu(
+                                    pf.z.s(t * width + vh * hv..t * width + (vh + 1) * hv),
+                                    &mut ts.zs,
+                                );
                                 let o = pf.o.s(t * width + vh * hv..t * width + (vh + 1) * hv);
                                 for j in 0..hv {
                                     o[j] *= ts.zs[j];
@@ -1574,10 +1951,28 @@ impl<'a> Engine<'a> {
 
     // ------------------------------------------------------------ attention layer
 
-    fn pf_attention(&self, ctx: &mut Ctx, pf: &Pf, ts: &mut PfThread, l: usize, n: usize, p0: usize) {
+    fn pf_attention(
+        &self,
+        ctx: &mut Ctx,
+        pf: &Pf,
+        ts: &mut PfThread,
+        l: usize,
+        n: usize,
+        p0: usize,
+    ) {
         let d = &self.plan.desc;
         let lt = &self.plan.layers[l];
-        let Mixer::Attention { q, k, v, q_norm, k_norm, out } = lt.mixer else { unreachable!() };
+        let Mixer::Attention {
+            q,
+            k,
+            v,
+            q_norm,
+            k_norm,
+            out,
+        } = lt.mixer
+        else {
+            unreachable!()
+        };
         let tid = ctx.tid;
         let hd = d.head_dim;
         let nh = d.n_head;
@@ -1590,7 +1985,19 @@ impl<'a> Engine<'a> {
 
         // [1] norm + activations
         let ats = self.acts_of(&[q, k, v]);
-        self.pf_norm_act(ctx, pf, ts, &pf.x, Rows { r0: 0, n }, lt.attn_norm, &ats, None, l, "attn_norm", PH_ATT_NORM_QUANT);
+        self.pf_norm_act(
+            ctx,
+            pf,
+            ts,
+            &pf.x,
+            Rows { r0: 0, n },
+            lt.attn_norm,
+            &ats,
+            None,
+            l,
+            "attn_norm",
+            PH_ATT_NORM_QUANT,
+        );
 
         // [2] Q(+gate), K, V projections
         let xn = pf.xn.p(0) as *const f32;
@@ -1605,7 +2012,10 @@ impl<'a> Engine<'a> {
         // [3] q/k norm, RoPE, K/V cache writes, f16 Q (head-major) per token
         let ai = self.att_index[l];
         let kv_len = nkv * self.n_ctx * hd;
-        let (wqn, wkn) = (self.ws.get(q_norm).f32_slice(), self.ws.get(k_norm).f32_slice());
+        let (wqn, wkn) = (
+            self.ws.get(q_norm).f32_slice(),
+            self.ws.get(k_norm).f32_slice(),
+        );
         for t in share(pf, ts, n, 2, tid) {
             let pos = p0 + t;
             // SAFETY: token t's rows (q16, K/V cache at pos) are owned by this thread; the rope
@@ -1613,7 +2023,9 @@ impl<'a> Engine<'a> {
             unsafe {
                 let cache = pf.rope.s(t * hd..(t + 1) * hd);
                 for h in 0..nh {
-                    let src = pf.qkv.s(t * 2 * att_w + h * 2 * hd..t * 2 * att_w + h * 2 * hd + hd);
+                    let src = pf
+                        .qkv
+                        .s(t * 2 * att_w + h * 2 * hd..t * 2 * att_w + h * 2 * hd + hd);
                     let qn = &mut ts.tmpn[..hd];
                     ops::rms_norm_mul(src, wqn, qn, eps);
                     if trace {
@@ -1623,7 +2035,9 @@ impl<'a> Engine<'a> {
                     if trace {
                         self.ptr(l, "Qcur", n * att_w, t * att_w + h * hd, qn);
                     }
-                    pf.qf.s(t * att_w + h * hd..t * att_w + (h + 1) * hd).copy_from_slice(qn);
+                    pf.qf
+                        .s(t * att_w + h * hd..t * att_w + (h + 1) * hd)
+                        .copy_from_slice(qn);
                     let c = ((h / group) * pf.ub + t) * group + h % group;
                     ops::fp32_to_fp16(qn, pf.q16.s(c * hd..(c + 1) * hd));
                     if self.kv.k8() {
@@ -1639,8 +2053,10 @@ impl<'a> Engine<'a> {
                         self.ptr(l, "Kcur_normed", n * kvw, t * kvw + kvh * hd, kn);
                     }
                     ffi::oxe_rope_neox_inplace(kn.as_mut_ptr(), d.n_rot as i32, cache.as_ptr());
-                    #[cfg(feature="f32-reference")]
-                    if let Some(reference)=&self.f32_reference {reference.kv.put_k(ai,kvh,pos,kn);}
+                    #[cfg(feature = "f32-reference")]
+                    if let Some(reference) = &self.f32_reference {
+                        reference.kv.put_k(ai, kvh, pos, kn);
+                    }
                     if trace {
                         self.ptr(l, "Kcur", n * kvw, t * kvw + kvh * hd, kn);
                     }
@@ -1657,7 +2073,10 @@ impl<'a> Engine<'a> {
                     // int8 V: one Q8_0 row per (KV head, position), from the f32 projection
                     for kvh in 0..nkv {
                         let at = self.v8row(ai, kvh, pos);
-                        kv8::quant_row(pf.vr.s(t * kvw + kvh * hd..t * kvw + (kvh + 1) * hd), self.vcache8.at(at..at + kv8::row_bytes(hd)));
+                        kv8::quant_row(
+                            pf.vr.s(t * kvw + kvh * hd..t * kvw + (kvh + 1) * hd),
+                            self.vcache8.at(at..at + kv8::row_bytes(hd)),
+                        );
                     }
                 }
             }
@@ -1676,8 +2095,10 @@ impl<'a> Engine<'a> {
                     unsafe {
                         let row = self.vcache.ptr_at(self.vrow(ai, r) + p0 + tr.start);
                         for (i, t) in tr.clone().enumerate() {
-                            #[cfg(feature="f32-reference")]
-                            if let Some(reference)=&self.f32_reference {reference.kv.put_v(ai,r,p0+t,*pf.vr.p(t*kvw+r));}
+                            #[cfg(feature = "f32-reference")]
+                            if let Some(reference) = &self.f32_reference {
+                                reference.kv.put_v(ai, r, p0 + t, *pf.vr.p(t * kvw + r));
+                            }
                             ops::fp32_to_fp16(&[*pf.vr.p(t * kvw + r)], &mut h16);
                             *row.add(i) = h16[0];
                         }
@@ -1702,35 +2123,82 @@ impl<'a> Engine<'a> {
         //     probabilities to f16, vec_dot_f16 with V^T over n_kv)
         let n_kv = padded_n_kv(p0 + n - 1, self.n_ctx);
         let scale = 1.0 / (hd as f32).sqrt();
-        #[cfg(feature="f32-reference")]
-        if let Some(reference)=&self.f32_reference {
+        #[cfg(feature = "f32-reference")]
+        if let Some(reference) = &self.f32_reference {
             // Full f32 K/Q/V/probabilities. qf already holds normalized, roped
             // f32 queries; do not read q16, p16 or either f16 KV cache here.
-            let ctr=step_ctr(pf,ts);
-            loop{
-                let u=ctr.fetch_add(1,Relaxed);if u>=n*nh{break;}
-                let (t,h)=(u/nh,u%nh);let positions=p0+t+1;let kvh=h/group;
-                unsafe{
-                    for pos in 0..positions{
-                        ts.kq[pos]=ffi::oxe_vec_dot_f32(hd as i32,reference.kv.krow(ai,kvh,pos),pf.qf.p(t*att_w+h*hd))*scale;
+            let ctr = step_ctr(pf, ts);
+            loop {
+                let u = ctr.fetch_add(1, Relaxed);
+                if u >= n * nh {
+                    break;
+                }
+                let (t, h) = (u / nh, u % nh);
+                let positions = p0 + t + 1;
+                let kvh = h / group;
+                unsafe {
+                    for pos in 0..positions {
+                        ts.kq[pos] = ffi::oxe_vec_dot_f32(
+                            hd as i32,
+                            reference.kv.krow(ai, kvh, pos),
+                            pf.qf.p(t * att_w + h * hd),
+                        ) * scale;
                     }
-                    ops::soft_max(&ts.kq[..positions],&mut ts.wp[..positions],&mut ts.mask[..positions]);
-                    for dd in 0..hd{ts.aout[dd]=ffi::oxe_vec_dot_f32(positions as i32,reference.kv.vcol(ai,kvh,dd),ts.wp.as_ptr());}
-                    let gsrc=pf.qkv.s(t*2*att_w+h*2*hd+hd..t*2*att_w+(h+1)*2*hd);
-                    ops::sigmoid(gsrc,&mut ts.gsig);
-                    let out=pf.o.s(t*att_w+h*hd..t*att_w+(h+1)*hd);
-                    for dd in 0..hd{out[dd]=ts.aout[dd]*ts.gsig[dd];}
+                    ops::soft_max(
+                        &ts.kq[..positions],
+                        &mut ts.wp[..positions],
+                        &mut ts.mask[..positions],
+                    );
+                    for dd in 0..hd {
+                        ts.aout[dd] = ffi::oxe_vec_dot_f32(
+                            positions as i32,
+                            reference.kv.vcol(ai, kvh, dd),
+                            ts.wp.as_ptr(),
+                        );
+                    }
+                    let gsrc = pf
+                        .qkv
+                        .s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd);
+                    ops::sigmoid(gsrc, &mut ts.gsig);
+                    let out = pf.o.s(t * att_w + h * hd..t * att_w + (h + 1) * hd);
+                    for dd in 0..hd {
+                        out[dd] = ts.aout[dd] * ts.gsig[dd];
+                    }
                 }
             }
-            self.bar(ctx,pf,PH_ATT_CORE);
-            return self.pf_mixer_out(ctx,pf,ts,l,n,out,att_w,"attn_output",PH_ATT_OUT_QUANT,PH_ATT_OUT_DENSE,None);
+            self.bar(ctx, pf, PH_ATT_CORE);
+            return self.pf_mixer_out(
+                ctx,
+                pf,
+                ts,
+                l,
+                n,
+                out,
+                att_w,
+                "attn_output",
+                PH_ATT_OUT_QUANT,
+                PH_ATT_OUT_DENSE,
+                None,
+            );
         }
         // O-117 quality runner (bench / tests): the f32-attention reference for every row
         #[cfg(any(test, feature = "f32-reference"))]
         if self.pf_ref {
             self.pf_attention_ref(pf, ts, l, n, p0);
             self.bar(ctx, pf, PH_ATT_CORE);
-            return self.pf_mixer_out(ctx, pf, ts, l, n, out, att_w, "attn_output", PH_ATT_OUT_QUANT, PH_ATT_OUT_DENSE, None);
+            return self.pf_mixer_out(
+                ctx,
+                pf,
+                ts,
+                l,
+                n,
+                out,
+                att_w,
+                "attn_output",
+                PH_ATT_OUT_QUANT,
+                PH_ATT_OUT_DENSE,
+                None,
+            );
         }
         // PREFILL-LONG: fa2 units exist only when a token of this pass reaches beyond the cutoff
         // (`pf.cap` under fa2: PFA_MIN_KV or the auto cutoff; pf.fa2 implies f16 KV, no trace, no
@@ -1740,18 +2208,36 @@ impl<'a> Engine<'a> {
             // n_kv of the llama.cpp ubatch (of `lub` tokens, from p0) that holds token t
             let lub = pf.lub.load(Relaxed).max(1);
             let n_ctx = self.n_ctx;
-            self.pf_attention_tiled(pf, ts, l, n, p0, tid, fa2, |t| padded_n_kv(p0 + ((t / lub + 1) * lub).min(n) - 1, n_ctx));
+            self.pf_attention_tiled(pf, ts, l, n, p0, tid, fa2, |t| {
+                padded_n_kv(p0 + ((t / lub + 1) * lub).min(n) - 1, n_ctx)
+            });
             self.bar(ctx, pf, PH_ATT_CORE_TILED);
             #[cfg(any(test, feature = "f32-reference"))]
             self.pf_attn_check(ctx, pf, ts, l, n, p0);
-            return self.pf_mixer_out(ctx, pf, ts, l, n, out, att_w, "attn_output", PH_ATT_OUT_QUANT, PH_ATT_OUT_DENSE, None);
+            return self.pf_mixer_out(
+                ctx,
+                pf,
+                ts,
+                l,
+                n,
+                out,
+                att_w,
+                "attn_output",
+                PH_ATT_OUT_QUANT,
+                PH_ATT_OUT_DENSE,
+                None,
+            );
         }
         let nb = n.div_ceil(ATT_TB);
         let ctr = step_ctr(pf, ts);
         // THREADS-BY-PHASE: only the first attn_nth threads take units (same bits: dynamic units)
         let mine = tid < pf.attn_nth.load(Relaxed);
         loop {
-            let u = if mine { ctr.fetch_add(1, Relaxed) } else { usize::MAX };
+            let u = if mine {
+                ctr.fetch_add(1, Relaxed)
+            } else {
+                usize::MAX
+            };
             if u >= nh * nb {
                 break;
             }
@@ -1786,16 +2272,30 @@ impl<'a> Engine<'a> {
                         ts.aout.as_mut_ptr(),
                     );
                     if trace {
-                        self.ptr(l, "kq_soft_max", nh * n * n_kv, (h * n + t) * n_kv, &ts.kq[..n_kv]);
+                        self.ptr(
+                            l,
+                            "kq_soft_max",
+                            nh * n * n_kv,
+                            (h * n + t) * n_kv,
+                            &ts.kq[..n_kv],
+                        );
                     }
-                    let gsrc = pf.qkv.s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd);
+                    let gsrc = pf
+                        .qkv
+                        .s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd);
                     ops::sigmoid(gsrc, &mut ts.gsig);
                     let o = pf.o.s(t * att_w + h * hd..t * att_w + (h + 1) * hd);
                     for dd in 0..hd {
                         o[dd] = ts.aout[dd] * ts.gsig[dd];
                     }
                     if trace {
-                        self.ptr(l, "attn_pregate", n * att_w, t * att_w + h * hd, &ts.aout[..hd]);
+                        self.ptr(
+                            l,
+                            "attn_pregate",
+                            n * att_w,
+                            t * att_w + h * hd,
+                            &ts.aout[..hd],
+                        );
                         self.ptr(l, "attn_gated", n * att_w, t * att_w + h * hd, o);
                     }
                 }
@@ -1806,7 +2306,19 @@ impl<'a> Engine<'a> {
         self.pf_attn_check(ctx, pf, ts, l, n, p0);
 
         // [5] attn_output (+ residual)
-        self.pf_mixer_out(ctx, pf, ts, l, n, out, att_w, "attn_output", PH_ATT_OUT_QUANT, PH_ATT_OUT_DENSE, None);
+        self.pf_mixer_out(
+            ctx,
+            pf,
+            ts,
+            l,
+            n,
+            out,
+            att_w,
+            "attn_output",
+            PH_ATT_OUT_QUANT,
+            PH_ATT_OUT_DENSE,
+            None,
+        );
     }
 
     /// Tiled prefill attention (docs/lab-notes/M3-ATTN.md). Units = (KV head, block of ATT_TT tokens),
@@ -1819,7 +2331,17 @@ impl<'a> Engine<'a> {
     /// fa2 kernel ([`pfattn::Tile`], O(chunk) scratch) instead; the others are unchanged. Only
     /// threads with tid < `attn_nth` take units (THREADS-BY-PHASE; any value gives the same bits).
     #[allow(clippy::too_many_arguments)]
-    fn pf_attention_tiled(&self, pf: &Pf, ts: &mut PfThread, l: usize, n: usize, p0: usize, tid: usize, fa2: bool, n_kv_of: impl Fn(usize) -> usize) {
+    fn pf_attention_tiled(
+        &self,
+        pf: &Pf,
+        ts: &mut PfThread,
+        l: usize,
+        n: usize,
+        p0: usize,
+        tid: usize,
+        fa2: bool,
+        n_kv_of: impl Fn(usize) -> usize,
+    ) {
         let d = &self.plan.desc;
         let hd = d.head_dim;
         let nh = d.n_head;
@@ -1842,10 +2364,16 @@ impl<'a> Engine<'a> {
         // tokens fa2 / fa2x would take) run as pfg units of `gt` tokens; the tiled blocks before
         // them stay as they are. pfg units are handed out first (the long ones), then the tiled
         // ones fill in. A column's pfg result does not depend on its unit: same bits for any grid.
-        let gp = if fa2 { pfattn::GParams::decode(pf.pfgp.load(Relaxed)) } else { None };
+        let gp = if fa2 {
+            pfattn::GParams::decode(pf.pfgp.load(Relaxed))
+        } else {
+            None
+        };
         let (nbt, tp, gt, nbg) = match gp {
             Some(g) => {
-                let nbt = (0..nb).take_while(|&b| n_kv_of(((b + 1) * tt).min(n) - 1) <= pf.cap).count();
+                let nbt = (0..nb)
+                    .take_while(|&b| n_kv_of(((b + 1) * tt).min(n) - 1) <= pf.cap)
+                    .count();
                 let tp = (nbt * tt).min(n);
                 let gt = g.tokens_per_unit(group);
                 (nbt, tp, gt, (n - tp).div_ceil(gt))
@@ -1860,10 +2388,18 @@ impl<'a> Engine<'a> {
         // The stride is the scratch capacity (n_ctx, or PFA_MIN_KV under fa2: tiled units then
         // never reach beyond it); only addresses depend on it.
         let mask = pf.mask.load(Relaxed);
-        let cs = if mask & PF_ATTN_PAD != 0 { pf.cap + ATT_PAD } else { pf.cap };
+        let cs = if mask & PF_ATTN_PAD != 0 {
+            pf.cap + ATT_PAD
+        } else {
+            pf.cap
+        };
         let pb = if mask & PF_ATTN_PB != 0 { attn_pb() } else { 0 };
         loop {
-            let u = if mine { ctr.fetch_add(1, Relaxed) } else { usize::MAX };
+            let u = if mine {
+                ctr.fetch_add(1, Relaxed)
+            } else {
+                usize::MAX
+            };
             if u >= ng + nkv * nbt {
                 break;
             }
@@ -1891,7 +2427,10 @@ impl<'a> Engine<'a> {
             #[cfg(any(test, feature = "f32-reference"))]
             self.pf_count_unit(PFU_TILED);
             self.pf_kunit(tid, PFK_TILED);
-            debug_assert!(n_kv_of(t1 - 1) <= pf.cap && p0 + t1 <= pf.cap, "tiled unit beyond the prefill scratch");
+            debug_assert!(
+                n_kv_of(t1 - 1) <= pf.cap && p0 + t1 <= pf.cap,
+                "tiled unit beyond the prefill scratch"
+            );
             let rows = p0 + t1; // K rows 0..=p0+t1-1 (rows beyond a token's pos are masked)
             let n32 = rows.div_ceil(32) * 32;
             let kbase = ai * kv_len + kvh * n_ctx * hd;
@@ -1903,9 +2442,31 @@ impl<'a> Engine<'a> {
             unsafe {
                 if self.kv.k8() && self.kv8_fused {
                     let rb = kv8::row_bytes(hd);
-                    ffi::oxe_dot_q8_tile(hd as i32, self.kcache8.ptr_at(self.k8row(ai, kvh, 0)), rb as i64, rows as i32, pf.q8.p(c0 * rb), rb as i64, ncol as i32, ts.akq.as_mut_ptr(), 1, cs as i64);
+                    ffi::oxe_dot_q8_tile(
+                        hd as i32,
+                        self.kcache8.ptr_at(self.k8row(ai, kvh, 0)),
+                        rb as i64,
+                        rows as i32,
+                        pf.q8.p(c0 * rb),
+                        rb as i64,
+                        ncol as i32,
+                        ts.akq.as_mut_ptr(),
+                        1,
+                        cs as i64,
+                    );
                 } else if self.kv.k8() {
-                    kv8::scores_q8(self.kcache8.ptr_at(self.k8row(ai, kvh, 0)), hd, 0, rows, pf.q16.p(c0 * hd), hd, ncol, ts.akq.as_mut_ptr(), cs, &mut ts.kv8s);
+                    kv8::scores_q8(
+                        self.kcache8.ptr_at(self.k8row(ai, kvh, 0)),
+                        hd,
+                        0,
+                        rows,
+                        pf.q16.p(c0 * hd),
+                        hd,
+                        ncol,
+                        ts.akq.as_mut_ptr(),
+                        cs,
+                        &mut ts.kv8s,
+                    );
                 } else {
                     ffi::oxe_dot_f16_tile(
                         hd as i32,
@@ -1943,7 +2504,18 @@ impl<'a> Engine<'a> {
                     while q0 < n32 {
                         let q1 = (q0 + kv8::PV_CHUNK).min(n32);
                         let pacc = ts.kv8s.pacc.as_mut_ptr();
-                        kv8::pv_chunk(self.kv8_pv, self.vcache8.ptr_at(self.v8row(ai, kvh, 0)), hd, q0, q1, ts.ap16.as_ptr(), cs, ncol, pacc, &mut ts.kv8s);
+                        kv8::pv_chunk(
+                            self.kv8_pv,
+                            self.vcache8.ptr_at(self.v8row(ai, kvh, 0)),
+                            hd,
+                            q0,
+                            q1,
+                            ts.ap16.as_ptr(),
+                            cs,
+                            ncol,
+                            pacc,
+                            &mut ts.kv8s,
+                        );
                         for c in 0..ncol {
                             for dd in 0..hd {
                                 aot[dd * ncol + c] += ts.kv8s.pacc[c * hd + dd];
@@ -2001,7 +2573,9 @@ impl<'a> Engine<'a> {
                 }
                 for col in 0..ncol {
                     let (t, h) = (t0 + col / group, kvh * group + col % group);
-                    let gsrc = pf.qkv.s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd);
+                    let gsrc = pf
+                        .qkv
+                        .s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd);
                     ops::sigmoid(gsrc, &mut ts.gsig);
                     let o = pf.o.s(t * att_w + h * hd..t * att_w + (h + 1) * hd);
                     for dd in 0..hd {
@@ -2017,7 +2591,17 @@ impl<'a> Engine<'a> {
     /// then the sigmoid gate as in the tiled path. v0.1.4 PFG: `gp` Some runs the pfg kernel
     /// (`Tile::run_g`) instead of fa2 / fa2x.
     #[allow(clippy::too_many_arguments)]
-    fn pf_fa2_unit(&self, pf: &Pf, ts: &mut PfThread, ai: usize, kvh: usize, t0: usize, t1: usize, p0: usize, gp: Option<pfattn::GParams>) {
+    fn pf_fa2_unit(
+        &self,
+        pf: &Pf,
+        ts: &mut PfThread,
+        ai: usize,
+        kvh: usize,
+        t0: usize,
+        t1: usize,
+        p0: usize,
+        gp: Option<pfattn::GParams>,
+    ) {
         let d = &self.plan.desc;
         let hd = d.head_dim;
         let nkv = d.n_head_kv;
@@ -2048,11 +2632,19 @@ impl<'a> Engine<'a> {
             } else if x == 0 {
                 tile.run(&mut ts.fa2);
             } else {
-                tile.run_x(&mut ts.fa2, pfattn::XParams { fold: x >> 16, ch: x & 0xffff });
+                tile.run_x(
+                    &mut ts.fa2,
+                    pfattn::XParams {
+                        fold: x >> 16,
+                        ch: x & 0xffff,
+                    },
+                );
             }
             for col in 0..ncol {
                 let (t, h) = (t0 + col / group, kvh * group + col % group);
-                let gsrc = pf.qkv.s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd);
+                let gsrc = pf
+                    .qkv
+                    .s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd);
                 ops::sigmoid(gsrc, &mut ts.gsig);
                 let o = pf.o.s(t * att_w + h * hd..t * att_w + (h + 1) * hd);
                 for (dd, x) in ts.fa2.out(col).iter().enumerate() {
@@ -2084,12 +2676,28 @@ impl<'a> Engine<'a> {
         let wue = *self.ws.get(lt.up_exps);
         let wde = *self.ws.get(lt.down_exps);
         let rat = wge.qtype().act();
-        assert_eq!(rat, wue.qtype().act(), "gate/up experts with different activation types");
+        assert_eq!(
+            rat,
+            wue.qtype().act(),
+            "gate/up experts with different activation types"
+        );
 
         // [1] post-attention norm; activations for the shared expert (forward_mul_mat layout)
         //     and per row for the routed experts (forward_mul_mat_id: from_float)
         let ats = self.acts_of(&[lt.gate_shexp, lt.up_shexp]);
-        self.pf_norm_act(ctx, pf, ts, &pf.x1, rows, lt.post_norm, &ats, Some(rat), l, "attn_post_norm", PH_MOE_NORM_QUANT);
+        self.pf_norm_act(
+            ctx,
+            pf,
+            ts,
+            &pf.x1,
+            rows,
+            lt.post_norm,
+            &ats,
+            Some(rat),
+            l,
+            "attn_post_norm",
+            PH_MOE_NORM_QUANT,
+        );
 
         // [2] router logits, shared expert gate (vec_dot: 1 row), shared gate/up projections
         let xn = pf.xn.p(0) as *const f32;
@@ -2098,12 +2706,21 @@ impl<'a> Engine<'a> {
             self.dense(pf, n, lt.gate_shexp, xn, pf.shg.p(0), ffs, std::ptr::null()),
             self.dense(pf, n, lt.up_shexp, xn, pf.shu.p(0), ffs, std::ptr::null()),
         ];
-        #[cfg(feature="npu-prefill")]
-        let shared_overlap=!trace&&self.npu_prefill.as_ref().is_some_and(|p|p.shared_overlap([
-            self.ws.get(lt.gate_shexp).ptr,self.ws.get(lt.up_shexp).ptr,self.ws.get(lt.down_shexp).ptr],n));
-        #[cfg(not(feature="npu-prefill"))]
-        let shared_overlap=false;
-        self.pf_dense(pf, ts, if shared_overlap{&ops[..1]}else{&ops}, n);
+        #[cfg(feature = "npu-prefill")]
+        let shared_overlap = !trace
+            && self.npu_prefill.as_ref().is_some_and(|p| {
+                p.shared_overlap(
+                    [
+                        self.ws.get(lt.gate_shexp).ptr,
+                        self.ws.get(lt.up_shexp).ptr,
+                        self.ws.get(lt.down_shexp).ptr,
+                    ],
+                    n,
+                )
+            });
+        #[cfg(not(feature = "npu-prefill"))]
+        let shared_overlap = false;
+        self.pf_dense(pf, ts, if shared_overlap { &ops[..1] } else { &ops }, n);
         let gs = self.ws.get(lt.shexp_gate).f32_slice();
         for t in share(pf, ts, n, 8, tid) {
             // SAFETY: row t of xn read-only; sg[t] owned.
@@ -2132,13 +2749,23 @@ impl<'a> Engine<'a> {
                 for x in w.iter_mut() {
                     *x /= s;
                 }
-                if !shared_overlap{ops::swiglu(pf.shg.s(t * ffs..(t + 1) * ffs), pf.shu.s(t * ffs..(t + 1) * ffs), pf.shh.s(t * ffs..(t + 1) * ffs));}
+                if !shared_overlap {
+                    ops::swiglu(
+                        pf.shg.s(t * ffs..(t + 1) * ffs),
+                        pf.shu.s(t * ffs..(t + 1) * ffs),
+                        pf.shh.s(t * ffs..(t + 1) * ffs),
+                    );
+                }
             }
         }
         self.bar(ctx, pf, PH_MOE_ROUTE_SWIGLU);
         let wds = *self.ws.get(lt.down_shexp);
-        let sh_at = if wds.is_f32() { None } else { Some(wds.qtype().act()) };
-        if let Some(at) = sh_at.filter(|_|!shared_overlap) {
+        let sh_at = if wds.is_f32() {
+            None
+        } else {
+            Some(wds.qtype().act())
+        };
+        if let Some(at) = sh_at.filter(|_| !shared_overlap) {
             // shared down activations: forward_mul_mat layout over the n rows of shh
             let rb = at.bytes(ffs);
             let full = n - n % 4;
@@ -2181,7 +2808,10 @@ impl<'a> Engine<'a> {
                     order[fill[e as usize] as usize] = s as u32;
                     fill[e as usize] += 1;
                 }
-                let mut ex: Vec<(u32, u32)> = (0..ne).filter(|&e| off[e + 1] > off[e]).map(|e| (off[e + 1] - off[e], e as u32)).collect();
+                let mut ex: Vec<(u32, u32)> = (0..ne)
+                    .filter(|&e| off[e + 1] > off[e])
+                    .map(|e| (off[e + 1] - off[e], e as u32))
+                    .collect();
                 ex.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
                 let units = pf.units.s(0..pf.units.len);
                 let mut nu = 0;
@@ -2226,30 +2856,59 @@ impl<'a> Engine<'a> {
 
         // [4] routed gate/up (MUL_MAT_ID), shared down projection
         let nu = pf.n_units[0].load(Relaxed);
-        let sd = self.dense(pf, n, lt.down_shexp, pf.shh.p(0), pf.sdn.p(0), de, std::ptr::null());
-        let sd = Dense { act: if sh_at.is_some() { pf.sh_act.p(0) as *const u8 } else { std::ptr::null() }, ..sd };
+        let sd = self.dense(
+            pf,
+            n,
+            lt.down_shexp,
+            pf.shh.p(0),
+            pf.sdn.p(0),
+            de,
+            std::ptr::null(),
+        );
+        let sd = Dense {
+            act: if sh_at.is_some() {
+                pf.sh_act.p(0) as *const u8
+            } else {
+                std::ptr::null()
+            },
+            ..sd
+        };
         {
             let ctr = step_ctr(pf, ts);
-        let next = || ctr.fetch_add(1, Relaxed);
-            let shared_units=if shared_overlap{1}else{sd.units()};
+            let next = || ctr.fetch_add(1, Relaxed);
+            let shared_units = if shared_overlap { 1 } else { sd.units() };
             let total = nu + shared_units;
             loop {
                 let u = next();
                 if u >= total {
                     break;
                 }
-                if shared_overlap&&u==0 {
-                    #[cfg(feature="npu-prefill")]
-                    self.pf_shared_overlap(pf,n,&ops[1..],&sd,ffs,sh_at);
-                }else if u < nu+usize::from(shared_overlap) {
-                    #[cfg(feature="npu-prefill")]
-                    if shared_overlap{self.npu_prefill.as_ref().unwrap().note_expert_unit();}
+                if shared_overlap && u == 0 {
+                    #[cfg(feature = "npu-prefill")]
+                    self.pf_shared_overlap(pf, n, &ops[1..], &sd, ffs, sh_at);
+                } else if u < nu + usize::from(shared_overlap) {
+                    #[cfg(feature = "npu-prefill")]
+                    if shared_overlap {
+                        self.npu_prefill.as_ref().unwrap().note_expert_unit();
+                    }
                     // SAFETY: units read-only after the barrier.
-                    let ei=u-usize::from(shared_overlap);
+                    let ei = u - usize::from(shared_overlap);
                     let (e, c0, c1) = unsafe { *pf.units.p(ei) };
                     let rb = rat.bytes(de);
                     let t0 = if prof { ticks() } else { 0 };
-                    self.mmid_unit(pf, ts, &[(&wge, pf.g.p(0)), (&wue, pf.u.p(0))], e as usize, c0 as usize, c1 as usize, pf.actr.p(0), rb, ffe, ku, false);
+                    self.mmid_unit(
+                        pf,
+                        ts,
+                        &[(&wge, pf.g.p(0)), (&wue, pf.u.p(0))],
+                        e as usize,
+                        c0 as usize,
+                        c1 as usize,
+                        pf.actr.p(0),
+                        rb,
+                        ffe,
+                        ku,
+                        false,
+                    );
                     if prof {
                         let t1 = ticks();
                         pf_prof(pf, tid).sub[SUB_GATE_UP] += t1 - t0;
@@ -2274,9 +2933,15 @@ impl<'a> Engine<'a> {
             // SAFETY: routed row s is owned by this thread.
             unsafe {
                 let h = &mut ts.kq[..ffe];
-                ops::swiglu(pf.g.s(s * ffe..(s + 1) * ffe), pf.u.s(s * ffe..(s + 1) * ffe), h);
-                    #[cfg(feature="f32-reference")]
-                    if self.f32_reference.is_some(){pf.href.s(s*ffe..(s+1)*ffe).copy_from_slice(h);}
+                ops::swiglu(
+                    pf.g.s(s * ffe..(s + 1) * ffe),
+                    pf.u.s(s * ffe..(s + 1) * ffe),
+                    h,
+                );
+                #[cfg(feature = "f32-reference")]
+                if self.f32_reference.is_some() {
+                    pf.href.s(s * ffe..(s + 1) * ffe).copy_from_slice(h);
+                }
                 quantize_row_raw(dat, h.as_ptr(), pf.hq.p(s * hrb), ffe);
             }
         }
@@ -2286,7 +2951,7 @@ impl<'a> Engine<'a> {
         let nd = pf.n_units[1].load(Relaxed);
         {
             let ctr = step_ctr(pf, ts);
-        let next = || ctr.fetch_add(1, Relaxed);
+            let next = || ctr.fetch_add(1, Relaxed);
             loop {
                 let u = next();
                 if u >= nd {
@@ -2294,7 +2959,19 @@ impl<'a> Engine<'a> {
                 }
                 // SAFETY: units read-only after the barrier.
                 let (e, c0, c1) = unsafe { *pf.units.p(nu + u) };
-                self.mmid_unit(pf, ts, &[(&wde, pf.dn.p(0))], e as usize, c0 as usize, c1 as usize, pf.hq.p(0), hrb, de + DN_PAD, 1, true);
+                self.mmid_unit(
+                    pf,
+                    ts,
+                    &[(&wde, pf.dn.p(0))],
+                    e as usize,
+                    c0 as usize,
+                    c1 as usize,
+                    pf.hq.p(0),
+                    hrb,
+                    de + DN_PAD,
+                    1,
+                    true,
+                );
             }
         }
         self.bar(ctx, pf, PH_MOE_DOWN);
@@ -2340,82 +3017,158 @@ impl<'a> Engine<'a> {
 
     /// Independent shared FFN branch, owned by one existing worker while the
     /// rest compute routed experts. All output consumers follow PH_MOE_GATE_UP.
-    #[cfg(feature="npu-prefill")]
-    fn pf_shared_overlap(&self,pf:&Pf,n:usize,gate_up:&[Dense],down:&Dense,ffs:usize,at:Option<ActType>){
-        let _activity=self.npu_prefill.as_ref().unwrap().begin_shared_overlap();
-        for op in gate_up{self.dense_unit(op,n,0,op.w.rows);}
+    #[cfg(feature = "npu-prefill")]
+    fn pf_shared_overlap(
+        &self,
+        pf: &Pf,
+        n: usize,
+        gate_up: &[Dense],
+        down: &Dense,
+        ffs: usize,
+        at: Option<ActType>,
+    ) {
+        let _activity = self.npu_prefill.as_ref().unwrap().begin_shared_overlap();
+        for op in gate_up {
+            self.dense_unit(op, n, 0, op.w.rows);
+        }
         // SAFETY: this indivisible unit exclusively owns shared scratch. xn and
         // original dense activation buffers remain immutable through this layer.
-        unsafe{
-            for t in 0..n{ops::swiglu(pf.shg.s(t*ffs..(t+1)*ffs),pf.shu.s(t*ffs..(t+1)*ffs),pf.shh.s(t*ffs..(t+1)*ffs));}
+        unsafe {
+            for t in 0..n {
+                ops::swiglu(
+                    pf.shg.s(t * ffs..(t + 1) * ffs),
+                    pf.shu.s(t * ffs..(t + 1) * ffs),
+                    pf.shh.s(t * ffs..(t + 1) * ffs),
+                );
+            }
             // Keep the exact native activation layout for a latched CPU fallback.
             // Experts use actr/hq, never this private shared-down buffer.
-            if let Some(at)=at{
-                let rb=at.bytes(ffs);let full=n-n%4;
-                for a in (0..full).step_by(4){quantize_mat4_raw(at,pf.shh.p(a*ffs),pf.sh_act.p(a*rb),ffs);}
-                for a in full..n{quantize_row_raw(at,pf.shh.p(a*ffs),pf.sh_act.p(a*rb),ffs);}
+            if let Some(at) = at {
+                let rb = at.bytes(ffs);
+                let full = n - n % 4;
+                for a in (0..full).step_by(4) {
+                    quantize_mat4_raw(at, pf.shh.p(a * ffs), pf.sh_act.p(a * rb), ffs);
+                }
+                for a in full..n {
+                    quantize_row_raw(at, pf.shh.p(a * ffs), pf.sh_act.p(a * rb), ffs);
+                }
             }
         }
-        self.dense_unit(down,n,0,down.w.rows);
+        self.dense_unit(down, n, 0, down.w.rows);
     }
 
     /// One MUL_MAT_ID unit: expert `e`, weight rows c0..c1, for every routed row of the expert.
     /// `mats` are (weight, output base); output row of routed row s is at `s * out_w` (`per_row`
     /// false: s = token*ku + slot indexes the routed act rows by token; true: by s).
     #[allow(clippy::too_many_arguments)]
-    fn mmid_unit(&self, pf: &Pf, ts: &mut PfThread, mats: &[(&WeightRef, *mut f32)], e: usize, c0: usize, c1: usize, act: *mut u8, rb: usize, out_w: usize, ku: usize, per_row: bool) {
+    fn mmid_unit(
+        &self,
+        pf: &Pf,
+        ts: &mut PfThread,
+        mats: &[(&WeightRef, *mut f32)],
+        e: usize,
+        c0: usize,
+        c1: usize,
+        act: *mut u8,
+        rb: usize,
+        out_w: usize,
+        ku: usize,
+        per_row: bool,
+    ) {
         // SAFETY: the expert's row list is read-only; the unit owns output columns c0..c1 of
         // its routed rows; the tile/tmp scratch is this thread's.
         unsafe {
             let off = pf.off.s(0..pf.off.len);
             let list = pf.order.s(off[e] as usize..off[e + 1] as usize);
-            #[cfg(feature="f32-reference")]
-            if let Some(reference)=&self.f32_reference {
-                for &(w,out) in mats{for c in c0..c1{
-                    reference.with_row(w.ptr,e,c,|row|{
-                        for &s in list.iter(){
-                            let input=if per_row {pf.href.p(s as usize*w.k)}else{pf.xn.p((s as usize/ku)*w.k)};
-                            *out.add(s as usize*out_w+c)=ffi::oxe_vec_dot_f32(w.k as i32,row.as_ptr(),input);
-                        }
-                    });
-                }}return;
+            #[cfg(feature = "f32-reference")]
+            if let Some(reference) = &self.f32_reference {
+                for &(w, out) in mats {
+                    for c in c0..c1 {
+                        reference.with_row(w.ptr, e, c, |row| {
+                            for &s in list.iter() {
+                                let input = if per_row {
+                                    pf.href.p(s as usize * w.k)
+                                } else {
+                                    pf.xn.p((s as usize / ku) * w.k)
+                                };
+                                *out.add(s as usize * out_w + c) =
+                                    ffi::oxe_vec_dot_f32(w.k as i32, row.as_ptr(), input);
+                            }
+                        });
+                    }
+                }
+                return;
             }
             let cnt = list.len();
-            let row_of = |s: u32| -> usize { if per_row { s as usize } else { s as usize / ku } };
+            let row_of = |s: u32| -> usize {
+                if per_row {
+                    s as usize
+                } else {
+                    s as usize / ku
+                }
+            };
             let k = mats[0].0.k;
             let q = mats[0].0.qtype();
             let at = q.act();
             let mut i = 0;
             let mask = pf.mask.load(Relaxed);
-            let tile_ok = |t: kernels_sys::QType| kernels_sys::mmid_tile_has(t) && (t != kernels_sys::QType::Q6K || mask & PF_Q6K_TILE != 0);
-            if mask & PF_MMID_TILE != 0 && mats.iter().all(|m| tile_ok(m.0.qtype())) && mmid_use_tile(q, cnt, mask) {
+            let tile_ok = |t: kernels_sys::QType| {
+                kernels_sys::mmid_tile_has(t)
+                    && (t != kernels_sys::QType::Q6K || mask & PF_Q6K_TILE != 0)
+            };
+            if mask & PF_MMID_TILE != 0
+                && mats.iter().all(|m| tile_ok(m.0.qtype()))
+                && mmid_use_tile(q, cnt, mask)
+            {
                 // moe-prefill: all rows of the expert through the pair tiles (same bits per row)
-                let need = cnt.div_ceil(2) * (k / kernels_sys::QK_K) * kernels_sys::PF_XBLK_BYTES / 4;
+                let need =
+                    cnt.div_ceil(2) * (k / kernels_sys::QK_K) * kernels_sys::PF_XBLK_BYTES / 4;
                 if ts.xpack.len() < need {
                     ts.xpack.resize(need, 0);
                 }
                 ts.xrows.clear();
-                ts.xrows.extend(list.iter().map(|&s| act.add(row_of(s) * rb) as usize));
+                ts.xrows
+                    .extend(list.iter().map(|&s| act.add(row_of(s) * rb) as usize));
                 // SAFETY: usize and *const u8 have the same layout.
                 let rows = std::slice::from_raw_parts(ts.xrows.as_ptr() as *const *const u8, cnt);
                 kernels_sys::mmid_tile_pack_raw(rows, k, ts.xpack.as_mut_ptr() as *mut u8);
                 for &(w, out) in mats {
                     ts.xout.clear();
-                    ts.xout.extend(list.iter().map(|&s| out.add(s as usize * out_w + c0) as usize));
+                    ts.xout.extend(
+                        list.iter()
+                            .map(|&s| out.add(s as usize * out_w + c0) as usize),
+                    );
                     let orow = std::slice::from_raw_parts(ts.xout.as_ptr() as *const *mut f32, cnt);
-                    let ok = kernels_sys::mmid_tile_raw(w.qtype(), k, orow, w.rows_ptr(e, c0), ts.xpack.as_ptr() as *const u8, c1 - c0);
+                    let ok = kernels_sys::mmid_tile_raw(
+                        w.qtype(),
+                        k,
+                        orow,
+                        w.rows_ptr(e, c0),
+                        ts.xpack.as_ptr() as *const u8,
+                        c1 - c0,
+                    );
                     debug_assert!(ok);
                 }
                 return;
             }
             while i + 4 <= cnt {
-                let rp: [*const u8; 4] = std::array::from_fn(|j| act.add(row_of(list[i + j]) * rb) as *const u8);
+                let rp: [*const u8; 4] =
+                    std::array::from_fn(|j| act.add(row_of(list[i + j]) * rb) as *const u8);
                 interleave_rows4_raw(at, &rp, ts.tile.as_mut_ptr(), k);
                 for &(w, out) in mats {
                     let mut cc = c0;
                     while cc < c1 {
                         let nc = MMID_COLS.min(c1 - cc);
-                        gemm_mmid_raw(w.qtype(), k, ts.tmp.as_mut_ptr(), nc, w.rows_ptr(e, cc), ts.tile.as_ptr(), 4, nc);
+                        gemm_mmid_raw(
+                            w.qtype(),
+                            k,
+                            ts.tmp.as_mut_ptr(),
+                            nc,
+                            w.rows_ptr(e, cc),
+                            ts.tile.as_ptr(),
+                            4,
+                            nc,
+                        );
                         for j in 0..4 {
                             let dst = out.add(list[i + j] as usize * out_w + cc);
                             std::ptr::copy_nonoverlapping(ts.tmp.as_ptr().add(j * nc), dst, nc);
@@ -2431,22 +3184,43 @@ impl<'a> Engine<'a> {
             // row and keeping only the real rows is the same result at 1/4 of the weight
             // decoding per row.
             let rem = cnt - i;
-            if rem > 0 && mask & PF_MMID_GEMV1 != 0 && (rem == 1 || (rem == 2 && q == kernels_sys::QType::Q4K)) {
+            if rem > 0
+                && mask & PF_MMID_GEMV1 != 0
+                && (rem == 1 || (rem == 2 && q == kernels_sys::QType::Q4K))
+            {
                 // llama.cpp's own path for the cnt % 4 rows: one GEMV per row
                 for j in 0..rem {
                     let a = act.add(row_of(list[i + j]) * rb) as *const u8;
                     for &(w, out) in mats {
-                        gemv_raw(w.qtype(), k, out.add(list[i + j] as usize * out_w + c0), w.rows_ptr(e, c0), a, c1 - c0);
+                        gemv_raw(
+                            w.qtype(),
+                            k,
+                            out.add(list[i + j] as usize * out_w + c0),
+                            w.rows_ptr(e, c0),
+                            a,
+                            c1 - c0,
+                        );
                     }
                 }
             } else if rem > 0 {
-                let rp: [*const u8; 4] = std::array::from_fn(|j| act.add(row_of(list[i + j.min(rem - 1)]) * rb) as *const u8);
+                let rp: [*const u8; 4] = std::array::from_fn(|j| {
+                    act.add(row_of(list[i + j.min(rem - 1)]) * rb) as *const u8
+                });
                 interleave_rows4_raw(at, &rp, ts.tile.as_mut_ptr(), k);
                 for &(w, out) in mats {
                     let mut cc = c0;
                     while cc < c1 {
                         let nc = MMID_COLS.min(c1 - cc);
-                        gemm_mmid_raw(w.qtype(), k, ts.tmp.as_mut_ptr(), nc, w.rows_ptr(e, cc), ts.tile.as_ptr(), 4, nc);
+                        gemm_mmid_raw(
+                            w.qtype(),
+                            k,
+                            ts.tmp.as_mut_ptr(),
+                            nc,
+                            w.rows_ptr(e, cc),
+                            ts.tile.as_ptr(),
+                            4,
+                            nc,
+                        );
                         for j in 0..rem {
                             let dst = out.add(list[i + j] as usize * out_w + cc);
                             std::ptr::copy_nonoverlapping(ts.tmp.as_ptr().add(j * nc), dst, nc);
@@ -2470,7 +3244,12 @@ impl<'a> Engine<'a> {
         if tid == 0 {
             // SAFETY: thread 0 writes xn row 0 and its activation; read after the barrier.
             unsafe {
-                ops::rms_norm_mul(pf.x.s(r * de..(r + 1) * de), self.ws.get(self.plan.out_norm).f32_slice(), pf.xn.s(0..de), d.rms_eps);
+                ops::rms_norm_mul(
+                    pf.x.s(r * de..(r + 1) * de),
+                    self.ws.get(self.plan.out_norm).f32_slice(),
+                    pf.xn.s(0..de),
+                    d.rms_eps,
+                );
                 quantize_row_raw(at, pf.xn.p(0), pf.act_k.p(0), de);
                 if self.trace.is_some() {
                     if let Some(t) = &self.trace {
@@ -2490,16 +3269,33 @@ impl<'a> Engine<'a> {
             let nn = chunk.min(rows.end - r0);
             let out = &mut ts.kq[..nn];
             // SAFETY: rows r0..r0+nn of the head; activation complete after the barrier.
-            #[cfg(feature="f32-reference")]
-            let is_reference=if let Some(reference)=&self.f32_reference{
-                for i in 0..nn{reference.with_row(w.ptr,0,r0+i,|row|{
-                    // SAFETY: normalized f32 row complete; this worker owns head rows.
-                    out[i]=unsafe{ffi::oxe_vec_dot_f32(de as i32,row.as_ptr(),pf.xn.p(0))};
-                });}true
-            }else{false};
-            #[cfg(not(feature="f32-reference"))]
-            let is_reference=false;
-            if !is_reference{unsafe { gemv_raw(w.qtype(), de, out.as_mut_ptr(), w.rows_ptr(0, r0), pf.act_k.p(0), nn) }};
+            #[cfg(feature = "f32-reference")]
+            let is_reference = if let Some(reference) = &self.f32_reference {
+                for i in 0..nn {
+                    reference.with_row(w.ptr, 0, r0 + i, |row| {
+                        // SAFETY: normalized f32 row complete; this worker owns head rows.
+                        out[i] =
+                            unsafe { ffi::oxe_vec_dot_f32(de as i32, row.as_ptr(), pf.xn.p(0)) };
+                    });
+                }
+                true
+            } else {
+                false
+            };
+            #[cfg(not(feature = "f32-reference"))]
+            let is_reference = false;
+            if !is_reference {
+                unsafe {
+                    gemv_raw(
+                        w.qtype(),
+                        de,
+                        out.as_mut_ptr(),
+                        w.rows_ptr(0, r0),
+                        pf.act_k.p(0),
+                        nn,
+                    )
+                }
+            };
             for i in 0..nn {
                 if best.1 == u32::MAX || out[i] > best.0 {
                     best = (out[i], (r0 + i) as u32);
@@ -2602,9 +3398,18 @@ const PFU_PFG: usize = 5;
 /// kernels and inputs as the batched prefill's own head (`pf_head`), split over `pool`'s threads
 /// (every output row is one independent dot product: the bits do not depend on the split).
 #[cfg(any(test, feature = "f32-reference"))]
-pub fn head_logits<P: Team + ?Sized>(plan: &crate::plan::Plan, ws: &crate::weights::WeightStore, pool: &P, xn: &[f32], out: &mut [f32]) {
+pub fn head_logits<P: Team + ?Sized>(
+    plan: &crate::plan::Plan,
+    ws: &crate::weights::WeightStore,
+    pool: &P,
+    xn: &[f32],
+    out: &mut [f32],
+) {
     let (de, nv) = (plan.desc.n_embd, plan.desc.n_vocab);
-    assert!(xn.len() == de && out.len() >= nv, "head_logits: one n_embd row into n_vocab logits");
+    assert!(
+        xn.len() == de && out.len() >= nv,
+        "head_logits: one n_embd row into n_vocab logits"
+    );
     // a plain-data copy of the head's reference (pointer as usize): shared by the workers
     let w: crate::weights::WeightRef = *ws.get(plan.output);
     let qt = w.qtype();
@@ -2623,7 +3428,16 @@ pub fn head_logits<P: Team + ?Sized>(plan: &crate::plan::Plan, ws: &crate::weigh
         while r0 < end {
             let nn = chunk.min(end - r0);
             // SAFETY: this thread owns out[r0..r0 + nn]; the activation row is read-only.
-            unsafe { gemv_raw(qt, de, (outp as *mut f32).add(r0), w.rows_ptr(0, r0), actp as *const u8, nn) };
+            unsafe {
+                gemv_raw(
+                    qt,
+                    de,
+                    (outp as *mut f32).add(r0),
+                    w.rows_ptr(0, r0),
+                    actp as *const u8,
+                    nn,
+                )
+            };
             r0 += nn;
         }
     });
@@ -2635,25 +3449,39 @@ impl<'a> Engine<'a> {
     /// over the roped f32 query and the stored f16 K / V, [`crate::fused_ref::ref_attn_f64`]'s
     /// arithmetic) for every row; f16 KV only. Takes precedence over tiled / fa2 / fa2x.
     pub fn set_pf_ref(&mut self, on: bool) {
-        assert!(!on || !self.kv.any8(), "the prefill f32-attention reference reads the f16 KV cache");
+        assert!(
+            !on || !self.kv.any8(),
+            "the prefill f32-attention reference reads the f16 KV cache"
+        );
         self.pf_ref = on;
     }
 
     /// O-117: compare the gated batched-prefill attention outputs of these absolute positions with
     /// the f32-attention reference on the same inputs (None = off). Resets the accumulators.
     pub fn set_pf_check(&mut self, positions: Option<Vec<usize>>) {
-        assert!(positions.is_none() || !self.kv.any8(), "the prefill attention check reads the f16 KV cache");
+        assert!(
+            positions.is_none() || !self.kv.any8(),
+            "the prefill attention check reads the f16 KV cache"
+        );
         self.pf_check = positions.map(|mut p| {
             p.sort_unstable();
             p.dedup();
-            PfCheck { positions: p, acc: Mutex::new(Default::default()) }
+            PfCheck {
+                positions: p,
+                acc: Mutex::new(Default::default()),
+            }
         });
     }
 
     /// O-117: (position, sum of squared errors, sum of squared reference values) of every checked
     /// position a batched prefill reached since the last call; resets.
     pub fn take_pf_check(&self) -> Vec<(usize, f64, f64)> {
-        self.pf_check.as_ref().map_or_else(Vec::new, |c| std::mem::take(&mut *c.acc.lock().unwrap()).into_iter().map(|(p, (e, r))| (p, e, r)).collect())
+        self.pf_check.as_ref().map_or_else(Vec::new, |c| {
+            std::mem::take(&mut *c.acc.lock().unwrap())
+                .into_iter()
+                .map(|(p, (e, r))| (p, e, r))
+                .collect()
+        })
     }
 
     /// O-117: the engine's weights (the quality runner's [`head_logits`] of hidden rows).
@@ -2680,7 +3508,10 @@ impl<'a> Engine<'a> {
 
     pub fn reset_pf_counts(&self) {
         let c = &self.pf_ctr;
-        for a in [&c.passes, &c.rows, &c.max_rows].into_iter().chain(c.units.iter()) {
+        for a in [&c.passes, &c.rows, &c.max_rows]
+            .into_iter()
+            .chain(c.units.iter())
+        {
             a.store(0, Relaxed);
         }
     }
@@ -2708,7 +3539,15 @@ impl<'a> Engine<'a> {
     /// softmax and V accumulation in position order, output rounded to f32. Bit for bit
     /// [`crate::fused_ref::ref_attn_f64`] over the widened rows ([`Engine::kv_head_f32`]), read in
     /// place (no O(n_ctx) f32 copy per unit). `s`: scratch of at least `npos`.
-    pub(crate) fn pf_ref_head(&self, ai: usize, kvh: usize, q: &[f32], npos: usize, s: &mut [f64], out: &mut [f32]) {
+    pub(crate) fn pf_ref_head(
+        &self,
+        ai: usize,
+        kvh: usize,
+        q: &[f32],
+        npos: usize,
+        s: &mut [f64],
+        out: &mut [f32],
+    ) {
         let d = &self.plan.desc;
         let hd = d.head_dim;
         let scale = 1.0 / (hd as f32).sqrt();
@@ -2765,7 +3604,11 @@ impl<'a> Engine<'a> {
                 unsafe {
                     let q = pf.qf.s(t * att_w + h * hd..t * att_w + (h + 1) * hd);
                     self.pf_ref_head(ai, kvh, q, p0 + t + 1, &mut s, &mut out);
-                    ops::sigmoid(pf.qkv.s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd), &mut gate);
+                    ops::sigmoid(
+                        pf.qkv
+                            .s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd),
+                        &mut gate,
+                    );
                     let o = pf.o.s(t * att_w + h * hd..t * att_w + (h + 1) * hd);
                     for j in 0..hd {
                         o[j] = out[j] * gate[j];
@@ -2778,7 +3621,15 @@ impl<'a> Engine<'a> {
     /// O-117 ([`Engine::set_pf_check`]): after the attention core's barrier, the gated outputs of
     /// the checked positions of this pass vs the f32-attention reference over the same q and
     /// stored KV; ends with a barrier (only when a check is set: the same on every thread).
-    fn pf_attn_check(&self, ctx: &mut Ctx, pf: &Pf, ts: &mut PfThread, l: usize, n: usize, p0: usize) {
+    fn pf_attn_check(
+        &self,
+        ctx: &mut Ctx,
+        pf: &Pf,
+        ts: &mut PfThread,
+        l: usize,
+        n: usize,
+        p0: usize,
+    ) {
         let Some(chk) = &self.pf_check else { return };
         let d = &self.plan.desc;
         let (hd, nh, nkv) = (d.head_dim, d.n_head, d.n_head_kv);
@@ -2803,7 +3654,11 @@ impl<'a> Engine<'a> {
                 unsafe {
                     let q = pf.qf.s(t * att_w + h * hd..t * att_w + (h + 1) * hd);
                     self.pf_ref_head(ai, kvh, q, pos + 1, &mut s, &mut out);
-                    ops::sigmoid(pf.qkv.s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd), &mut gate);
+                    ops::sigmoid(
+                        pf.qkv
+                            .s(t * 2 * att_w + h * 2 * hd + hd..t * 2 * att_w + (h + 1) * 2 * hd),
+                        &mut gate,
+                    );
                     let o = pf.o.s(t * att_w + h * hd..t * att_w + (h + 1) * hd);
                     for j in 0..hd {
                         let r = (out[j] * gate[j]) as f64;

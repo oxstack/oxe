@@ -8,23 +8,109 @@ use std::os::raw::c_int;
 pub const GGML_TYPE_IQ3_XXS: c_int = 18;
 pub const GGML_TYPE_IQ2_S: c_int = 22;
 
-pub type VecDot = unsafe extern "C" fn(n: c_int, s: *mut f32, bs: usize, vx: *const u8, bx: usize, vy: *const u8, by: usize, nrc: c_int);
+pub type VecDot = unsafe extern "C" fn(
+    n: c_int,
+    s: *mut f32,
+    bs: usize,
+    vx: *const u8,
+    bx: usize,
+    vy: *const u8,
+    by: usize,
+    nrc: c_int,
+);
 
 use std::ffi::c_void;
 
 extern "C" {
-    pub fn oxf_vec_dot_q6_K_q8_K(n: c_int, s: *mut f32, bs: usize, vx: *const u8, bx: usize, vy: *const u8, by: usize, nrc: c_int);
-    pub fn oxf_vec_dot_q8_0_q8_0(n: c_int, s: *mut f32, bs: usize, vx: *const u8, bx: usize, vy: *const u8, by: usize, nrc: c_int);
-    pub fn oxf_vec_dot_iq2_s_q8_K(n: c_int, s: *mut f32, bs: usize, vx: *const u8, bx: usize, vy: *const u8, by: usize, nrc: c_int);
-    pub fn oxf_vec_dot_iq3_xxs_q8_K(n: c_int, s: *mut f32, bs: usize, vx: *const u8, bx: usize, vy: *const u8, by: usize, nrc: c_int);
-    pub fn oxf_vec_dot_iq4_xs_q8_K(n: c_int, s: *mut f32, bs: usize, vx: *const u8, bx: usize, vy: *const u8, by: usize, nrc: c_int);
-    pub fn oxf_vec_dot_iq4_nl_q8_0(n: c_int, s: *mut f32, bs: usize, vx: *const u8, bx: usize, vy: *const u8, by: usize, nrc: c_int);
-    pub fn oxf_vec_dot_q2_0_q8_0(n: c_int, s: *mut f32, bs: usize, vx: *const u8, bx: usize, vy: *const u8, by: usize, nrc: c_int);
+    pub fn oxf_vec_dot_q6_K_q8_K(
+        n: c_int,
+        s: *mut f32,
+        bs: usize,
+        vx: *const u8,
+        bx: usize,
+        vy: *const u8,
+        by: usize,
+        nrc: c_int,
+    );
+    pub fn oxf_vec_dot_q8_0_q8_0(
+        n: c_int,
+        s: *mut f32,
+        bs: usize,
+        vx: *const u8,
+        bx: usize,
+        vy: *const u8,
+        by: usize,
+        nrc: c_int,
+    );
+    pub fn oxf_vec_dot_iq2_s_q8_K(
+        n: c_int,
+        s: *mut f32,
+        bs: usize,
+        vx: *const u8,
+        bx: usize,
+        vy: *const u8,
+        by: usize,
+        nrc: c_int,
+    );
+    pub fn oxf_vec_dot_iq3_xxs_q8_K(
+        n: c_int,
+        s: *mut f32,
+        bs: usize,
+        vx: *const u8,
+        bx: usize,
+        vy: *const u8,
+        by: usize,
+        nrc: c_int,
+    );
+    pub fn oxf_vec_dot_iq4_xs_q8_K(
+        n: c_int,
+        s: *mut f32,
+        bs: usize,
+        vx: *const u8,
+        bx: usize,
+        vy: *const u8,
+        by: usize,
+        nrc: c_int,
+    );
+    pub fn oxf_vec_dot_iq4_nl_q8_0(
+        n: c_int,
+        s: *mut f32,
+        bs: usize,
+        vx: *const u8,
+        bx: usize,
+        vy: *const u8,
+        by: usize,
+        nrc: c_int,
+    );
+    pub fn oxf_vec_dot_q2_0_q8_0(
+        n: c_int,
+        s: *mut f32,
+        bs: usize,
+        vx: *const u8,
+        bx: usize,
+        vy: *const u8,
+        by: usize,
+        nrc: c_int,
+    );
 
     pub fn ggml_cpu_expert_r4_slice_to_r4(ty: c_int, data: *mut u8, ne00: i64, ne01: i64) -> bool;
-    pub fn ggml_cpu_expert_r4_gemv(ty: c_int, ne00: i64, s: *mut f32, vx: *const u8, vy: *const u8, nrows: i64);
+    pub fn ggml_cpu_expert_r4_gemv(
+        ty: c_int,
+        ne00: i64,
+        s: *mut f32,
+        vx: *const u8,
+        vy: *const u8,
+        nrows: i64,
+    );
     /// 4 rows x 4 tokens per i8mm tile set; s[t][r] for rows [0, nrows) of vx; bitwise equal to the gemv per (row, token).
-    pub fn ggml_cpu_expert_r4_gemm4(ty: c_int, ne00: i64, s: *const *mut f32, vx: *const u8, vy: *const *const u8, nrows: i64);
+    pub fn ggml_cpu_expert_r4_gemm4(
+        ty: c_int,
+        ne00: i64,
+        s: *const *mut f32,
+        vx: *const u8,
+        vy: *const *const u8,
+        nrows: i64,
+    );
     pub fn ggml_cpu_expert_r4_has_gemm() -> bool;
 
     // PREFILL (csrc/pf_expert.c): 8-token tiles for the IQ2_S R4 gate/up rows; bitwise equal to the gemv per (row, token)
@@ -32,15 +118,48 @@ extern "C" {
     pub fn pf_expert_pack_x8(ne00: i64, n: c_int, vy: *const *const u8, xc: *mut i8, xd: *mut f32);
     pub fn pf_expert_iq2s_scratch(ne00: i64, nrows: i64) -> usize;
     /// Rows [0, nrows) of the R4 matrix `vx` against `ngroups` consecutive X groups: `s[8g + t][r]` (NULL = skip).
-    pub fn pf_expert_iq2s_rows(ne00: i64, vx: *const u8, nrows: i64, xc: *const i8, xd: *const f32, ngroups: i64, s: *const *mut f32, scratch: *mut c_void);
+    pub fn pf_expert_iq2s_rows(
+        ne00: i64,
+        vx: *const u8,
+        nrows: i64,
+        xc: *const i8,
+        xd: *const f32,
+        ngroups: i64,
+        s: *const *mut f32,
+        scratch: *mut c_void,
+    );
     /// Down rows (plain IQ4_NL matrix, Q8_0 activations): pack `n <= 8` q8_0 rows of `len` values (`xc` = len * 8 bytes,
     /// `xd` = len / 32 * 8 floats), then rows [0, nrows) against the groups; bitwise equal to vec_dot per (row, token).
-    pub fn pf_expert_pack_x8_q8_0(len: i64, n: c_int, vy: *const *const u8, xc: *mut i8, xd: *mut f32);
+    pub fn pf_expert_pack_x8_q8_0(
+        len: i64,
+        n: c_int,
+        vy: *const *const u8,
+        xc: *mut i8,
+        xd: *mut f32,
+    );
     pub fn pf_expert_iq4nl_scratch(ne00: i64, nrows: i64) -> usize;
-    pub fn pf_expert_iq4nl_rows(ne00: i64, vx: *const u8, nrows: i64, xc: *const i8, xd: *const f32, ngroups: i64, s: *const *mut f32, scratch: *mut c_void);
+    pub fn pf_expert_iq4nl_rows(
+        ne00: i64,
+        vx: *const u8,
+        nrows: i64,
+        xc: *const i8,
+        xd: *const f32,
+        ngroups: i64,
+        s: *const *mut f32,
+        scratch: *mut c_void,
+    );
     pub fn pf_expert_iq3_scratch(ne00: i64, nrows: i64) -> usize;
     /// As `pf_expert_iq2s_rows` for an IQ3_XXS R4 matrix.
-    pub fn pf_expert_iq3_rows(ne00: i64, vx: *const u8, nrows: i64, xc: *const i8, xd: *const f32, ngroups: i64, s: *const *mut f32, scratch: *mut c_void);
+    pub fn pf_expert_iq3_rows(
+        ne00: i64,
+        vx: *const u8,
+        nrows: i64,
+        xc: *const i8,
+        xd: *const f32,
+        ngroups: i64,
+        s: *const *mut f32,
+        scratch: *mut c_void,
+    );
 }
 
 /// Weight quant types present in the Flash GGUF (ggml type ids).
@@ -142,11 +261,28 @@ impl W {
 /// `base` must point at the matrix's row 0 and the rows must exist; `act` must hold
 /// `w.act().bytes(k)` bytes; `out` must hold `r1 - r0` floats.
 #[inline]
-pub unsafe fn gemv_vecdot(w: W, base: *const u8, k: usize, r0: usize, r1: usize, act: *const u8, out: *mut f32) {
+pub unsafe fn gemv_vecdot(
+    w: W,
+    base: *const u8,
+    k: usize,
+    r0: usize,
+    r1: usize,
+    act: *const u8,
+    out: *mut f32,
+) {
     let rb = w.row_bytes(k);
     let f = w.vec_dot().expect("quantised type");
     for r in r0..r1 {
-        f(k as c_int, out.add(r - r0), 0, base.add(r * rb), 0, act, 0, 1);
+        f(
+            k as c_int,
+            out.add(r - r0),
+            0,
+            base.add(r * rb),
+            0,
+            act,
+            0,
+            1,
+        );
     }
 }
 
@@ -155,7 +291,16 @@ pub unsafe fn gemv_vecdot(w: W, base: *const u8, k: usize, r0: usize, r1: usize,
 /// # Safety
 /// As [`gemv_vecdot`]; the slice must have been transformed by `slice_to_r4`.
 #[inline]
-pub unsafe fn gemv_r4(ty: c_int, w: W, base: *const u8, k: usize, r0: usize, r1: usize, act: *const u8, out: *mut f32) {
+pub unsafe fn gemv_r4(
+    ty: c_int,
+    w: W,
+    base: *const u8,
+    k: usize,
+    r0: usize,
+    r1: usize,
+    act: *const u8,
+    out: *mut f32,
+) {
     debug_assert!(r0 % 4 == 0 && r1 % 4 == 0);
     let rb = w.row_bytes(k);
     ggml_cpu_expert_r4_gemv(ty, k as i64, out, base.add(r0 * rb), act, (r1 - r0) as i64);
@@ -166,7 +311,14 @@ pub unsafe fn gemv_r4(ty: c_int, w: W, base: *const u8, k: usize, r0: usize, r1:
 /// # Safety
 /// `base` must hold the rows.
 #[inline]
-pub unsafe fn gemv_f32(base: *const f32, k: usize, r0: usize, r1: usize, x: &[f32], out: &mut [f32]) {
+pub unsafe fn gemv_f32(
+    base: *const f32,
+    k: usize,
+    r0: usize,
+    r1: usize,
+    x: &[f32],
+    out: &mut [f32],
+) {
     for r in r0..r1 {
         out[r - r0] = kernels_sys::ffi::oxe_vec_dot_f32(k as c_int, base.add(r * k), x.as_ptr());
     }
@@ -177,7 +329,14 @@ pub unsafe fn gemv_f32(base: *const f32, k: usize, r0: usize, r1: usize, x: &[f3
 /// # Safety
 /// `base` must hold the rows.
 #[inline]
-pub unsafe fn gemv_bf16(base: *const u16, k: usize, r0: usize, r1: usize, x: &[f32], out: &mut [f32]) {
+pub unsafe fn gemv_bf16(
+    base: *const u16,
+    k: usize,
+    r0: usize,
+    r1: usize,
+    x: &[f32],
+    out: &mut [f32],
+) {
     for r in r0..r1 {
         let row = std::slice::from_raw_parts(base.add(r * k), k);
         let mut acc = [0f32; 8];
@@ -215,7 +374,9 @@ pub fn f16_to_f32(h: u16) -> f32 {
     f32::from_bits(bits)
 }
 
-const KVALUES_IQ4NL: [i8; 16] = [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113];
+const KVALUES_IQ4NL: [i8; 16] = [
+    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+];
 
 /// Dequantise IQ4_NL blocks (18 B: fp16 d, 16 nibble bytes; low nibbles = weights 0-15,
 /// high nibbles = 16-31, as ggml's dequantize_row_iq4_nl).
@@ -261,7 +422,9 @@ mod tests {
                 let h: u16 = 0x2000 + (b as u16 % 512);
                 m[b * bb + d_off..b * bb + d_off + 2].copy_from_slice(&h.to_le_bytes());
             }
-            let act_f: Vec<f32> = (0..k).map(|i| ((i * 37 % 101) as f32 - 50.0) / 50.0).collect();
+            let act_f: Vec<f32> = (0..k)
+                .map(|i| ((i * 37 % 101) as f32 - 50.0) / 50.0)
+                .collect();
             let mut act = vec![0u8; kernels_sys::ActType::Q8K.bytes(k)];
             kernels_sys::quantize_act(kernels_sys::ActType::Q8K, &act_f, &mut act);
             let mut want = vec![0f32; rows];
@@ -269,18 +432,30 @@ mod tests {
             unsafe {
                 gemv_vecdot(w, m.as_ptr(), k, 0, rows, act.as_ptr(), want.as_mut_ptr());
                 let t = w.r4().unwrap();
-                assert!(ggml_cpu_expert_r4_slice_to_r4(t, m.as_mut_ptr(), k as i64, rows as i64));
+                assert!(ggml_cpu_expert_r4_slice_to_r4(
+                    t,
+                    m.as_mut_ptr(),
+                    k as i64,
+                    rows as i64
+                ));
                 gemv_r4(t, w, m.as_ptr(), k, 0, rows, act.as_ptr(), got.as_mut_ptr());
             }
             assert!(want.iter().all(|v| v.is_finite()));
-            assert_eq!(want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{w:?}");
+            assert_eq!(
+                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "{w:?}"
+            );
         }
     }
 
     /// R4 gemm4 (4 tokens per call, i8mm) is bitwise equal to the NEON vec_dot per (row, token).
     #[test]
     fn r4_gemm4_bitwise_vs_vec_dot() {
-        assert!(unsafe { ggml_cpu_expert_r4_has_gemm() }, "build without i8mm gemm");
+        assert!(
+            unsafe { ggml_cpu_expert_r4_has_gemm() },
+            "build without i8mm gemm"
+        );
         for w in [W::Iq2S, W::Iq3Xxs] {
             let (k, rows) = (2560usize, 64usize);
             let rb = w.row_bytes(k);
@@ -300,24 +475,56 @@ mod tests {
             let ab = kernels_sys::ActType::Q8K.bytes(k);
             let mut acts = vec![0u8; 4 * ab];
             for t in 0..4 {
-                let f: Vec<f32> = (0..k).map(|_| ((rnd() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0).collect();
-                kernels_sys::quantize_act(kernels_sys::ActType::Q8K, &f, &mut acts[t * ab..(t + 1) * ab]);
+                let f: Vec<f32> = (0..k)
+                    .map(|_| ((rnd() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0)
+                    .collect();
+                kernels_sys::quantize_act(
+                    kernels_sys::ActType::Q8K,
+                    &f,
+                    &mut acts[t * ab..(t + 1) * ab],
+                );
             }
             let mut want = vec![0f32; 4 * rows];
             for t in 0..4 {
-                unsafe { gemv_vecdot(w, m.as_ptr(), k, 0, rows, acts[t * ab..].as_ptr(), want[t * rows..].as_mut_ptr()) };
+                unsafe {
+                    gemv_vecdot(
+                        w,
+                        m.as_ptr(),
+                        k,
+                        0,
+                        rows,
+                        acts[t * ab..].as_ptr(),
+                        want[t * rows..].as_mut_ptr(),
+                    )
+                };
             }
             let ty = w.r4().unwrap();
-            assert!(unsafe { ggml_cpu_expert_r4_slice_to_r4(ty, m.as_mut_ptr(), k as i64, rows as i64) });
+            assert!(unsafe {
+                ggml_cpu_expert_r4_slice_to_r4(ty, m.as_mut_ptr(), k as i64, rows as i64)
+            });
             let mut got = vec![0f32; 4 * rows];
             // two calls of 16 + 48 rows at the row offsets the stream op uses
             for (r0, r1) in [(0usize, 16usize), (16, 64)] {
-                let s: [*mut f32; 4] = std::array::from_fn(|t| unsafe { got.as_mut_ptr().add(t * rows + r0) });
+                let s: [*mut f32; 4] =
+                    std::array::from_fn(|t| unsafe { got.as_mut_ptr().add(t * rows + r0) });
                 let vy: [*const u8; 4] = std::array::from_fn(|t| acts[t * ab..].as_ptr());
-                unsafe { ggml_cpu_expert_r4_gemm4(ty, k as i64, s.as_ptr(), m.as_ptr().add(r0 * rb), vy.as_ptr(), (r1 - r0) as i64) };
+                unsafe {
+                    ggml_cpu_expert_r4_gemm4(
+                        ty,
+                        k as i64,
+                        s.as_ptr(),
+                        m.as_ptr().add(r0 * rb),
+                        vy.as_ptr(),
+                        (r1 - r0) as i64,
+                    )
+                };
             }
             assert!(want.iter().all(|v| v.is_finite() && *v != 0.0));
-            assert_eq!(want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{w:?}");
+            assert_eq!(
+                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "{w:?}"
+            );
         }
     }
 
@@ -348,35 +555,113 @@ mod tests {
         let ab = kernels_sys::ActType::Q8K.bytes(k);
         let mut acts = vec![0u8; nt * ab];
         for t in 0..nt {
-            let mag = if t == 3 { 0.0 } else if t % 5 == 1 { 250.0 } else { 1.0 };
-            let f: Vec<f32> = (0..k).map(|_| (((rnd() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0) * mag).collect();
-            kernels_sys::quantize_act(kernels_sys::ActType::Q8K, &f, &mut acts[t * ab..(t + 1) * ab]);
+            let mag = if t == 3 {
+                0.0
+            } else if t % 5 == 1 {
+                250.0
+            } else {
+                1.0
+            };
+            let f: Vec<f32> = (0..k)
+                .map(|_| (((rnd() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0) * mag)
+                .collect();
+            kernels_sys::quantize_act(
+                kernels_sys::ActType::Q8K,
+                &f,
+                &mut acts[t * ab..(t + 1) * ab],
+            );
         }
         let mut want = vec![0f32; nt * rows];
         for t in 0..nt {
-            unsafe { gemv_vecdot(w, m.as_ptr(), k, 0, rows, acts[t * ab..].as_ptr(), want[t * rows..].as_mut_ptr()) };
+            unsafe {
+                gemv_vecdot(
+                    w,
+                    m.as_ptr(),
+                    k,
+                    0,
+                    rows,
+                    acts[t * ab..].as_ptr(),
+                    want[t * rows..].as_mut_ptr(),
+                )
+            };
         }
-        assert!(unsafe { ggml_cpu_expert_r4_slice_to_r4(w.r4().unwrap(), m.as_mut_ptr(), k as i64, rows as i64) });
+        assert!(unsafe {
+            ggml_cpu_expert_r4_slice_to_r4(w.r4().unwrap(), m.as_mut_ptr(), k as i64, rows as i64)
+        });
         let ng = nt.div_ceil(8);
         let mut xc = vec![0i8; ng * k * 8];
         let mut xd = vec![0f32; ng * (k / 256) * 8];
         for g in 0..ng {
             let n = (nt - g * 8).min(8);
-            let vy: [*const u8; 8] = std::array::from_fn(|t| if t < n { acts[(g * 8 + t) * ab..].as_ptr() } else { std::ptr::null() });
-            unsafe { pf_expert_pack_x8(k as i64, n as c_int, vy.as_ptr(), xc[g * k * 8..].as_mut_ptr(), xd[g * (k / 256) * 8..].as_mut_ptr()) };
+            let vy: [*const u8; 8] = std::array::from_fn(|t| {
+                if t < n {
+                    acts[(g * 8 + t) * ab..].as_ptr()
+                } else {
+                    std::ptr::null()
+                }
+            });
+            unsafe {
+                pf_expert_pack_x8(
+                    k as i64,
+                    n as c_int,
+                    vy.as_ptr(),
+                    xc[g * k * 8..].as_mut_ptr(),
+                    xd[g * (k / 256) * 8..].as_mut_ptr(),
+                )
+            };
         }
         let mut got = vec![0f32; nt * rows];
         // two calls of 32 rows at the row offsets the stream op uses
         for r0 in [0usize, 32] {
             let n = 32usize;
             let iq2 = w == W::Iq2S;
-            let mut scratch = vec![0u32; unsafe { if iq2 { pf_expert_iq2s_scratch(k as i64, n as i64) } else { pf_expert_iq3_scratch(k as i64, n as i64) } }.div_ceil(4)];
-            let s: Vec<*mut f32> = (0..ng * 8).map(|t| if t < nt { unsafe { got.as_mut_ptr().add(t * rows + r0) } } else { std::ptr::null_mut() }).collect();
-            let f = if iq2 { pf_expert_iq2s_rows } else { pf_expert_iq3_rows };
-            unsafe { f(k as i64, m.as_ptr().add(r0 * rb), n as i64, xc.as_ptr(), xd.as_ptr(), ng as i64, s.as_ptr(), scratch.as_mut_ptr() as *mut c_void) };
+            let mut scratch = vec![
+                0u32;
+                unsafe {
+                    if iq2 {
+                        pf_expert_iq2s_scratch(k as i64, n as i64)
+                    } else {
+                        pf_expert_iq3_scratch(k as i64, n as i64)
+                    }
+                }
+                .div_ceil(4)
+            ];
+            let s: Vec<*mut f32> = (0..ng * 8)
+                .map(|t| {
+                    if t < nt {
+                        unsafe { got.as_mut_ptr().add(t * rows + r0) }
+                    } else {
+                        std::ptr::null_mut()
+                    }
+                })
+                .collect();
+            let f = if iq2 {
+                pf_expert_iq2s_rows
+            } else {
+                pf_expert_iq3_rows
+            };
+            unsafe {
+                f(
+                    k as i64,
+                    m.as_ptr().add(r0 * rb),
+                    n as i64,
+                    xc.as_ptr(),
+                    xd.as_ptr(),
+                    ng as i64,
+                    s.as_ptr(),
+                    scratch.as_mut_ptr() as *mut c_void,
+                )
+            };
         }
-        assert!(want.iter().enumerate().all(|(i, v)| v.is_finite() && (*v != 0.0 || i / rows == 3)));
-        assert_eq!(want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{w:?}");
+        assert!(want
+            .iter()
+            .enumerate()
+            .all(|(i, v)| v.is_finite() && (*v != 0.0 || i / rows == 3)));
+        assert_eq!(
+            want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "{w:?}"
+        );
     }
 
     /// PREFILL: the 8-token IQ4_NL down tile is bitwise equal to the NEON vec_dot per (row, token).
@@ -401,31 +686,93 @@ mod tests {
         let ab = kernels_sys::ActType::Q8_0.bytes(k);
         let mut acts = vec![0u8; nt * ab];
         for t in 0..nt {
-            let mag = if t == 3 { 0.0 } else if t % 5 == 1 { 250.0 } else { 1.0 };
-            let f: Vec<f32> = (0..k).map(|_| (((rnd() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0) * mag).collect();
-            kernels_sys::quantize_act(kernels_sys::ActType::Q8_0, &f, &mut acts[t * ab..(t + 1) * ab]);
+            let mag = if t == 3 {
+                0.0
+            } else if t % 5 == 1 {
+                250.0
+            } else {
+                1.0
+            };
+            let f: Vec<f32> = (0..k)
+                .map(|_| (((rnd() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0) * mag)
+                .collect();
+            kernels_sys::quantize_act(
+                kernels_sys::ActType::Q8_0,
+                &f,
+                &mut acts[t * ab..(t + 1) * ab],
+            );
         }
         let mut want = vec![0f32; nt * rows];
         for t in 0..nt {
-            unsafe { gemv_vecdot(w, m.as_ptr(), k, 0, rows, acts[t * ab..].as_ptr(), want[t * rows..].as_mut_ptr()) };
+            unsafe {
+                gemv_vecdot(
+                    w,
+                    m.as_ptr(),
+                    k,
+                    0,
+                    rows,
+                    acts[t * ab..].as_ptr(),
+                    want[t * rows..].as_mut_ptr(),
+                )
+            };
         }
         let ng = nt.div_ceil(8);
         let mut xc = vec![0i8; ng * k * 8];
         let mut xd = vec![0f32; ng * (k / 32) * 8];
         for g in 0..ng {
             let n = (nt - g * 8).min(8);
-            let vy: [*const u8; 8] = std::array::from_fn(|t| if t < n { acts[(g * 8 + t) * ab..].as_ptr() } else { std::ptr::null() });
-            unsafe { pf_expert_pack_x8_q8_0(k as i64, n as c_int, vy.as_ptr(), xc[g * k * 8..].as_mut_ptr(), xd[g * (k / 32) * 8..].as_mut_ptr()) };
+            let vy: [*const u8; 8] = std::array::from_fn(|t| {
+                if t < n {
+                    acts[(g * 8 + t) * ab..].as_ptr()
+                } else {
+                    std::ptr::null()
+                }
+            });
+            unsafe {
+                pf_expert_pack_x8_q8_0(
+                    k as i64,
+                    n as c_int,
+                    vy.as_ptr(),
+                    xc[g * k * 8..].as_mut_ptr(),
+                    xd[g * (k / 32) * 8..].as_mut_ptr(),
+                )
+            };
         }
         let mut got = vec![0f32; nt * rows];
         for r0 in [0usize, 32, 64] {
             let n = 32usize;
-            let mut scratch = vec![0u32; unsafe { pf_expert_iq4nl_scratch(k as i64, n as i64) }.div_ceil(4)];
-            let s: Vec<*mut f32> = (0..ng * 8).map(|t| if t < nt { unsafe { got.as_mut_ptr().add(t * rows + r0) } } else { std::ptr::null_mut() }).collect();
-            unsafe { pf_expert_iq4nl_rows(k as i64, m.as_ptr().add(r0 * rb), n as i64, xc.as_ptr(), xd.as_ptr(), ng as i64, s.as_ptr(), scratch.as_mut_ptr() as *mut c_void) };
+            let mut scratch =
+                vec![0u32; unsafe { pf_expert_iq4nl_scratch(k as i64, n as i64) }.div_ceil(4)];
+            let s: Vec<*mut f32> = (0..ng * 8)
+                .map(|t| {
+                    if t < nt {
+                        unsafe { got.as_mut_ptr().add(t * rows + r0) }
+                    } else {
+                        std::ptr::null_mut()
+                    }
+                })
+                .collect();
+            unsafe {
+                pf_expert_iq4nl_rows(
+                    k as i64,
+                    m.as_ptr().add(r0 * rb),
+                    n as i64,
+                    xc.as_ptr(),
+                    xd.as_ptr(),
+                    ng as i64,
+                    s.as_ptr(),
+                    scratch.as_mut_ptr() as *mut c_void,
+                )
+            };
         }
-        assert!(want.iter().enumerate().all(|(i, v)| v.is_finite() && (*v != 0.0 || i / rows == 3)));
-        assert_eq!(want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), got.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        assert!(want
+            .iter()
+            .enumerate()
+            .all(|(i, v)| v.is_finite() && (*v != 0.0 || i / rows == 3)));
+        assert_eq!(
+            want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            got.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

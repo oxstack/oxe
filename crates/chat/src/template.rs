@@ -19,7 +19,11 @@ pub fn float_repr(v: f64) -> String {
         return if v < 0.0 { "-inf".into() } else { "inf".into() };
     }
     if v == 0.0 {
-        return if v.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+        return if v.is_sign_negative() {
+            "-0.0".into()
+        } else {
+            "0.0".into()
+        };
     }
     // Rust's {:e} gives the shortest round-trip digits: d[.ddd]e<exp>
     let s = format!("{:e}", v.abs());
@@ -61,7 +65,11 @@ fn float_json(v: f64) -> String {
     if v.is_nan() {
         "NaN".into()
     } else if v.is_infinite() {
-        if v < 0.0 { "-Infinity".into() } else { "Infinity".into() }
+        if v < 0.0 {
+            "-Infinity".into()
+        } else {
+            "Infinity".into()
+        }
     } else {
         float_repr(v)
     }
@@ -90,7 +98,9 @@ pub fn json_escape_into(out: &mut String, s: &str) {
 fn number_as_float(v: &Value) -> Option<f64> {
     let s = v.to_string();
     if s.contains(['.', 'e', 'E', 'n', 'N', 'i']) {
-        s.parse::<f64>().ok().or_else(|| f64::try_from(v.clone()).ok())
+        s.parse::<f64>()
+            .ok()
+            .or_else(|| f64::try_from(v.clone()).ok())
     } else {
         None
     }
@@ -104,7 +114,10 @@ struct JsonFmt<'a> {
 
 fn to_json(out: &mut String, v: &Value, lvl: usize, f: &JsonFmt) -> Result<(), Error> {
     if lvl > 100 {
-        return Err(Error::new(ErrorKind::InvalidOperation, "value is nested too deep"));
+        return Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "value is nested too deep",
+        ));
     }
     let ind = |out: &mut String, l: usize| {
         if let Some(i) = f.indent {
@@ -182,14 +195,26 @@ fn tojson_filter(v: Value, args: Rest<Value>, kwargs: Kwargs) -> Result<Value, E
         }
         Ok(args.get(pos).cloned())
     };
-    let ensure_ascii = get("ensure_ascii", 0)?.map(|x| x.is_true()).unwrap_or(false);
-    let indent = get("indent", 1)?.and_then(|x| i64::try_from(x).ok()).filter(|&i| i >= 0).map(|i| i as usize);
+    let ensure_ascii = get("ensure_ascii", 0)?
+        .map(|x| x.is_true())
+        .unwrap_or(false);
+    let indent = get("indent", 1)?
+        .and_then(|x| i64::try_from(x).ok())
+        .filter(|&i| i >= 0)
+        .map(|i| i as usize);
     let seps = get("separators", 2)?;
     if get("sort_keys", 3)?.map(|x| x.is_true()).unwrap_or(false) {
-        return Err(Error::new(ErrorKind::InvalidOperation, "tojson sort_keys=true not implemented"));
+        return Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "tojson sort_keys=true not implemented",
+        ));
     }
     kwargs.assert_all_used()?;
-    let mut item_sep = if indent.is_none() { ", ".to_string() } else { ",".to_string() };
+    let mut item_sep = if indent.is_none() {
+        ", ".to_string()
+    } else {
+        ",".to_string()
+    };
     let mut key_sep = ": ".to_string();
     if let Some(s) = seps {
         let v: Vec<Value> = s.try_iter()?.collect();
@@ -201,7 +226,16 @@ fn tojson_filter(v: Value, args: Rest<Value>, kwargs: Kwargs) -> Result<Value, E
         }
     }
     let mut out = String::new();
-    to_json(&mut out, &v, 0, &JsonFmt { indent, item_sep: &item_sep, key_sep: &key_sep })?;
+    to_json(
+        &mut out,
+        &v,
+        0,
+        &JsonFmt {
+            indent,
+            item_sep: &item_sep,
+            key_sep: &key_sep,
+        },
+    )?;
     if ensure_ascii {
         let mut o2 = String::with_capacity(out.len());
         for c in out.chars() {
@@ -232,7 +266,16 @@ pub fn value_to_string(v: &Value) -> Result<String, Error> {
         },
         _ => {
             let mut out = String::new();
-            to_json(&mut out, v, 0, &JsonFmt { indent: None, item_sep: ", ", key_sep: ": " })?;
+            to_json(
+                &mut out,
+                v,
+                0,
+                &JsonFmt {
+                    indent: None,
+                    item_sep: ", ",
+                    key_sep: ": ",
+                },
+            )?;
             out
         }
     })
@@ -257,7 +300,12 @@ pub fn strftime_now(fmt: &str) -> String {
         let mut tm: libc::tm = std::mem::zeroed();
         libc::localtime_r(&t, &mut tm);
         let mut buf = vec![0u8; 256];
-        let n = libc::strftime(buf.as_mut_ptr() as *mut libc::c_char, buf.len(), fmt_c.as_ptr(), &tm);
+        let n = libc::strftime(
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            fmt_c.as_ptr(),
+            &tm,
+        );
         buf.truncate(n);
         String::from_utf8_lossy(&buf).into_owned()
     }
@@ -290,7 +338,9 @@ impl ChatTemplate {
         env.add_filter("string", string_filter);
         env.add_filter("safe", string_filter);
         env.add_function("raise_exception", raise_exception);
-        env.add_function("strftime_now", |f: String| -> Result<Value, Error> { Ok(Value::from(strftime_now(&f))) });
+        env.add_function("strftime_now", |f: String| -> Result<Value, Error> {
+            Ok(Value::from(strftime_now(&f)))
+        });
         env.add_template_owned("chat", source.to_string())?;
         let format = if source.contains("<tool_call>")
             && source.contains("<function=")

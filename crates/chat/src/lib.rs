@@ -7,7 +7,9 @@ pub mod request;
 pub mod template;
 
 pub use parser::{compute_diffs, ChatMsg, MsgDiff, ParserConfig, ToolCall};
-pub use request::{apply, chat_inputs, Applied, ChatInputs, ReasoningFormat, ServerChatOptions, Tool, ToolChoice};
+pub use request::{
+    apply, chat_inputs, Applied, ChatInputs, ReasoningFormat, ServerChatOptions, Tool, ToolChoice,
+};
 pub use template::{ChatTemplate, Format};
 
 /// Incremental parse state for one response (`common_chat_session` + `task_result_state`).
@@ -29,9 +31,24 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(cfg: ParserConfig, generation_prompt: String, gen_id: Box<dyn FnMut() -> String + Send>) -> Session {
+    pub fn new(
+        cfg: ParserConfig,
+        generation_prompt: String,
+        gen_id: Box<dyn FnMut() -> String + Send>,
+    ) -> Session {
         let full = generation_prompt.clone();
-        Session { cfg, generation_prompt, full, msg: ChatMsg::default(), last: None, incremental: true, n_incremental: 0, n_full: 0, ids: Vec::new(), gen_id }
+        Session {
+            cfg,
+            generation_prompt,
+            full,
+            msg: ChatMsg::default(),
+            last: None,
+            incremental: true,
+            n_incremental: 0,
+            n_full: 0,
+            ids: Vec::new(),
+            gen_id,
+        }
     }
 
     pub fn msg(&self) -> &ChatMsg {
@@ -57,7 +74,8 @@ impl Session {
             None => {
                 self.n_full += 1;
                 self.last = None;
-                let (m, t, c) = parser::parse_full(&self.cfg, &self.full, partial).map_err(|e| e.0)?;
+                let (m, t, c) =
+                    parser::parse_full(&self.cfg, &self.full, partial).map_err(|e| e.0)?;
                 self.last = t.map(|t| (m.clone(), t));
                 (m, c)
             }
@@ -95,13 +113,21 @@ impl Session {
 pub fn random_string() -> String {
     const A: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let mut seed = [0u8; 32];
-    if std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut seed)).is_err() {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut seed))
+        .is_err()
+    {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         for (i, b) in seed.iter_mut().enumerate() {
             *b = (t >> (i % 16 * 8)) as u8 ^ i as u8;
         }
     }
-    seed.iter().map(|b| A[(*b as usize) % A.len()] as char).collect()
+    seed.iter()
+        .map(|b| A[(*b as usize) % A.len()] as char)
+        .collect()
 }
 
 #[cfg(test)]

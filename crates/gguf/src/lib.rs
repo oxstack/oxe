@@ -86,7 +86,9 @@ impl GgmlType {
         self.info().map(|i| i.0).unwrap_or("UNKNOWN")
     }
     pub fn from_name(name: &str) -> Option<GgmlType> {
-        (0..64).map(GgmlType).find(|t| t.info().map(|i| i.0) == Some(name))
+        (0..64)
+            .map(GgmlType)
+            .find(|t| t.info().map(|i| i.0) == Some(name))
     }
 }
 
@@ -103,7 +105,10 @@ pub enum Value {
     Str(String),
     Array(Vec<Value>),
     /// An array longer than [`LONG_ARRAY`]: only its item type and length are kept.
-    LongArray { item_type: u32, len: u64 },
+    LongArray {
+        item_type: u32,
+        len: u64,
+    },
     U64(u64),
     I64(i64),
     F64(f64),
@@ -245,14 +250,20 @@ fn value(c: &mut Cursor, vtype: u32) -> Result<Value> {
             let n = c.u64()?;
             if n > LONG_ARRAY {
                 if let Some(sz) = scalar_size(item) {
-                    let len = usize::try_from(n).ok().and_then(|n| n.checked_mul(sz)).ok_or_else(|| Error("metadata array too long".into()))?;
+                    let len = usize::try_from(n)
+                        .ok()
+                        .and_then(|n| n.checked_mul(sz))
+                        .ok_or_else(|| Error("metadata array too long".into()))?;
                     c.take(len)?;
                 } else {
                     for _ in 0..n {
                         value(c, item)?;
                     }
                 }
-                Value::LongArray { item_type: item, len: n }
+                Value::LongArray {
+                    item_type: item,
+                    len: n,
+                }
             } else {
                 Value::Array((0..n).map(|_| value(c, item)).collect::<Result<_>>()?)
             }
@@ -280,7 +291,9 @@ pub fn parse_header(buf: &[u8]) -> Result<Header> {
     // takes >= 12 bytes, a tensor entry >= 24), so a crafted count cannot abort the allocation
     let left = (buf.len() - c.pos) as u64;
     if n_kv > left / 12 || n_tensors > left / 24 {
-        return err(format!("GGUF header claims {n_kv} keys / {n_tensors} tensors, more than its {left} bytes hold"));
+        return err(format!(
+            "GGUF header claims {n_kv} keys / {n_tensors} tensors, more than its {left} bytes hold"
+        ));
     }
     let mut metadata = Vec::with_capacity(n_kv as usize);
     for _ in 0..n_kv {
@@ -293,7 +306,9 @@ pub fn parse_header(buf: &[u8]) -> Result<Header> {
         let name = c.string()?;
         let nd = c.u32()?;
         if nd > MAX_DIMS {
-            return err(format!("{name}: {nd} dimensions (ggml has at most {MAX_DIMS})"));
+            return err(format!(
+                "{name}: {nd} dimensions (ggml has at most {MAX_DIMS})"
+            ));
         }
         let shape = (0..nd).map(|_| c.u64()).collect::<Result<Vec<_>>>()?;
         // ggml keeps ne as int64
@@ -306,20 +321,40 @@ pub fn parse_header(buf: &[u8]) -> Result<Header> {
             Some(i) => i,
             None => return err(format!("{name}: unknown ggml type id {}", ty.0)),
         };
-        let t = TensorInfo { name, shape, ty, offset };
+        let t = TensorInfo {
+            name,
+            shape,
+            ty,
+            offset,
+        };
         let Some(n) = t.checked_elements().filter(|&n| n <= i64::MAX as u64) else {
-            return err(format!("{}: element count overflows (shape {:?})", t.name, t.shape));
+            return err(format!(
+                "{}: element count overflows (shape {:?})",
+                t.name, t.shape
+            ));
         };
         if n % blk != 0 {
-            return err(format!("{}: {n} elements not a multiple of {tname} block {blk}", t.name));
+            return err(format!(
+                "{}: {n} elements not a multiple of {tname} block {blk}",
+                t.name
+            ));
         }
         if t.checked_bytes().is_none() {
             return err(format!("{}: byte size overflows", t.name));
         }
         tensors.push(t);
     }
-    let mut h = Header { version, metadata, tensors, data_offset: 0, header_bytes_read: c.pos as u64 };
-    let align = h.get("general.alignment").and_then(|v| v.as_u64()).unwrap_or(32);
+    let mut h = Header {
+        version,
+        metadata,
+        tensors,
+        data_offset: 0,
+        header_bytes_read: c.pos as u64,
+    };
+    let align = h
+        .get("general.alignment")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(32);
     if align == 0 || !align.is_power_of_two() {
         return err(format!("general.alignment {align} is not a power of two"));
     }
@@ -332,7 +367,9 @@ pub fn parse_header(buf: &[u8]) -> Result<Header> {
 /// After this, `data_offset + offset + bytes` fits in u64 and in the mapping for every tensor.
 pub fn check_bounds(h: &Header, file_bytes: u64) -> Result<()> {
     for t in &h.tensors {
-        let end = t.checked_bytes().and_then(|b| h.data_offset.checked_add(t.offset)?.checked_add(b));
+        let end = t
+            .checked_bytes()
+            .and_then(|b| h.data_offset.checked_add(t.offset)?.checked_add(b));
         match end {
             Some(e) if e <= file_bytes => {}
             _ => return err(format!("{}: data beyond end of file", t.name)),
@@ -356,21 +393,36 @@ impl Gguf {
         let file = File::open(&path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
         // SAFETY: read-only private mapping of a model file we do not modify; concurrent
         // truncation by another process would be a user error (same as llama.cpp).
-        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| Error(format!("mmap {}: {e}", path.display())))?;
+        let mmap = unsafe { Mmap::map(&file) }
+            .map_err(|e| Error(format!("mmap {}: {e}", path.display())))?;
         let header = parse_header(&mmap)?;
         let file_bytes = mmap.len() as u64;
         check_bounds(&header, file_bytes)?;
-        Ok(Gguf { path, header, file_bytes, mmap, file })
+        Ok(Gguf {
+            path,
+            header,
+            file_bytes,
+            mmap,
+            file,
+        })
     }
 
     /// Another read-only mapping of the same open file, not a reopen by path.
     /// Used by bounded row-streaming reference helpers after a loader drops its view.
     pub fn remap(&self) -> Result<Gguf> {
-        let file=self.file.try_clone().map_err(|e|Error(e.to_string()))?;
+        let file = self.file.try_clone().map_err(|e| Error(e.to_string()))?;
         // SAFETY: same immutable file and bounds contract as the original mapping.
-        let mmap=unsafe{Mmap::map(&file)}.map_err(|e|Error(e.to_string()))?;
-        if mmap.len()as u64!=self.file_bytes{return err("source size changed before remap");}
-        Ok(Gguf{path:self.path.clone(),header:self.header.clone(),file_bytes:self.file_bytes,mmap,file})
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| Error(e.to_string()))?;
+        if mmap.len() as u64 != self.file_bytes {
+            return err("source size changed before remap");
+        }
+        Ok(Gguf {
+            path: self.path.clone(),
+            header: self.header.clone(),
+            file_bytes: self.file_bytes,
+            mmap,
+            file,
+        })
     }
 
     /// The raw bytes of a tensor (touches only the pages actually read by the caller).
@@ -383,13 +435,16 @@ impl Gguf {
     /// process (the page cache keeps them until [`Gguf::drop_cache`]); page-aligned inward.
     pub fn release_range(&self, t: &TensorInfo, off: usize, len: usize) {
         const PAGE: usize = 4096;
-        let start = self.mmap.as_ptr() as usize + (self.header.data_offset + t.offset) as usize + off;
+        let start =
+            self.mmap.as_ptr() as usize + (self.header.data_offset + t.offset) as usize + off;
         let a = start.div_ceil(PAGE) * PAGE;
         let b = (start + len) / PAGE * PAGE;
         if b > a {
             // SAFETY: advisory on pages of our own read-only mapping; nothing keeps references
             // into them across this call (the caller has finished reading the range).
-            unsafe { madvise(a as *mut u8, b - a, 4 /* MADV_DONTNEED */) };
+            unsafe {
+                madvise(a as *mut u8, b - a, 4 /* MADV_DONTNEED */)
+            };
         }
     }
 

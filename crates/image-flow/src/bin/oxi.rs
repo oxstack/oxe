@@ -115,7 +115,9 @@ impl Args {
         let mut i = 0;
         while i < rest.len() {
             if let Some(key) = rest[i].strip_prefix("--") {
-                let v = rest.get(i + 1).ok_or_else(|| format!("--{key} needs a value"))?;
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| format!("--{key} needs a value"))?;
                 kv.insert(key.to_string(), v.clone());
                 i += 2;
             } else {
@@ -127,7 +129,10 @@ impl Args {
     }
 
     fn req(&self, key: &str) -> Result<&str, String> {
-        self.kv.get(key).map(|s| s.as_str()).ok_or_else(|| format!("missing --{key}"))
+        self.kv
+            .get(key)
+            .map(|s| s.as_str())
+            .ok_or_else(|| format!("missing --{key}"))
     }
 
     fn opt(&self, key: &str) -> Option<&str> {
@@ -137,7 +142,9 @@ impl Args {
     fn usize_or(&self, key: &str, default: usize) -> Result<usize, String> {
         match self.opt(key) {
             None => Ok(default),
-            Some(s) => s.parse::<usize>().map_err(|_| format!("--{key}: '{s}' is not a number")),
+            Some(s) => s
+                .parse::<usize>()
+                .map_err(|_| format!("--{key}: '{s}' is not a number")),
         }
     }
 }
@@ -187,7 +194,11 @@ impl DitBackend for Timed<'_> {
                     let share = |x: u64| if pc > 0.0 { 100.0 * x as f64 / pc } else { 0.0 };
                     // token rows of this forward: the share the CPU computed in split calls
                     let rows = s.npu_rows + s.cpu_rows;
-                    let cpu_share = if rows > 0 { 100.0 * s.cpu_rows as f64 / rows as f64 } else { 0.0 };
+                    let cpu_share = if rows > 0 {
+                        100.0 * s.cpu_rows as f64 / rows as f64
+                    } else {
+                        0.0
+                    };
                     npu_part = format!(
                         " | npu {name}: {} calls, gemm {:.3} s, dsp {:.3} s, unpack {:.3} s, cycles {:.3e} (hmx {:.1}%, deq {:.1}%), rows npu {} cpu {} ({cpu_share:.1}% cpu, cpu phase {:.3} s)",
                         t.npu_calls,
@@ -231,7 +242,11 @@ impl Timed<'_> {
         let name = self.npu_name?;
         let s = self.npu_last?;
         let mib = s.weights_bytes as f64 / (1u64 << 20) as f64;
-        let kc = if s.kc_max == 0 { "none".to_string() } else { s.kc_max.to_string() };
+        let kc = if s.kc_max == 0 {
+            "none".to_string()
+        } else {
+            s.kc_max.to_string()
+        };
         let mut line = format!(
             "oxi: npu: {} linears, {} on the cpu, {mib:.1} MiB of {} weights on {name}, {} session(s), kc max {kc}, {} blobs in {} output parts, pack {:.3} s, cpu rows {}%",
             s.linears,
@@ -244,9 +259,15 @@ impl Timed<'_> {
             self.npu_cpu_rows_pct
         );
         line += &format!(", pack workers {}", s.pack_threads);
-        line += &format!(", allocated bytes {}, weight capacity bytes {}", s.allocated_bytes, s.weight_capacity_bytes);
+        line += &format!(
+            ", allocated bytes {}, weight capacity bytes {}",
+            s.allocated_bytes, s.weight_capacity_bytes
+        );
         if npu_stats_env() {
-            line += &format!(", non-finite values {}, max |value| {:e}", self.npu_nonfinite, self.npu_max_abs);
+            line += &format!(
+                ", non-finite values {}, max |value| {:e}",
+                self.npu_nonfinite, self.npu_max_abs
+            );
         }
         Some(line)
     }
@@ -278,8 +299,14 @@ fn print_npu_audit(lines: &[AuditLine]) {
             l.name, l.samples, l.rel_rmse, l.pred_rel_rmse_chunks, l.max_x, l.max_ref, l.cancel, l.max_abs_err
         );
     }
-    if let Some(w) = lines.iter().max_by(|a, b| a.rel_rmse.total_cmp(&b.rel_rmse)) {
-        eprintln!("oxi: npu audit: worst rel_rmse {:.2e} in {}", w.rel_rmse, w.name);
+    if let Some(w) = lines
+        .iter()
+        .max_by(|a, b| a.rel_rmse.total_cmp(&b.rel_rmse))
+    {
+        eprintln!(
+            "oxi: npu audit: worst rel_rmse {:.2e} in {}",
+            w.rel_rmse, w.name
+        );
     }
 }
 
@@ -332,8 +359,13 @@ fn build_backend<'p>(
             let mut m = RefModel::open(gguf, threads)?;
             m.set_arith(arith_of(arith)?);
             // W5-G self-noise control: OXI_PERTURB_ULP=N moves the token embeddings by up to N ulps
-            if let Some(u) = std::env::var("OXI_PERTURB_ULP").ok().and_then(|v| v.parse::<u32>().ok()) {
-                eprintln!("oxi: OXI_PERTURB_ULP={u}: token embeddings perturbed (self-noise control)");
+            if let Some(u) = std::env::var("OXI_PERTURB_ULP")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+            {
+                eprintln!(
+                    "oxi: OXI_PERTURB_ULP={u}: token embeddings perturbed (self-noise control)"
+                );
                 m.set_perturb_ulp(u);
             }
             Backend::Ref(m)
@@ -344,7 +376,15 @@ fn build_backend<'p>(
         }
         other => return Err(format!("--backend must be ref or fast, got '{other}'")),
     };
-    Ok(Timed { inner, times: Vec::new(), npu_name, npu_cpu_rows_pct, npu_nonfinite: 0, npu_max_abs: 0.0, npu_last: None })
+    Ok(Timed {
+        inner,
+        times: Vec::new(),
+        npu_name,
+        npu_cpu_rows_pct,
+        npu_nonfinite: 0,
+        npu_max_abs: 0.0,
+        npu_last: None,
+    })
 }
 
 /// `--npu off|emu|device` (default off), `--npu-budget-mib N` (default 2048), `--npu-kc N` (default 3072, 0 = no
@@ -363,7 +403,9 @@ fn npu_setup(a: &Args) -> Result<Option<(Box<dyn oxn::Backend>, NpuConfig)>, Str
         return Ok(None);
     }
     let budget_mib = a.usize_or("npu-budget-mib", 2048)?;
-    let budget_bytes = budget_mib.checked_mul(1 << 20).ok_or("--npu-budget-mib is too large")?;
+    let budget_bytes = budget_mib
+        .checked_mul(1 << 20)
+        .ok_or("--npu-budget-mib is too large")?;
     let kc_max = a.usize_or("npu-kc", 3072)?;
     if kc_max != 0 && kc_max < 32 {
         return Err("--npu-kc must be 0 (no K chunking) or at least 32".into());
@@ -416,8 +458,13 @@ fn make_pool(kind: &str, threads: usize) -> Result<Option<sched::Pool>, String> 
     // 11 cores burn power doing nothing there, which costs sustained speed on this machine (it
     // throttles at about 97 C). 200 us covers the gaps between consecutive stages of a block; a
     // wake-up costs tens of microseconds. OXI_IDLE_SPIN_US overrides it (results never depend on it).
-    let spin_us = std::env::var("OXI_IDLE_SPIN_US").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(200);
-    sched::Pool::new(&cpus, Duration::from_micros(spin_us)).map(Some).map_err(|e| format!("pool: {e}"))
+    let spin_us = std::env::var("OXI_IDLE_SPIN_US")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(200);
+    sched::Pool::new(&cpus, Duration::from_micros(spin_us))
+        .map(Some)
+        .map_err(|e| format!("pool: {e}"))
 }
 
 /// One VAE decode with its timing split (file load vs decode) and the CPU mask it ran under.
@@ -438,7 +485,14 @@ impl VaeReport {
     }
 }
 
-fn decode_vae(vae: &Path, z: &[f32], gh: usize, gw: usize, threads: usize, conv: &str) -> Result<VaeReport, String> {
+fn decode_vae(
+    vae: &Path,
+    z: &[f32],
+    gh: usize,
+    gw: usize,
+    threads: usize,
+    conv: &str,
+) -> Result<VaeReport, String> {
     image_vae::decoder::set_conv_mode(conv)?;
     let allowed = sched::allowed_cpus();
     if allowed != 0 && allowed < threads {
@@ -454,7 +508,14 @@ fn decode_vae(vae: &Path, z: &[f32], gh: usize, gw: usize, threads: usize, conv:
         "oxi: vae decode ({conv} conv) {:.3} s (includes loading the VAE file: load {load_s:.3} s, decode {decode_s:.3} s, {allowed} cpus allowed)",
         load_s + decode_s
     );
-    Ok(VaeReport { rgb, conv: conv.to_string(), load_s, decode_s, allowed_cpus: allowed, threads })
+    Ok(VaeReport {
+        rgb,
+        conv: conv.to_string(),
+        load_s,
+        decode_s,
+        allowed_cpus: allowed,
+        threads,
+    })
 }
 
 fn fast_config(a: &Args) -> Result<FastConfig, String> {
@@ -484,7 +545,13 @@ fn latent_grid(h: &Handoff, a: &Args) -> Result<(usize, usize), String> {
         }
     };
     if grid.0 * grid.1 != h.n_img {
-        return Err(format!("latent grid {}x{} has {} tokens, hand-over has {}", grid.0, grid.1, grid.0 * grid.1, h.n_img));
+        return Err(format!(
+            "latent grid {}x{} has {} tokens, hand-over has {}",
+            grid.0,
+            grid.1,
+            grid.0 * grid.1,
+            h.n_img
+        ));
     }
     Ok(grid)
 }
@@ -514,7 +581,15 @@ fn cmd_generate(a: &Args) -> Result<(), String> {
     let h = Handoff::load(&dir)?;
     let (gh, gw) = latent_grid(&h, a)?;
     let pool = make_pool(kind, threads)?;
-    let mut be = build_backend(&gguf, kind, threads, cfg, &pool, a.opt("arith"), npu_setup(a)?)?;
+    let mut be = build_backend(
+        &gguf,
+        kind,
+        threads,
+        cfg,
+        &pool,
+        a.opt("arith"),
+        npu_setup(a)?,
+    )?;
 
     let mut step_secs = Vec::with_capacity(h.steps);
     let mut last = Instant::now();
@@ -608,14 +683,20 @@ fn cmd_drift_probe(a: &Args) -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let h = Handoff::load(&dir)?;
     if step >= h.steps {
-        return Err(format!("--step {step} exceeds the {}-step handoff", h.steps));
+        return Err(format!(
+            "--step {step} exceeds the {}-step handoff",
+            h.steps
+        ));
     }
     let t0 = Instant::now();
     let mut m = RefModel::open(&gguf, threads)?;
     let types = m.embed_types();
     let bo = image_flow::drift::BlocksOpts {
         perturb_ulp: a.usize_or("perturb-ulp", 0)? as u32,
-        max_single: a.opt("max-single").map(|v| v.parse::<usize>().map_err(|_| "--max-single: not a number")).transpose()?,
+        max_single: a
+            .opt("max-single")
+            .map(|v| v.parse::<usize>().map_err(|_| "--max-single: not a number"))
+            .transpose()?,
     };
     let mut report = image_flow::drift::run_with(&mut m, &h, &dir, step, scope, &ariths, bo)?;
     report["perturb_ulp"] = json!(bo.perturb_ulp);
@@ -712,7 +793,9 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
                 "c": fit_step(h.img_at(i), o, next_x(&h, i, &free_final)),
                 "sigma_diff": sigma_diff(&h, i)}));
         } else {
-            notes.push(format!("step {i}: no dump.flux.out, output comparison skipped"));
+            notes.push(format!(
+                "step {i}: no dump.flux.out, output comparison skipped"
+            ));
         }
         checks.push(json!({"check": "fit_c_model_out", "step": i,
             "c": fit_step(h.img_at(i), &tf_out[i], next_x(&h, i, &free_final)),
@@ -740,7 +823,12 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
     // 4. free-running final vs the last step's implied result (dump img + dt * dump out)
     if let Some(o) = h.out_at(steps - 1) {
         let dt = h.sigma_pair(steps - 1).1 - h.sigma_pair(steps - 1).0;
-        let implied: Vec<f32> = h.img_at(steps - 1).iter().zip(o).map(|(x, v)| x + dt * v).collect();
+        let implied: Vec<f32> = h
+            .img_at(steps - 1)
+            .iter()
+            .zip(o)
+            .map(|(x, v)| x + dt * v)
+            .collect();
         checks.push(json!({"check": "free_final_vs_implied_last_step", "rel_rmse": rel_rmse(&free_final, &implied)}));
 
         // 5. VAE latent: implied final tokens -> NCHW -> diffusion_to_vae vs dump.vae.z
@@ -750,7 +838,9 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
             checks.push(json!({"check": "vae_z_vs_dump_from_implied_final", "rel_rmse": rel_rmse(&vae_z, &z.data)}));
         }
     } else {
-        notes.push("no dump.flux.out for the last step: implied final and VAE checks skipped".into());
+        notes.push(
+            "no dump.flux.out for the last step: implied final and VAE checks skipped".into(),
+        );
     }
     if let (Some(z), Some((gh, gw))) = (&h.vae_z, h.vae_grid()) {
         let nchw = latent::tokens_to_nchw(&free_final, latent::LATENT_CHANNELS, gh, gw)?;
@@ -811,7 +901,10 @@ fn cond_args(a: &Args, prompt_flag: &str) -> Result<CondArgs, String> {
     if width == 0 || height == 0 {
         return Err("--width and --height are required".into());
     }
-    let root = a.opt("cache").map(PathBuf::from).unwrap_or_else(cond_cache::default_root);
+    let root = a
+        .opt("cache")
+        .map(PathBuf::from)
+        .unwrap_or_else(cond_cache::default_root);
     Ok(CondArgs {
         prompt,
         model_name,
@@ -831,7 +924,10 @@ fn encoder_arg(a: &Args) -> Result<Option<String>, String> {
     match (a.opt("cond-encoder"), a.opt("te-arith")) {
         (Some(_), Some(_)) => Err("--cond-encoder and --te-arith exclude each other".into()),
         (Some(id), None) => Ok(Some(id.to_string())),
-        (None, Some(ar)) => Ok(Some(qwen3_te::encoder_identity(Path::new(a.req("te-gguf")?), ar)?)),
+        (None, Some(ar)) => Ok(Some(qwen3_te::encoder_identity(
+            Path::new(a.req("te-gguf")?),
+            ar,
+        )?)),
         (None, None) => Ok(None),
     }
 }
@@ -840,7 +936,9 @@ fn encoder_arg(a: &Args) -> Result<Option<String>, String> {
 fn run_identity(ca: &CondArgs, te: &Path, arith: &str) -> Result<String, String> {
     let id = qwen3_te::encoder_identity(te, arith)?;
     match &ca.encoder {
-        Some(e) if *e != id => Err(format!("--cond-encoder/--te-arith '{e}' disagrees with this run's encoder '{id}'")),
+        Some(e) if *e != id => Err(format!(
+            "--cond-encoder/--te-arith '{e}' disagrees with this run's encoder '{id}'"
+        )),
         _ => Ok(id),
     }
 }
@@ -875,7 +973,8 @@ fn cmd_cond_native(a: &Args) -> Result<(), String> {
         Err(_) => needs_reference("prompt is not UTF-8"),
     };
     eprintln!("oxi: te: encoding ({})", backend.arith());
-    let out = match qwen3_te::encode_prompt(&te, &text, backend, a.usize_or("threads", 12)?, max_n) {
+    let out = match qwen3_te::encode_prompt(&te, &text, backend, a.usize_or("threads", 12)?, max_n)
+    {
         Ok(o) => o,
         Err(qwen3_te::TeError::NeedsReference(s)) => needs_reference(&s),
         Err(qwen3_te::TeError::Other(e)) => return Err(format!("text encoder: {e}")),
@@ -923,13 +1022,22 @@ fn cmd_cond_put(a: &Args) -> Result<(), String> {
             // a context computed earlier (e.g. the f32 reference written by te-check --te-out)
             let v = qwen3_te::read_f32(Path::new(p))?;
             if v.len() != h.txt.len() {
-                return Err(format!("--te-ctx: {} values, the hand-over context has {}", v.len(), h.txt.len()));
+                return Err(format!(
+                    "--te-ctx: {} values, the hand-over context has {}",
+                    v.len(),
+                    h.txt.len()
+                ));
             }
             h.txt = v;
             // provenance of an externally computed context: the caller names it, or its content hash
             let id = match &ca.encoder {
                 Some(e) => e.clone(),
-                None => format!("context-file;{}", image_flow::sha256::hex(&image_flow::sha256::sha256(&std::fs::read(p).map_err(|e| e.to_string())?))),
+                None => format!(
+                    "context-file;{}",
+                    image_flow::sha256::hex(&image_flow::sha256::sha256(
+                        &std::fs::read(p).map_err(|e| e.to_string())?
+                    ))
+                ),
             };
             ca.encoder = Some(id);
             Some(json!({"context_file": p}))
@@ -957,7 +1065,11 @@ fn cmd_cond_put(a: &Args) -> Result<(), String> {
             false
         }
         "computed" => true,
-        other => return Err(format!("--sigmas must be stored or computed, got '{other}'")),
+        other => {
+            return Err(format!(
+                "--sigmas must be stored or computed, got '{other}'"
+            ))
+        }
     };
     let kin = key_inputs(&ca);
     let entry = if partial {
@@ -989,7 +1101,12 @@ fn needs_reference(why: &str) -> ! {
 }
 
 /// Encode `prompt` natively and compare it with the hand-over's context (same n_txt and width required).
-fn native_context(a: &Args, te: &Path, prompt: &[u8], h: &Handoff) -> Result<(qwen3_te::TeOutput, Value), String> {
+fn native_context(
+    a: &Args,
+    te: &Path,
+    prompt: &[u8],
+    h: &Handoff,
+) -> Result<(qwen3_te::TeOutput, Value), String> {
     let text = match std::str::from_utf8(prompt) {
         Ok(t) => t,
         Err(_) => needs_reference("prompt is not UTF-8"),
@@ -1009,7 +1126,8 @@ fn native_context(a: &Args, te: &Path, prompt: &[u8], h: &Handoff) -> Result<(qw
     }
     let spec = qwen3_te::config::KleinSpec::klein();
     let width = out.ctx_dim / spec.out_layers.len();
-    let rep = qwen3_te::metrics::report(&out.ctx, &h.txt, out.n, out.n_real, width, &spec.out_layers)?;
+    let rep =
+        qwen3_te::metrics::report(&out.ctx, &h.txt, out.n, out.n_real, width, &spec.out_layers)?;
     Ok((out, rep))
 }
 
@@ -1022,9 +1140,21 @@ fn cmd_te_check(a: &Args) -> Result<(), String> {
     let te = PathBuf::from(a.req("te-gguf")?);
     let prompt = std::fs::read(a.req("prompt-file")?).map_err(|e| format!("--prompt-file: {e}"))?;
     let h = Handoff::load(Path::new(a.req("handoff")?))?;
-    let min_cos: f64 = a.opt("gate-cos").unwrap_or("0.999").parse().map_err(|_| "--gate-cos")?;
-    let max_rel: f64 = a.opt("gate-rel").unwrap_or("0.05").parse().map_err(|_| "--gate-rel")?;
-    let slack: f64 = a.opt("gate-slack").unwrap_or("1.0").parse().map_err(|_| "--gate-slack")?;
+    let min_cos: f64 = a
+        .opt("gate-cos")
+        .unwrap_or("0.999")
+        .parse()
+        .map_err(|_| "--gate-cos")?;
+    let max_rel: f64 = a
+        .opt("gate-rel")
+        .unwrap_or("0.05")
+        .parse()
+        .map_err(|_| "--gate-rel")?;
+    let slack: f64 = a
+        .opt("gate-slack")
+        .unwrap_or("1.0")
+        .parse()
+        .map_err(|_| "--gate-slack")?;
     let (out, rep) = native_context(a, &te, &prompt, &h)?;
     if let Some(p) = a.opt("te-out") {
         qwen3_te::write_f32(Path::new(p), &out.ctx)?;
@@ -1034,14 +1164,32 @@ fn cmd_te_check(a: &Args) -> Result<(), String> {
     let (pass, why, vs_ref, gate) = match a.opt("te-ref") {
         Some(p) => {
             let r = qwen3_te::read_f32(Path::new(p))?;
-            let cand = qwen3_te::metrics::report(&out.ctx, &r, out.n, out.n_real, width, &spec.out_layers)?;
-            let inst = qwen3_te::metrics::report(&h.txt, &r, out.n, out.n_real, width, &spec.out_layers)?;
+            let cand = qwen3_te::metrics::report(
+                &out.ctx,
+                &r,
+                out.n,
+                out.n_real,
+                width,
+                &spec.out_layers,
+            )?;
+            let inst =
+                qwen3_te::metrics::report(&h.txt, &r, out.n, out.n_real, width, &spec.out_layers)?;
             let (ok, why) = qwen3_te::metrics::gate_vs_installed(&cand, &inst, slack);
-            (ok, why, json!({"candidate": cand, "installed_sdcpp": inst}), json!({"kind": "O-46 vs installed", "slack": slack}))
+            (
+                ok,
+                why,
+                json!({"candidate": cand, "installed_sdcpp": inst}),
+                json!({"kind": "O-46 vs installed", "slack": slack}),
+            )
         }
         None => {
             let (ok, why) = qwen3_te::metrics::gate(&rep, min_cos, max_rel);
-            (ok, why, Value::Null, json!({"kind": "absolute vs hand-over", "min_cos": min_cos, "max_rel_rmse": max_rel}))
+            (
+                ok,
+                why,
+                Value::Null,
+                json!({"kind": "absolute vs hand-over", "min_cos": min_cos, "max_rel_rmse": max_rel}),
+            )
         }
     };
     write_json(
@@ -1058,7 +1206,10 @@ fn cmd_te_check(a: &Args) -> Result<(), String> {
 fn cmd_generate_cond(a: &Args) -> Result<(), String> {
     let ca = cond_args(a, "cond-prompt-file")?;
     latent::grid_for(ca.width, ca.height)?;
-    let seed: u64 = a.req("seed")?.parse().map_err(|_| "--seed must be an integer".to_string())?;
+    let seed: u64 = a
+        .req("seed")?
+        .parse()
+        .map_err(|_| "--seed must be an integer".to_string())?;
     let kin = key_inputs(&ca);
     let key = cond_cache::cache_key(&kin);
     let cond: Conditioning = match cond_cache::get(&ca.root, &kin)? {
@@ -1085,7 +1236,9 @@ fn cmd_generate_cond(a: &Args) -> Result<(), String> {
     let noise_kind = a.opt("noise").unwrap_or("own");
     let img0 = match noise_kind {
         "own" => noise::initial_tokens(seed, cond.n_img, latent::LATENT_CHANNELS),
-        "sdcpp" => noise::sdcpp_initial_tokens(seed, cond.grid.0, cond.grid.1, latent::LATENT_CHANNELS),
+        "sdcpp" => {
+            noise::sdcpp_initial_tokens(seed, cond.grid.0, cond.grid.1, latent::LATENT_CHANNELS)
+        }
         other => return Err(format!("--noise must be own or sdcpp, got '{other}'")),
     };
     let (sigmas, sigma_end, sigmas_source) = match a.opt("sigmas").unwrap_or("stored") {
@@ -1094,13 +1247,25 @@ fn cmd_generate_cond(a: &Args) -> Result<(), String> {
             let full = schedule::flux2_sigmas(steps as u32, cond.n_img);
             (full[..steps].to_vec(), full[steps], "computed")
         }
-        other => return Err(format!("--sigmas must be stored or computed, got '{other}'")),
+        other => {
+            return Err(format!(
+                "--sigmas must be stored or computed, got '{other}'"
+            ))
+        }
     };
     let mut inp = FlowInputs::from_conditioning(&cond, img0, sigmas)?;
     inp.sigma_end = sigma_end;
 
     let pool = make_pool(kind, threads)?;
-    let mut be = build_backend(&ca.gguf, kind, threads, cfg, &pool, a.opt("arith"), npu_setup(a)?)?;
+    let mut be = build_backend(
+        &ca.gguf,
+        kind,
+        threads,
+        cfg,
+        &pool,
+        a.opt("arith"),
+        npu_setup(a)?,
+    )?;
     let (gh, gw) = cond.grid;
     let mut step_secs = Vec::with_capacity(steps);
     let mut last = Instant::now();
@@ -1192,7 +1357,11 @@ fn cmd_act_stats(a: &Args) -> Result<(), String> {
     let dir = Path::new(a.req("handoff")?);
     let mut steps = Vec::new();
     for call in 0..16 {
-        let (x, shift, scale) = match (read_tag_call(dir, "dump.single.0.in", call)?, read_tag_call(dir, "dump.single.mod.shift", call)?, read_tag_call(dir, "dump.single.mod.scale", call)?) {
+        let (x, shift, scale) = match (
+            read_tag_call(dir, "dump.single.0.in", call)?,
+            read_tag_call(dir, "dump.single.mod.shift", call)?,
+            read_tag_call(dir, "dump.single.mod.scale", call)?,
+        ) {
             (Some(x), Some(sh), Some(sc)) => (x, sh, sc),
             _ => break,
         };
@@ -1209,7 +1378,11 @@ fn cmd_act_stats(a: &Args) -> Result<(), String> {
                 continue;
             }
             let mut row = json!({"chunk": chunk});
-            for (name, arr) in [("natural", Arrange::Natural), ("sorted", Arrange::Sorted), ("equalized", Arrange::Equalized)] {
+            for (name, arr) in [
+                ("natural", Arrange::Natural),
+                ("sorted", Arrange::Sorted),
+                ("equalized", Arrange::Equalized),
+            ] {
                 let (plain, balanced) = quant_error(&xm, n, h, &mag, chunk, arr);
                 row[name] = json!({"plain": plain, "balanced": balanced});
             }
@@ -1242,27 +1415,42 @@ fn cmd_chan_calib(a: &Args) -> Result<(), String> {
     let blocks = a.usize_or("blocks", 20)?;
     let slack: f64 = match a.opt("slack") {
         None => 0.10,
-        Some(s) => s.parse().map_err(|_| format!("--slack: '{s}' is not a number"))?,
+        Some(s) => s
+            .parse()
+            .map_err(|_| format!("--slack: '{s}' is not a number"))?,
     };
     if !(0.0..=1.0).contains(&slack) {
         return Err("--slack must be within 0..1".into());
     }
     let out = a.req("out")?;
-    let dirs: Vec<&str> = a.req("handoff")?.split(',').filter(|d| !d.is_empty()).collect();
+    let dirs: Vec<&str> = a
+        .req("handoff")?
+        .split(',')
+        .filter(|d| !d.is_empty())
+        .collect();
     let mut plans = Vec::new();
     let mut sources = Vec::new();
     for b in 0..blocks {
         let tag = format!("dump.single.{b}.in");
-        let (mut cal, mut hold, mut n_hold, mut h_seen) = (None::<ChanAccum>, Vec::new(), 0usize, 0usize);
+        let (mut cal, mut hold, mut n_hold, mut h_seen) =
+            (None::<ChanAccum>, Vec::new(), 0usize, 0usize);
         for d in &dirs {
             let dir = Path::new(d);
             for call in 0..64 {
-                let (x, shift, scale) = match (read_tag_call(dir, &tag, call)?, read_tag_call(dir, "dump.single.mod.shift", call)?, read_tag_call(dir, "dump.single.mod.scale", call)?) {
+                let (x, shift, scale) = match (
+                    read_tag_call(dir, &tag, call)?,
+                    read_tag_call(dir, "dump.single.mod.shift", call)?,
+                    read_tag_call(dir, "dump.single.mod.scale", call)?,
+                ) {
                     (Some(x), Some(sh), Some(sc)) => (x, sh, sc),
                     _ => break,
                 };
                 let (h, n) = (x.ne[0], x.ne[1]);
-                if shift.data.len() != h || scale.data.len() != h || x.data.len() != n * h || (h_seen != 0 && h != h_seen) {
+                if shift.data.len() != h
+                    || scale.data.len() != h
+                    || x.data.len() != n * h
+                    || (h_seen != 0 && h != h_seen)
+                {
                     return Err(format!("block {b} call {call}: unexpected dump shapes"));
                 }
                 h_seen = h;
@@ -1282,10 +1470,19 @@ fn cmd_chan_calib(a: &Args) -> Result<(), String> {
             }
         }
         match cal {
-            Some(c) if n_hold > 0 => plans.push(plan_operand(&format!("single.{b}.lin1_in"), &c, &hold, n_hold, chunk, slack)?),
+            Some(c) if n_hold > 0 => plans.push(plan_operand(
+                &format!("single.{b}.lin1_in"),
+                &c,
+                &hold,
+                n_hold,
+                chunk,
+                slack,
+            )?),
             _ => {
                 if b == 0 {
-                    return Err("no dump.single.0.in with its modulation dumps in these hand-overs".into());
+                    return Err(
+                        "no dump.single.0.in with its modulation dumps in these hand-overs".into(),
+                    );
                 }
                 break;
             }
@@ -1295,9 +1492,15 @@ fn cmd_chan_calib(a: &Args) -> Result<(), String> {
     let text = serde_json::to_string_pretty(&rec).map_err(|e| e.to_string())?;
     std::fs::write(out, &text).map_err(|e| format!("{out}: {e}"))?;
     let met = plans.iter().filter(|p| p.meets_target).count();
-    println!("chan-calib: {} operands, {met} meet the chunk-32 target at chunk {chunk}; record written", plans.len());
+    println!(
+        "chan-calib: {} operands, {met} meet the chunk-32 target at chunk {chunk}; record written",
+        plans.len()
+    );
     for p in &plans {
-        println!("  {}: {} (meets_target {})", p.name, p.arrange, p.meets_target);
+        println!(
+            "  {}: {} (meets_target {})",
+            p.name, p.arrange, p.meets_target
+        );
     }
     Ok(())
 }
@@ -1313,12 +1516,29 @@ fn cmd_txt_stats(a: &Args) -> Result<(), String> {
     let pe_row = h.pe.len() / (h.n_txt + h.n_img);
     let tols = [0.0, 1e-4, 1e-3, 1e-2, 3e-2, 1e-1, 3e-1];
     let est = image_flow::txtstats::estimate(&h.txt, h.n_txt, dim, h.n_img, &tols);
-    let norms: Vec<f64> = (0..h.n_txt).map(|t| h.txt[t * dim..(t + 1) * dim].iter().map(|v| (*v as f64).powi(2)).sum::<f64>().sqrt()).collect();
+    let norms: Vec<f64> = (0..h.n_txt)
+        .map(|t| {
+            h.txt[t * dim..(t + 1) * dim]
+                .iter()
+                .map(|v| (*v as f64).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        })
+        .collect();
     // relative distance of each token to its predecessor: shows where the prompt ends and the padding begins
     let step: Vec<f64> = (1..h.n_txt)
         .map(|t| {
-            let d: f64 = h.txt[t * dim..(t + 1) * dim].iter().zip(&h.txt[(t - 1) * dim..t * dim]).map(|(x, y)| ((*x - *y) as f64).powi(2)).sum::<f64>().sqrt();
-            if norms[t] > 0.0 { d / norms[t] } else { 0.0 }
+            let d: f64 = h.txt[t * dim..(t + 1) * dim]
+                .iter()
+                .zip(&h.txt[(t - 1) * dim..t * dim])
+                .map(|(x, y)| ((*x - *y) as f64).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            if norms[t] > 0.0 {
+                d / norms[t]
+            } else {
+                0.0
+            }
         })
         .collect();
     // step-to-step change of the text rows (and, for scale, the image rows) entering single block 0:
@@ -1336,7 +1556,11 @@ fn cmd_txt_stats(a: &Args) -> Result<(), String> {
     }
     let mut sorted = step.clone();
     sorted.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-    let step_median = if sorted.is_empty() { 0.0 } else { sorted[sorted.len() / 2] };
+    let step_median = if sorted.is_empty() {
+        0.0
+    } else {
+        sorted[sorted.len() / 2]
+    };
     let report = json!({
         "n_txt": h.n_txt, "n_img": h.n_img, "ctx_dim": dim,
         "txt_pe_max_abs_spread": image_flow::txtstats::txt_pe_spread(&h.pe, h.n_txt, pe_row),
@@ -1376,10 +1600,14 @@ fn cmd_vae_decode(a: &Args) -> Result<(), String> {
         let dec = image_vae::load_decoder(&vae)?;
         for _ in 1..repeat {
             let t = Instant::now();
-            let again = image_vae::decode_with(&dec, &z.data, latent::LATENT_CHANNELS, gh, gw, threads)?;
+            let again =
+                image_vae::decode_with(&dec, &z.data, latent::LATENT_CHANNELS, gh, gw, threads)?;
             warm.push(t.elapsed().as_secs_f64());
             if again.data != rep.rgb.data {
-                return Err("vae-decode: a repeated decode differs from the first (non-deterministic)".into());
+                return Err(
+                    "vae-decode: a repeated decode differs from the first (non-deterministic)"
+                        .into(),
+                );
             }
         }
     }
@@ -1409,11 +1637,20 @@ fn cmd_compare(a: &Args) -> Result<(), String> {
         ));
     }
     let psnr = image_vae::psnr(&x, &y)?;
-    let max_abs = x.data.iter().zip(&y.data).map(|(p, q)| (*p as i32 - *q as i32).abs()).max().unwrap_or(0);
+    let max_abs = x
+        .data
+        .iter()
+        .zip(&y.data)
+        .map(|(p, q)| (*p as i32 - *q as i32).abs())
+        .max()
+        .unwrap_or(0);
     let report = json!({
         "a": a.pos[0], "b": a.pos[1], "width": x.width, "height": x.height,
         "psnr_db": psnr, "max_abs_diff": max_abs,
     });
-    println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+    );
     Ok(())
 }

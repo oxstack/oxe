@@ -51,7 +51,17 @@ pub enum Kind {
     Head,
 }
 pub const KINDS: usize = 9;
-pub const KIND_NAMES: [&str; KINDS] = ["hc", "mix_proj", "mix_core", "mix_out", "ple", "router", "exp_gate_up", "exp_down", "head"];
+pub const KIND_NAMES: [&str; KINDS] = [
+    "hc",
+    "mix_proj",
+    "mix_core",
+    "mix_out",
+    "ple",
+    "router",
+    "exp_gate_up",
+    "exp_down",
+    "head",
+];
 
 #[derive(Clone, Copy)]
 pub struct Hc {
@@ -156,23 +166,51 @@ impl Weights {
                 ple_value: o("ple_value.weight"),
                 exp: expert_geom(s, l),
             };
-            for m in [Some(lw.hc[0].down), Some(lw.hc[0].up), lw.hc[0].inject, Some(lw.hc[1].down), Some(lw.hc[1].up), lw.hc[1].inject]
-                .into_iter()
-                .chain([lw.qkv, lw.zgate, lw.alpha, lw.beta, lw.ssm_out, lw.q, lw.k, lw.v, lw.idx_q, lw.idx_k, lw.out])
-                .chain([Some(lw.sh_gate), Some(lw.sh_up), Some(lw.sh_down), lw.ple_key, lw.ple_value])
-                .flatten()
+            for m in [
+                Some(lw.hc[0].down),
+                Some(lw.hc[0].up),
+                lw.hc[0].inject,
+                Some(lw.hc[1].down),
+                Some(lw.hc[1].up),
+                lw.hc[1].inject,
+            ]
+            .into_iter()
+            .chain([
+                lw.qkv, lw.zgate, lw.alpha, lw.beta, lw.ssm_out, lw.q, lw.k, lw.v, lw.idx_q,
+                lw.idx_k, lw.out,
+            ])
+            .chain([
+                Some(lw.sh_gate),
+                Some(lw.sh_up),
+                Some(lw.sh_down),
+                lw.ple_key,
+                lw.ple_value,
+            ])
+            .flatten()
             {
                 bd += m.bytes();
             }
             br += lw.router.bytes();
             be += TOP_K * lw.exp.record;
-            assert_eq!(lw.attn, lw.q.is_some() && lw.qkv.is_none(), "layer {l}: mixer tensors");
+            assert_eq!(
+                lw.attn,
+                lw.q.is_some() && lw.qkv.is_none(),
+                "layer {l}: mixer tensors"
+            );
             layers.push(lw);
         }
         let out_hc = hc("output_hc");
         let output = d.get("output.weight");
         bd += out_hc.down.bytes() + out_hc.up.bytes() + output.bytes();
-        Weights { layers, out_hc, output, token_embd: d.get("token_embd.weight"), bytes_dense: bd, bytes_router: br, bytes_experts: be }
+        Weights {
+            layers,
+            out_hc,
+            output,
+            token_embd: d.get("token_embd.weight"),
+            bytes_dense: bd,
+            bytes_router: br,
+            bytes_experts: be,
+        }
     }
 }
 
@@ -191,7 +229,10 @@ unsafe impl Send for SBuf {}
 impl SBuf {
     fn new(n: usize) -> SBuf {
         let b: Box<[f32]> = vec![0.0; n].into_boxed_slice();
-        SBuf { len: b.len(), ptr: Box::into_raw(b) as *mut f32 }
+        SBuf {
+            len: b.len(),
+            ptr: Box::into_raw(b) as *mut f32,
+        }
     }
     /// The whole buffer, mutable. Callers write only the elements their phase owns (disjoint between threads).
     #[allow(clippy::mut_from_ref)]
@@ -201,7 +242,11 @@ impl SBuf {
     /// Elements `r0..r1` only (bounds checked: cold relative to the GEMV it feeds).
     #[allow(clippy::mut_from_ref)]
     unsafe fn range(&self, r0: usize, r1: usize) -> &mut [f32] {
-        assert!(r0 <= r1 && r1 <= self.len, "SBuf range {r0}..{r1} of {}", self.len);
+        assert!(
+            r0 <= r1 && r1 <= self.len,
+            "SBuf range {r0}..{r1} of {}",
+            self.len
+        );
         std::slice::from_raw_parts_mut(self.ptr.add(r0), r1 - r0)
     }
     unsafe fn r(&self) -> &[f32] {
@@ -211,7 +256,11 @@ impl SBuf {
 impl Drop for SBuf {
     fn drop(&mut self) {
         // SAFETY: ptr/len come from Box::into_raw of a boxed slice of exactly this length, dropped once.
-        unsafe { drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(self.ptr, self.len))) }
+        unsafe {
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                self.ptr, self.len,
+            )))
+        }
     }
 }
 
@@ -259,22 +308,22 @@ pub struct Engine<'a> {
     pub trace: &'a Trace,
     pub cfg: Cfg,
     nt: usize,
-    x: SBuf,       // 4 x 2560 hyper-connection streams
-    hcw: SBuf,     // 4 inject weights
-    low: SBuf,     // 320
-    hup: SBuf,     // 10240
-    xin: SBuf,     // 2560 (block input, recomputed redundantly)
-    qkv: SBuf,     // 10240 (GDN) / 12288+512+512 (attn: q|k|v)
-    z: SBuf,       // 6144
-    ab: SBuf,      // 96
-    idx: SBuf,     // 512 + 128
-    mix: SBuf,     // 6144
-    blk: SBuf,     // 2560
-    ple: SBuf,     // 2560 + 10240
-    logits: SBuf,  // 512
-    sh: SBuf,      // 640 gate | 640 up
-    eh: SBuf,      // 10 x 640 SwiGLU outputs
-    moe: SBuf,     // 2560
+    x: SBuf,      // 4 x 2560 hyper-connection streams
+    hcw: SBuf,    // 4 inject weights
+    low: SBuf,    // 320
+    hup: SBuf,    // 10240
+    xin: SBuf,    // 2560 (block input, recomputed redundantly)
+    qkv: SBuf,    // 10240 (GDN) / 12288+512+512 (attn: q|k|v)
+    z: SBuf,      // 6144
+    ab: SBuf,     // 96
+    idx: SBuf,    // 512 + 128
+    mix: SBuf,    // 6144
+    blk: SBuf,    // 2560
+    ple: SBuf,    // 2560 + 10240
+    logits: SBuf, // 512
+    sh: SBuf,     // 640 gate | 640 up
+    eh: SBuf,     // 10 x 640 SwiGLU outputs
+    moe: SBuf,    // 2560
     gdn_state: Vec<SBuf>,
     conv_state: Vec<SBuf>,
     kv_k: Vec<SBuf>,
@@ -308,7 +357,15 @@ fn xorshift(s: &mut u64) -> u64 {
 }
 
 impl<'a> Engine<'a> {
-    pub fn new(w: &'a Weights, cache: &'a Cache, io: &'a IoQueue, ngram: Option<NgramTable>, trace: &'a Trace, cfg: Cfg, nt: usize) -> Engine<'a> {
+    pub fn new(
+        w: &'a Weights,
+        cache: &'a Cache,
+        io: &'a IoQueue,
+        ngram: Option<NgramTable>,
+        trace: &'a Trace,
+        cfg: Cfg,
+        nt: usize,
+    ) -> Engine<'a> {
         let n_attn = w.layers.iter().filter(|l| l.attn).count();
         let n_gdn = N_LAYER - n_attn;
         let ctx = cfg.ctx;
@@ -353,12 +410,25 @@ impl<'a> Engine<'a> {
             sh: SBuf::new(2 * FF_EXP),
             eh: SBuf::new(TOP_K * FF_EXP),
             moe: SBuf::new(N_EMBD),
-            gdn_state: (0..n_gdn).map(|_| SBuf::new(SSM_V_HEADS * SSM_D * SSM_D)).collect(),
-            conv_state: (0..n_gdn).map(|_| SBuf::new((SSM_CONV - 1) * SSM_QKV)).collect(),
-            kv_k: (0..n_attn).map(|_| SBuf::new(ctx * N_HEAD_KV * HEAD_D)).collect(),
-            kv_v: (0..n_attn).map(|_| SBuf::new(ctx * N_HEAD_KV * HEAD_D)).collect(),
+            gdn_state: (0..n_gdn)
+                .map(|_| SBuf::new(SSM_V_HEADS * SSM_D * SSM_D))
+                .collect(),
+            conv_state: (0..n_gdn)
+                .map(|_| SBuf::new((SSM_CONV - 1) * SSM_QKV))
+                .collect(),
+            kv_k: (0..n_attn)
+                .map(|_| SBuf::new(ctx * N_HEAD_KV * HEAD_D))
+                .collect(),
+            kv_v: (0..n_attn)
+                .map(|_| SBuf::new(ctx * N_HEAD_KV * HEAD_D))
+                .collect(),
             kv_i: (0..n_attn).map(|_| SBuf::new(ctx * IDX_D)).collect(),
-            work: UnsafeCell::new([Entry { ptr: std::ptr::null(), state: std::ptr::null() }; TOP_K]),
+            work: UnsafeCell::new(
+                [Entry {
+                    ptr: std::ptr::null(),
+                    state: std::ptr::null(),
+                }; TOP_K],
+            ),
             work_epoch: AtomicU64::new(0),
             ts,
             tok: UnsafeCell::new(0),
@@ -370,10 +440,16 @@ impl<'a> Engine<'a> {
                 *v = ((i * 7919 % 1000) as f32 - 500.0) * 1e-3;
             }
             for s in &e.kv_k {
-                s.m().iter_mut().enumerate().for_each(|(i, v)| *v = ((i % 97) as f32 - 48.0) * 0.01);
+                s.m()
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(i, v)| *v = ((i % 97) as f32 - 48.0) * 0.01);
             }
             for s in &e.kv_v {
-                s.m().iter_mut().enumerate().for_each(|(i, v)| *v = ((i % 89) as f32 - 44.0) * 0.01);
+                s.m()
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(i, v)| *v = ((i % 89) as f32 - 44.0) * 0.01);
             }
         }
         e
@@ -474,7 +550,16 @@ impl<'a> Engine<'a> {
         unsafe { self.head(c, ts, t0) };
     }
 
-    fn end_phase(&self, c: &mut Ctx, ts: &mut Ts, t0: Instant, k: Kind, s: Instant, ssd: u64, ng: u64) {
+    fn end_phase(
+        &self,
+        c: &mut Ctx,
+        ts: &mut Ts,
+        t0: Instant,
+        k: Kind,
+        s: Instant,
+        ssd: u64,
+        ng: u64,
+    ) {
         let w = s.elapsed().as_nanos() as u64;
         ts.prof.push((k as u8, w.saturating_sub(ssd + ng), ssd, ng));
         c.barrier();
@@ -489,13 +574,23 @@ impl<'a> Engine<'a> {
         let s = Instant::now();
         unsafe {
             let x = self.x.r();
-            kf::oxe_rms_norm_mul_f32(x.as_ptr(), hc.norm, ts.xn.as_mut_ptr(), (N_HC * N_EMBD) as i64, EPS);
+            kf::oxe_rms_norm_mul_f32(
+                x.as_ptr(),
+                hc.norm,
+                ts.xn.as_mut_ptr(),
+                (N_HC * N_EMBD) as i64,
+                EPS,
+            );
             quantize_act(ActType::Q8_0, &ts.xn, &mut ts.a);
             let (r0, r1) = part(HC_RANK, nt, tid, 8);
             hc.down.gemv(r0, r1, &ts.a, &ts.xn, self.low.range(r0, r1));
             if let Some(inj) = hc.inject {
                 if tid < N_HC.min(nt) {
-                    let (i0, i1) = if nt >= N_HC { (tid, tid + 1) } else { part(N_HC, nt, tid, 1) };
+                    let (i0, i1) = if nt >= N_HC {
+                        (tid, tid + 1)
+                    } else {
+                        part(N_HC, nt, tid, 1)
+                    };
                     inj.gemv(i0, i1, &ts.a, &ts.xn, self.hcw.range(i0, i1));
                 }
             }
@@ -509,7 +604,8 @@ impl<'a> Engine<'a> {
             kf::oxe_rms_norm_f32(low.as_ptr(), ts.tmp.as_mut_ptr(), HC_RANK as i64, EPS);
             quantize_act(ActType::Q8_0, &ts.tmp[..HC_RANK], &mut ts.a);
             let (r0, r1) = part(N_HC * N_EMBD, nt, tid, 8);
-            hc.up.gemv(r0, r1, &ts.a, &ts.tmp[..HC_RANK], self.hup.range(r0, r1));
+            hc.up
+                .gemv(r0, r1, &ts.a, &ts.tmp[..HC_RANK], self.hup.range(r0, r1));
         }
         self.end_phase(c, ts, t0, Kind::Hc, s, 0, 0);
     }
@@ -553,7 +649,12 @@ impl<'a> Engine<'a> {
             let (r0, r1) = part(ik.n, nt, tid, 8);
             ik.gemv(r0, r1, &ts.a, xin, &mut idx[iq.n + r0..iq.n + r1]);
         } else {
-            let (mq, mz, ma, mb) = (lw.qkv.unwrap(), lw.zgate.unwrap(), lw.alpha.unwrap(), lw.beta.unwrap());
+            let (mq, mz, ma, mb) = (
+                lw.qkv.unwrap(),
+                lw.zgate.unwrap(),
+                lw.alpha.unwrap(),
+                lw.beta.unwrap(),
+            );
             let (r0, r1) = part(mq.n, nt, tid, 8);
             mq.gemv(r0, r1, &ts.a, xin, &mut q[r0..r1]);
             let (r0, r1) = part(mz.n, nt, tid, 8);
@@ -561,7 +662,13 @@ impl<'a> Engine<'a> {
             let ab = self.ab.m();
             let (r0, r1) = part(ma.n, nt, tid, 1);
             ma.gemv(r0, r1, &ts.a, xin, &mut ab[r0..r1]);
-            mb.gemv(r0, r1, &ts.a, xin, &mut ab[SSM_V_HEADS + r0..SSM_V_HEADS + r1]);
+            mb.gemv(
+                r0,
+                r1,
+                &ts.a,
+                xin,
+                &mut ab[SSM_V_HEADS + r0..SSM_V_HEADS + r1],
+            );
         }
     }
 
@@ -616,7 +723,13 @@ impl<'a> Engine<'a> {
                 out.as_mut_ptr(),
             );
             // gated RMSNorm
-            kf::oxe_rms_norm_mul_f32(out.as_ptr(), lw.ssm_norm, ts.tmp2.as_mut_ptr(), SSM_D as i64, EPS);
+            kf::oxe_rms_norm_mul_f32(
+                out.as_ptr(),
+                lw.ssm_norm,
+                ts.tmp2.as_mut_ptr(),
+                SSM_D as i64,
+                EPS,
+            );
             for i in 0..SSM_D {
                 let zz = z[h * SSM_D + i];
                 mix[h * SSM_D + i] = ts.tmp2[i] * zz / (1.0 + (-zz).exp());
@@ -643,7 +756,11 @@ impl<'a> Engine<'a> {
             kf::oxe_rms_norm_mul_f32(qh.as_ptr(), lw.q_norm, qn.as_mut_ptr(), HEAD_D as i64, EPS);
             let sc = &mut ts.tmp[..n_kv];
             for p in 0..n_kv {
-                let kp = if p == pos { &knew[kvh * HEAD_D..(kvh + 1) * HEAD_D] } else { &kc[(p * N_HEAD_KV + kvh) * HEAD_D..(p * N_HEAD_KV + kvh + 1) * HEAD_D] };
+                let kp = if p == pos {
+                    &knew[kvh * HEAD_D..(kvh + 1) * HEAD_D]
+                } else {
+                    &kc[(p * N_HEAD_KV + kvh) * HEAD_D..(p * N_HEAD_KV + kvh + 1) * HEAD_D]
+                };
                 sc[p] = kf::oxe_vec_dot_f32(HEAD_D as i32, qn.as_ptr(), kp.as_ptr()) * scale;
             }
             let m = sc.iter().cloned().fold(f32::MIN, f32::max);
@@ -655,7 +772,11 @@ impl<'a> Engine<'a> {
             let o = &mut ts.tmp2[..HEAD_D];
             o.fill(0.0);
             for p in 0..n_kv {
-                let vp = if p == pos { &vnew[kvh * HEAD_D..(kvh + 1) * HEAD_D] } else { &vc[(p * N_HEAD_KV + kvh) * HEAD_D..(p * N_HEAD_KV + kvh + 1) * HEAD_D] };
+                let vp = if p == pos {
+                    &vnew[kvh * HEAD_D..(kvh + 1) * HEAD_D]
+                } else {
+                    &vc[(p * N_HEAD_KV + kvh) * HEAD_D..(p * N_HEAD_KV + kvh + 1) * HEAD_D]
+                };
                 let wgt = sc[p] / sum;
                 for i in 0..HEAD_D {
                     o[i] += wgt * vp[i];
@@ -672,15 +793,28 @@ impl<'a> Engine<'a> {
             let qh = &idx[tid * IDX_D..(tid + 1) * IDX_D];
             let mut acc = 0f32;
             for p in 0..pos {
-                acc += kf::oxe_vec_dot_f32(IDX_D as i32, qh.as_ptr(), ic[p * IDX_D..].as_ptr()).max(0.0);
+                acc += kf::oxe_vec_dot_f32(IDX_D as i32, qh.as_ptr(), ic[p * IDX_D..].as_ptr())
+                    .max(0.0);
             }
             ts.tmp[0] = acc;
         }
     }
 
-    unsafe fn mixer_out(&self, c: &Ctx, ts: &mut Ts, lw: &LayerW, gi: usize, ai: usize, pos: usize) {
+    unsafe fn mixer_out(
+        &self,
+        c: &Ctx,
+        ts: &mut Ts,
+        lw: &LayerW,
+        gi: usize,
+        ai: usize,
+        pos: usize,
+    ) {
         let (tid, nt) = (c.tid, c.nthreads);
-        let (m, k) = if lw.attn { (lw.out.unwrap(), N_HEAD * HEAD_D) } else { (lw.ssm_out.unwrap(), SSM_INNER) };
+        let (m, k) = if lw.attn {
+            (lw.out.unwrap(), N_HEAD * HEAD_D)
+        } else {
+            (lw.ssm_out.unwrap(), SSM_INNER)
+        };
         assert_eq!(m.k, k);
         let mix = &self.mix.r()[..k];
         quantize_act(ActType::Q8K, mix, &mut ts.a);
@@ -703,14 +837,25 @@ impl<'a> Engine<'a> {
                 let kc = self.kv_k[ai].m();
                 let vc = self.kv_v[ai].m();
                 for h in 0..N_HEAD_KV {
-                    let dst = &mut kc[(pos * N_HEAD_KV + h) * HEAD_D..(pos * N_HEAD_KV + h + 1) * HEAD_D];
-                    kf::oxe_rms_norm_mul_f32(kn[h * HEAD_D..].as_ptr(), lw.k_norm, dst.as_mut_ptr(), HEAD_D as i64, EPS);
+                    let dst =
+                        &mut kc[(pos * N_HEAD_KV + h) * HEAD_D..(pos * N_HEAD_KV + h + 1) * HEAD_D];
+                    kf::oxe_rms_norm_mul_f32(
+                        kn[h * HEAD_D..].as_ptr(),
+                        lw.k_norm,
+                        dst.as_mut_ptr(),
+                        HEAD_D as i64,
+                        EPS,
+                    );
                     vc[(pos * N_HEAD_KV + h) * HEAD_D..(pos * N_HEAD_KV + h + 1) * HEAD_D]
-                        .copy_from_slice(&kn[N_HEAD_KV * HEAD_D + h * HEAD_D..N_HEAD_KV * HEAD_D + (h + 1) * HEAD_D]);
+                        .copy_from_slice(
+                            &kn[N_HEAD_KV * HEAD_D + h * HEAD_D
+                                ..N_HEAD_KV * HEAD_D + (h + 1) * HEAD_D],
+                        );
                 }
                 let ic = self.kv_i[ai].m();
                 let idx = self.idx.r();
-                ic[pos * IDX_D..(pos + 1) * IDX_D].copy_from_slice(&idx[IDX_HEADS * IDX_D..IDX_HEADS * IDX_D + IDX_D]);
+                ic[pos * IDX_D..(pos + 1) * IDX_D]
+                    .copy_from_slice(&idx[IDX_HEADS * IDX_D..IDX_HEADS * IDX_D + IDX_D]);
             }
         } else {
             // shift the conv state over this thread's channels
@@ -735,7 +880,9 @@ impl<'a> Engine<'a> {
         let waited = match &self.ngram {
             Some(ng) => (*ng.get()).gather(e),
             None => {
-                e.iter_mut().enumerate().for_each(|(i, v)| *v = ((i % 13) as f32 - 6.0) * 0.1);
+                e.iter_mut()
+                    .enumerate()
+                    .for_each(|(i, v)| *v = ((i % 13) as f32 - 6.0) * 0.1);
                 0
             }
         };
@@ -746,7 +893,13 @@ impl<'a> Engine<'a> {
         let (r0, r1) = part(pv.n, nt, tid, 8);
         pv.gemv(r0, r1, &ts.a, &ts.xn[..N_EMBD], &mut ple[r0..r1]);
         let (k0, k1) = part(pk.n, nt, tid, 8);
-        pk.gemv(k0, k1, &ts.a, &ts.xn[..N_EMBD], &mut ple[N_EMBD + k0..N_EMBD + k1]);
+        pk.gemv(
+            k0,
+            k1,
+            &ts.a,
+            &ts.xn[..N_EMBD],
+            &mut ple[N_EMBD + k0..N_EMBD + k1],
+        );
         let x = self.x.m();
         for s in 0..N_HC {
             for i in r0..r1 {
@@ -762,11 +915,13 @@ impl<'a> Engine<'a> {
         quantize_act(ActType::Q8K, &ts.xn[..N_EMBD], &mut ts.a);
         let xin = &ts.xn[..N_EMBD];
         let (r0, r1) = part(N_EXPERT, nt, tid, 1);
-        lw.router.gemv(r0, r1, &ts.a, xin, self.logits.range(r0, r1));
+        lw.router
+            .gemv(r0, r1, &ts.a, xin, self.logits.range(r0, r1));
         let sh = self.sh.m();
         let (r0, r1) = part(FF_EXP, nt, tid, 8);
         lw.sh_gate.gemv(r0, r1, &ts.a, xin, &mut sh[r0..r1]);
-        lw.sh_up.gemv(r0, r1, &ts.a, xin, &mut sh[FF_EXP + r0..FF_EXP + r1]);
+        lw.sh_up
+            .gemv(r0, r1, &ts.a, xin, &mut sh[FF_EXP + r0..FF_EXP + r1]);
         for r in r0..r1 {
             let g = sh[r];
             sh[r] = g / (1.0 + (-g).exp()) * sh[FF_EXP + r];
@@ -785,7 +940,9 @@ impl<'a> Engine<'a> {
         let work = &mut *self.work.get();
         let class = ReqClass::Demand;
         for j in 0..TOP_K {
-            let (e, _) = self.cache.lookup(self.io, l, truth[l][j] as usize, stamp, class);
+            let (e, _) = self
+                .cache
+                .lookup(self.io, l, truth[l][j] as usize, stamp, class);
             work[j] = e;
         }
         if self.cfg.io == IoMode::Lookahead {
@@ -798,7 +955,13 @@ impl<'a> Engine<'a> {
                 let mut n_ok = 0;
                 for j in 0..TOP_K {
                     if (xorshift(rng) % 1_000_000) as f64 / 1e6 < self.cfg.recall {
-                        self.cache.lookup(self.io, l2, truth[l2][j] as usize, stamp, ReqClass::Prefetch);
+                        self.cache.lookup(
+                            self.io,
+                            l2,
+                            truth[l2][j] as usize,
+                            stamp,
+                            ReqClass::Prefetch,
+                        );
                         n_ok += 1;
                     }
                 }
@@ -850,12 +1013,46 @@ impl<'a> Engine<'a> {
                 let (gt, ut) = (&mut ts.tmp[..r1 - r0], &mut ts.tmp2[..r1 - r0]);
                 match g.gate_w.r4() {
                     Some(t) => {
-                        crate::ffi::gemv_r4(t, g.gate_w, p, N_EMBD, r0, r1, ts.a.as_ptr(), gt.as_mut_ptr());
-                        crate::ffi::gemv_r4(t, g.gate_w, p.add(g.gate_bytes), N_EMBD, r0, r1, ts.a.as_ptr(), ut.as_mut_ptr());
+                        crate::ffi::gemv_r4(
+                            t,
+                            g.gate_w,
+                            p,
+                            N_EMBD,
+                            r0,
+                            r1,
+                            ts.a.as_ptr(),
+                            gt.as_mut_ptr(),
+                        );
+                        crate::ffi::gemv_r4(
+                            t,
+                            g.gate_w,
+                            p.add(g.gate_bytes),
+                            N_EMBD,
+                            r0,
+                            r1,
+                            ts.a.as_ptr(),
+                            ut.as_mut_ptr(),
+                        );
                     }
                     None => {
-                        crate::ffi::gemv_vecdot(g.gate_w, p, N_EMBD, r0, r1, ts.a.as_ptr(), gt.as_mut_ptr());
-                        crate::ffi::gemv_vecdot(g.gate_w, p.add(g.gate_bytes), N_EMBD, r0, r1, ts.a.as_ptr(), ut.as_mut_ptr());
+                        crate::ffi::gemv_vecdot(
+                            g.gate_w,
+                            p,
+                            N_EMBD,
+                            r0,
+                            r1,
+                            ts.a.as_ptr(),
+                            gt.as_mut_ptr(),
+                        );
+                        crate::ffi::gemv_vecdot(
+                            g.gate_w,
+                            p.add(g.gate_bytes),
+                            N_EMBD,
+                            r0,
+                            r1,
+                            ts.a.as_ptr(),
+                            ut.as_mut_ptr(),
+                        );
                     }
                 }
                 for r in 0..r1 - r0 {
@@ -888,8 +1085,17 @@ impl<'a> Engine<'a> {
         let qb = ActType::Q8_0.bytes(FF_EXP);
         for j in 0..TOP_K {
             // bounded dummy: normalise before quantising
-            kf::oxe_rms_norm_f32(eh[j * FF_EXP..].as_ptr(), ts.tmp.as_mut_ptr(), FF_EXP as i64, EPS);
-            quantize_act(ActType::Q8_0, &ts.tmp[..FF_EXP], &mut ts.a2[j * qb..(j + 1) * qb]);
+            kf::oxe_rms_norm_f32(
+                eh[j * FF_EXP..].as_ptr(),
+                ts.tmp.as_mut_ptr(),
+                FF_EXP as i64,
+                EPS,
+            );
+            quantize_act(
+                ActType::Q8_0,
+                &ts.tmp[..FF_EXP],
+                &mut ts.a2[j * qb..(j + 1) * qb],
+            );
         }
         kf::oxe_rms_norm_f32(sh.as_ptr(), ts.tmp.as_mut_ptr(), FF_EXP as i64, EPS);
         quantize_act(ActType::Q8_0, &ts.tmp[..FF_EXP], &mut ts.a);
@@ -904,7 +1110,15 @@ impl<'a> Engine<'a> {
         let logits = self.logits.r();
         for j in 0..TOP_K {
             let p = work[j].ptr.add(2 * g.gate_bytes);
-            crate::ffi::gemv_vecdot(g.down_w, p, FF_EXP, r0, r1, ts.a2[j * qb..].as_ptr(), t.as_mut_ptr());
+            crate::ffi::gemv_vecdot(
+                g.down_w,
+                p,
+                FF_EXP,
+                r0,
+                r1,
+                ts.a2[j * qb..].as_ptr(),
+                t.as_mut_ptr(),
+            );
             let wj = 0.1 + 0.001 * logits[j].tanh();
             for r in 0..r1 - r0 {
                 moe[r] += wj * t[r];
@@ -941,7 +1155,8 @@ impl<'a> Engine<'a> {
             r = e;
         }
         ts.best = best;
-        ts.prof.push((Kind::Head as u8, s.elapsed().as_nanos() as u64, 0, 0));
+        ts.prof
+            .push((Kind::Head as u8, s.elapsed().as_nanos() as u64, 0, 0));
         // the pool's join barrier ends the phase; thread 0 records its wall after run()
     }
 
@@ -1016,7 +1231,15 @@ mod tests {
     use super::part;
     #[test]
     fn partitions_cover_rows() {
-        for &(n, a) in &[(320usize, 8usize), (10240, 8), (640, 4), (2560, 8), (248320, 8), (48, 1), (512, 1)] {
+        for &(n, a) in &[
+            (320usize, 8usize),
+            (10240, 8),
+            (640, 4),
+            (2560, 8),
+            (248320, 8),
+            (48, 1),
+            (512, 1),
+        ] {
             for nt in [1, 2, 4, 6, 8, 12] {
                 let mut next = 0;
                 for t in 0..nt {

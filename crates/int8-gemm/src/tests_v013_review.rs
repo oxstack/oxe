@@ -94,10 +94,16 @@ fn max_chunk_sums_stay_exact() {
         gemm_ref(&x, &w, 0..1, 0..1, &mut b, 8, order, false);
         for t in 0..8 {
             for r in 0..8 {
-                let want = (if t % 2 == 0 { 127i64 } else { -127 }) * (if r < 4 { -128 } else { 127 }) * K as i64;
+                let want = (if t % 2 == 0 { 127i64 } else { -127 })
+                    * (if r < 4 { -128 } else { 127 })
+                    * K as i64;
                 assert!(want.abs() < i32::MAX as i64);
                 assert_eq!(a[t * 8 + r], want as f32, "{order:?} t{t} r{r}");
-                assert_eq!(b[t * 8 + r].to_bits(), a[t * 8 + r].to_bits(), "{order:?} t{t} r{r}");
+                assert_eq!(
+                    b[t * 8 + r].to_bits(),
+                    a[t * 8 + r].to_bits(),
+                    "{order:?} t{t} r{r}"
+                );
             }
         }
     }
@@ -110,13 +116,33 @@ fn max_chunk_sums_stay_exact() {
 /// code 255 with scale exactly 1/255. Only the probed query's bytes are written.
 #[test]
 fn softmax_pack_exp_range_and_codes() {
-    let s0 = [0.0f32, -1.0, -10.0, -50.0, -86.99, -87.0, -88.0, f32::NEG_INFINITY];
+    let s0 = [
+        0.0f32,
+        -1.0,
+        -10.0,
+        -50.0,
+        -86.99,
+        -87.0,
+        -88.0,
+        f32::NEG_INFINITY,
+    ];
     let mut s = s0.to_vec();
     let sv = [1.0f32; 8];
     let qi = 5usize;
     let mut codes = vec![0xAAu8; 64];
     let (mut sum, mut scale) = (0.0f32, 0.0f32);
-    unsafe { raw::i8g_softmax_pack(s.as_mut_ptr(), 8, 0.0, sv.as_ptr(), codes.as_mut_ptr(), qi, &mut sum, &mut scale) };
+    unsafe {
+        raw::i8g_softmax_pack(
+            s.as_mut_ptr(),
+            8,
+            0.0,
+            sv.as_ptr(),
+            codes.as_mut_ptr(),
+            qi,
+            &mut sum,
+            &mut scale,
+        )
+    };
     assert_eq!(s[0].to_bits(), 1.0f32.to_bits(), "exp(0) must be exactly 1");
     assert_eq!(scale.to_bits(), (1.0f32 / 255.0).to_bits());
     let mut want_sum = 0.0f64;
@@ -124,9 +150,15 @@ fn softmax_pack_exp_range_and_codes() {
         let want = (s0[j].max(-87.0) as f64).exp();
         want_sum += want;
         assert!(e.is_finite() && (0.0..=1.0).contains(&e), "j {j}: {e:e}");
-        assert!(((e as f64) - want).abs() <= 1e-4 * want, "j {j}: {e:e} vs {want:e}");
+        assert!(
+            ((e as f64) - want).abs() <= 1e-4 * want,
+            "j {j}: {e:e} vs {want:e}"
+        );
     }
-    assert!(((sum as f64 - want_sum) / want_sum).abs() < 1e-4, "sum {sum} vs {want_sum}");
+    assert!(
+        ((sum as f64 - want_sum) / want_sum).abs() < 1e-4,
+        "sum {sum} vs {want_sum}"
+    );
     // 255 * e^-1 = 93.81 -> 94; 255 * e^-10 = 0.012 -> 0
     assert_eq!(&codes[qi * 8..qi * 8 + 8], &[255u8, 94, 0, 0, 0, 0, 0, 0]);
     for (i, &b) in codes.iter().enumerate() {
@@ -146,7 +178,18 @@ fn softmax_pack_nan_score_surfaces_in_sum() {
     let sv = [0.5f32; 8];
     let mut codes = vec![0xAAu8; 64];
     let (mut sum, mut scale) = (0.0f32, 1.0f32);
-    unsafe { raw::i8g_softmax_pack(s.as_mut_ptr(), 8, 0.0, sv.as_ptr(), codes.as_mut_ptr(), 0, &mut sum, &mut scale) };
+    unsafe {
+        raw::i8g_softmax_pack(
+            s.as_mut_ptr(),
+            8,
+            0.0,
+            sv.as_ptr(),
+            codes.as_mut_ptr(),
+            0,
+            &mut sum,
+            &mut scale,
+        )
+    };
     assert!(sum.is_nan(), "sum {sum}");
     assert_eq!(scale, 0.0);
     assert!(codes[..8].iter().all(|&b| b == 0));
@@ -162,9 +205,23 @@ fn softmax_pack_all_masked_chunk_is_negligible() {
     let sv = [0.05f32; 16];
     let mut codes = vec![0u8; 128];
     let (mut sum, mut scale) = (0.0f32, 0.0f32);
-    unsafe { raw::i8g_softmax_pack(s.as_mut_ptr(), 16, 3.0, sv.as_ptr(), codes.as_mut_ptr(), 1, &mut sum, &mut scale) };
+    unsafe {
+        raw::i8g_softmax_pack(
+            s.as_mut_ptr(),
+            16,
+            3.0,
+            sv.as_ptr(),
+            codes.as_mut_ptr(),
+            1,
+            &mut sum,
+            &mut scale,
+        )
+    };
     assert!(sum.is_finite() && sum >= 0.0 && sum < 1e-36, "sum {sum:e}");
-    assert!(scale.is_finite() && scale >= 0.0 && scale < 1e-38, "scale {scale:e}");
+    assert!(
+        scale.is_finite() && scale >= 0.0 && scale < 1e-38,
+        "scale {scale:e}"
+    );
     for j in 0..16 {
         let c = codes[(j / 8) * 64 + 8 + j % 8] as f32;
         assert!(c * scale < 1e-37, "j {j}: code {c} scale {scale:e}");
@@ -188,20 +245,31 @@ fn fattn_softmax_masked_lanes_and_nan() {
     let want: f64 = (0..nvalid).map(|j| (s[j] as f64 - m as f64).exp()).sum();
     for qi in [0usize, 7] {
         let mut pt = vec![f32::NAN; kc * 8];
-        let sum = unsafe { fr::i8g_fattn_softmax_f32(s.as_ptr(), kc, nvalid, m, pt.as_mut_ptr(), qi) };
-        assert!(((sum as f64 - want) / want).abs() < 1e-5, "f32 sum {sum} vs {want}");
+        let sum =
+            unsafe { fr::i8g_fattn_softmax_f32(s.as_ptr(), kc, nvalid, m, pt.as_mut_ptr(), qi) };
+        assert!(
+            ((sum as f64 - want) / want).abs() < 1e-5,
+            "f32 sum {sum} vs {want}"
+        );
         for j in 0..kc {
             let p = pt[j * 8 + qi];
             if j < nvalid {
                 let w = (s[j] as f64 - m as f64).exp();
-                assert!((p as f64 - w).abs() <= 1e-6 * w, "qi {qi} j {j}: {p} vs {w}");
+                assert!(
+                    (p as f64 - w).abs() <= 1e-6 * w,
+                    "qi {qi} j {j}: {p} vs {w}"
+                );
             } else {
                 assert_eq!(p.to_bits(), 0, "qi {qi} masked j {j}: {p}");
             }
         }
         let mut ph = vec![0x7e00u16; kc * 8];
-        let sum_h = unsafe { fr::i8g_fattn_softmax_f16(s.as_ptr(), kc, nvalid, m, ph.as_mut_ptr(), qi) };
-        assert!(sum_h.is_finite() && ((sum_h as f64 - want) / want).abs() < 2e-3, "f16 sum {sum_h} vs {want}");
+        let sum_h =
+            unsafe { fr::i8g_fattn_softmax_f16(s.as_ptr(), kc, nvalid, m, ph.as_mut_ptr(), qi) };
+        assert!(
+            sum_h.is_finite() && ((sum_h as f64 - want) / want).abs() < 2e-3,
+            "f16 sum {sum_h} vs {want}"
+        );
         for j in nvalid..kc {
             assert_eq!(ph[j * 8 + qi], 0, "qi {qi} masked f16 j {j}");
         }

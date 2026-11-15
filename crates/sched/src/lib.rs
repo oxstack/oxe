@@ -49,7 +49,11 @@ pub struct Barrier {
 impl Barrier {
     pub fn new(n: usize) -> Barrier {
         assert!(n >= 1);
-        Barrier { n: n as u32, arrival: Padded::default(), sense: Padded::default() }
+        Barrier {
+            n: n as u32,
+            arrival: Padded::default(),
+            sense: Padded::default(),
+        }
     }
 
     pub fn team_size(&self) -> usize {
@@ -151,7 +155,12 @@ pub fn thread_affinity(tid: u32) -> std::io::Result<libc::cpu_set_t> {
     // SAFETY: cpu_set_t is plain data; the kernel writes at most its size.
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
-        if libc::sched_getaffinity(tid as libc::pid_t, std::mem::size_of::<libc::cpu_set_t>(), &mut set) != 0 {
+        if libc::sched_getaffinity(
+            tid as libc::pid_t,
+            std::mem::size_of::<libc::cpu_set_t>(),
+            &mut set,
+        ) != 0
+        {
             return Err(std::io::Error::last_os_error());
         }
         Ok(set)
@@ -162,7 +171,12 @@ pub fn thread_affinity(tid: u32) -> std::io::Result<libc::cpu_set_t> {
 pub fn set_thread_affinity(tid: u32, set: &libc::cpu_set_t) -> std::io::Result<()> {
     // SAFETY: plain syscall on a valid cpu_set_t.
     unsafe {
-        if libc::sched_setaffinity(tid as libc::pid_t, std::mem::size_of::<libc::cpu_set_t>(), set) != 0 {
+        if libc::sched_setaffinity(
+            tid as libc::pid_t,
+            std::mem::size_of::<libc::cpu_set_t>(),
+            set,
+        ) != 0
+        {
             return Err(std::io::Error::last_os_error());
         }
     }
@@ -185,7 +199,9 @@ pub fn allowed_cpus() -> usize {
 /// with an empty result (nothing usable is an error).
 pub fn clamp_to_allowed(cpus: &[usize]) -> (Vec<usize>, Vec<usize>) {
     match thread_affinity(0) {
-        Ok(set) => clamp_to_set(cpus, |c| c < libc::CPU_SETSIZE as usize && unsafe { libc::CPU_ISSET(c, &set) }),
+        Ok(set) => clamp_to_set(cpus, |c| {
+            c < libc::CPU_SETSIZE as usize && unsafe { libc::CPU_ISSET(c, &set) }
+        }),
         Err(_) => (cpus.to_vec(), Vec::new()), // unknown mask: keep the list as given
     }
 }
@@ -216,7 +232,12 @@ fn futex_wait(addr: &AtomicU32, expected: u32) {
 fn futex_wake_all(addr: &AtomicU32) {
     // SAFETY: FUTEX_WAKE on a valid aligned u32.
     unsafe {
-        libc::syscall(libc::SYS_futex, addr.as_ptr(), libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG, i32::MAX);
+        libc::syscall(
+            libc::SYS_futex,
+            addr.as_ptr(),
+            libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG,
+            i32::MAX,
+        );
     }
 }
 
@@ -225,7 +246,10 @@ pub fn parse_cpu_list(s: &str) -> Result<Vec<usize>, String> {
     let mut out = Vec::new();
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         if let Some((a, b)) = part.split_once('-') {
-            let (a, b): (usize, usize) = (a.parse().map_err(|_| format!("bad cpu {a}"))?, b.parse().map_err(|_| format!("bad cpu {b}"))?);
+            let (a, b): (usize, usize) = (
+                a.parse().map_err(|_| format!("bad cpu {a}"))?,
+                b.parse().map_err(|_| format!("bad cpu {b}"))?,
+            );
             if b < a {
                 return Err(format!("bad range {part}"));
             }
@@ -270,13 +294,15 @@ impl Pool {
         for (i, &cpu) in cpus.iter().enumerate().skip(1) {
             let sh = shared.clone();
             let tids2 = tids.clone();
-            let spawned = std::thread::Builder::new().name(format!("oxe-w{i}")).spawn(move || {
-                if let Err(e) = pin_current_thread(cpu) {
-                    eprintln!("oxe-w{i}: pin to cpu {cpu} failed: {e}");
-                }
-                tids2[i].store(gettid(), Release);
-                worker_loop(&sh, i);
-            });
+            let spawned = std::thread::Builder::new()
+                .name(format!("oxe-w{i}"))
+                .spawn(move || {
+                    if let Err(e) = pin_current_thread(cpu) {
+                        eprintln!("oxe-w{i}: pin to cpu {cpu} failed: {e}");
+                    }
+                    tids2[i].store(gettid(), Release);
+                    worker_loop(&sh, i);
+                });
             match spawned {
                 Ok(h) => handles.push(h),
                 Err(e) => {
@@ -294,7 +320,13 @@ impl Pool {
         while tids.iter().any(|t| t.load(Acquire) == 0) {
             std::thread::yield_now();
         }
-        Ok(Pool { shared, handles, cpus: cpus.to_vec(), tids, caller_mask })
+        Ok(Pool {
+            shared,
+            handles,
+            cpus: cpus.to_vec(),
+            tids,
+            caller_mask,
+        })
     }
 
     /// F-VAE1: run `f` on the creating thread with that thread's mask from before [`Pool::new`] (all its CPUs),
@@ -302,8 +334,15 @@ impl Pool {
     /// load) inherit the full mask instead of the one-CPU mask of worker 0. Call from the thread that created the
     /// pool, between jobs; without a saved mask `f` runs pinned as before.
     pub fn unpinned<R>(&self, f: impl FnOnce() -> R) -> R {
-        assert_eq!(gettid(), self.tids[0].load(Relaxed), "Pool::unpinned: not the pool's creating thread");
-        let restored = self.caller_mask.as_ref().is_some_and(|m| set_thread_affinity(0, m).is_ok());
+        assert_eq!(
+            gettid(),
+            self.tids[0].load(Relaxed),
+            "Pool::unpinned: not the pool's creating thread"
+        );
+        let restored = self
+            .caller_mask
+            .as_ref()
+            .is_some_and(|m| set_thread_affinity(0, m).is_ok());
         let r = f();
         if restored {
             if let Err(e) = pin_current_thread(self.cpus[0]) {
@@ -336,7 +375,11 @@ impl Pool {
     /// this frame would free it under them (F15).
     pub fn run<F: Fn(&mut Ctx) + Sync>(&self, job: F) {
         let sh = &*self.shared;
-        if sh.busy.compare_exchange(false, true, Acquire, Relaxed).is_err() {
+        if sh
+            .busy
+            .compare_exchange(false, true, Acquire, Relaxed)
+            .is_err()
+        {
             panic!("sched::Pool::run called while another run is in progress (concurrent or re-entrant use of one pool)");
         }
         let ptr: *const (dyn Fn(&mut Ctx) + Sync + '_) = &job;
@@ -365,7 +408,9 @@ pub struct AbortOnUnwind;
 
 impl Drop for AbortOnUnwind {
     fn drop(&mut self) {
-        eprintln!("sched: a job panicked inside Pool::run; aborting (workers may still use the job)");
+        eprintln!(
+            "sched: a job panicked inside Pool::run; aborting (workers may still use the job)"
+        );
         std::process::abort();
     }
 }
@@ -374,7 +419,12 @@ fn run_job(sh: &Shared, tid: usize, sense: &mut u32) {
     let guard = AbortOnUnwind;
     // SAFETY: published before the epoch bump that this thread observed (or by itself).
     let job = unsafe { (*sh.job.get()).expect("job published") };
-    let mut ctx = Ctx { tid, nthreads: sh.n, barrier: &sh.barrier, sense };
+    let mut ctx = Ctx {
+        tid,
+        nthreads: sh.n,
+        barrier: &sh.barrier,
+        sense,
+    };
     // SAFETY: the job pointer is valid until the join barrier completes (see Pool::run).
     unsafe { (*job)(&mut ctx) };
     ctx.barrier(); // join
@@ -498,62 +548,70 @@ impl DetachedPool {
         let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<()>>();
         let dd = d.clone();
         let cs = cpus.to_vec();
-        let leader = std::thread::Builder::new().name("oxe-leader".into()).spawn(move || {
-            let pool = match Pool::new(&cs, dd.spin) {
-                Ok(p) => {
-                    let _ = tx.send(Ok(()));
-                    p
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(e));
-                    return;
-                }
-            };
-            loop {
-                // wait for a job: spin, then sleep on the condvar
-                let start = Instant::now();
-                let mut spins = 0u32;
-                loop {
-                    let s = dd.state.load(Acquire);
-                    if s == 1 || s == 3 {
-                        break;
+        let leader = std::thread::Builder::new()
+            .name("oxe-leader".into())
+            .spawn(move || {
+                let pool = match Pool::new(&cs, dd.spin) {
+                    Ok(p) => {
+                        let _ = tx.send(Ok(()));
+                        p
                     }
-                    spin_loop();
-                    spins = spins.wrapping_add(1);
-                    if spins % 1024 == 0 && start.elapsed() >= dd.spin {
-                        let g = dd.lock.lock().unwrap();
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                };
+                loop {
+                    // wait for a job: spin, then sleep on the condvar
+                    let start = Instant::now();
+                    let mut spins = 0u32;
+                    loop {
                         let s = dd.state.load(Acquire);
-                        if s != 1 && s != 3 {
-                            let _g = dd.cv.wait_timeout(g, Duration::from_millis(50)).unwrap();
+                        if s == 1 || s == 3 {
+                            break;
+                        }
+                        spin_loop();
+                        spins = spins.wrapping_add(1);
+                        if spins % 1024 == 0 && start.elapsed() >= dd.spin {
+                            let g = dd.lock.lock().unwrap();
+                            let s = dd.state.load(Acquire);
+                            if s != 1 && s != 3 {
+                                let _g = dd.cv.wait_timeout(g, Duration::from_millis(50)).unwrap();
+                            }
                         }
                     }
-                }
-                if dd.state.load(Acquire) == 3 {
-                    return;
-                }
-                // SAFETY: published before state = 1 (see Detached).
-                let job = unsafe { (*dd.job.get()).expect("job") };
-                struct J(JobPtr);
-                // SAFETY: the pointee is Sync (dyn Fn + Sync) and outlives the run.
-                unsafe impl Sync for J {}
-                impl J {
-                    fn call(&self, c: &mut Ctx) {
-                        // SAFETY: the submitter keeps the job alive until state == 2.
-                        unsafe { (*self.0)(c) }
+                    if dd.state.load(Acquire) == 3 {
+                        return;
                     }
+                    // SAFETY: published before state = 1 (see Detached).
+                    let job = unsafe { (*dd.job.get()).expect("job") };
+                    struct J(JobPtr);
+                    // SAFETY: the pointee is Sync (dyn Fn + Sync) and outlives the run.
+                    unsafe impl Sync for J {}
+                    impl J {
+                        fn call(&self, c: &mut Ctx) {
+                            // SAFETY: the submitter keeps the job alive until state == 2.
+                            unsafe { (*self.0)(c) }
+                        }
+                    }
+                    let j = J(job);
+                    pool.run(|c| j.call(c));
+                    dd.episodes.store(pool.barrier_episodes(), Relaxed);
+                    {
+                        let _g = dd.lock.lock().unwrap();
+                        dd.state.store(2, Release);
+                    }
+                    dd.cv.notify_all();
                 }
-                let j = J(job);
-                pool.run(|c| j.call(c));
-                dd.episodes.store(pool.barrier_episodes(), Relaxed);
-                {
-                    let _g = dd.lock.lock().unwrap();
-                    dd.state.store(2, Release);
-                }
-                dd.cv.notify_all();
-            }
-        })?;
-        rx.recv().map_err(|_| std::io::Error::other("leader thread died"))??;
-        Ok(DetachedPool { inner: d, leader: Some(leader), n: cpus.len(), cpus: cpus.to_vec() })
+            })?;
+        rx.recv()
+            .map_err(|_| std::io::Error::other("leader thread died"))??;
+        Ok(DetachedPool {
+            inner: d,
+            leader: Some(leader),
+            n: cpus.len(),
+            cpus: cpus.to_vec(),
+        })
     }
     pub fn cpus(&self) -> &[usize] {
         &self.cpus
@@ -645,6 +703,6 @@ pub fn lpt_assign(costs: &[u64], bins: usize, out: &mut [u8], loads: &mut [u64])
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tests_cli;
-#[cfg(test)]
 mod tests_affinity;
+#[cfg(test)]
+mod tests_cli;

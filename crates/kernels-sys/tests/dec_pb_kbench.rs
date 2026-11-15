@@ -29,7 +29,10 @@ const VPAD: usize = 32;
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) as u32
     }
     fn f(&mut self) -> f32 {
@@ -84,20 +87,46 @@ fn timed(nt: usize, reps: usize, f: &(dyn Fn(usize, usize) + Sync)) -> f64 {
 }
 
 fn env_list(k: &str, d: &str) -> Vec<usize> {
-    std::env::var(k).unwrap_or(d.into()).split(',').filter(|x| !x.trim().is_empty()).map(|x| x.trim().parse().unwrap()).collect()
+    std::env::var(k)
+        .unwrap_or(d.into())
+        .split(',')
+        .filter(|x| !x.trim().is_empty())
+        .map(|x| x.trim().parse().unwrap())
+        .collect()
 }
 
 fn env_num(k: &str, d: usize) -> usize {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(d)
 }
 
 /// One full sweep; returns (positions, lanes, pb, legacy us, pb us) rows of step [3].
-fn sweep(n_ctx: usize, layers: usize, positions: &[usize], threads: &[usize], pbs: &[usize], reps: usize, n_att: usize) -> Vec<(usize, usize, usize, f64, f64)> {
+fn sweep(
+    n_ctx: usize,
+    layers: usize,
+    positions: &[usize],
+    threads: &[usize],
+    pbs: &[usize],
+    reps: usize,
+    n_att: usize,
+) -> Vec<(usize, usize, usize, f64, f64)> {
     let vs = n_ctx + VPAD;
     let mut r = Lcg(0xdec9b);
     // per layer copy: K [kvh][n_ctx][HD], V^T [kvh][HD][vs]
-    let ks: Vec<Vec<u16>> = (0..layers).map(|_| f16s(&(0..NKV * n_ctx * HD).map(|_| r.f() * 0.5).collect::<Vec<_>>())).collect();
-    let vts: Vec<Vec<u16>> = (0..layers).map(|_| f16s(&(0..NKV * HD * vs).map(|_| r.f() * 0.5).collect::<Vec<_>>())).collect();
+    let ks: Vec<Vec<u16>> = (0..layers)
+        .map(|_| {
+            f16s(
+                &(0..NKV * n_ctx * HD)
+                    .map(|_| r.f() * 0.5)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let vts: Vec<Vec<u16>> = (0..layers)
+        .map(|_| f16s(&(0..NKV * HD * vs).map(|_| r.f() * 0.5).collect::<Vec<_>>()))
+        .collect();
     let kp: Vec<P> = ks.iter().map(|k| P(k.as_ptr() as _)).collect();
     let vp: Vec<P> = vts.iter().map(|v| P(v.as_ptr() as _)).collect();
     let mut rows_out = Vec::new();
@@ -106,7 +135,18 @@ fn sweep(n_ctx: usize, layers: usize, positions: &[usize], threads: &[usize], pb
     );
     println!(
         "{:>6} {:>5} {:>3} {:>7} | {:>9} {:>9} {:>9} | {:>8} {:>8} | {:>8} {:>8} | {:>7}",
-        "pos", "lanes", "thr", "pv", "sc us", "pv us", "layer us", "ms/tok", "attnGB/s", "V GB/s", "Lpv GB/s", "pv x"
+        "pos",
+        "lanes",
+        "thr",
+        "pv",
+        "sc us",
+        "pv us",
+        "layer us",
+        "ms/tok",
+        "attnGB/s",
+        "V GB/s",
+        "Lpv GB/s",
+        "pv x"
     );
     for &pos_n in positions {
         if pos_n > n_ctx {
@@ -129,12 +169,27 @@ fn sweep(n_ctx: usize, layers: usize, positions: &[usize], threads: &[usize], pb
             }
             let p16 = f16s(&pv);
             drop(pv);
-            let nf: Vec<i32> = (0..ncol).map(|c| padded_n_kv(pos0 + c / GROUP, n_ctx) as i32).collect();
-            let (qp, pp, nfp) = (P(q.as_ptr() as _), P(p16.as_ptr() as _), P(nf.as_ptr() as _));
+            let nf: Vec<i32> = (0..ncol)
+                .map(|c| padded_n_kv(pos0 + c / GROUP, n_ctx) as i32)
+                .collect();
+            let (qp, pp, nfp) = (
+                P(q.as_ptr() as _),
+                P(p16.as_ptr() as _),
+                P(nf.as_ptr() as _),
+            );
             for &nt in threads {
-                let scores: Vec<std::sync::Mutex<Vec<f32>>> = (0..nt).map(|_| std::sync::Mutex::new(vec![0f32; NKV * ncol * n_ctx])).collect();
-                let outs: Vec<std::sync::Mutex<(Vec<f32>, Vec<u128>, Vec<u32>)>> =
-                    (0..nt).map(|_| std::sync::Mutex::new((vec![0f32; 32 * ncol], vec![0u128; 32 * ncol * 4], vec![0u32; NKV * HD * ncol]))).collect();
+                let scores: Vec<std::sync::Mutex<Vec<f32>>> = (0..nt)
+                    .map(|_| std::sync::Mutex::new(vec![0f32; NKV * ncol * n_ctx]))
+                    .collect();
+                let outs: Vec<std::sync::Mutex<(Vec<f32>, Vec<u128>, Vec<u32>)>> = (0..nt)
+                    .map(|_| {
+                        std::sync::Mutex::new((
+                            vec![0f32; 32 * ncol],
+                            vec![0u128; 32 * ncol * 4],
+                            vec![0u32; NKV * HD * ncol],
+                        ))
+                    })
+                    .collect();
                 let sc = |t: usize, rep: usize| {
                     let (a0, b0) = (rows * NKV * t / nt, rows * NKV * (t + 1) / nt);
                     let kb = kp[rep % layers];
@@ -178,26 +233,58 @@ fn sweep(n_ctx: usize, layers: usize, positions: &[usize], threads: &[usize], pb
                         let mut d = a;
                         while d < b {
                             let de = (d + 32).min(b);
-                            let (x, y) = ((vb.p() as *const u16).wrapping_add((kvh * HD + d) * vs), (pp.p() as *const u16).wrapping_add(kvh * ncol * n_ctx));
+                            let (x, y) = (
+                                (vb.p() as *const u16).wrapping_add((kvh * HD + d) * vs),
+                                (pp.p() as *const u16).wrapping_add(kvh * ncol * n_ctx),
+                            );
                             // SAFETY: V^T rows within the copy (n32 <= n_ctx < vs, finite beyond pos);
                             // probabilities column-strided n_ctx; scratch is this thread's.
                             unsafe {
                                 if pb == 0 {
-                                    ffi::oxe_dot_f16_tile(n32 as i32, x, vs as i64, (de - d) as i32, y, n_ctx as i64, ncol as i32, tmp.as_mut_ptr(), ncol as i64, 1, nfp.p() as *const i32);
+                                    ffi::oxe_dot_f16_tile(
+                                        n32 as i32,
+                                        x,
+                                        vs as i64,
+                                        (de - d) as i32,
+                                        y,
+                                        n_ctx as i64,
+                                        ncol as i32,
+                                        tmp.as_mut_ptr(),
+                                        ncol as i64,
+                                        1,
+                                        nfp.p() as *const i32,
+                                    );
                                 } else {
-                                    ffi::oxe_dot_f16_tile_pb(n32 as i32, x, vs as i64, (de - d) as i32, y, n_ctx as i64, ncol as i32, tmp.as_mut_ptr(), ncol as i64, 1, nfp.p() as *const i32, pb as i32, st.as_mut_ptr() as *mut u8);
+                                    ffi::oxe_dot_f16_tile_pb(
+                                        n32 as i32,
+                                        x,
+                                        vs as i64,
+                                        (de - d) as i32,
+                                        y,
+                                        n_ctx as i64,
+                                        ncol as i32,
+                                        tmp.as_mut_ptr(),
+                                        ncol as i64,
+                                        1,
+                                        nfp.p() as *const i32,
+                                        pb as i32,
+                                        st.as_mut_ptr() as *mut u8,
+                                    );
                                 }
                             }
                             for dd in d..de {
                                 for c in 0..ncol {
-                                    bits[((kvh * HD + dd) * ncol) + c] = tmp[(dd - d) * ncol + c].to_bits();
+                                    bits[((kvh * HD + dd) * ncol) + c] =
+                                        tmp[(dd - d) * ncol + c].to_bits();
                                 }
                             }
                             d = de;
                         }
                     }
                 };
-                let snapshot = || -> Vec<Vec<u32>> { outs.iter().map(|o| o.lock().unwrap().2.clone()).collect() };
+                let snapshot = || -> Vec<Vec<u32>> {
+                    outs.iter().map(|o| o.lock().unwrap().2.clone()).collect()
+                };
                 let t_sc = timed(nt, reps, &sc);
                 let t_leg = timed(nt, reps, &|t, rep| pvk(t, rep, 0));
                 let want = snapshot();
@@ -224,7 +311,10 @@ fn sweep(n_ctx: usize, layers: usize, positions: &[usize], threads: &[usize], pb
                 line("legacy", t_leg);
                 for &pb in pbs {
                     let t_pb = timed(nt, reps, &|t, rep| pvk(t, rep, pb));
-                    assert!(snapshot() == want, "pb {pb} differs from legacy at pos {pos_n} lanes {lanes} threads {nt}");
+                    assert!(
+                        snapshot() == want,
+                        "pb {pb} differs from legacy at pos {pos_n} lanes {lanes} threads {nt}"
+                    );
                     line(&format!("pb{pb}"), t_pb);
                     rows_out.push((pos_n, lanes, pb, t_leg * 1e6, t_pb * 1e6));
                 }

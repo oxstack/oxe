@@ -10,8 +10,25 @@ pub type Tid = usize;
 
 #[derive(Clone, Debug)]
 pub enum Mixer {
-    Recurrent { qkv: Tid, z: Tid, beta: Tid, alpha: Tid, conv1d: Tid, a: Tid, dt_bias: Tid, norm: Tid, out: Tid },
-    Attention { q: Tid, k: Tid, v: Tid, q_norm: Tid, k_norm: Tid, out: Tid },
+    Recurrent {
+        qkv: Tid,
+        z: Tid,
+        beta: Tid,
+        alpha: Tid,
+        conv1d: Tid,
+        a: Tid,
+        dt_bias: Tid,
+        norm: Tid,
+        out: Tid,
+    },
+    Attention {
+        q: Tid,
+        k: Tid,
+        v: Tid,
+        q_norm: Tid,
+        k_norm: Tid,
+        out: Tid,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -31,11 +48,36 @@ pub struct LayerTensors {
 
 impl LayerTensors {
     pub fn all(&self) -> Vec<Tid> {
-        let mut v = vec![self.attn_norm, self.post_norm, self.router, self.shexp_gate, self.gate_exps, self.up_exps, self.down_exps];
+        let mut v = vec![
+            self.attn_norm,
+            self.post_norm,
+            self.router,
+            self.shexp_gate,
+            self.gate_exps,
+            self.up_exps,
+            self.down_exps,
+        ];
         v.extend([self.gate_shexp, self.up_shexp, self.down_shexp]);
         match self.mixer {
-            Mixer::Recurrent { qkv, z, beta, alpha, conv1d, a, dt_bias, norm, out } => v.extend([qkv, z, beta, alpha, conv1d, a, dt_bias, norm, out]),
-            Mixer::Attention { q, k, v: vv, q_norm, k_norm, out } => v.extend([q, k, vv, q_norm, k_norm, out]),
+            Mixer::Recurrent {
+                qkv,
+                z,
+                beta,
+                alpha,
+                conv1d,
+                a,
+                dt_bias,
+                norm,
+                out,
+            } => v.extend([qkv, z, beta, alpha, conv1d, a, dt_bias, norm, out]),
+            Mixer::Attention {
+                q,
+                k,
+                v: vv,
+                q_norm,
+                k_norm,
+                out,
+            } => v.extend([q, k, vv, q_norm, k_norm, out]),
         }
         v
     }
@@ -90,19 +132,40 @@ impl PhaseKind {
 pub enum Work {
     /// Delta-net mixing for key heads `kheads` and the value heads that use them
     /// (llama.cpp maps value head v to key head v % n_kheads).
-    RecMix { kheads: Range<usize> },
-    RecOut { rows: Range<usize> },
+    RecMix {
+        kheads: Range<usize>,
+    },
+    RecOut {
+        rows: Range<usize>,
+    },
     /// q (+gate) rows of `qheads`; raw K rows `k_rows`; V rows `v_rows` (written to the cache).
-    AttnQkv { qheads: Range<usize>, k_rows: Range<usize>, v_rows: Range<usize> },
-    AttnCore { qheads: Range<usize> },
-    AttnOut { rows: Range<usize> },
+    AttnQkv {
+        qheads: Range<usize>,
+        k_rows: Range<usize>,
+        v_rows: Range<usize>,
+    },
+    AttnCore {
+        qheads: Range<usize>,
+    },
+    AttnOut {
+        rows: Range<usize>,
+    },
     /// Router logits rows, and the shared expert's gate/up rows (its h slice).
-    MoeRouter { rows: Range<usize>, sh_rows: Range<usize> },
+    MoeRouter {
+        rows: Range<usize>,
+        sh_rows: Range<usize>,
+    },
     /// Routed units (slot j, 256-row block b) flattened as j * blocks + b.
-    MoeGateUp { units: Range<usize> },
+    MoeGateUp {
+        units: Range<usize>,
+    },
     /// Output rows of every expert's down projection, combined in llama.cpp order.
-    MoeDown { rows: Range<usize> },
-    Head { rows: Range<usize> },
+    MoeDown {
+        rows: Range<usize>,
+    },
+    Head {
+        rows: Range<usize>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -154,21 +217,34 @@ impl Budget {
 
 /// Split `n` items into `parts` contiguous ranges, sizes differing by at most one.
 pub fn split(n: usize, parts: usize) -> Vec<Range<usize>> {
-    (0..parts).map(|i| (n * i / parts)..(n * (i + 1) / parts)).collect()
+    (0..parts)
+        .map(|i| (n * i / parts)..(n * (i + 1) / parts))
+        .collect()
 }
 
 /// Split `rows` (a multiple of 8) into per-thread ranges of whole 8-row groups.
 pub fn split_rows(rows: usize, parts: usize) -> Vec<Range<usize>> {
     assert!(rows % 8 == 0, "rows {rows} not a multiple of 8");
-    split(rows / 8, parts).into_iter().map(|r| r.start * 8..r.end * 8).collect()
+    split(rows / 8, parts)
+        .into_iter()
+        .map(|r| r.start * 8..r.end * 8)
+        .collect()
 }
 
 fn find(h: &Header, name: &str) -> Result<Tid, String> {
-    h.tensors.iter().position(|t| t.name == name).ok_or(format!("missing tensor {name}"))
+    h.tensors
+        .iter()
+        .position(|t| t.name == name)
+        .ok_or(format!("missing tensor {name}"))
 }
 
 impl Plan {
-    pub fn build(h: &Header, desc: &ModelDesc, nthreads: usize, n_kv: usize) -> Result<Plan, String> {
+    pub fn build(
+        h: &Header,
+        desc: &ModelDesc,
+        nthreads: usize,
+        n_kv: usize,
+    ) -> Result<Plan, String> {
         assert!(nthreads >= 1 && n_kv >= 1);
         let mut layers = Vec::new();
         for (il, kind) in desc.layers.iter().enumerate() {
@@ -218,35 +294,109 @@ impl Plan {
         for (il, kind) in d.layers.iter().enumerate() {
             match kind {
                 LayerKind::Recurrent => {
-                    let work = kh_split.iter().map(|kh| Work::RecMix { kheads: kh.clone() }).collect();
-                    phases.push(Phase { kind: PhaseKind::RecMix, layer: il, barrier_after: true, work });
-                    let work = split_rows(d.n_embd, n).into_iter().map(|rows| Work::RecOut { rows }).collect();
-                    phases.push(Phase { kind: PhaseKind::RecOut, layer: il, barrier_after: true, work });
+                    let work = kh_split
+                        .iter()
+                        .map(|kh| Work::RecMix { kheads: kh.clone() })
+                        .collect();
+                    phases.push(Phase {
+                        kind: PhaseKind::RecMix,
+                        layer: il,
+                        barrier_after: true,
+                        work,
+                    });
+                    let work = split_rows(d.n_embd, n)
+                        .into_iter()
+                        .map(|rows| Work::RecOut { rows })
+                        .collect();
+                    phases.push(Phase {
+                        kind: PhaseKind::RecOut,
+                        layer: il,
+                        barrier_after: true,
+                        work,
+                    });
                 }
                 LayerKind::Attention => {
                     let kv_rows = d.n_head_kv * d.head_dim;
                     let (ks, vs) = (split_rows(kv_rows, n), split_rows(kv_rows, n));
                     let work = (0..n)
-                        .map(|t| Work::AttnQkv { qheads: qh_split[t].clone(), k_rows: ks[t].clone(), v_rows: vs[n - 1 - t].clone() })
+                        .map(|t| Work::AttnQkv {
+                            qheads: qh_split[t].clone(),
+                            k_rows: ks[t].clone(),
+                            v_rows: vs[n - 1 - t].clone(),
+                        })
                         .collect();
-                    phases.push(Phase { kind: PhaseKind::AttnQkv, layer: il, barrier_after: true, work });
-                    let work = qh_split.iter().map(|q| Work::AttnCore { qheads: q.clone() }).collect();
-                    phases.push(Phase { kind: PhaseKind::AttnCore, layer: il, barrier_after: true, work });
-                    let work = split_rows(d.n_embd, n).into_iter().map(|rows| Work::AttnOut { rows }).collect();
-                    phases.push(Phase { kind: PhaseKind::AttnOut, layer: il, barrier_after: true, work });
+                    phases.push(Phase {
+                        kind: PhaseKind::AttnQkv,
+                        layer: il,
+                        barrier_after: true,
+                        work,
+                    });
+                    let work = qh_split
+                        .iter()
+                        .map(|q| Work::AttnCore { qheads: q.clone() })
+                        .collect();
+                    phases.push(Phase {
+                        kind: PhaseKind::AttnCore,
+                        layer: il,
+                        barrier_after: true,
+                        work,
+                    });
+                    let work = split_rows(d.n_embd, n)
+                        .into_iter()
+                        .map(|rows| Work::AttnOut { rows })
+                        .collect();
+                    phases.push(Phase {
+                        kind: PhaseKind::AttnOut,
+                        layer: il,
+                        barrier_after: true,
+                        work,
+                    });
                 }
             }
             let sh = split_rows(d.ff_shexp, n);
-            let work = split(d.n_expert, n).into_iter().zip(sh).map(|(rows, sh_rows)| Work::MoeRouter { rows, sh_rows }).collect();
-            phases.push(Phase { kind: PhaseKind::MoeRouter, layer: il, barrier_after: true, work });
-            let work = unit_split.iter().map(|u| Work::MoeGateUp { units: u.clone() }).collect();
-            phases.push(Phase { kind: PhaseKind::MoeGateUp, layer: il, barrier_after: true, work });
-            let work = split_rows(d.n_embd, n).into_iter().map(|rows| Work::MoeDown { rows }).collect();
-            phases.push(Phase { kind: PhaseKind::MoeDown, layer: il, barrier_after: true, work });
+            let work = split(d.n_expert, n)
+                .into_iter()
+                .zip(sh)
+                .map(|(rows, sh_rows)| Work::MoeRouter { rows, sh_rows })
+                .collect();
+            phases.push(Phase {
+                kind: PhaseKind::MoeRouter,
+                layer: il,
+                barrier_after: true,
+                work,
+            });
+            let work = unit_split
+                .iter()
+                .map(|u| Work::MoeGateUp { units: u.clone() })
+                .collect();
+            phases.push(Phase {
+                kind: PhaseKind::MoeGateUp,
+                layer: il,
+                barrier_after: true,
+                work,
+            });
+            let work = split_rows(d.n_embd, n)
+                .into_iter()
+                .map(|rows| Work::MoeDown { rows })
+                .collect();
+            phases.push(Phase {
+                kind: PhaseKind::MoeDown,
+                layer: il,
+                barrier_after: true,
+                work,
+            });
         }
-        let work = split_rows(d.n_vocab, n).into_iter().map(|rows| Work::Head { rows }).collect();
+        let work = split_rows(d.n_vocab, n)
+            .into_iter()
+            .map(|rows| Work::Head { rows })
+            .collect();
         // no barrier_after: the pool's join barrier ends the token
-        phases.push(Phase { kind: PhaseKind::Head, layer: d.n_layer, barrier_after: false, work });
+        phases.push(Phase {
+            kind: PhaseKind::Head,
+            layer: d.n_layer,
+            barrier_after: false,
+            work,
+        });
         Ok(Plan {
             desc: desc.clone(),
             nthreads,
@@ -280,7 +430,9 @@ impl Plan {
             let t = &tensors[id];
             match role(t, d) {
                 Role::Dense => b.weights_dense += t.bytes(),
-                Role::Expert => b.weights_expert += t.bytes() * d.n_expert_used as u64 / d.n_expert as u64,
+                Role::Expert => {
+                    b.weights_expert += t.bytes() * d.n_expert_used as u64 / d.n_expert as u64
+                }
                 Role::Embedding => b.embedding_row += t.bytes() / t.shape[1],
                 Role::Mtp => {}
             }
@@ -311,34 +463,117 @@ impl Plan {
         for p in &self.phases {
             let name = format!("{} layer {}", p.kind.name(), p.layer);
             if p.work.len() != self.nthreads {
-                return Err(format!("{name}: {} slices for {} threads", p.work.len(), self.nthreads));
+                return Err(format!(
+                    "{name}: {} slices for {} threads",
+                    p.work.len(),
+                    self.nthreads
+                ));
             }
-            let ranges = |f: &dyn Fn(&Work) -> Range<usize>| p.work.iter().map(f).collect::<Vec<_>>();
+            let ranges =
+                |f: &dyn Fn(&Work) -> Range<usize>| p.work.iter().map(f).collect::<Vec<_>>();
             match p.kind {
-                PhaseKind::RecMix => {
-                    exact(&name, &ranges(&|w| match w { Work::RecMix { kheads } => kheads.clone(), _ => 0..0 }), d.ssm_n_kheads)?
-                }
-                PhaseKind::RecOut => exact(&name, &ranges(&|w| match w { Work::RecOut { rows } => rows.clone(), _ => 0..0 }), d.n_embd)?,
+                PhaseKind::RecMix => exact(
+                    &name,
+                    &ranges(&|w| match w {
+                        Work::RecMix { kheads } => kheads.clone(),
+                        _ => 0..0,
+                    }),
+                    d.ssm_n_kheads,
+                )?,
+                PhaseKind::RecOut => exact(
+                    &name,
+                    &ranges(&|w| match w {
+                        Work::RecOut { rows } => rows.clone(),
+                        _ => 0..0,
+                    }),
+                    d.n_embd,
+                )?,
                 PhaseKind::AttnQkv => {
-                    exact(&name, &ranges(&|w| match w { Work::AttnQkv { qheads, .. } => qheads.clone(), _ => 0..0 }), d.n_head)?;
+                    exact(
+                        &name,
+                        &ranges(&|w| match w {
+                            Work::AttnQkv { qheads, .. } => qheads.clone(),
+                            _ => 0..0,
+                        }),
+                        d.n_head,
+                    )?;
                     let kv = d.n_head_kv * d.head_dim;
-                    exact(&name, &ranges(&|w| match w { Work::AttnQkv { k_rows, .. } => k_rows.clone(), _ => 0..0 }), kv)?;
-                    let mut v = ranges(&|w| match w { Work::AttnQkv { v_rows, .. } => v_rows.clone(), _ => 0..0 });
+                    exact(
+                        &name,
+                        &ranges(&|w| match w {
+                            Work::AttnQkv { k_rows, .. } => k_rows.clone(),
+                            _ => 0..0,
+                        }),
+                        kv,
+                    )?;
+                    let mut v = ranges(&|w| match w {
+                        Work::AttnQkv { v_rows, .. } => v_rows.clone(),
+                        _ => 0..0,
+                    });
                     v.sort_by_key(|r| (r.start, r.end));
                     exact(&name, &v, kv)?;
                 }
-                PhaseKind::AttnCore => exact(&name, &ranges(&|w| match w { Work::AttnCore { qheads } => qheads.clone(), _ => 0..0 }), d.n_head)?,
-                PhaseKind::AttnOut => exact(&name, &ranges(&|w| match w { Work::AttnOut { rows } => rows.clone(), _ => 0..0 }), d.n_embd)?,
+                PhaseKind::AttnCore => exact(
+                    &name,
+                    &ranges(&|w| match w {
+                        Work::AttnCore { qheads } => qheads.clone(),
+                        _ => 0..0,
+                    }),
+                    d.n_head,
+                )?,
+                PhaseKind::AttnOut => exact(
+                    &name,
+                    &ranges(&|w| match w {
+                        Work::AttnOut { rows } => rows.clone(),
+                        _ => 0..0,
+                    }),
+                    d.n_embd,
+                )?,
                 PhaseKind::MoeRouter => {
-                    exact(&name, &ranges(&|w| match w { Work::MoeRouter { rows, .. } => rows.clone(), _ => 0..0 }), d.n_expert)?;
-                    exact(&name, &ranges(&|w| match w { Work::MoeRouter { sh_rows, .. } => sh_rows.clone(), _ => 0..0 }), d.ff_shexp)?;
+                    exact(
+                        &name,
+                        &ranges(&|w| match w {
+                            Work::MoeRouter { rows, .. } => rows.clone(),
+                            _ => 0..0,
+                        }),
+                        d.n_expert,
+                    )?;
+                    exact(
+                        &name,
+                        &ranges(&|w| match w {
+                            Work::MoeRouter { sh_rows, .. } => sh_rows.clone(),
+                            _ => 0..0,
+                        }),
+                        d.ff_shexp,
+                    )?;
                 }
                 PhaseKind::MoeGateUp => {
                     let units = d.n_expert_used * (d.ff_exp / kernels_sys::QK_K);
-                    exact(&name, &ranges(&|w| match w { Work::MoeGateUp { units } => units.clone(), _ => 0..0 }), units)?
+                    exact(
+                        &name,
+                        &ranges(&|w| match w {
+                            Work::MoeGateUp { units } => units.clone(),
+                            _ => 0..0,
+                        }),
+                        units,
+                    )?
                 }
-                PhaseKind::MoeDown => exact(&name, &ranges(&|w| match w { Work::MoeDown { rows } => rows.clone(), _ => 0..0 }), d.n_embd)?,
-                PhaseKind::Head => exact(&name, &ranges(&|w| match w { Work::Head { rows } => rows.clone(), _ => 0..0 }), d.n_vocab)?,
+                PhaseKind::MoeDown => exact(
+                    &name,
+                    &ranges(&|w| match w {
+                        Work::MoeDown { rows } => rows.clone(),
+                        _ => 0..0,
+                    }),
+                    d.n_embd,
+                )?,
+                PhaseKind::Head => exact(
+                    &name,
+                    &ranges(&|w| match w {
+                        Work::Head { rows } => rows.clone(),
+                        _ => 0..0,
+                    }),
+                    d.n_vocab,
+                )?,
             }
         }
         Ok(())
@@ -359,8 +594,18 @@ impl Plan {
             self.n_kv
         );
         let _ = rec;
-        for p in self.phases.iter().filter(|p| p.layer <= 3 || p.kind == PhaseKind::Head) {
-            s += &format!("  L{:<2} {:<13} {} {:?}\n", p.layer, p.kind.name(), if p.barrier_after { "B" } else { "-" }, p.work[0]);
+        for p in self
+            .phases
+            .iter()
+            .filter(|p| p.layer <= 3 || p.kind == PhaseKind::Head)
+        {
+            s += &format!(
+                "  L{:<2} {:<13} {} {:?}\n",
+                p.layer,
+                p.kind.name(),
+                if p.barrier_after { "B" } else { "-" },
+                p.work[0]
+            );
         }
         s
     }

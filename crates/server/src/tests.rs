@@ -15,12 +15,22 @@ use std::sync::Arc;
 pub(crate) fn model() -> Option<PathBuf> {
     let p = PathBuf::from(std::env::var("HOME").unwrap_or_default())
         .join(".local/share/ai-stack/models/llm/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf");
-    assert!(p.exists(), "model test run without its model: {} is missing", p.display());
+    assert!(
+        p.exists(),
+        "model test run without its model: {} is missing",
+        p.display()
+    );
     Some(p)
 }
 
 pub(crate) fn greedy() -> GenParams {
-    GenParams { sampling: SamplingParams { temperature: 0.0, ..Default::default() }, ..Default::default() }
+    GenParams {
+        sampling: SamplingParams {
+            temperature: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 fn state(scripts: &[&str], n_ctx: usize) -> Option<Arc<State<StubEngine>>> {
@@ -29,9 +39,20 @@ fn state(scripts: &[&str], n_ctx: usize) -> Option<Arc<State<StubEngine>>> {
 
 /// As [`state`] with `max_snapshots` checkpoints, a prefill `ubatch` (checkpoint grid) and
 /// an optional prefix-store directory.
-fn state_with(scripts: &[&str], n_ctx: usize, max_snapshots: usize, ubatch: usize, store: Option<&std::path::Path>) -> Option<Arc<State<StubEngine>>> {
+fn state_with(
+    scripts: &[&str],
+    n_ctx: usize,
+    max_snapshots: usize,
+    ubatch: usize,
+    store: Option<&std::path::Path>,
+) -> Option<Arc<State<StubEngine>>> {
     let tok = tokenizer::Tokenizer::from_gguf(model()?).unwrap();
-    let mut eng = StubEngine::new(n_ctx, tok.n_vocab(), tok.eos.unwrap(), tok.encode("default reply", false, true));
+    let mut eng = StubEngine::new(
+        n_ctx,
+        tok.n_vocab(),
+        tok.eos.unwrap(),
+        tok.encode("default reply", false, true),
+    );
     for s in scripts {
         eng.scripts.push_back(tok.encode(s, false, true));
     }
@@ -40,7 +61,11 @@ fn state_with(scripts: &[&str], n_ctx: usize, max_snapshots: usize, ubatch: usiz
     let cfg = Config {
         model_name: "ornith".into(),
         model_path: "/m.gguf".into(),
-        chat_opts: chat::ServerChatOptions { chat_template_kwargs: kw, enable_thinking: false, ..Default::default() },
+        chat_opts: chat::ServerChatOptions {
+            chat_template_kwargs: kw,
+            enable_thinking: false,
+            ..Default::default()
+        },
         fingerprint: "oxe-test".into(),
         slots: true,
         idle_reprefill: false,
@@ -49,14 +74,27 @@ fn state_with(scripts: &[&str], n_ctx: usize, max_snapshots: usize, ubatch: usiz
     let mut w = Worker::new(eng, max_snapshots);
     w.ubatch = ubatch;
     if let Some(dir) = store {
-        let id = crate::prefix_store::identity(std::path::Path::new("/m.gguf"), &w.engine.state_id().unwrap(), ubatch);
+        let id = crate::prefix_store::identity(
+            std::path::Path::new("/m.gguf"),
+            &w.engine.state_id().unwrap(),
+            ubatch,
+        );
         w.store = Some(crate::prefix_store::PrefixStore::open(dir, id, 1 << 30, 64).unwrap());
     }
     Some(Arc::new(State::new(cfg, tok, w).unwrap()))
 }
 
-async fn call(st: &Arc<State<StubEngine>>, method: &str, path: &str, body: Json) -> (u16, Json, Vec<String>) {
-    let b = if body.is_null() { Vec::new() } else { serde_json::to_vec(&body).unwrap() };
+async fn call(
+    st: &Arc<State<StubEngine>>,
+    method: &str,
+    path: &str,
+    body: Json,
+) -> (u16, Json, Vec<String>) {
+    let b = if body.is_null() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(&body).unwrap()
+    };
     match handle(st.clone(), method, path, "", &b).await {
         Reply::Json(c, j) => (c, j, vec![]),
         Reply::Stream(mut rx) => {
@@ -84,24 +122,69 @@ const CALL: &str = "I'll look.\n\n<tool_call>\n<function=read_file>\n<parameter=
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 async fn chat_nonstream_shape() {
-    let Some(st) = state(&["Hello there!"], 4096) else { return };
-    let (c, j, _) = call(&st, "POST", "/v1/chat/completions", json!({"messages":[{"role":"user","content":"hi"}],"temperature":0})).await;
+    let Some(st) = state(&["Hello there!"], 4096) else {
+        return;
+    };
+    let (c, j, _) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        json!({"messages":[{"role":"user","content":"hi"}],"temperature":0}),
+    )
+    .await;
     assert_eq!(c, 200);
-    assert_eq!(keys(&j), ["choices", "created", "model", "system_fingerprint", "object", "usage", "id", "timings"]);
+    assert_eq!(
+        keys(&j),
+        [
+            "choices",
+            "created",
+            "model",
+            "system_fingerprint",
+            "object",
+            "usage",
+            "id",
+            "timings"
+        ]
+    );
     assert_eq!(j["object"], "chat.completion");
-    assert!(j["id"].as_str().unwrap().starts_with("chatcmpl-") && j["id"].as_str().unwrap().len() == 41);
+    assert!(
+        j["id"].as_str().unwrap().starts_with("chatcmpl-") && j["id"].as_str().unwrap().len() == 41
+    );
     let ch = &j["choices"][0];
     assert_eq!(keys(ch), ["finish_reason", "index", "message"]);
     assert_eq!(ch["finish_reason"], "stop");
-    assert_eq!(ch["message"], json!({"role":"assistant","content":"Hello there!"}));
+    assert_eq!(
+        ch["message"],
+        json!({"role":"assistant","content":"Hello there!"})
+    );
     let u = &j["usage"];
-    assert_eq!(keys(u), ["completion_tokens", "prompt_tokens", "total_tokens", "prompt_tokens_details"]);
+    assert_eq!(
+        keys(u),
+        [
+            "completion_tokens",
+            "prompt_tokens",
+            "total_tokens",
+            "prompt_tokens_details"
+        ]
+    );
     // 3 text tokens + EOS (llama-server counts the EOG token too)
     assert_eq!(u["completion_tokens"], 4);
     assert_eq!(
         keys(&j["timings"]),
         // + the CACHE-PERFECT resume source (design sec. 7, P2b)
-        ["cache_n", "prompt_n", "prompt_ms", "prompt_per_token_ms", "prompt_per_second", "predicted_n", "predicted_ms", "predicted_per_token_ms", "predicted_per_second", "resume_src", "resume_ms"]
+        [
+            "cache_n",
+            "prompt_n",
+            "prompt_ms",
+            "prompt_per_token_ms",
+            "prompt_per_second",
+            "predicted_n",
+            "predicted_ms",
+            "predicted_per_token_ms",
+            "predicted_per_second",
+            "resume_src",
+            "resume_ms"
+        ]
     );
     assert_eq!(j["timings"]["resume_src"], "cold");
 }
@@ -110,7 +193,10 @@ fn parse_frames(frames: &[String]) -> (Vec<Json>, bool) {
     let mut out = Vec::new();
     let mut done = false;
     for f in frames {
-        assert!(f.starts_with("data: ") && f.ends_with("\n\n"), "bad SSE frame {f:?}");
+        assert!(
+            f.starts_with("data: ") && f.ends_with("\n\n"),
+            "bad SSE frame {f:?}"
+        );
         let body = &f[6..f.len() - 2];
         assert!(!body.contains('\n'), "frame must be one line");
         if body == "[DONE]" {
@@ -126,16 +212,37 @@ fn parse_frames(frames: &[String]) -> (Vec<Json>, bool) {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 async fn chat_stream_tool_call_roundtrip() {
-    let Some(st) = state(&[CALL, "The file says hi."], 8192) else { return };
+    let Some(st) = state(&[CALL, "The file says hi."], 8192) else {
+        return;
+    };
     let tools: Json = serde_json::from_str(TOOLS).unwrap();
     let msgs = json!([{"role":"system","content":"sys"},{"role":"user","content":"read it"}]);
-    let (_, _, frames) = call(&st, "POST", "/v1/chat/completions", json!({"messages": msgs, "tools": tools, "stream": true, "temperature": 0})).await;
+    let (_, _, frames) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        json!({"messages": msgs, "tools": tools, "stream": true, "temperature": 0}),
+    )
+    .await;
     let (chunks, done) = parse_frames(&frames);
     assert!(done);
     // first chunk is the role delta
-    assert_eq!(chunks[0]["choices"][0]["delta"], json!({"role":"assistant","content":null}));
+    assert_eq!(
+        chunks[0]["choices"][0]["delta"],
+        json!({"role":"assistant","content":null})
+    );
     for c in &chunks {
-        assert_eq!(keys(c)[..6], ["choices", "created", "id", "model", "system_fingerprint", "object"]);
+        assert_eq!(
+            keys(c)[..6],
+            [
+                "choices",
+                "created",
+                "id",
+                "model",
+                "system_fingerprint",
+                "object"
+            ]
+        );
         assert_eq!(c["object"], "chat.completion.chunk");
         assert_eq!(c["id"], chunks[0]["id"]);
     }
@@ -183,23 +290,39 @@ async fn chat_stream_tool_call_roundtrip() {
         {"role":"assistant","content":content,"tool_calls":[{"id":id,"type":"function","function":{"name":name,"arguments":args}}]},
         {"role":"tool","tool_call_id":id,"content":"hi"}
     ]);
-    let (c, j, _) = call(&st, "POST", "/v1/chat/completions", json!({"messages": msgs2, "tools": tools, "temperature": 0})).await;
+    let (c, j, _) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        json!({"messages": msgs2, "tools": tools, "temperature": 0}),
+    )
+    .await;
     assert_eq!(c, 200, "{j}");
     assert_eq!(j["choices"][0]["message"]["content"], "The file says hi.");
     assert_eq!(j["choices"][0]["finish_reason"], "stop");
     // the re-rendered prompt shares the system+tools+user+reply prefix with turn 1
-    let cached = j["usage"]["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap();
+    let cached = j["usage"]["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap();
     let prompt = j["usage"]["prompt_tokens"].as_u64().unwrap();
-    assert!(cached > 250 && cached < prompt, "cached {cached} of {prompt}");
+    assert!(
+        cached > 250 && cached < prompt,
+        "cached {cached} of {prompt}"
+    );
     let n_eval = st.worker.lock().unwrap().engine.n_evaluated - n_eval_before;
     // only the uncached prompt tail + the decoded tokens (the final EOS is not decoded)
-    assert_eq!(n_eval as u64, prompt - cached + j["usage"]["completion_tokens"].as_u64().unwrap() - 1);
+    assert_eq!(
+        n_eval as u64,
+        prompt - cached + j["usage"]["completion_tokens"].as_u64().unwrap() - 1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 async fn stream_usage_chunk_and_done() {
-    let Some(st) = state(&["ok"], 4096) else { return };
+    let Some(st) = state(&["ok"], 4096) else {
+        return;
+    };
     let (_, _, frames) = call(
         &st,
         "POST",
@@ -213,22 +336,45 @@ async fn stream_usage_chunk_and_done() {
     assert_eq!(chunks[n - 2]["choices"][0]["finish_reason"], "stop");
     assert!(chunks[n - 2].get("timings").is_none());
     assert_eq!(chunks[n - 1]["choices"], json!([]));
-    assert_eq!(keys(&chunks[n - 1]), ["choices", "created", "id", "model", "system_fingerprint", "object", "usage", "timings"]);
+    assert_eq!(
+        keys(&chunks[n - 1]),
+        [
+            "choices",
+            "created",
+            "id",
+            "model",
+            "system_fingerprint",
+            "object",
+            "usage",
+            "timings"
+        ]
+    );
     assert_eq!(chunks[n - 1]["usage"]["completion_tokens"], 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 async fn completion_n_probs_and_limits() {
-    let Some(st) = state(&["A B C D", "A", "x"], 4096) else { return };
-    let (c, j, _) = call(&st, "POST", "/completion", json!({"prompt":"Answer: ","n_predict":1,"n_probs":3,"temperature":0})).await;
+    let Some(st) = state(&["A B C D", "A", "x"], 4096) else {
+        return;
+    };
+    let (c, j, _) = call(
+        &st,
+        "POST",
+        "/completion",
+        json!({"prompt":"Answer: ","n_predict":1,"n_probs":3,"temperature":0}),
+    )
+    .await;
     assert_eq!(c, 200);
     assert_eq!(j["stop_type"], "limit");
     assert_eq!(j["tokens_predicted"], 1);
     assert_eq!(j["content"], "A");
     let cp = &j["completion_probabilities"];
     assert_eq!(cp.as_array().unwrap().len(), 1);
-    assert_eq!(keys(&cp[0]), ["id", "token", "bytes", "logprob", "top_logprobs"]);
+    assert_eq!(
+        keys(&cp[0]),
+        ["id", "token", "bytes", "logprob", "top_logprobs"]
+    );
     assert_eq!(cp[0]["token"], "A");
     let top = cp[0]["top_logprobs"].as_array().unwrap();
     assert_eq!(top.len(), 3);
@@ -246,30 +392,67 @@ async fn completion_n_probs_and_limits() {
     assert_eq!(c, 400);
     assert_eq!(j["error"]["type"], "exceed_context_size_error");
     // streamed native completion: partial objects, final has stop:true, no [DONE]
-    let (_, _, frames) = call(&st, "POST", "/completion", json!({"prompt":"q","stream":true,"temperature":0})).await;
+    let (_, _, frames) = call(
+        &st,
+        "POST",
+        "/completion",
+        json!({"prompt":"q","stream":true,"temperature":0}),
+    )
+    .await;
     let (chunks, done) = parse_frames(&frames);
     assert!(!done);
     assert_eq!(chunks.last().unwrap()["stop"], true);
-    assert!(chunks[..chunks.len() - 1].iter().all(|c| c["stop"] == false));
+    assert!(chunks[..chunks.len() - 1]
+        .iter()
+        .all(|c| c["stop"] == false));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 async fn helper_endpoints() {
     let Some(st) = state(&[], 4096) else { return };
-    assert_eq!(call(&st, "GET", "/health", Json::Null).await.1, json!({"status":"ok"}));
+    assert_eq!(
+        call(&st, "GET", "/health", Json::Null).await.1,
+        json!({"status":"ok"})
+    );
     let (_, m, _) = call(&st, "GET", "/v1/models", Json::Null).await;
     assert_eq!(m["data"][0]["id"], "ornith");
     assert_eq!(m["object"], "list");
-    let (_, t, _) = call(&st, "POST", "/tokenize", json!({"content":"<|im_start|>hi"})).await;
-    let ids: Vec<u32> = t["tokens"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as u32).collect();
+    let (_, t, _) = call(
+        &st,
+        "POST",
+        "/tokenize",
+        json!({"content":"<|im_start|>hi"}),
+    )
+    .await;
+    let ids: Vec<u32> = t["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_u64().unwrap() as u32)
+        .collect();
     assert_eq!(ids[0], 248045);
     let (_, d, _) = call(&st, "POST", "/detokenize", json!({"tokens": ids})).await;
     assert_eq!(d["content"], "<|im_start|>hi");
-    let (_, p, _) = call(&st, "POST", "/tokenize", json!({"content":"hi","with_pieces":true})).await;
+    let (_, p, _) = call(
+        &st,
+        "POST",
+        "/tokenize",
+        json!({"content":"hi","with_pieces":true}),
+    )
+    .await;
     assert_eq!(p["tokens"][0]["piece"], "hi");
-    let (_, a, _) = call(&st, "POST", "/apply-template", json!({"messages":[{"role":"user","content":"hi"}]})).await;
-    assert_eq!(a["prompt"], "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
+    let (_, a, _) = call(
+        &st,
+        "POST",
+        "/apply-template",
+        json!({"messages":[{"role":"user","content":"hi"}]}),
+    )
+    .await;
+    assert_eq!(
+        a["prompt"],
+        "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    );
     let (c, e, _) = call(&st, "GET", "/nope", Json::Null).await;
     assert_eq!(c, 404);
     assert_eq!(e["error"]["type"], "not_found_error");
@@ -286,7 +469,10 @@ fn stop_strings_and_limits() {
     let Some(p) = model() else { return };
     let tok = tokenizer::Tokenizer::from_gguf(p).unwrap();
     let script = tok.encode("one two STOP three", false, true);
-    let mut w = Worker::new(StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script), 4);
+    let mut w = Worker::new(
+        StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script),
+        4,
+    );
     let prompt = tok.encode("hello", false, true);
     let mut gp = greedy();
     gp.stop = vec!["STOP".into()];
@@ -317,24 +503,25 @@ fn prefix_cache_logic() {
     // tokens are arbitrary ids; the stub validates every restore against its KV
     let mut eng = StubEngine::new(1000, 100, 99, vec![]);
     let mut c: PrefixCache<<StubEngine as Engine>::Snapshot> = PrefixCache::new(3);
-    let run = |eng: &mut StubEngine, c: &mut PrefixCache<_>, prompt: &[u32], gen: &[u32]| -> usize {
-        let n = c.prepare(eng, prompt, true).unwrap();
-        let rest = &prompt[n..];
-        if rest.len() > 1 {
-            eng.prefill(&rest[..rest.len() - 1]).unwrap();
-            c.appended(&rest[..rest.len() - 1]);
+    let run =
+        |eng: &mut StubEngine, c: &mut PrefixCache<_>, prompt: &[u32], gen: &[u32]| -> usize {
+            let n = c.prepare(eng, prompt, true).unwrap();
+            let rest = &prompt[n..];
+            if rest.len() > 1 {
+                eng.prefill(&rest[..rest.len() - 1]).unwrap();
+                c.appended(&rest[..rest.len() - 1]);
+                c.checkpoint(eng).unwrap();
+            }
+            eng.prefill(&rest[rest.len() - 1..]).unwrap();
+            c.appended(&rest[rest.len() - 1..]);
+            for &g in gen {
+                eng.decode(g).unwrap();
+                c.appended(&[g]);
+            }
             c.checkpoint(eng).unwrap();
-        }
-        eng.prefill(&rest[rest.len() - 1..]).unwrap();
-        c.appended(&rest[rest.len() - 1..]);
-        for &g in gen {
-            eng.decode(g).unwrap();
-            c.appended(&[g]);
-        }
-        c.checkpoint(eng).unwrap();
-        assert_eq!(eng.tokens, c.tokens);
-        n
-    };
+            assert_eq!(eng.tokens, c.tokens);
+            n
+        };
     let p1: Vec<u32> = (1..=50).collect();
     assert_eq!(run(&mut eng, &mut c, &p1, &[60, 61, 62]), 0);
     // identical prompt: restore the checkpoint at len-1
@@ -344,7 +531,10 @@ fn prefix_cache_logic() {
     p2.extend([60, 70, 71, 72]);
     let restores = eng.calls.iter().filter(|c| c.0 == "restore").count();
     assert_eq!(run(&mut eng, &mut c, &p2, &[80]), 51);
-    assert_eq!(eng.calls.iter().filter(|c| c.0 == "restore").count(), restores);
+    assert_eq!(
+        eng.calls.iter().filter(|c| c.0 == "restore").count(),
+        restores
+    );
     // diverges after the first reply token: deepest checkpoint inside the common prefix
     // (end of the second generation = p1 + [60])
     let mut p3 = p1.clone();
@@ -436,7 +626,11 @@ impl Engine for SpecStub {
 fn speculative_loop_matches_plain() {
     let Some(p) = model() else { return };
     let tok = tokenizer::Tokenizer::from_gguf(p).unwrap();
-    let script = tok.encode("one two three four five six STOP seven eight nine", false, true);
+    let script = tok.encode(
+        "one two three four five six STOP seven eight nine",
+        false,
+        true,
+    );
     let prompt = tok.encode("hello", false, true);
     let cases: Vec<GenParams> = {
         let mut v = vec![greedy()];
@@ -449,36 +643,86 @@ fn speculative_loop_matches_plain() {
         v
     };
     for gp in &cases {
-        let mut plain = Worker::new(StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone()), 4);
+        let mut plain = Worker::new(
+            StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone()),
+            4,
+        );
         let want = plain.generate(&tok, &prompt, gp, &mut |_| true).unwrap();
         for depth in 1..=3 {
             let inner = StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone());
-            let mut w = Worker::new(SpecStub { inner, depth, before: None, appended: vec![], rewinds: 0, calls: 0, at: vec![] }, 4);
+            let mut w = Worker::new(
+                SpecStub {
+                    inner,
+                    depth,
+                    before: None,
+                    appended: vec![],
+                    rewinds: 0,
+                    calls: 0,
+                    at: vec![],
+                },
+                4,
+            );
             let got = w.generate(&tok, &prompt, gp, &mut |_| true).unwrap();
             assert_eq!(got.tokens, want.tokens, "depth {depth}");
             assert_eq!(got.text, want.text);
             assert_eq!(got.stop, want.stop);
-            assert_eq!(w.engine.n_past(), plain.engine.n_past(), "depth {depth}: state length after the request");
-            assert_eq!(w.engine.inner.tokens, plain.engine.tokens, "depth {depth}: state tokens");
+            assert_eq!(
+                w.engine.n_past(),
+                plain.engine.n_past(),
+                "depth {depth}: state length after the request"
+            );
+            assert_eq!(
+                w.engine.inner.tokens, plain.engine.tokens,
+                "depth {depth}: state tokens"
+            );
         }
     }
     // a client that disconnects mid-stream: the state must equal the plain run's (no
     // speculative tokens left behind), and the next request must match too
     for cancel_at in 1..6 {
-        let mut plain = Worker::new(StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone()), 4);
+        let mut plain = Worker::new(
+            StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone()),
+            4,
+        );
         let mut k = 0;
-        let r = plain.generate(&tok, &prompt, &greedy(), &mut |_| { k += 1; k < cancel_at });
+        let r = plain.generate(&tok, &prompt, &greedy(), &mut |_| {
+            k += 1;
+            k < cancel_at
+        });
         assert!(matches!(r, Err(crate::generate::GenError::Cancelled)));
-        let want = plain.generate(&tok, &prompt, &greedy(), &mut |_| true).unwrap();
+        let want = plain
+            .generate(&tok, &prompt, &greedy(), &mut |_| true)
+            .unwrap();
         for depth in 1..=3 {
             let inner = StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone());
-            let mut w = Worker::new(SpecStub { inner, depth, before: None, appended: vec![], rewinds: 0, calls: 0, at: vec![] }, 4);
+            let mut w = Worker::new(
+                SpecStub {
+                    inner,
+                    depth,
+                    before: None,
+                    appended: vec![],
+                    rewinds: 0,
+                    calls: 0,
+                    at: vec![],
+                },
+                4,
+            );
             let mut k = 0;
-            let r = w.generate(&tok, &prompt, &greedy(), &mut |_| { k += 1; k < cancel_at });
+            let r = w.generate(&tok, &prompt, &greedy(), &mut |_| {
+                k += 1;
+                k < cancel_at
+            });
             assert!(matches!(r, Err(crate::generate::GenError::Cancelled)));
-            assert_eq!(w.engine.n_past(), w.cache.tokens.len(), "cancel at {cancel_at}, depth {depth}: engine ahead of the cache");
+            assert_eq!(
+                w.engine.n_past(),
+                w.cache.tokens.len(),
+                "cancel at {cancel_at}, depth {depth}: engine ahead of the cache"
+            );
             let got = w.generate(&tok, &prompt, &greedy(), &mut |_| true).unwrap();
-            assert_eq!(got.tokens, want.tokens, "cancel at {cancel_at}, depth {depth}: next request differs");
+            assert_eq!(
+                got.tokens, want.tokens,
+                "cancel at {cancel_at}, depth {depth}: next request differs"
+            );
         }
     }
 }
@@ -491,10 +735,20 @@ fn speculative_loop_matches_plain() {
 fn greedy_fast_path_streams_identically() {
     let Some(p) = model() else { return };
     let tok = tokenizer::Tokenizer::from_gguf(p).unwrap();
-    let script = tok.encode("one two three \u{e9}t\u{e9} \u{65e5}\u{672c} four five six STOP seven eight nine", false, true);
+    let script = tok.encode(
+        "one two three \u{e9}t\u{e9} \u{65e5}\u{672c} four five six STOP seven eight nine",
+        false,
+        true,
+    );
     let prompt = tok.encode("hello", false, true);
     type Stream = Vec<(String, u32, usize)>;
-    fn run<E: Engine>(w: &mut Worker<E>, tok: &tokenizer::Tokenizer, prompt: &[u32], gp: &GenParams, cancel_at: usize) -> (Stream, Option<(Vec<u32>, String, StopType)>) {
+    fn run<E: Engine>(
+        w: &mut Worker<E>,
+        tok: &tokenizer::Tokenizer,
+        prompt: &[u32],
+        gp: &GenParams,
+        cancel_at: usize,
+    ) -> (Stream, Option<(Vec<u32>, String, StopType)>) {
         let mut st = Vec::new();
         let r = w.generate(tok, prompt, gp, &mut |pt| {
             st.push((pt.text.clone(), pt.token, pt.n_decoded));
@@ -518,15 +772,38 @@ fn greedy_fast_path_streams_identically() {
                 let mk = || StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone());
                 let (a, b, sa, sb) = if depth == 0 {
                     let (mut wa, mut wb) = (Worker::new(mk(), 4), Worker::new(mk(), 4));
-                    let (x, y) = (run(&mut wa, &tok, &prompt, gp, cancel_at), run(&mut wb, &tok, &prompt, &slow, cancel_at));
+                    let (x, y) = (
+                        run(&mut wa, &tok, &prompt, gp, cancel_at),
+                        run(&mut wb, &tok, &prompt, &slow, cancel_at),
+                    );
                     (x, y, wa.engine.tokens.clone(), wb.engine.tokens.clone())
                 } else {
-                    let sp = |inner| SpecStub { inner, depth, before: None, appended: vec![], rewinds: 0, calls: 0, at: vec![] };
+                    let sp = |inner| SpecStub {
+                        inner,
+                        depth,
+                        before: None,
+                        appended: vec![],
+                        rewinds: 0,
+                        calls: 0,
+                        at: vec![],
+                    };
                     let (mut wa, mut wb) = (Worker::new(sp(mk()), 4), Worker::new(sp(mk()), 4));
-                    let (x, y) = (run(&mut wa, &tok, &prompt, gp, cancel_at), run(&mut wb, &tok, &prompt, &slow, cancel_at));
-                    (x, y, wa.engine.inner.tokens.clone(), wb.engine.inner.tokens.clone())
+                    let (x, y) = (
+                        run(&mut wa, &tok, &prompt, gp, cancel_at),
+                        run(&mut wb, &tok, &prompt, &slow, cancel_at),
+                    );
+                    (
+                        x,
+                        y,
+                        wa.engine.inner.tokens.clone(),
+                        wb.engine.inner.tokens.clone(),
+                    )
                 };
-                assert_eq!(a, b, "depth {depth}, cancel at {cancel_at}, stop {:?}", gp.stop);
+                assert_eq!(
+                    a, b,
+                    "depth {depth}, cancel at {cancel_at}, stop {:?}",
+                    gp.stop
+                );
                 assert_eq!(sa, sb, "state, depth {depth}, cancel at {cancel_at}");
                 n += 1;
             }
@@ -547,7 +824,9 @@ fn mtp_multiturn_greedy_is_identical_to_plain() {
     let Ok(model) = std::env::var("OXE_TEST_MODEL") else {
         panic!("OXE_TEST_MODEL not set: this ignored test needs a real model");
     };
-    let cpus = sched::parse_cpu_list(&std::env::var("OXE_TEST_CPUS").unwrap_or_else(|_| "0-7".into())).unwrap();
+    let cpus =
+        sched::parse_cpu_list(&std::env::var("OXE_TEST_CPUS").unwrap_or_else(|_| "0-7".into()))
+            .unwrap();
     let tok = tokenizer::Tokenizer::from_gguf(&model).unwrap();
     let sys = "You are a coding agent. Use tools. Be concise.\n".repeat(30);
     let turns = [
@@ -558,7 +837,15 @@ fn mtp_multiturn_greedy_is_identical_to_plain() {
         "\nUser: List three edge cases worth testing, as a numbered list.\nAssistant:",
     ];
     let run = |depth: usize| -> Vec<Vec<u32>> {
-        let eng = crate::oxe_engine::OxeEngine::open_full(std::path::Path::new(&model), &cpus, None, model::engine::UBATCH, 4096, depth).unwrap();
+        let eng = crate::oxe_engine::OxeEngine::open_full(
+            std::path::Path::new(&model),
+            &cpus,
+            None,
+            model::engine::UBATCH,
+            4096,
+            depth,
+        )
+        .unwrap();
         let mut w = Worker::new(eng, 4);
         let mut prompt: Vec<u32> = tok.encode(&sys, true, true);
         let mut out = Vec::new();
@@ -570,7 +857,15 @@ fn mtp_multiturn_greedy_is_identical_to_plain() {
                 gp.stop = vec!["\n\n".into(), "User:".into()];
             }
             let r = w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
-            eprintln!("depth {depth} turn {i}: {} tokens, stop {:?}, cache {} prompt {}, draft {}/{}", r.tokens.len(), r.stop, r.timings.cache_n, r.timings.prompt_n, r.timings.draft_n, r.timings.draft_n_accepted);
+            eprintln!(
+                "depth {depth} turn {i}: {} tokens, stop {:?}, cache {} prompt {}, draft {}/{}",
+                r.tokens.len(),
+                r.stop,
+                r.timings.cache_n,
+                r.timings.prompt_n,
+                r.timings.draft_n,
+                r.timings.draft_n_accepted
+            );
             // the next prompt re-sends the reply, as an agent does
             prompt.extend(tok.encode(&r.text, false, true));
             out.push(r.tokens);
@@ -584,21 +879,29 @@ fn mtp_multiturn_greedy_is_identical_to_plain() {
     }
 }
 
-
 // ------------------------------------------------------------------ agentic prefix reuse
 
 #[test]
 fn sha256_vectors() {
     use crate::prefix_store::sha256_hex;
-    assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-    assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert_eq!(
+        sha256_hex(b""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
     let long = vec![b'a'; 1000];
     let mut h = crate::prefix_store::Sha256::default();
     for c in long.chunks(7) {
         h.update(c);
     }
     assert_eq!(h.hex(), sha256_hex(&long));
-    assert_eq!(sha256_hex(&long), "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
+    assert_eq!(
+        sha256_hex(&long),
+        "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3"
+    );
 }
 
 fn agent_tools() -> Json {
@@ -608,7 +911,13 @@ fn agent_tools() -> Json {
 }
 
 fn agent_system() -> String {
-    format!("You are a coding agent, an interactive CLI coding assistant.\n{}", (0..12).map(|i| format!("Rule {i}: keep changes minimal and test them.")).collect::<Vec<_>>().join("\n"))
+    format!(
+        "You are a coding agent, an interactive CLI coding assistant.\n{}",
+        (0..12)
+            .map(|i| format!("Rule {i}: keep changes minimal and test them."))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 const READ_CALL: &str = "<tool_call>\n<function=read>\n<parameter=filePath>\n/p/calc.py\n</parameter>\n</function>\n</tool_call>";
@@ -622,7 +931,15 @@ const READ_CALL: &str = "<tool_call>\n<function=read>\n<parameter=filePath>\n/p/
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 async fn multiturn_tool_calls_reuse_cache() {
-    let Some(st) = state_with(&[READ_CALL, "Fixed: add() now returns a + b.", "Run pytest."], 16384, 4, 16, None) else { return };
+    let Some(st) = state_with(
+        &[READ_CALL, "Fixed: add() now returns a + b.", "Run pytest."],
+        16384,
+        4,
+        16,
+        None,
+    ) else {
+        return;
+    };
     // the query-checkpoint mechanism, measured without ECHO (with it turn 3 keeps every token)
     st.echo.lock().unwrap().cfg.enabled = false;
     let tools = agent_tools();
@@ -637,26 +954,66 @@ async fn multiturn_tool_calls_reuse_cache() {
     msgs.as_array_mut().unwrap().extend([j1["choices"][0]["message"].clone(), json!({"role":"tool","tool_call_id":tc["id"],"content":"def add(a, b):\n    return a - b\n"})]);
     let (_, j2, _) = call(&st, "POST", "/v1/chat/completions", req(&msgs)).await;
     let c2 = j2["timings"]["cache_n"].as_u64().unwrap() as usize;
-    assert!(c2 >= n1, "turn 2 reuses prompt + reply: cache_n {c2}, first prompt {n1}");
+    assert!(
+        c2 >= n1,
+        "turn 2 reuses prompt + reply: cache_n {c2}, first prompt {n1}"
+    );
     // turn 3: answer + a new user message re-renders turn 1's assistant message without <think>
-    msgs.as_array_mut().unwrap().extend([j2["choices"][0]["message"].clone(), json!({"role":"user","content":"Now write a test."})]);
-    let (_, tk, _) = call(&st, "POST", "/apply-template", json!({"messages": msgs, "tools": tools})).await;
+    msgs.as_array_mut().unwrap().extend([
+        j2["choices"][0]["message"].clone(),
+        json!({"role":"user","content":"Now write a test."}),
+    ]);
+    let (_, tk, _) = call(
+        &st,
+        "POST",
+        "/apply-template",
+        json!({"messages": msgs, "tools": tools}),
+    )
+    .await;
     let p3 = st.tok.encode(tk["prompt"].as_str().unwrap(), true, true);
-    let (_, tk1, _) = call(&st, "POST", "/apply-template", json!({"messages": [msgs[0].clone(), msgs[1].clone()], "tools": tools})).await;
+    let (_, tk1, _) = call(
+        &st,
+        "POST",
+        "/apply-template",
+        json!({"messages": [msgs[0].clone(), msgs[1].clone()], "tools": tools}),
+    )
+    .await;
     let p1 = st.tok.encode(tk1["prompt"].as_str().unwrap(), true, true);
     assert_eq!(p1.len(), n1);
     let div = p1.iter().zip(&p3).take_while(|(a, b)| a == b).count();
-    assert_eq!(div, n1 - 4, "first difference: the generation prompt's empty think block");
-    assert_eq!(String::from_utf8_lossy(&st.tok.piece(p1[div], true)), "<think>");
+    assert_eq!(
+        div,
+        n1 - 4,
+        "first difference: the generation prompt's empty think block"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&st.tok.piece(p1[div], true)),
+        "<think>"
+    );
     let (_, j3, _) = call(&st, "POST", "/v1/chat/completions", req(&msgs)).await;
     let c3 = j3["timings"]["cache_n"].as_u64().unwrap() as usize;
-    assert!(c3 > 0 && c3 <= div && div - c3 < 16, "turn 3 resumes from the query checkpoint: cache_n {c3}, divergence {div}");
+    assert!(
+        c3 > 0 && c3 <= div && div - c3 < 16,
+        "turn 3 resumes from the query checkpoint: cache_n {c3}, divergence {div}"
+    );
     assert_eq!(j3["choices"][0]["message"]["content"], "Run pytest.");
     // a new conversation with the same system prompt and tools resumes from the anchor
-    let first_user = p1.windows(2).position(|w| w == &st.user_delim.as_ref().unwrap()[..]).unwrap();
-    let (_, j4, _) = call(&st, "POST", "/v1/chat/completions", req(&json!([msgs[0].clone(), {"role":"user","content":"Something else."}]))).await;
+    let first_user = p1
+        .windows(2)
+        .position(|w| w == &st.user_delim.as_ref().unwrap()[..])
+        .unwrap();
+    let (_, j4, _) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        req(&json!([msgs[0].clone(), {"role":"user","content":"Something else."}])),
+    )
+    .await;
     let c4 = j4["timings"]["cache_n"].as_u64().unwrap() as usize;
-    assert!(c4 > 0 && c4 <= first_user && first_user - c4 < 16, "new conversation: cache_n {c4}, first user message at {first_user}");
+    assert!(
+        c4 > 0 && c4 <= first_user && first_user - c4 < 16,
+        "new conversation: cache_n {c4}, first user message at {first_user}"
+    );
 }
 
 pub(crate) fn scratch_dir(name: &str) -> PathBuf {
@@ -674,39 +1031,90 @@ async fn prefix_store_survives_restart() {
     let tools = agent_tools();
     let sys = agent_system();
     let body = json!({"messages": [{"role":"system","content":sys},{"role":"user","content":"Hello."}], "tools": tools, "temperature": 0});
-    let Some(st) = state_with(&["Hi there."], 16384, 4, 16, Some(&dir)) else { return };
+    let Some(st) = state_with(&["Hi there."], 16384, 4, 16, Some(&dir)) else {
+        return;
+    };
     let (_, a, _) = call(&st, "POST", "/v1/chat/completions", body.clone()).await;
     assert_eq!(a["timings"]["cache_n"], 0);
     st.worker.lock().unwrap().store.as_mut().unwrap().flush();
-    let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|d| d.file_name().to_string_lossy().into_owned()).collect();
+    let files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|d| d.file_name().to_string_lossy().into_owned())
+        .collect();
     assert_eq!(files.len(), 1, "{files:?}");
     assert!(files[0].ends_with(".bin") && files[0].len() == 68);
     // the stored tokens end before the first user message
-    let prompt = st.tok.encode(&{
-        let (_, tk, _) = call(&st, "POST", "/apply-template", body.clone()).await;
-        tk["prompt"].as_str().unwrap().to_string()
-    }, true, true);
-    let first_user = prompt.windows(2).position(|w| w == &st.user_delim.as_ref().unwrap()[..]).unwrap();
+    let prompt = st.tok.encode(
+        &{
+            let (_, tk, _) = call(&st, "POST", "/apply-template", body.clone()).await;
+            tk["prompt"].as_str().unwrap().to_string()
+        },
+        true,
+        true,
+    );
+    let first_user = prompt
+        .windows(2)
+        .position(|w| w == &st.user_delim.as_ref().unwrap()[..])
+        .unwrap();
     drop(st);
     // restart: same directory, fresh engine
-    let Some(st2) = state_with(&["Hi there."], 16384, 4, 16, Some(&dir)) else { return };
-    assert_eq!(st2.worker.lock().unwrap().store.as_ref().unwrap().n_entries(), 1);
+    let Some(st2) = state_with(&["Hi there."], 16384, 4, 16, Some(&dir)) else {
+        return;
+    };
+    assert_eq!(
+        st2.worker
+            .lock()
+            .unwrap()
+            .store
+            .as_ref()
+            .unwrap()
+            .n_entries(),
+        1
+    );
     let (_, b, _) = call(&st2, "POST", "/v1/chat/completions", body.clone()).await;
     let c = b["timings"]["cache_n"].as_u64().unwrap() as usize;
     assert_eq!(c, first_user / 16 * 16, "restored the anchor");
     assert_eq!(b["choices"][0]["message"], a["choices"][0]["message"]);
     let w = st2.worker.lock().unwrap();
-    assert!(w.engine.calls.iter().any(|c| c.0 == "load" && c.2 == first_user / 16 * 16));
+    assert!(w
+        .engine
+        .calls
+        .iter()
+        .any(|c| c.0 == "load" && c.2 == first_user / 16 * 16));
     assert_eq!(w.engine.tokens[..c], prompt[..c]);
     drop(w);
     // a different identity (other ubatch) does not see the entry
-    let Some(st3) = state_with(&[], 16384, 4, 32, Some(&dir)) else { return };
-    assert_eq!(st3.worker.lock().unwrap().store.as_ref().unwrap().n_entries(), 0);
+    let Some(st3) = state_with(&[], 16384, 4, 32, Some(&dir)) else {
+        return;
+    };
+    assert_eq!(
+        st3.worker
+            .lock()
+            .unwrap()
+            .store
+            .as_ref()
+            .unwrap()
+            .n_entries(),
+        0
+    );
     // a corrupt entry is discarded, and the request still succeeds from scratch
-    let f = std::fs::read_dir(&dir).unwrap().flatten().next().unwrap().path();
+    let f = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .next()
+        .unwrap()
+        .path();
     let len = std::fs::metadata(&f).unwrap().len();
-    std::fs::OpenOptions::new().write(true).open(&f).unwrap().set_len(len - 3).unwrap();
-    let Some(st4) = state_with(&["Hi there."], 16384, 4, 16, Some(&dir)) else { return };
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&f)
+        .unwrap()
+        .set_len(len - 3)
+        .unwrap();
+    let Some(st4) = state_with(&["Hi there."], 16384, 4, 16, Some(&dir)) else {
+        return;
+    };
     let (_, d, _) = call(&st4, "POST", "/v1/chat/completions", body.clone()).await;
     assert_eq!(d["timings"]["cache_n"], 0);
     assert_eq!(d["choices"][0]["message"], a["choices"][0]["message"]);
@@ -728,16 +1136,34 @@ fn prefix_store_real_model() {
     let Ok(model) = std::env::var("OXE_TEST_MODEL") else {
         panic!("OXE_TEST_MODEL not set: this ignored test needs a real model");
     };
-    let cpus = sched::parse_cpu_list(&std::env::var("OXE_TEST_CPUS").unwrap_or_else(|_| "0-7".into())).unwrap();
+    let cpus =
+        sched::parse_cpu_list(&std::env::var("OXE_TEST_CPUS").unwrap_or_else(|_| "0-7".into()))
+            .unwrap();
     let tok = tokenizer::Tokenizer::from_gguf(&model).unwrap();
-    let bos = tok.bos.and_then(|t| tok.token_text(t)).unwrap_or("").to_string();
-    let eos = tok.eos.and_then(|t| tok.token_text(t)).unwrap_or("").to_string();
+    let bos = tok
+        .bos
+        .and_then(|t| tok.token_text(t))
+        .unwrap_or("")
+        .to_string();
+    let eos = tok
+        .eos
+        .and_then(|t| tok.token_text(t))
+        .unwrap_or("")
+        .to_string();
     let tmpl = chat::ChatTemplate::new(tok.chat_template.as_deref().unwrap(), &bos, &eos).unwrap();
     let mut kw = serde_json::Map::new();
     kw.insert("enable_thinking".into(), Json::Bool(false));
-    let opts = chat::ServerChatOptions { chat_template_kwargs: kw, enable_thinking: false, ..Default::default() };
+    let opts = chat::ServerChatOptions {
+        chat_template_kwargs: kw,
+        enable_thinking: false,
+        ..Default::default()
+    };
     let delim = tok.encode("<|im_start|>user", false, true);
-    let sys = format!("{}\n{}", agent_system(), "Prefer small, verifiable steps; explain what you changed.\n".repeat(40));
+    let sys = format!(
+        "{}\n{}",
+        agent_system(),
+        "Prefer small, verifiable steps; explain what you changed.\n".repeat(40)
+    );
     let render = |msgs: &Json| -> (Vec<u32>, Option<usize>, bool) {
         let body = json!({"messages": msgs, "tools": agent_tools()});
         let inp = chat::chat_inputs(&body, &opts, &tmpl).unwrap();
@@ -754,13 +1180,28 @@ fn prefix_store_real_model() {
     ];
     let dir = scratch_dir("real-store");
     let open = |depth: usize| {
-        let eng = crate::oxe_engine::OxeEngine::open_full(std::path::Path::new(&model), &cpus, None, model::engine::UBATCH, 8192, depth).unwrap();
+        let eng = crate::oxe_engine::OxeEngine::open_full(
+            std::path::Path::new(&model),
+            &cpus,
+            None,
+            model::engine::UBATCH,
+            8192,
+            depth,
+        )
+        .unwrap();
         let mut w = Worker::new(eng, 4);
-        let id = crate::prefix_store::identity(std::path::Path::new(&model), &w.engine.state_id().unwrap(), w.ubatch);
+        let id = crate::prefix_store::identity(
+            std::path::Path::new(&model),
+            &w.engine.state_id().unwrap(),
+            w.ubatch,
+        );
         w.store = Some(crate::prefix_store::PrefixStore::open(&dir, id, 4 << 30, 1024).unwrap());
         w
     };
-    let run = |w: &mut Worker<crate::oxe_engine::OxeEngine>, label: &str, hints: bool| -> Vec<(Vec<u32>, usize)> {
+    let run = |w: &mut Worker<crate::oxe_engine::OxeEngine>,
+               label: &str,
+               hints: bool|
+     -> Vec<(Vec<u32>, usize)> {
         let mut msgs: Vec<Json> = Vec::new();
         let mut out = Vec::new();
         for t in &turns {
@@ -773,7 +1214,13 @@ fn prefix_store_real_model() {
                 gp.query_start = qs;
             }
             let r = w.generate(&tok, &p, &gp, &mut |_| true).unwrap();
-            eprintln!("{label}: prompt {} cache_n {} ({:.0} ms prompt) -> {} tokens", p.len(), r.timings.cache_n, r.timings.prompt_ms, r.tokens.len());
+            eprintln!(
+                "{label}: prompt {} cache_n {} ({:.0} ms prompt) -> {} tokens",
+                p.len(),
+                r.timings.cache_n,
+                r.timings.prompt_ms,
+                r.tokens.len()
+            );
             out.push((r.tokens, r.timings.cache_n));
         }
         w.store.as_mut().unwrap().flush();
@@ -783,18 +1230,41 @@ fn prefix_store_real_model() {
     // no checkpoint hints (one unsplit prefill per request, no store writes): the grid splits
     // of the hinted runs must not change a single token
     let plain = {
-        let eng = crate::oxe_engine::OxeEngine::open_full(std::path::Path::new(&model), &cpus, None, model::engine::UBATCH, 8192, 0).unwrap();
+        let eng = crate::oxe_engine::OxeEngine::open_full(
+            std::path::Path::new(&model),
+            &cpus,
+            None,
+            model::engine::UBATCH,
+            8192,
+            0,
+        )
+        .unwrap();
         let mut w = Worker::new(eng, 4);
         let id = crate::prefix_store::identity(std::path::Path::new(&model), "unused", w.ubatch);
-        w.store = Some(crate::prefix_store::PrefixStore::open(&scratch_dir("real-plain"), id, 1 << 30, 1 << 30).unwrap());
+        w.store = Some(
+            crate::prefix_store::PrefixStore::open(
+                &scratch_dir("real-plain"),
+                id,
+                1 << 30,
+                1 << 30,
+            )
+            .unwrap(),
+        );
         run(&mut w, "off plain", false)
     };
     let cold = run(&mut open(0), "off cold", true);
     assert_eq!(plain[0].0, cold[0].0, "grid split changed the first reply");
     let warm = run(&mut open(0), "off warm", true);
-    assert!(warm[0].1 >= 1024, "first request resumed from the stored prefix: cache_n {}", warm[0].1);
+    assert!(
+        warm[0].1 >= 1024,
+        "first request resumed from the stored prefix: cache_n {}",
+        warm[0].1
+    );
     for (i, ((a, ca), (b, _))) in cold.iter().zip(&warm).enumerate() {
-        assert_eq!(a, b, "turn {i}: stored-prefix resume differs from the cold run");
+        assert_eq!(
+            a, b,
+            "turn {i}: stored-prefix resume differs from the cold run"
+        );
         if i > 0 {
             assert!(*ca > 0, "turn {i}: no cache reuse");
         }
@@ -802,7 +1272,9 @@ fn prefix_store_real_model() {
     // MTP on: its own entry (state layout differs); same tokens
     let mtp_cold = run(&mut open(2), "mtp cold", true);
     let mtp_warm = run(&mut open(2), "mtp warm", true);
-    for (i, ((a, _), ((b, _), (c, _)))) in cold.iter().zip(mtp_cold.iter().zip(&mtp_warm)).enumerate() {
+    for (i, ((a, _), ((b, _), (c, _)))) in
+        cold.iter().zip(mtp_cold.iter().zip(&mtp_warm)).enumerate()
+    {
         assert_eq!(a, b, "turn {i}: MTP on differs from off");
         assert_eq!(a, c, "turn {i}: MTP warm differs from off");
     }
@@ -821,25 +1293,26 @@ fn parked_sessions_logic() {
     c.park_budget = 1 << 20;
     c.park_min = 8;
     // mimics Worker::generate: prepare, prefill to len-1 + checkpoint, last token, decode, checkpoint
-    let run = |eng: &mut StubEngine, c: &mut PrefixCache<_>, prompt: &[u32], gen: &[u32]| -> usize {
-        let n = c.prepare(eng, prompt, true).unwrap();
-        let rest = &prompt[n..];
-        if rest.len() > 1 {
-            eng.prefill(&rest[..rest.len() - 1]).unwrap();
-            c.appended(&rest[..rest.len() - 1]);
+    let run =
+        |eng: &mut StubEngine, c: &mut PrefixCache<_>, prompt: &[u32], gen: &[u32]| -> usize {
+            let n = c.prepare(eng, prompt, true).unwrap();
+            let rest = &prompt[n..];
+            if rest.len() > 1 {
+                eng.prefill(&rest[..rest.len() - 1]).unwrap();
+                c.appended(&rest[..rest.len() - 1]);
+                c.checkpoint(eng).unwrap();
+            }
+            eng.prefill(&rest[rest.len() - 1..]).unwrap();
+            c.appended(&rest[rest.len() - 1..]);
+            c.prompt_len = prompt.len();
+            for &g in gen {
+                eng.decode(g).unwrap();
+                c.appended(&[g]);
+            }
             c.checkpoint(eng).unwrap();
-        }
-        eng.prefill(&rest[rest.len() - 1..]).unwrap();
-        c.appended(&rest[rest.len() - 1..]);
-        c.prompt_len = prompt.len();
-        for &g in gen {
-            eng.decode(g).unwrap();
-            c.appended(&[g]);
-        }
-        c.checkpoint(eng).unwrap();
-        assert_eq!(eng.tokens, c.tokens);
-        n
-    };
+            assert_eq!(eng.tokens, c.tokens);
+            n
+        };
     let a1: Vec<u32> = (1..=50).collect();
     assert_eq!(run(&mut eng, &mut c, &a1, &[60, 61]), 0);
     // agent B: A (52 tokens) is parked
@@ -886,13 +1359,21 @@ fn parked_sessions_logic() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 async fn agent_switch_resumes_parked_session() {
-    let Some(st) = state_with(&[READ_CALL, "A title", "Fixed it."], 16384, 8, 16, None) else { return };
+    let Some(st) = state_with(&[READ_CALL, "A title", "Fixed it."], 16384, 8, 16, None) else {
+        return;
+    };
     let ledger = scratch_dir("ledger").with_extension("jsonl");
     {
         let mut w = st.worker.lock().unwrap();
         w.cache.park_budget = 1 << 30;
         w.cache.park_min = 16;
-        w.ledger = Some(std::fs::OpenOptions::new().create(true).append(true).open(&ledger).unwrap());
+        w.ledger = Some(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&ledger)
+                .unwrap(),
+        );
     }
     let tools = agent_tools();
     let sys = agent_system();
@@ -910,21 +1391,36 @@ async fn agent_switch_resumes_parked_session() {
     msgs.as_array_mut().unwrap().extend([j1["choices"][0]["message"].clone(), json!({"role":"tool","tool_call_id":tc["id"],"content":"def add(a, b):\n    return a - b\n"})]);
     let (_, j2, _) = call(&st, "POST", "/v1/chat/completions", req(&msgs)).await;
     let c2 = j2["timings"]["cache_n"].as_u64().unwrap() as usize;
-    assert!(c2 >= n1, "turn 2 after the title request reuses prompt + reply: cache_n {c2}, first prompt {n1}");
+    assert!(
+        c2 >= n1,
+        "turn 2 after the title request reuses prompt + reply: cache_n {c2}, first prompt {n1}"
+    );
     assert_eq!(j2["choices"][0]["message"]["content"], "Fixed it.");
     let w = st.worker.lock().unwrap();
     assert_eq!(w.cache.stats.unparks, 1);
-    assert_eq!(w.cache.stats.parks, 2, "the title session is parked in turn");
+    assert_eq!(
+        w.cache.stats.parks, 2,
+        "the title session is parked in turn"
+    );
     drop(w);
     // the ledger: one line per generation, numbers and enum labels only
-    let lines: Vec<Json> = std::fs::read_to_string(&ledger).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let lines: Vec<Json> = std::fs::read_to_string(&ledger)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[0]["cache_src"], "none");
     assert_eq!(lines[1]["parks"], 1, "{}", lines[1]);
     assert_eq!(lines[2]["cache_src"], "parked");
     assert_eq!(lines[2]["unparks"], 1);
     assert_eq!(lines[2]["cache_n"].as_u64().unwrap() as usize, c2);
-    assert!(!std::fs::read_to_string(&ledger).unwrap().contains("calc.py"), "no content in the ledger");
+    assert!(
+        !std::fs::read_to_string(&ledger)
+            .unwrap()
+            .contains("calc.py"),
+        "no content in the ledger"
+    );
     let _ = std::fs::remove_file(&ledger);
 }
 
@@ -934,30 +1430,64 @@ async fn agent_switch_resumes_parked_session() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 async fn turn_checkpoints_resume_edit() {
-    let Some(st) = state_with(&["Done.", "Done again."], 16384, 8, 16, None) else { return };
+    let Some(st) = state_with(&["Done.", "Done again."], 16384, 8, 16, None) else {
+        return;
+    };
     let sys = agent_system();
-    let para = |i: usize| (0..12).map(|k| format!("Point {i}.{k}: the parser must accept ports 1 to 65535.")).collect::<Vec<_>>().join(" ");
+    let para = |i: usize| {
+        (0..12)
+            .map(|k| format!("Point {i}.{k}: the parser must accept ports 1 to 65535."))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let mut msgs = vec![json!({"role":"system","content":sys})];
     for i in 0..4 {
         msgs.push(json!({"role":"user","content":para(i)}));
         msgs.push(json!({"role":"assistant","content":format!("Noted {i}.")}));
     }
     msgs.push(json!({"role":"user","content":"Now fix it."}));
-    let (_, j1, _) = call(&st, "POST", "/v1/chat/completions", json!({"messages": msgs, "temperature": 0})).await;
+    let (_, j1, _) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        json!({"messages": msgs, "temperature": 0}),
+    )
+    .await;
     assert_eq!(j1["choices"][0]["message"]["content"], "Done.");
     let (_, tk, _) = call(&st, "POST", "/apply-template", json!({"messages": msgs})).await;
     let prompt = st.tok.encode(tk["prompt"].as_str().unwrap(), true, true);
     let im = st.user_delim.as_ref().unwrap()[0];
-    let starts: Vec<usize> = prompt.iter().enumerate().filter(|(_, &t)| t == im).map(|(i, _)| i).collect();
+    let starts: Vec<usize> = prompt
+        .iter()
+        .enumerate()
+        .filter(|(_, &t)| t == im)
+        .map(|(i, _)| i)
+        .collect();
     let last_user = starts[starts.len() - 2];
     let info = st.worker.lock().unwrap().cache.snapshot_info();
-    let turns: Vec<usize> = info.iter().filter(|x| x.1 == crate::cache::PRIO_TURN).map(|x| x.0).collect();
+    let turns: Vec<usize> = info
+        .iter()
+        .filter(|x| x.1 == crate::cache::PRIO_TURN)
+        .map(|x| x.0)
+        .collect();
     assert!(!turns.is_empty() && turns.len() <= 4, "{info:?}");
-    assert!(turns.contains(&(last_user / 16 * 16)), "turn checkpoint below the last user message: {info:?}, start {last_user}");
+    assert!(
+        turns.contains(&(last_user / 16 * 16)),
+        "turn checkpoint below the last user message: {info:?}, start {last_user}"
+    );
     // edit the last user message
     *msgs.last_mut().unwrap() = json!({"role":"user","content":"Now fix it, and add a test."});
-    let (_, j2, _) = call(&st, "POST", "/v1/chat/completions", json!({"messages": msgs, "temperature": 0})).await;
-    assert_eq!(j2["timings"]["cache_n"].as_u64().unwrap() as usize, last_user / 16 * 16);
+    let (_, j2, _) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        json!({"messages": msgs, "temperature": 0}),
+    )
+    .await;
+    assert_eq!(
+        j2["timings"]["cache_n"].as_u64().unwrap() as usize,
+        last_user / 16 * 16
+    );
     assert_eq!(j2["choices"][0]["message"]["content"], "Done again.");
 }
 
@@ -969,7 +1499,11 @@ async fn session_cache_survives_restart() {
     let dir = scratch_dir("sessions");
     let open = |st: &Arc<State<StubEngine>>| {
         let mut w = st.worker.lock().unwrap();
-        let id = crate::prefix_store::identity(std::path::Path::new("/m.gguf"), &w.engine.state_id().unwrap(), 16);
+        let id = crate::prefix_store::identity(
+            std::path::Path::new("/m.gguf"),
+            &w.engine.state_id().unwrap(),
+            16,
+        );
         w.sessions = Some(crate::prefix_store::PrefixStore::open(&dir, id, 1 << 30, 16).unwrap());
         w.cache.park_min = 16;
         w.cache.park_budget = 1 << 30;
@@ -979,23 +1513,41 @@ async fn session_cache_survives_restart() {
     let sys = agent_system();
     let req = |msgs: &Json| json!({"messages": msgs, "tools": tools, "temperature": 0});
     let mut msgs = json!([{"role":"system","content":sys},{"role":"user","content":"The add() function in calc.py is wrong."}]);
-    let Some(st) = state_with(&[READ_CALL], 16384, 8, 16, None) else { return };
+    let Some(st) = state_with(&[READ_CALL], 16384, 8, 16, None) else {
+        return;
+    };
     open(&st);
     let (_, j1, _) = call(&st, "POST", "/v1/chat/completions", req(&msgs)).await;
     let live = st.worker.lock().unwrap().cache.tokens.len();
     assert!(st.worker.lock().unwrap().persist_sessions() >= 1);
     drop(st);
-    let Some(st2) = state_with(&["Fixed it."], 16384, 8, 16, None) else { return };
+    let Some(st2) = state_with(&["Fixed it."], 16384, 8, 16, None) else {
+        return;
+    };
     open(&st2);
     let tc = j1["choices"][0]["message"]["tool_calls"][0].clone();
     msgs.as_array_mut().unwrap().extend([j1["choices"][0]["message"].clone(), json!({"role":"tool","tool_call_id":tc["id"],"content":"def add(a, b):\n    return a - b\n"})]);
     let (_, j2, _) = call(&st2, "POST", "/v1/chat/completions", req(&msgs)).await;
-    assert_eq!(j2["timings"]["cache_n"].as_u64().unwrap() as usize, live, "resumed the whole session from disk");
+    assert_eq!(
+        j2["timings"]["cache_n"].as_u64().unwrap() as usize,
+        live,
+        "resumed the whole session from disk"
+    );
     assert_eq!(j2["choices"][0]["message"]["content"], "Fixed it.");
-    assert!(st2.worker.lock().unwrap().engine.calls.iter().any(|c| c.0 == "load" && c.2 == live));
+    assert!(st2
+        .worker
+        .lock()
+        .unwrap()
+        .engine
+        .calls
+        .iter()
+        .any(|c| c.0 == "load" && c.2 == live));
     // files are private
     use std::os::unix::fs::PermissionsExt;
-    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(
+        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
     for f in std::fs::read_dir(&dir).unwrap().flatten() {
         assert_eq!(f.metadata().unwrap().permissions().mode() & 0o777, 0o600);
     }
@@ -1017,26 +1569,56 @@ fn parked_sessions_real_model() {
     let Ok(model) = std::env::var("OXE_TEST_MODEL") else {
         panic!("OXE_TEST_MODEL not set: this ignored test needs a real model");
     };
-    let cpus = sched::parse_cpu_list(&std::env::var("OXE_TEST_CPUS").unwrap_or_else(|_| "0-7".into())).unwrap();
-    let depth: usize = std::env::var("OXE_TEST_MTP").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let cpus =
+        sched::parse_cpu_list(&std::env::var("OXE_TEST_CPUS").unwrap_or_else(|_| "0-7".into()))
+            .unwrap();
+    let depth: usize = std::env::var("OXE_TEST_MTP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let tok = tokenizer::Tokenizer::from_gguf(&model).unwrap();
-    let bos = tok.bos.and_then(|t| tok.token_text(t)).unwrap_or("").to_string();
-    let eos = tok.eos.and_then(|t| tok.token_text(t)).unwrap_or("").to_string();
+    let bos = tok
+        .bos
+        .and_then(|t| tok.token_text(t))
+        .unwrap_or("")
+        .to_string();
+    let eos = tok
+        .eos
+        .and_then(|t| tok.token_text(t))
+        .unwrap_or("")
+        .to_string();
     let tmpl = chat::ChatTemplate::new(tok.chat_template.as_deref().unwrap(), &bos, &eos).unwrap();
     let mut kw = serde_json::Map::new();
     kw.insert("enable_thinking".into(), Json::Bool(false));
-    let opts = chat::ServerChatOptions { chat_template_kwargs: kw, enable_thinking: false, ..Default::default() };
+    let opts = chat::ServerChatOptions {
+        chat_template_kwargs: kw,
+        enable_thinking: false,
+        ..Default::default()
+    };
     let delim = tok.encode("<|im_start|>user", false, true);
-    let sys = format!("{}\n{}", agent_system(), "Prefer small, verifiable steps; explain what you changed.\n".repeat(40));
+    let sys = format!(
+        "{}\n{}",
+        agent_system(),
+        "Prefer small, verifiable steps; explain what you changed.\n".repeat(40)
+    );
     let render = |msgs: &Json, tools: bool| -> (Vec<u32>, GenParams) {
-        let body = if tools { json!({"messages": msgs, "tools": agent_tools()}) } else { json!({"messages": msgs}) };
+        let body = if tools {
+            json!({"messages": msgs, "tools": agent_tools()})
+        } else {
+            json!({"messages": msgs})
+        };
         let inp = chat::chat_inputs(&body, &opts, &tmpl).unwrap();
         let p = tok.encode(&chat::apply(&tmpl, &inp).unwrap().prompt, true, true);
         let mut gp = greedy();
         gp.n_predict = 48;
         gp.first_user = p.windows(delim.len()).position(|w| w == &delim[..]);
         gp.query_start = msgs.as_array().unwrap().last().unwrap()["role"] == "user";
-        gp.msg_starts = p.iter().enumerate().filter(|(_, &t)| t == delim[0]).map(|(i, _)| i).collect();
+        gp.msg_starts = p
+            .iter()
+            .enumerate()
+            .filter(|(_, &t)| t == delim[0])
+            .map(|(i, _)| i)
+            .collect();
         (p, gp)
     };
     let turns: Vec<Json> = vec![
@@ -1047,7 +1629,15 @@ fn parked_sessions_real_model() {
     ];
     let title = json!([{"role":"system","content":"You are a title generator. Reply with a title of at most 8 words."},{"role":"user","content":"The add() function in calc.py is wrong."}]);
     let open = |ckpt: usize| {
-        let eng = crate::oxe_engine::OxeEngine::open_full(std::path::Path::new(&model), &cpus, None, model::engine::UBATCH, 8192, depth).unwrap();
+        let eng = crate::oxe_engine::OxeEngine::open_full(
+            std::path::Path::new(&model),
+            &cpus,
+            None,
+            model::engine::UBATCH,
+            8192,
+            depth,
+        )
+        .unwrap();
         Worker::new(eng, ckpt)
     };
     // (token ids, cache_n) of the uninterrupted session
@@ -1078,8 +1668,17 @@ fn parked_sessions_real_model() {
             let session = w.cache.tokens.clone();
             let (tp, tg) = render(&title, false);
             let r = w.generate(&tok, &tp, &tg, &mut |_| true).unwrap();
-            eprintln!("title: prompt {} cache_n {} -> {} tokens", tp.len(), r.timings.cache_n, r.tokens.len());
-            assert_eq!(w.cache.parked_lengths().len(), 1, "the agent session is parked");
+            eprintln!(
+                "title: prompt {} cache_n {} -> {} tokens",
+                tp.len(),
+                r.timings.cache_n,
+                r.tokens.len()
+            );
+            assert_eq!(
+                w.cache.parked_lengths().len(),
+                1,
+                "the agent session is parked"
+            );
             // unpark at full length (a prompt that continues the parked session): the state
             // must be byte-identical to the one that was parked
             let mut probe = session.clone();
@@ -1088,17 +1687,36 @@ fn parked_sessions_real_model() {
             assert_eq!(n, session.len(), "turn {i}: full-length unpark");
             let mut after = Vec::new();
             w.engine.save_state(&mut after).unwrap();
-            assert!(before == after, "turn {i}: unparked state differs from the parked one ({} vs {} bytes)", before.len(), after.len());
+            assert!(
+                before == after,
+                "turn {i}: unparked state differs from the parked one ({} vs {} bytes)",
+                before.len(),
+                after.len()
+            );
         }
         let r = w.generate(&tok, &p, &gp, &mut |_| true).unwrap();
-        eprintln!("parked run turn {i}: prompt {} cache_n {} ({:.0} ms prompt), checkpoints {:?}", p.len(), r.timings.cache_n, r.timings.prompt_ms, w.cache.snapshot_info());
-        assert_eq!(r.tokens, reference[i].0, "turn {i}: token ids differ from the uninterrupted session");
+        eprintln!(
+            "parked run turn {i}: prompt {} cache_n {} ({:.0} ms prompt), checkpoints {:?}",
+            p.len(),
+            r.timings.cache_n,
+            r.timings.prompt_ms,
+            w.cache.snapshot_info()
+        );
+        assert_eq!(
+            r.tokens, reference[i].0,
+            "turn {i}: token ids differ from the uninterrupted session"
+        );
         // The scripted transcript re-renders fixed assistant messages, not the model's own
         // replies, so a prompt can diverge inside (or before) the parked reply; the resume point
         // is then the deepest checkpoint below the divergence (len-1, query or anchor). Resume
         // equality is defined against the uninterrupted session on the same schedule.
         if i > 0 {
-            assert!(r.timings.cache_n >= reference[i].1, "turn {i}: cache_n {} < uninterrupted {}", r.timings.cache_n, reference[i].1);
+            assert!(
+                r.timings.cache_n >= reference[i].1,
+                "turn {i}: cache_n {} < uninterrupted {}",
+                r.timings.cache_n,
+                reference[i].1
+            );
         }
     }
     eprintln!("park stats: {:?}", w.cache.stats);
@@ -1109,7 +1727,12 @@ fn parked_sessions_real_model() {
 /// Stub worker for the message-boundary schedule: `msg_split` on, a 4096-token ubatch (so the
 /// grid would have no position inside these short prompts, and any split is the schedule's).
 pub(crate) fn stub_worker(tok: &tokenizer::Tokenizer, max_snapshots: usize) -> Worker<StubEngine> {
-    let eng = StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), tok.encode("default reply", false, true));
+    let eng = StubEngine::new(
+        1024,
+        tok.n_vocab(),
+        tok.eos.unwrap(),
+        tok.encode("default reply", false, true),
+    );
     let mut w = Worker::new(eng, max_snapshots);
     w.ubatch = 4096;
     w.msg_split = true;
@@ -1117,17 +1740,30 @@ pub(crate) fn stub_worker(tok: &tokenizer::Tokenizer, max_snapshots: usize) -> W
 }
 
 fn msg_params(first_user: Option<usize>, query: bool, starts: &[usize]) -> GenParams {
-    GenParams { first_user, query_start: query, msg_starts: starts.to_vec(), ..greedy() }
+    GenParams {
+        first_user,
+        query_start: query,
+        msg_starts: starts.to_vec(),
+        ..greedy()
+    }
 }
 
 /// (n_past before, n_tokens) of the prefill calls logged from index `from` on.
 pub(crate) fn prefills(calls: &[(&'static str, usize, usize)], from: usize) -> Vec<(usize, usize)> {
-    calls[from..].iter().filter(|c| c.0 == "prefill").map(|c| (c.1, c.2)).collect()
+    calls[from..]
+        .iter()
+        .filter(|c| c.0 == "prefill")
+        .map(|c| (c.1, c.2))
+        .collect()
 }
 
 /// A prefix store for `w`'s identity; 8 tokens minimum so the 17-token anchor qualifies.
 fn msg_store(w: &Worker<StubEngine>, dir: &std::path::Path) -> crate::prefix_store::PrefixStore {
-    let id = crate::prefix_store::identity(std::path::Path::new("/m.gguf"), &w.engine.state_id().unwrap(), w.ubatch);
+    let id = crate::prefix_store::identity(
+        std::path::Path::new("/m.gguf"),
+        &w.engine.state_id().unwrap(),
+        w.ubatch,
+    );
     crate::prefix_store::PrefixStore::open(dir, id, 1 << 30, 8).unwrap()
 }
 
@@ -1144,13 +1780,19 @@ fn msg_split_anchor_is_first_user() {
     let gp = msg_params(Some(17), true, &[0, 17, 30]);
     let mut w = stub_worker(&tok, 8);
     let r = w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
-    assert_eq!(prefills(&w.engine.calls, 0), vec![(0, 17), (17, 13), (30, 9), (39, 1)]);
+    assert_eq!(
+        prefills(&w.engine.calls, 0),
+        vec![(0, 17), (17, 13), (30, 9), (39, 1)]
+    );
     let info = w.cache.snapshot_info();
     assert!(info.contains(&(17, crate::cache::PRIO_ANCHOR)), "{info:?}");
     assert!(info.contains(&(30, crate::cache::PRIO_QUERY)), "{info:?}");
     assert!(info.contains(&(39, crate::cache::PRIO_TAIL)), "{info:?}");
     // end of generation: prompt + the decoded tokens but the last one (never fed to the engine)
-    assert!(info.contains(&(40 + r.n_decoded - 1, crate::cache::PRIO_TAIL)), "{info:?}");
+    assert!(
+        info.contains(&(40 + r.n_decoded - 1, crate::cache::PRIO_TAIL)),
+        "{info:?}"
+    );
 
     // old behaviour: one unsplit prefill to n-1 and no anchor. At ubatch 4096 the grid has no
     // position inside the prompt, so there is nothing to checkpoint before the tail.
@@ -1158,7 +1800,11 @@ fn msg_split_anchor_is_first_user() {
     g.msg_split = false;
     g.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
     assert_eq!(prefills(&g.engine.calls, 0), vec![(0, 39), (39, 1)]);
-    assert!(!g.cache.snapshot_info().iter().any(|x| x.1 == crate::cache::PRIO_ANCHOR));
+    assert!(!g
+        .cache
+        .snapshot_info()
+        .iter()
+        .any(|x| x.1 == crate::cache::PRIO_ANCHOR));
 }
 
 /// The anchor of request 1 is restored for a second question with the same system prompt; the
@@ -1179,8 +1825,13 @@ fn msg_split_resident_second_question() {
     let mark = w.engine.calls.len();
     let r = w.generate(&tok, &p2, &gp, &mut |_| true).unwrap();
     assert_eq!(r.timings.cache_n, 17);
-    assert!(w.engine.calls[mark..].iter().any(|c| c.0 == "restore" && c.2 == 17));
-    assert_eq!(prefills(&w.engine.calls, mark), vec![(17, 13), (30, 9), (39, 1)]);
+    assert!(w.engine.calls[mark..]
+        .iter()
+        .any(|c| c.0 == "restore" && c.2 == 17));
+    assert_eq!(
+        prefills(&w.engine.calls, mark),
+        vec![(17, 13), (30, 9), (39, 1)]
+    );
 }
 
 /// A process that loads the anchor from the prefix store computes the same prefill schedule
@@ -1210,7 +1861,11 @@ fn msg_split_cold_and_store_loaded_schedules_match() {
     b.store = Some(st);
     let rb = b.generate(&tok, &p2, &gp, &mut |_| true).unwrap();
     assert_eq!(rb.timings.cache_n, 17);
-    assert!(b.engine.calls.iter().any(|c| c.0 == "load" && c.1 == 0 && c.2 == 17));
+    assert!(b
+        .engine
+        .calls
+        .iter()
+        .any(|c| c.0 == "load" && c.1 == 0 && c.2 == 17));
     let from_b = prefills(&b.engine.calls, 0);
     // worker C: cold, no store
     let mut c = stub_worker(&tok, 8);
@@ -1237,10 +1892,24 @@ fn msg_split_turn_checkpoints_newest_win() {
     w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
     assert_eq!(
         prefills(&w.engine.calls, 0),
-        vec![(0, 10), (10, 10), (20, 10), (30, 10), (40, 10), (50, 10), (60, 10), (70, 9), (79, 1)]
+        vec![
+            (0, 10),
+            (10, 10),
+            (20, 10),
+            (30, 10),
+            (40, 10),
+            (50, 10),
+            (60, 10),
+            (70, 9),
+            (79, 1)
+        ]
     );
     let info = w.cache.snapshot_info();
-    let turns: Vec<usize> = info.iter().filter(|x| x.1 == crate::cache::PRIO_TURN).map(|x| x.0).collect();
+    let turns: Vec<usize> = info
+        .iter()
+        .filter(|x| x.1 == crate::cache::PRIO_TURN)
+        .map(|x| x.0)
+        .collect();
     assert_eq!(turns, vec![50, 60], "{info:?}");
     assert!(info.contains(&(10, crate::cache::PRIO_ANCHOR)), "{info:?}");
     assert!(info.contains(&(70, crate::cache::PRIO_QUERY)), "{info:?}");
@@ -1260,19 +1929,46 @@ fn msg_split_noncanonical_resume_saves_no_store_entry() {
     let st = msg_store(&w, &dir);
     w.store = Some(st);
     let p1: Vec<u32> = (100..140).collect();
-    w.generate(&tok, &p1, &msg_params(Some(17), true, &[0, 17, 30]), &mut |_| true).unwrap();
+    w.generate(
+        &tok,
+        &p1,
+        &msg_params(Some(17), true, &[0, 17, 30]),
+        &mut |_| true,
+    )
+    .unwrap();
     w.store.as_mut().unwrap().flush();
-    assert_eq!(w.store.as_ref().unwrap().n_entries(), 1, "request 1 stores its anchor");
+    assert_eq!(
+        w.store.as_ref().unwrap().n_entries(),
+        1,
+        "request 1 stores its anchor"
+    );
     // request 2 shares the first 39 tokens (request 1's tail checkpoint, not a message start),
     // then a user message starts at 45. The anchor taken at 45 is not stored.
     let mut p2 = p1[..39].to_vec();
     p2.extend(400..421);
     assert_eq!(p2.len(), 60);
-    let r = w.generate(&tok, &p2, &msg_params(Some(45), false, &[0, 17, 30, 45]), &mut |_| true).unwrap();
+    let r = w
+        .generate(
+            &tok,
+            &p2,
+            &msg_params(Some(45), false, &[0, 17, 30, 45]),
+            &mut |_| true,
+        )
+        .unwrap();
     assert_eq!(r.timings.cache_n, 39);
-    assert!(w.cache.snapshot_info().contains(&(45, crate::cache::PRIO_ANCHOR)), "{:?}", w.cache.snapshot_info());
+    assert!(
+        w.cache
+            .snapshot_info()
+            .contains(&(45, crate::cache::PRIO_ANCHOR)),
+        "{:?}",
+        w.cache.snapshot_info()
+    );
     w.store.as_mut().unwrap().flush();
-    assert_eq!(w.store.as_ref().unwrap().n_entries(), 1, "no entry from a non-canonical state");
+    assert_eq!(
+        w.store.as_ref().unwrap().n_entries(),
+        1,
+        "no entry from a non-canonical state"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1297,12 +1993,19 @@ fn warm_file_roundtrip() {
     // within the 60 s interval a request does not write again; a forced save does
     assert!(!w.save_warm(false));
     assert!(w.save_warm(true));
-    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     // a new process with the same identity hands the hint to its engine
     let mut v = stub_worker(&tok, 8);
     v.warm = Some(WarmFile::new(path.clone(), "id-A".into()));
     assert!(v.load_warm().is_some());
-    assert!(v.engine.calls.iter().any(|c| c.0 == "warm" && c.1 == 0 && c.2 == 8));
+    assert!(v
+        .engine
+        .calls
+        .iter()
+        .any(|c| c.0 == "warm" && c.1 == 0 && c.2 == 8));
     // another identity reads nothing
     let mut o = stub_worker(&tok, 8);
     o.warm = Some(WarmFile::new(path.clone(), "id-B".into()));
@@ -1411,12 +2114,18 @@ impl Engine for MidCallCancelStub {
     fn prefill(&mut self, t: &[u32]) -> crate::engine::Result<&[f32]> {
         self.calls += 1;
         if self.calls == self.at && t.len() > 1 {
-            assert!(self.registered.is_some(), "generate registers the cancel flag before prefilling");
+            assert!(
+                self.registered.is_some(),
+                "generate registers the cancel flag before prefilling"
+            );
             self.flag.store(true, std::sync::atomic::Ordering::Relaxed);
             // the abort hit mid-call and the engine rolled back to the call's start: its state is as before the call
             // (FlashEngine restores the recurrent snapshot; the StubEngine's own snapshot/restore does not cover its
             // script cursor, so the stub models the rolled-back state by not touching it)
-            return Err(crate::engine::EngineError(format!("{} stub abort", crate::engine::CANCELLED_MARK)));
+            return Err(crate::engine::EngineError(format!(
+                "{} stub abort",
+                crate::engine::CANCELLED_MARK
+            )));
         }
         self.inner.prefill(t)
     }
@@ -1456,20 +2165,41 @@ fn cancel_inside_a_prefill_call_rolls_back_to_the_call_start() {
     let reference = {
         let mut w = Worker::new(StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), 4);
         w.ubatch = u;
-        w.generate(&tok, &prompt, &greedy(), &mut |_| true).unwrap().tokens
+        w.generate(&tok, &prompt, &greedy(), &mut |_| true)
+            .unwrap()
+            .tokens
     };
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let eng = MidCallCancelStub { inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), flag: flag.clone(), at: 3, calls: 0, registered: None };
+    let eng = MidCallCancelStub {
+        inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()),
+        flag: flag.clone(),
+        at: 3,
+        calls: 0,
+        registered: None,
+    };
     let mut w = Worker::new(eng, 4);
     w.ubatch = u;
     let mut gp = greedy();
     gp.cancel = Some(flag.clone());
     let r = w.generate(&tok, &prompt, &gp, &mut |_| true);
-    assert!(matches!(r, Err(crate::generate::GenError::Cancelled)), "a mid-call abort is a cancel");
-    assert!(w.engine.registered.is_none(), "flag unregistered after the request");
+    assert!(
+        matches!(r, Err(crate::generate::GenError::Cancelled)),
+        "a mid-call abort is a cancel"
+    );
+    assert!(
+        w.engine.registered.is_none(),
+        "flag unregistered after the request"
+    );
     let n = w.cache.tokens.len();
-    assert_eq!(w.engine.inner.tokens, w.cache.tokens, "engine and cache agree after a mid-call cancel");
-    assert_eq!(n, 2 * u * crate::generate::CANCEL_UBATCHES, "the 3rd call rolled back: two calls kept");
+    assert_eq!(
+        w.engine.inner.tokens, w.cache.tokens,
+        "engine and cache agree after a mid-call cancel"
+    );
+    assert_eq!(
+        n,
+        2 * u * crate::generate::CANCEL_UBATCHES,
+        "the 3rd call rolled back: two calls kept"
+    );
     assert_eq!(w.cache.tokens[..], prompt[..n]);
     flag.store(false, std::sync::atomic::Ordering::Relaxed);
     w.engine.at = usize::MAX;
@@ -1494,10 +2224,17 @@ fn cancel_mid_prefill_and_decode() {
     let reference = {
         let mut w = Worker::new(StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), 4);
         w.ubatch = u;
-        w.generate(&tok, &prompt, &greedy(), &mut |_| true).unwrap().tokens
+        w.generate(&tok, &prompt, &greedy(), &mut |_| true)
+            .unwrap()
+            .tokens
     };
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let eng = CancelStub { inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), flag: flag.clone(), at: 3, calls: 0 };
+    let eng = CancelStub {
+        inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()),
+        flag: flag.clone(),
+        at: 3,
+        calls: 0,
+    };
     let mut w = Worker::new(eng, 4);
     w.ubatch = u;
     let mut gp = greedy();
@@ -1505,8 +2242,15 @@ fn cancel_mid_prefill_and_decode() {
     let r = w.generate(&tok, &prompt, &gp, &mut |_| true);
     assert!(matches!(r, Err(crate::generate::GenError::Cancelled)));
     let n = w.cache.tokens.len();
-    assert_eq!(w.engine.inner.tokens, w.cache.tokens, "engine and cache agree after a cancel");
-    assert_eq!(n, 3 * u * crate::generate::CANCEL_UBATCHES, "stopped after the 3rd chunk");
+    assert_eq!(
+        w.engine.inner.tokens, w.cache.tokens,
+        "engine and cache agree after a cancel"
+    );
+    assert_eq!(
+        n,
+        3 * u * crate::generate::CANCEL_UBATCHES,
+        "stopped after the 3rd chunk"
+    );
     assert_eq!(w.cache.tokens[..], prompt[..n]);
     // the retry resumes the partial prefill and replies as the uncancelled run did
     flag.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1529,20 +2273,41 @@ fn cancel_mid_prefill_and_decode() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 async fn structured_output_is_refused() {
-    let Some(st) = state(&["x"], 4096) else { return };
-    for extra in [json!({"response_format": {"type": "json_object"}}), json!({"json_schema": {"type": "object"}}), json!({"grammar": "root ::= \"a\""})] {
+    let Some(st) = state(&["x"], 4096) else {
+        return;
+    };
+    for extra in [
+        json!({"response_format": {"type": "json_object"}}),
+        json!({"json_schema": {"type": "object"}}),
+        json!({"grammar": "root ::= \"a\""}),
+    ] {
         let mut body = json!({"messages":[{"role":"user","content":"hi"}]});
         for (k, v) in extra.as_object().unwrap() {
             body[k] = v.clone();
         }
         let (c, j, _) = call(&st, "POST", "/v1/chat/completions", body).await;
         assert_eq!(c, 400, "{j}");
-        assert!(j["error"]["message"].as_str().unwrap().contains("not supported"));
+        assert!(j["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not supported"));
     }
     // response_format text is the default and stays accepted
-    let (c, _, _) = call(&st, "POST", "/v1/chat/completions", json!({"messages":[{"role":"user","content":"hi"}], "response_format": {"type": "text"}})).await;
+    let (c, _, _) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        json!({"messages":[{"role":"user","content":"hi"}], "response_format": {"type": "text"}}),
+    )
+    .await;
     assert_eq!(c, 200);
-    let (c, _, _) = call(&st, "POST", "/completion", json!({"prompt": "hi", "grammar": "root ::= \"a\""})).await;
+    let (c, _, _) = call(
+        &st,
+        "POST",
+        "/completion",
+        json!({"prompt": "hi", "grammar": "root ::= \"a\""}),
+    )
+    .await;
     assert_eq!(c, 400);
 }
 
@@ -1559,7 +2324,11 @@ async fn session_cache_resumes_after_user_message() {
     let req = |msgs: &Json| json!({"messages": msgs, "tools": tools, "temperature": 0});
     let open = |st: &Arc<State<StubEngine>>, dir: &std::path::Path| {
         let mut w = st.worker.lock().unwrap();
-        let id = crate::prefix_store::identity(std::path::Path::new("/m.gguf"), &w.engine.state_id().unwrap(), 16);
+        let id = crate::prefix_store::identity(
+            std::path::Path::new("/m.gguf"),
+            &w.engine.state_id().unwrap(),
+            16,
+        );
         w.sessions = Some(crate::prefix_store::PrefixStore::open(dir, id, 1 << 30, 16).unwrap());
         w.cache.park_min = 16;
         w.cache.park_budget = 1 << 30;
@@ -1569,15 +2338,32 @@ async fn session_cache_resumes_after_user_message() {
     // turns 1-2: tool call, tool result -> answer; turn 3: a new user message
     let run_two = |st: Arc<State<StubEngine>>| async move {
         let mut msgs = json!([{"role":"system","content":agent_system()},{"role":"user","content":"The add() function in calc.py is wrong."}]);
-        let (_, j1, _) = call(&st, "POST", "/v1/chat/completions", json!({"messages": msgs, "tools": agent_tools(), "temperature": 0})).await;
+        let (_, j1, _) = call(
+            &st,
+            "POST",
+            "/v1/chat/completions",
+            json!({"messages": msgs, "tools": agent_tools(), "temperature": 0}),
+        )
+        .await;
         let tc = j1["choices"][0]["message"]["tool_calls"][0].clone();
         msgs.as_array_mut().unwrap().extend([j1["choices"][0]["message"].clone(), json!({"role":"tool","tool_call_id":tc["id"],"content":"def add(a, b):\n    return a - b\n"})]);
-        let (_, j2, _) = call(&st, "POST", "/v1/chat/completions", json!({"messages": msgs, "tools": agent_tools(), "temperature": 0})).await;
-        msgs.as_array_mut().unwrap().extend([j2["choices"][0]["message"].clone(), json!({"role":"user","content":"Now write a test."})]);
+        let (_, j2, _) = call(
+            &st,
+            "POST",
+            "/v1/chat/completions",
+            json!({"messages": msgs, "tools": agent_tools(), "temperature": 0}),
+        )
+        .await;
+        msgs.as_array_mut().unwrap().extend([
+            j2["choices"][0]["message"].clone(),
+            json!({"role":"user","content":"Now write a test."}),
+        ]);
         msgs
     };
     // reference: uninterrupted
-    let Some(r) = state_with(&scripts, 16384, 8, 16, None) else { return };
+    let Some(r) = state_with(&scripts, 16384, 8, 16, None) else {
+        return;
+    };
     // the session cache's checkpoints, measured without ECHO (its records are RAM only here)
     r.echo.lock().unwrap().cfg.enabled = false;
     let msgs = run_two(r.clone()).await;
@@ -1586,7 +2372,9 @@ async fn session_cache_resumes_after_user_message() {
     assert!(c_ref > 0);
     // test: same turns, persist (idle unload), new process, turn 3
     let dir = scratch_dir("sessions-user");
-    let Some(st) = state_with(&scripts, 16384, 8, 16, None) else { return };
+    let Some(st) = state_with(&scripts, 16384, 8, 16, None) else {
+        return;
+    };
     st.echo.lock().unwrap().cfg.enabled = false;
     open(&st, &dir);
     // the same conversation (tool-call ids are random, and the template does not render them)
@@ -1594,12 +2382,17 @@ async fn session_cache_resumes_after_user_message() {
     let n = st.worker.lock().unwrap().persist_sessions();
     assert!(n >= 2, "full state + its query checkpoint: {n} entries");
     drop(st);
-    let Some(st2) = state_with(&["Run pytest."], 16384, 8, 16, None) else { return };
+    let Some(st2) = state_with(&["Run pytest."], 16384, 8, 16, None) else {
+        return;
+    };
     st2.echo.lock().unwrap().cfg.enabled = false;
     open(&st2, &dir);
     let (_, j3, _) = call(&st2, "POST", "/v1/chat/completions", req(&msgs2)).await;
     let c3 = j3["timings"]["cache_n"].as_u64().unwrap();
-    assert_eq!(c3, c_ref, "reuse after the restart equals the uninterrupted session's");
+    assert_eq!(
+        c3, c_ref,
+        "reuse after the restart equals the uninterrupted session's"
+    );
     assert_eq!(j3["choices"][0]["message"], jr["choices"][0]["message"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1645,14 +2438,22 @@ fn cancelled_partial_prefill_survives_another_request() {
     let prompt: Vec<u32> = (0..1000u32).map(|i| 100 + i % 5000).collect();
     let u = 16;
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let eng = CancelStub { inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), flag: flag.clone(), at: 5, calls: 0 };
+    let eng = CancelStub {
+        inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()),
+        flag: flag.clone(),
+        at: 5,
+        calls: 0,
+    };
     let mut w = Worker::new(eng, 8);
     w.ubatch = u;
     w.cache.park_budget = 1 << 30;
     w.cache.park_min = 64;
     let mut gp = greedy();
     gp.cancel = Some(flag.clone());
-    assert!(matches!(w.generate(&tok, &prompt, &gp, &mut |_| true), Err(crate::generate::GenError::Cancelled)));
+    assert!(matches!(
+        w.generate(&tok, &prompt, &gp, &mut |_| true),
+        Err(crate::generate::GenError::Cancelled)
+    ));
     let partial = w.cache.tokens.len();
     assert!(partial >= 64, "partial prefill of {partial} tokens");
     // the user's next, unrelated short request
@@ -1660,7 +2461,11 @@ fn cancelled_partial_prefill_survives_another_request() {
     w.engine.at = usize::MAX;
     let short: Vec<u32> = (0..20u32).map(|i| 7000 + i).collect();
     w.generate(&tok, &short, &gp, &mut |_| true).unwrap();
-    assert_eq!(w.cache.parked_lengths(), vec![partial], "the partial session was parked");
+    assert_eq!(
+        w.cache.parked_lengths(),
+        vec![partial],
+        "the partial session was parked"
+    );
     // the retry resumes the partial prefill
     let r = w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
     assert_eq!(r.timings.cache_n, partial);
@@ -1677,25 +2482,59 @@ fn mtp_tune_table_and_per_request_off_switch() {
     std::fs::write(&f, r#"{"buckets":[{"max_ctx":32768,"depth":0},{"max_ctx":4096,"depth":2},{"max_ctx":12288,"depth":1}]}"#).unwrap();
     let t = SpecTable::load(&f).unwrap();
     assert_eq!(t.buckets, vec![(4096, 2), (12288, 1), (32768, 0)]);
-    assert_eq!((t.depth_for(10), t.depth_for(4096), t.depth_for(4097), t.depth_for(20000), t.depth_for(99999)), (2, 2, 1, 0, 0));
+    assert_eq!(
+        (
+            t.depth_for(10),
+            t.depth_for(4096),
+            t.depth_for(4097),
+            t.depth_for(20000),
+            t.depth_for(99999)
+        ),
+        (2, 2, 1, 0, 0)
+    );
     std::fs::remove_dir_all(&dir).ok();
     // per-request switch parsing
     let gp = crate::api::gen_params(&json!({"prompt":"x","speculative":false}), false).unwrap();
     assert_eq!(gp.spec_depth, Some(0));
     let gp = crate::api::gen_params(&json!({"prompt":"x","spec_draft_n_max":1}), false).unwrap();
     assert_eq!(gp.spec_depth, Some(1));
-    let gp = crate::api::gen_params(&json!({"prompt":"x","speculative":{"n_max":3}}), false).unwrap();
+    let gp =
+        crate::api::gen_params(&json!({"prompt":"x","speculative":{"n_max":3}}), false).unwrap();
     assert_eq!(gp.spec_depth, Some(3));
     // speculation off for a request: identical output, no speculative calls
     let Some(p) = model() else { return };
     let tok = tokenizer::Tokenizer::from_gguf(p).unwrap();
     let script = tok.encode("one two three four five six seven", false, true);
     let prompt = tok.encode("hello", false, true);
-    let mut plain = Worker::new(StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone()), 4);
-    let want = plain.generate(&tok, &prompt, &greedy(), &mut |_| true).unwrap();
-    for (depth, table) in [(Some(0), None), (None, Some(SpecTable { buckets: vec![(1 << 20, 0)] }))] {
+    let mut plain = Worker::new(
+        StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone()),
+        4,
+    );
+    let want = plain
+        .generate(&tok, &prompt, &greedy(), &mut |_| true)
+        .unwrap();
+    for (depth, table) in [
+        (Some(0), None),
+        (
+            None,
+            Some(SpecTable {
+                buckets: vec![(1 << 20, 0)],
+            }),
+        ),
+    ] {
         let inner = StubEngine::new(1024, tok.n_vocab(), tok.eos.unwrap(), script.clone());
-        let mut w = Worker::new(SpecStub { inner, depth: 2, before: None, appended: vec![], rewinds: 0, calls: 0, at: vec![] }, 4);
+        let mut w = Worker::new(
+            SpecStub {
+                inner,
+                depth: 2,
+                before: None,
+                appended: vec![],
+                rewinds: 0,
+                calls: 0,
+                at: vec![],
+            },
+            4,
+        );
         w.spec_table = table;
         let mut gp = greedy();
         gp.spec_depth = depth;
@@ -1764,17 +2603,39 @@ fn cancel_during_mtp_speculation_is_consistent() {
     let Some(m) = model() else { return };
     let tok = tokenizer::Tokenizer::from_gguf(m).unwrap();
     let eos = tok.eos.unwrap();
-    let script = tok.encode("one two three four five six seven eight nine ten eleven twelve", false, true);
+    let script = tok.encode(
+        "one two three four five six seven eight nine ten eleven twelve",
+        false,
+        true,
+    );
     let prompt = tok.encode("hello there", false, true);
     let reference = {
         let mut w = Worker::new(StubEngine::new(1024, tok.n_vocab(), eos, script.clone()), 4);
-        w.generate(&tok, &prompt, &greedy(), &mut |_| true).unwrap().tokens
+        w.generate(&tok, &prompt, &greedy(), &mut |_| true)
+            .unwrap()
+            .tokens
     };
     for depth in 1..=3 {
         for at in 1..4 {
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let spec = SpecStub { inner: StubEngine::new(1024, tok.n_vocab(), eos, script.clone()), depth, before: None, appended: vec![], rewinds: 0, calls: 0, at: vec![] };
-            let mut w = Worker::new(SpecCancelStub { spec, flag: flag.clone(), at, calls: 0 }, 4);
+            let spec = SpecStub {
+                inner: StubEngine::new(1024, tok.n_vocab(), eos, script.clone()),
+                depth,
+                before: None,
+                appended: vec![],
+                rewinds: 0,
+                calls: 0,
+                at: vec![],
+            };
+            let mut w = Worker::new(
+                SpecCancelStub {
+                    spec,
+                    flag: flag.clone(),
+                    at,
+                    calls: 0,
+                },
+                4,
+            );
             let mut gp = greedy();
             gp.cancel = Some(flag.clone());
             let mut sent = 0usize;
@@ -1782,19 +2643,39 @@ fn cancel_during_mtp_speculation_is_consistent() {
                 sent += 1;
                 true
             });
-            assert!(matches!(r, Err(crate::generate::GenError::Cancelled)), "depth {depth}, at {at}");
+            assert!(
+                matches!(r, Err(crate::generate::GenError::Cancelled)),
+                "depth {depth}, at {at}"
+            );
             // stopped at the first token after the verify that raised the flag
-            assert!(sent >= at + 1, "depth {depth}, at {at}: {sent} tokens emitted before the stop");
-            assert_eq!(w.engine.n_past(), w.cache.tokens.len(), "depth {depth}, at {at}: engine ahead of the cache");
-            assert_eq!(w.engine.spec.inner.tokens, w.cache.tokens, "depth {depth}, at {at}: engine and cache agree");
+            assert!(
+                sent >= at + 1,
+                "depth {depth}, at {at}: {sent} tokens emitted before the stop"
+            );
+            assert_eq!(
+                w.engine.n_past(),
+                w.cache.tokens.len(),
+                "depth {depth}, at {at}: engine ahead of the cache"
+            );
+            assert_eq!(
+                w.engine.spec.inner.tokens, w.cache.tokens,
+                "depth {depth}, at {at}: engine and cache agree"
+            );
             let k = w.cache.tokens.len();
             assert_eq!(w.cache.tokens[..prompt.len()], prompt[..]);
-            assert_eq!(w.cache.tokens[prompt.len()..], reference[..k - prompt.len()], "a prefix of the uncancelled reply");
+            assert_eq!(
+                w.cache.tokens[prompt.len()..],
+                reference[..k - prompt.len()],
+                "a prefix of the uncancelled reply"
+            );
             // the next request works and replies as the uncancelled run
             flag.store(false, std::sync::atomic::Ordering::Relaxed);
             w.engine.at = usize::MAX;
             let r2 = w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
-            assert_eq!(r2.tokens, reference, "depth {depth}, at {at}: next request differs");
+            assert_eq!(
+                r2.tokens, reference,
+                "depth {depth}, at {at}: next request differs"
+            );
         }
     }
 }
@@ -1835,9 +2716,26 @@ async fn idle_reprefill_serves_the_next_user_turn() {
         // where turn 2 ended = after its last decode (the idle job only restores and prefills).
         // `calls.len()` read right after the reply raced the idle job: under load the job had
         // already run, its prefills fell before the mark and the boundary lists differed (P2 review).
-        let calls0 = st.worker.lock().unwrap().engine.calls.iter().rposition(|c| c.0 == "decode").map_or(0, |i| i + 1);
-        msgs.as_array_mut().unwrap().extend([j2["choices"][0]["message"].clone(), json!({"role":"user","content":"Now write a test."})]);
-        let (_, tk, _) = call(&st, "POST", "/apply-template", json!({"messages": msgs, "tools": agent_tools()})).await;
+        let calls0 = st
+            .worker
+            .lock()
+            .unwrap()
+            .engine
+            .calls
+            .iter()
+            .rposition(|c| c.0 == "decode")
+            .map_or(0, |i| i + 1);
+        msgs.as_array_mut().unwrap().extend([
+            j2["choices"][0]["message"].clone(),
+            json!({"role":"user","content":"Now write a test."}),
+        ]);
+        let (_, tk, _) = call(
+            &st,
+            "POST",
+            "/apply-template",
+            json!({"messages": msgs, "tools": agent_tools()}),
+        )
+        .await;
         let p3 = st.tok.encode(tk["prompt"].as_str().unwrap(), true, true);
         let d = st.user_delim.clone().unwrap();
         let last_user = p3.windows(d.len()).rposition(|w| w == &d[..]).unwrap();
@@ -1849,14 +2747,24 @@ async fn idle_reprefill_serves_the_next_user_turn() {
         // up to turn 3's last decode: with SX-2 on, turn 3 itself ends with "stop" and spawns the
         // next idle job, which may already have run when the lock is taken here; its prefills are
         // not turn 3's (v0.1.3: the remaining race of this test, now deterministic)
-        let end = w.engine.calls.iter().rposition(|c| c.0 == "decode").map_or(w.engine.calls.len(), |i| i + 1).max(calls0);
+        let end = w
+            .engine
+            .calls
+            .iter()
+            .rposition(|c| c.0 == "decode")
+            .map_or(w.engine.calls.len(), |i| i + 1)
+            .max(calls0);
         let mut bounds: Vec<usize> = w.engine.calls[calls0..end]
             .iter()
             .filter(|c| c.0 == "prefill" && c.2 > 1)
             .flat_map(|c| (c.1..c.1 + c.2).step_by(16))
             .collect();
         bounds.sort_unstable();
-        (j3["timings"]["cache_n"].as_u64().unwrap() as usize, last_user, bounds)
+        (
+            j3["timings"]["cache_n"].as_u64().unwrap() as usize,
+            last_user,
+            bounds,
+        )
     };
     if model().is_none() {
         return;
@@ -1865,8 +2773,14 @@ async fn idle_reprefill_serves_the_next_user_turn() {
     let (c_on, last_user2, b_on) = run(true).await;
     assert_eq!(last_user, last_user2);
     // lossless: the engine sees the same ubatch boundaries with and without the idle job
-    assert_eq!(b_on, b_off, "ubatch boundaries differ: idle {b_on:?} vs on-demand {b_off:?}");
-    assert!(c_off < last_user, "without SX-2 the query is re-prefilled: cache_n {c_off} < {last_user}");
+    assert_eq!(
+        b_on, b_off,
+        "ubatch boundaries differ: idle {b_on:?} vs on-demand {b_off:?}"
+    );
+    assert!(
+        c_off < last_user,
+        "without SX-2 the query is re-prefilled: cache_n {c_off} < {last_user}"
+    );
     assert!(c_on > c_off && c_on + 16 > last_user, "with SX-2 the request resumes at the grid point below its new user message: cache_n {c_on}, user message at {last_user}");
 }
 
@@ -1884,7 +2798,10 @@ fn store_prune_leaves_foreign_files_alone() {
     let ours = "model=sha256:m1 server=sha256:new state=s ubatch=16";
     let old_build = "model=sha256:m1 server=sha256:old state=s ubatch=16";
     let other_model = "model=sha256:m2 server=sha256:new state=s ubatch=16";
-    for (id, toks) in [(old_build, vec![1u32, 2, 3]), (other_model, vec![4u32, 5, 6])] {
+    for (id, toks) in [
+        (old_build, vec![1u32, 2, 3]),
+        (other_model, vec![4u32, 5, 6]),
+    ] {
         let mut st = crate::prefix_store::PrefixStore::open(&dir, id.into(), 1 << 30, 1).unwrap();
         st.save_async(toks, vec![1u8; 64]);
         st.flush();
@@ -1896,11 +2813,21 @@ fn store_prune_leaves_foreign_files_alone() {
         st.flush();
     }
     drop(st);
-    let n_bin = || std::fs::read_dir(&dir).unwrap().flatten().filter(|d| d.path().extension().map_or(false, |e| e == "bin")).count();
+    let n_bin = || {
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|d| d.path().extension().map_or(false, |e| e == "bin"))
+            .count()
+    };
     assert_eq!(n_bin(), 2 + 2 + 3);
     let mut st = crate::prefix_store::PrefixStore::open(&dir, ours.into(), 100, 1).unwrap();
     assert_eq!(st.n_entries(), 0, "own entries pruned to the cap");
-    assert_eq!(n_bin(), 4, "the size cap touches only this identity's entries");
+    assert_eq!(
+        n_bin(),
+        4,
+        "the size cap touches only this identity's entries"
+    );
     // TTL: own entries and the same model's old-build orphan go; other model + non-entries stay
     st.save_async(vec![9, 9, 9], vec![1u8; 16]);
     st.flush();
@@ -1934,9 +2861,16 @@ fn ctx_adaptive_mtp_switch_mid_reply_matches_plain() {
     let mut limit_gp = greedy();
     limit_gp.n_predict = 25;
     let cases = [greedy(), stop_gp, limit_gp];
-    let table = || SpecTable { buckets: vec![(p0 + 5, 0), (p0 + 15, 2), (1 << 20, 0)] };
+    let table = || SpecTable {
+        buckets: vec![(p0 + 5, 0), (p0 + 15, 2), (1 << 20, 0)],
+    };
     // (mtp_max_ctx, spec_table, context positions where decode_spec may run, must speculate)
-    let policies: Vec<(Option<usize>, Option<SpecTable>, std::ops::Range<usize>, bool)> = vec![
+    let policies: Vec<(
+        Option<usize>,
+        Option<SpecTable>,
+        std::ops::Range<usize>,
+        bool,
+    )> = vec![
         (Some(p0 + 7), None, p0..p0 + 7, true),
         (None, Some(table()), p0 + 6..p0 + 16, true),
         (Some(p0 + 7), Some(table()), p0 + 6..p0 + 7, false),
@@ -1944,7 +2878,18 @@ fn ctx_adaptive_mtp_switch_mid_reply_matches_plain() {
     ];
     let mk = |mtp_max_ctx: Option<usize>, spec_table: Option<SpecTable>| {
         let inner = StubEngine::new(1024, tok.n_vocab(), eos, script.clone());
-        let mut w = Worker::new(SpecStub { inner, depth: 2, before: None, appended: vec![], rewinds: 0, calls: 0, at: vec![] }, 4);
+        let mut w = Worker::new(
+            SpecStub {
+                inner,
+                depth: 2,
+                before: None,
+                appended: vec![],
+                rewinds: 0,
+                calls: 0,
+                at: vec![],
+            },
+            4,
+        );
         w.mtp_max_ctx = mtp_max_ctx;
         w.spec_table = spec_table;
         w
@@ -1958,7 +2903,10 @@ fn ctx_adaptive_mtp_switch_mid_reply_matches_plain() {
             assert_eq!(got.tokens, want.tokens, "policy {pi}: tokens");
             assert_eq!(got.text, want.text, "policy {pi}: text");
             assert_eq!(got.stop, want.stop, "policy {pi}: stop");
-            assert_eq!(w.engine.inner.tokens, plain.engine.tokens, "policy {pi}: engine state");
+            assert_eq!(
+                w.engine.inner.tokens, plain.engine.tokens,
+                "policy {pi}: engine state"
+            );
             assert!(
                 w.engine.at.iter().all(|x| allowed.contains(x)),
                 "policy {pi}: decode_spec at {:?}, allowed {:?}",
@@ -1969,7 +2917,10 @@ fn ctx_adaptive_mtp_switch_mid_reply_matches_plain() {
                 assert!(w.engine.calls > 0, "policy {pi}: speculation never ran");
             }
             if allowed.is_empty() {
-                assert_eq!(w.engine.calls, 0, "policy {pi}: speculation with mtp_max_ctx at the prompt");
+                assert_eq!(
+                    w.engine.calls, 0,
+                    "policy {pi}: speculation with mtp_max_ctx at the prompt"
+                );
             }
             // a client that disconnects mid-reply: the state must be consistent, and the next
             // request must reply as the uncancelled run
@@ -1980,11 +2931,24 @@ fn ctx_adaptive_mtp_switch_mid_reply_matches_plain() {
                     k += 1;
                     k < cancel_at
                 });
-                assert!(matches!(r, Err(crate::generate::GenError::Cancelled)), "policy {pi}, cancel at {cancel_at}");
-                assert_eq!(w.engine.n_past(), w.cache.tokens.len(), "policy {pi}, cancel at {cancel_at}: engine ahead of the cache");
+                assert!(
+                    matches!(r, Err(crate::generate::GenError::Cancelled)),
+                    "policy {pi}, cancel at {cancel_at}"
+                );
+                assert_eq!(
+                    w.engine.n_past(),
+                    w.cache.tokens.len(),
+                    "policy {pi}, cancel at {cancel_at}: engine ahead of the cache"
+                );
                 let again = w.generate(&tok, &prompt, gp, &mut |_| true).unwrap();
-                assert_eq!(again.tokens, want.tokens, "policy {pi}, cancel at {cancel_at}: next request differs");
-                assert_eq!(w.engine.inner.tokens, plain.engine.tokens, "policy {pi}, cancel at {cancel_at}: engine state");
+                assert_eq!(
+                    again.tokens, want.tokens,
+                    "policy {pi}, cancel at {cancel_at}: next request differs"
+                );
+                assert_eq!(
+                    w.engine.inner.tokens, plain.engine.tokens,
+                    "policy {pi}, cancel at {cancel_at}: engine state"
+                );
             }
         }
     }
@@ -2019,7 +2983,9 @@ impl Engine for FailAfterStub {
         self.calls += 1;
         if self.calls == self.at {
             self.inner.prefill(t)?;
-            return Err(crate::engine::EngineError("flash: expert read failed (see the IO error)".into()));
+            return Err(crate::engine::EngineError(
+                "flash: expert read failed (see the IO error)".into(),
+            ));
         }
         self.inner.prefill(t)
     }
@@ -2046,7 +3012,11 @@ fn engine_error_mid_prefill_leaves_engine_and_cache_in_step() {
     let eos = tok.eos.unwrap();
     let script = tok.encode("a reply of a few tokens", false, true);
     let prompt: Vec<u32> = (0..1000u32).map(|i| 100 + i % 5000).collect();
-    let eng = FailAfterStub { inner: StubEngine::new(4096, tok.n_vocab(), eos, script), at: 3, calls: 0 };
+    let eng = FailAfterStub {
+        inner: StubEngine::new(4096, tok.n_vocab(), eos, script),
+        at: 3,
+        calls: 0,
+    };
     let mut w = Worker::new(eng, 4);
     w.ubatch = 16;
     let r = w.generate(&tok, &prompt, &greedy(), &mut |_| true);
@@ -2057,8 +3027,16 @@ fn engine_error_mid_prefill_leaves_engine_and_cache_in_step() {
     let r = w.generate(&tok, &prompt, &greedy(), &mut |_| true);
     let n = w.engine.inner.tokens.len().min(prompt.len());
     let same = w.engine.inner.tokens[..n] == prompt[..n];
-    eprintln!("retry: ok {}, engine holds the prompt: {same}, engine n_past {} vs prompt {}", r.is_ok(), w.engine.n_past(), prompt.len());
-    assert_eq!(eng_n, cache_n, "engine ahead of the cache after a failed prefill");
+    eprintln!(
+        "retry: ok {}, engine holds the prompt: {same}, engine n_past {} vs prompt {}",
+        r.is_ok(),
+        w.engine.n_past(),
+        prompt.len()
+    );
+    assert_eq!(
+        eng_n, cache_n,
+        "engine ahead of the cache after a failed prefill"
+    );
     assert!(same, "the retry prefilled on top of the failed chunk");
 }
 
@@ -2068,12 +3046,23 @@ fn engine_error_mid_prefill_leaves_engine_and_cache_in_step() {
 fn flash_switch_defaults_and_flags() {
     use crate::flash_switches::FlashSwitches;
     let d = FlashSwitches::default();
-    assert!(d.attn_tile && d.dense_gemm && d.expert_tile, "G4 prefill switches must default on: {d:?}");
+    assert!(
+        d.attn_tile && d.dense_gemm && d.expert_tile,
+        "G4 prefill switches must default on: {d:?}"
+    );
     assert!(!d.warmup, "warm-up reads must default off: {d:?}");
     let mut s = FlashSwitches::default();
     assert_eq!(s.parse_flag("--flash-dense-gemm", "0"), Ok(true));
     assert_eq!(s.parse_flag("--flash-warmup", "1"), Ok(true));
-    assert_eq!(s, FlashSwitches { attn_tile: true, dense_gemm: false, expert_tile: true, warmup: true });
+    assert_eq!(
+        s,
+        FlashSwitches {
+            attn_tile: true,
+            dense_gemm: false,
+            expert_tile: true,
+            warmup: true
+        }
+    );
     assert_eq!(s.parse_flag("--flash-attn-tile", "0"), Ok(true));
     assert_eq!(s.parse_flag("--flash-expert-tile", "0"), Ok(true));
     assert!(!s.attn_tile && !s.expert_tile);
@@ -2083,7 +3072,10 @@ fn flash_switch_defaults_and_flags() {
     assert_eq!(s.parse_flag("--flash-hotset", "default"), Ok(false));
     assert!(s.parse_flag("--flash-warmup", "yes").is_err());
     assert!(s.parse_flag("--flash-dense-gemm", "").is_err());
-    assert!(s.warmup && !s.dense_gemm, "a rejected value must not change the switch");
+    assert!(
+        s.warmup && !s.dense_gemm,
+        "a rejected value must not change the switch"
+    );
 }
 
 // ------------------------------------------------------------------ LONG-CTX: no full-state RAM copies
@@ -2100,13 +3092,23 @@ fn long_ctx_stream_save_equals_buffered_save() {
     let mut b = crate::prefix_store::PrefixStore::open(&d2, "id".into(), 1 << 30, 16).unwrap();
     a.save_async(toks.clone(), eng.save_state_vec().unwrap());
     a.flush();
-    let len = b.save_stream(&toks, &mut |w| eng.save_state(w).map_err(|e| e.0)).unwrap();
+    let len = b
+        .save_stream(&toks, &mut |w| eng.save_state(w).map_err(|e| e.0))
+        .unwrap();
     assert_eq!(len as usize, eng.state_size_hint());
     let file = |d: &std::path::Path| {
-        let p = std::fs::read_dir(d).unwrap().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "bin")).unwrap();
+        let p = std::fs::read_dir(d)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "bin"))
+            .unwrap();
         std::fs::read(p).unwrap()
     };
-    assert!(file(&d1) == file(&d2), "streamed entry differs from the buffered one");
+    assert!(
+        file(&d1) == file(&d2),
+        "streamed entry differs from the buffered one"
+    );
     assert!(b.contains(&toks));
     // a reopened store indexes it, and it loads into a fresh engine
     let b2 = crate::prefix_store::PrefixStore::open(&d2, "id".into(), 1 << 30, 16).unwrap();
@@ -2128,7 +3130,8 @@ fn long_ctx_stream_save_equals_buffered_save() {
 fn long_ctx_disk_park_streams_large_sessions() {
     let dir = scratch_dir("lc-park");
     let mut w = Worker::new(StubEngine::new(100_000, 400, 399, vec![]), 8);
-    w.sessions = Some(crate::prefix_store::PrefixStore::open(&dir, "id".into(), 1 << 30, 16).unwrap());
+    w.sessions =
+        Some(crate::prefix_store::PrefixStore::open(&dir, "id".into(), 1 << 30, 16).unwrap());
     w.cache.park_budget = 1 << 30;
     w.cache.park_min = 8;
     w.cache.spill = true;
@@ -2160,10 +3163,16 @@ fn long_ctx_disk_park_streams_large_sessions() {
     let b1: Vec<u32> = (320..=350).collect();
     assert_eq!(run(&mut w, &b1, &[360]), 0);
     assert_eq!(w.cache.stats.disk_parks, 1);
-    assert!(w.cache.parked_lengths().is_empty(), "the long session was copied into RAM");
+    assert!(
+        w.cache.parked_lengths().is_empty(),
+        "the long session was copied into RAM"
+    );
     let st = w.sessions.as_ref().unwrap();
     assert!(st.contains(&a_full), "full session not on disk");
-    assert!(st.contains(&a1[..a1.len() - 1]), "prompt checkpoint not on disk");
+    assert!(
+        st.contains(&a1[..a1.len() - 1]),
+        "prompt checkpoint not on disk"
+    );
     // A continues: B (small) parks in RAM as before; A's whole state is on disk for the worker's
     // session-cache lookup
     let mut a2 = a_full.clone();
@@ -2210,7 +3219,12 @@ fn long_ctx_stream_save_write_behind_150mib() {
         })
         .unwrap();
     assert_eq!(len as usize, total);
-    let p = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "bin")).unwrap();
+    let p = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "bin"))
+        .unwrap();
     let f = std::fs::read(&p).unwrap();
     let hdr = 8 + 4 + 2 + 8 + 4 * toks.len() + 16;
     assert_eq!(f.len(), hdr + total);

@@ -6,7 +6,10 @@ use crate::sampling::SamplingParams;
 use serde_json::{json, Map, Value as Json};
 
 pub fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// The OpenAI error object `{"error":{"code","message","param","type"}}` for an HTTP status:
@@ -58,7 +61,9 @@ pub fn exceed_context_json(n_prompt: usize, n_ctx: usize) -> Json {
 /// The request's own output limit, if it names one (`n_predict`, `max_completion_tokens`,
 /// `max_tokens`; null = absent). Without one the server's default output limit applies.
 pub fn has_length_field(body: &Json) -> bool {
-    ["n_predict", "max_completion_tokens", "max_tokens"].iter().any(|k| body.get(*k).is_some_and(|v| !v.is_null()))
+    ["n_predict", "max_completion_tokens", "max_tokens"]
+        .iter()
+        .any(|k| body.get(*k).is_some_and(|v| !v.is_null()))
 }
 
 fn num<T: Copy>(body: &Json, keys: &[&str], f: impl Fn(&Json) -> Option<T>, def: T) -> T {
@@ -83,7 +88,9 @@ pub fn check_sampling(body: &Json) -> Result<(), String> {
     let get = |k: &str| body.get(k).filter(|v| !v.is_null());
     let float = |k: &str, lo: f64, hi: f64| -> Result<(), String> {
         let Some(v) = get(k) else { return Ok(()) };
-        let x = v.as_f64().ok_or_else(|| format!("\"{k}\" must be a number"))?;
+        let x = v
+            .as_f64()
+            .ok_or_else(|| format!("\"{k}\" must be a number"))?;
         // the engine computes in f32: a value that is finite in f64 but not in f32 is out of range
         if !(x as f32).is_finite() || x < lo || x > hi {
             return Err(format!("\"{k}\" = {x} is out of range ({lo} to {hi})"));
@@ -101,7 +108,9 @@ pub fn check_sampling(body: &Json) -> Result<(), String> {
     if let Some(v) = get("top_k") {
         match v.as_i64() {
             Some(k) if i32::try_from(k).is_ok() => {}
-            _ => return Err("\"top_k\" must be an integer in the 32-bit range (<= 0 = off)".into()),
+            _ => {
+                return Err("\"top_k\" must be an integer in the 32-bit range (<= 0 = off)".into())
+            }
         }
     }
     if let Some(v) = get("seed") {
@@ -119,10 +128,14 @@ pub fn logit_bias(body: &Json) -> Result<Vec<(u32, f32)>, String> {
     let bad = |m: String| Err(m);
     let mut out: Vec<(u32, f32)> = Vec::new();
     let mut put = |id: Option<u64>, b: Option<f64>| -> Result<(), String> {
-        let id = id.and_then(|i| u32::try_from(i).ok()).ok_or("\"logit_bias\": a key is not a token id")?;
+        let id = id
+            .and_then(|i| u32::try_from(i).ok())
+            .ok_or("\"logit_bias\": a key is not a token id")?;
         let b = b.ok_or("\"logit_bias\": a bias is not a number")?;
         if !(-100.0..=100.0).contains(&b) && b != f64::NEG_INFINITY {
-            return Err(format!("\"logit_bias\" = {b} for token {id} is out of range (-100 to 100)"));
+            return Err(format!(
+                "\"logit_bias\" = {b} for token {id} is out of range (-100 to 100)"
+            ));
         }
         out.retain(|e| e.0 != id);
         out.push((id, b as f32));
@@ -138,8 +151,14 @@ pub fn logit_bias(body: &Json) -> Result<Vec<(u32, f32)>, String> {
         Some(Json::Array(a)) => {
             for e in a {
                 let pair = e.as_array().filter(|p| p.len() == 2);
-                let Some(p) = pair else { return bad("\"logit_bias\": array entries are [id, bias]".into()) };
-                let b = if p[1] == Json::Bool(false) { Some(f64::NEG_INFINITY) } else { p[1].as_f64() };
+                let Some(p) = pair else {
+                    return bad("\"logit_bias\": array entries are [id, bias]".into());
+                };
+                let b = if p[1] == Json::Bool(false) {
+                    Some(f64::NEG_INFINITY)
+                } else {
+                    p[1].as_f64()
+                };
                 put(p[0].as_u64(), b)?;
             }
         }
@@ -156,28 +175,67 @@ pub fn logit_bias(body: &Json) -> Result<Vec<(u32, f32)>, String> {
 pub fn gen_params(body: &Json, chat: bool) -> Result<GenParams, String> {
     let d = SamplingParams::default();
     let mut p = GenParams::default();
-    p.n_predict = num(body, &["n_predict", "max_completion_tokens", "max_tokens"], Json::as_i64, -1);
+    p.n_predict = num(
+        body,
+        &["n_predict", "max_completion_tokens", "max_tokens"],
+        Json::as_i64,
+        -1,
+    );
     if let Some(v) = body.get("n_predict").and_then(Json::as_i64) {
         p.n_predict = v;
     }
     p.sampling = SamplingParams {
-        temperature: num(body, &["temperature"], |v| v.as_f64().map(|x| x as f32), d.temperature),
-        top_k: num(body, &["top_k"], |v| v.as_i64().map(|x| x.clamp(i32::MIN as i64, i32::MAX as i64) as i32), d.top_k),
+        temperature: num(
+            body,
+            &["temperature"],
+            |v| v.as_f64().map(|x| x as f32),
+            d.temperature,
+        ),
+        top_k: num(
+            body,
+            &["top_k"],
+            |v| {
+                v.as_i64()
+                    .map(|x| x.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+            },
+            d.top_k,
+        ),
         top_p: num(body, &["top_p"], |v| v.as_f64().map(|x| x as f32), d.top_p),
         min_p: num(body, &["min_p"], |v| v.as_f64().map(|x| x as f32), d.min_p),
         seed: num(body, &["seed"], |v| v.as_i64().map(|x| x as u64), d.seed),
-        presence_penalty: num(body, &["presence_penalty"], |v| v.as_f64().map(|x| x as f32), 0.0),
-        frequency_penalty: num(body, &["frequency_penalty"], |v| v.as_f64().map(|x| x as f32), 0.0),
+        presence_penalty: num(
+            body,
+            &["presence_penalty"],
+            |v| v.as_f64().map(|x| x as f32),
+            0.0,
+        ),
+        frequency_penalty: num(
+            body,
+            &["frequency_penalty"],
+            |v| v.as_f64().map(|x| x as f32),
+            0.0,
+        ),
         logit_bias: logit_bias(body)?,
     };
     check_sampling(body)?;
     p.stop = match body.get("stop") {
         Some(Json::String(s)) => vec![s.clone()],
-        Some(Json::Array(a)) => a.iter().filter_map(Json::as_str).filter(|s| !s.is_empty()).map(str::to_string).collect(),
+        Some(Json::Array(a)) => a
+            .iter()
+            .filter_map(Json::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
         _ => Vec::new(),
     };
-    p.cache_prompt = body.get("cache_prompt").and_then(Json::as_bool).unwrap_or(true);
-    p.ignore_eos = body.get("ignore_eos").and_then(Json::as_bool).unwrap_or(false);
+    p.cache_prompt = body
+        .get("cache_prompt")
+        .and_then(Json::as_bool)
+        .unwrap_or(true);
+    p.ignore_eos = body
+        .get("ignore_eos")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
     // per-request speculation switch (the controller's off-switch): "speculative": false, or a
     // depth via "spec_draft_n_max" (llama-server's flag name) / "speculative": {"n_max": n}
     p.spec_depth = match body.get("speculative") {
@@ -185,11 +243,26 @@ pub fn gen_params(body: &Json, chat: bool) -> Result<GenParams, String> {
         Some(Json::Object(o)) => o.get("n_max").and_then(Json::as_u64).map(|n| n as usize),
         _ => None,
     }
-    .or_else(|| body.get("spec_draft_n_max").and_then(Json::as_u64).map(|n| n as usize));
+    .or_else(|| {
+        body.get("spec_draft_n_max")
+            .and_then(Json::as_u64)
+            .map(|n| n as usize)
+    });
     if chat {
-        if body.get("logprobs").and_then(Json::as_bool).unwrap_or(false) {
-            p.n_probs = body.get("top_logprobs").and_then(Json::as_u64).unwrap_or(20) as usize;
-        } else if body.get("top_logprobs").map(|v| !v.is_null()).unwrap_or(false) {
+        if body
+            .get("logprobs")
+            .and_then(Json::as_bool)
+            .unwrap_or(false)
+        {
+            p.n_probs = body
+                .get("top_logprobs")
+                .and_then(Json::as_u64)
+                .unwrap_or(20) as usize;
+        } else if body
+            .get("top_logprobs")
+            .map(|v| !v.is_null())
+            .unwrap_or(false)
+        {
             return Err("top_logprobs requires logprobs to be set to true".into());
         }
         if let Some(n) = body.get("n_probs").and_then(Json::as_u64) {
@@ -201,7 +274,10 @@ pub fn gen_params(body: &Json, chat: bool) -> Result<GenParams, String> {
     // every generated token keeps n_probs entries (vocabulary-sized for a huge value): bound the
     // memory a request can ask for (OpenAI allows top_logprobs <= 20)
     if p.n_probs > MAX_N_PROBS {
-        return Err(format!("n_probs / top_logprobs = {} is above the limit {MAX_N_PROBS}", p.n_probs));
+        return Err(format!(
+            "n_probs / top_logprobs = {} is above the limit {MAX_N_PROBS}",
+            p.n_probs
+        ));
     }
     Ok(p)
 }
@@ -246,7 +322,11 @@ pub fn timings_json(t: &Timings) -> Json {
     j
 }
 
-fn timings_base(t: &Timings, per_tok: impl Fn(f64, usize) -> f64, per_s: impl Fn(f64, usize) -> f64) -> Json {
+fn timings_base(
+    t: &Timings,
+    per_tok: impl Fn(f64, usize) -> f64,
+    per_s: impl Fn(f64, usize) -> f64,
+) -> Json {
     json!({
         "cache_n": t.cache_n,
         "prompt_n": t.prompt_n,
@@ -285,15 +365,28 @@ fn piece_str(b: &[u8]) -> String {
 /// `completion_token_output::probs_vector_to_json` (post_sampling_probs=false shape;
 /// with post_sampling the keys become prob/top_probs).
 pub fn probs_json(v: &[TokenProbs], post_sampling: bool) -> Json {
-    let (pk, tk) = if post_sampling { ("prob", "top_probs") } else { ("logprob", "top_logprobs") };
-    let val = |p: f32| if post_sampling { Json::from(p) } else { Json::from(logprob(p)) };
+    let (pk, tk) = if post_sampling {
+        ("prob", "top_probs")
+    } else {
+        ("logprob", "top_logprobs")
+    };
+    let val = |p: f32| {
+        if post_sampling {
+            Json::from(p)
+        } else {
+            Json::from(logprob(p))
+        }
+    };
     Json::Array(
         v.iter()
             .map(|t| {
                 let mut o = Map::new();
                 o.insert("id".into(), t.id.into());
                 o.insert("token".into(), piece_str(&t.piece).into());
-                o.insert("bytes".into(), t.piece.iter().map(|&b| Json::from(b)).collect());
+                o.insert(
+                    "bytes".into(),
+                    t.piece.iter().map(|&b| Json::from(b)).collect(),
+                );
                 o.insert(pk.into(), val(t.prob));
                 o.insert(
                     tk.into(),
@@ -303,7 +396,10 @@ pub fn probs_json(v: &[TokenProbs], post_sampling: bool) -> Json {
                             let mut x = Map::new();
                             x.insert("id".into(), e.id.into());
                             x.insert("token".into(), piece_str(&e.piece).into());
-                            x.insert("bytes".into(), e.piece.iter().map(|&b| Json::from(b)).collect());
+                            x.insert(
+                                "bytes".into(),
+                                e.piece.iter().map(|&b| Json::from(b)).collect(),
+                            );
                             x.insert(pk.into(), val(e.prob));
                             Json::Object(x)
                         })
@@ -335,13 +431,25 @@ pub struct ChatMeta {
     pub fingerprint: String,
 }
 
-pub fn chat_response(m: &ChatMeta, msg: &chat::ChatMsg, r: &GenResult, n_probs: bool, post_sampling: bool) -> Json {
+pub fn chat_response(
+    m: &ChatMeta,
+    msg: &chat::ChatMsg,
+    r: &GenResult,
+    n_probs: bool,
+    post_sampling: bool,
+) -> Json {
     let mut choice = Map::new();
-    choice.insert("finish_reason".into(), finish_reason(r.stop, !msg.tool_calls.is_empty()).into());
+    choice.insert(
+        "finish_reason".into(),
+        finish_reason(r.stop, !msg.tool_calls.is_empty()).into(),
+    );
     choice.insert("index".into(), 0.into());
     choice.insert("message".into(), msg.to_json());
     if n_probs && !r.probs.is_empty() {
-        choice.insert("logprobs".into(), json!({"content": probs_json(&r.probs, post_sampling)}));
+        choice.insert(
+            "logprobs".into(),
+            json!({"content": probs_json(&r.probs, post_sampling)}),
+        );
     }
     json!({
         "choices": [Json::Object(choice)],
@@ -379,13 +487,32 @@ pub fn chat_usage_chunk(m: &ChatMeta, r: &GenResult) -> Json {
 }
 
 /// native /completion final object (`to_json_non_oaicompat`)
-pub fn completion_final(model: &str, prompt: &str, r: &GenResult, stream: bool, gp: &GenParams, return_tokens: bool, post_sampling: bool) -> Json {
+pub fn completion_final(
+    model: &str,
+    prompt: &str,
+    r: &GenResult,
+    stream: bool,
+    gp: &GenParams,
+    return_tokens: bool,
+    post_sampling: bool,
+) -> Json {
     let mut o = Map::new();
     o.insert("index".into(), 0.into());
-    o.insert("content".into(), if stream { "".into() } else { r.text.clone().into() });
+    o.insert(
+        "content".into(),
+        if stream {
+            "".into()
+        } else {
+            r.text.clone().into()
+        },
+    );
     o.insert(
         "tokens".into(),
-        if return_tokens && !stream { r.tokens.iter().map(|&t| Json::from(t)).collect() } else { Json::Array(vec![]) },
+        if return_tokens && !stream {
+            r.tokens.iter().map(|&t| Json::from(t)).collect()
+        } else {
+            Json::Array(vec![])
+        },
     );
     o.insert("id_slot".into(), 0.into());
     o.insert("stop".into(), true.into());
@@ -398,10 +525,16 @@ pub fn completion_final(model: &str, prompt: &str, r: &GenResult, stream: bool, 
     o.insert("truncated".into(), r.truncated.into());
     o.insert("stop_type".into(), r.stop.as_str().into());
     o.insert("stopping_word".into(), r.stopping_word.clone().into());
-    o.insert("tokens_cached".into(), (r.n_prompt + r.n_decoded.saturating_sub(1)).into());
+    o.insert(
+        "tokens_cached".into(),
+        (r.n_prompt + r.n_decoded.saturating_sub(1)).into(),
+    );
     o.insert("timings".into(), timings_json(&r.timings));
     if !stream && !r.probs.is_empty() {
-        o.insert("completion_probabilities".into(), probs_json(&r.probs, post_sampling));
+        o.insert(
+            "completion_probabilities".into(),
+            probs_json(&r.probs, post_sampling),
+        );
     }
     Json::Object(o)
 }
@@ -423,7 +556,13 @@ pub fn generation_settings(gp: &GenParams) -> Json {
 }
 
 /// native /completion streamed partial
-pub fn completion_partial(text: &str, n_decoded: usize, n_prompt: usize, probs: &[TokenProbs], post_sampling: bool) -> Json {
+pub fn completion_partial(
+    text: &str,
+    n_decoded: usize,
+    n_prompt: usize,
+    probs: &[TokenProbs],
+    post_sampling: bool,
+) -> Json {
     let mut o = Map::new();
     o.insert("index".into(), 0.into());
     o.insert("content".into(), text.into());
@@ -433,13 +572,17 @@ pub fn completion_partial(text: &str, n_decoded: usize, n_prompt: usize, probs: 
     o.insert("tokens_predicted".into(), n_decoded.into());
     o.insert("tokens_evaluated".into(), n_prompt.into());
     if !probs.is_empty() {
-        o.insert("completion_probabilities".into(), probs_json(probs, post_sampling));
+        o.insert(
+            "completion_probabilities".into(),
+            probs_json(probs, post_sampling),
+        );
     }
     Json::Object(o)
 }
 
 /// The message of a refused `n` above 1.
-const N_REFUSED: &str = "\"n\" > 1 is not supported: this local model server returns one choice per request. \
+const N_REFUSED: &str =
+    "\"n\" > 1 is not supported: this local model server returns one choice per request. \
 Send n=1 (or omit it) and repeat the request for more choices.";
 
 /// `n` (choices per request). Absent, null or 1 is the one choice this server returns. An integer
@@ -448,13 +591,26 @@ Send n=1 (or omit it) and repeat the request for more choices.";
 pub fn check_n(body: &Json) -> Result<(), Json> {
     let int = match body.get("n") {
         None | Some(Json::Null) => return Ok(()),
-        Some(Json::Number(x)) => x.as_i64().map(i128::from).or_else(|| x.as_u64().map(i128::from)),
+        Some(Json::Number(x)) => x
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| x.as_u64().map(i128::from)),
         Some(_) => None,
     };
     match int {
         Some(1) => Ok(()),
-        Some(v) if v > 1 => Err(error_json_with(400, N_REFUSED, "unsupported_value", Some("n"))),
-        _ => Err(error_json_with(400, "\"n\" must be a positive integer.", "invalid_value", Some("n"))),
+        Some(v) if v > 1 => Err(error_json_with(
+            400,
+            N_REFUSED,
+            "unsupported_value",
+            Some("n"),
+        )),
+        _ => Err(error_json_with(
+            400,
+            "\"n\" must be a positive integer.",
+            "invalid_value",
+            Some("n"),
+        )),
     }
 }
 
@@ -463,7 +619,11 @@ pub fn check_n(body: &Json) -> Result<(), Json> {
 /// client and differ on every call. No new dependency. Used for ids, never for secrets.
 pub fn random_hex() -> String {
     use std::hash::{BuildHasher, Hasher};
-    let one = || std::collections::hash_map::RandomState::new().build_hasher().finish();
+    let one = || {
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+    };
     format!("{:016x}{:016x}", one(), one())
 }
 
@@ -472,7 +632,8 @@ pub fn random_hex() -> String {
 /// `offset` is the character position of the first row in the reply text;
 /// it is advanced past each row's token, so rows sent in several pieces keep one running offset.
 pub fn legacy_logprobs(rows: &[TokenProbs], top_n: usize, offset: &mut usize) -> Json {
-    let (mut tokens, mut lps, mut tops, mut offs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut tokens, mut lps, mut tops, mut offs) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for t in rows {
         let token = piece_str(&t.piece);
         offs.push(Json::from(*offset));

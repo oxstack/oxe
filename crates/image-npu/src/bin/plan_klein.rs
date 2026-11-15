@@ -1,7 +1,10 @@
 //! Prints the klein window plan for the fixture table. Planning arithmetic only; no device access.
 //! Usage: plan_klein [--json] [tokens...]   (default tokens: 1536 4608)
 
-use image_npu::plan::{klein_linear_order, parse_tensor_table, plan_json, plan_report, plan_windows, ActReserve, PlanConfig};
+use image_npu::plan::{
+    klein_linear_order, parse_tensor_table, plan_json, plan_report, plan_windows, ActReserve,
+    PlanConfig,
+};
 
 const FIXTURE: &str = include_str!("../../../../tests/fixtures/klein-4b-q8.tensors.txt");
 

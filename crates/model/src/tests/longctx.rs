@@ -16,12 +16,25 @@ const CTX_TRAIN: u32 = 262_144;
 /// 2 x f16 + 1e-3 band (1.5e-3; 9.7e-3 at x1000): Q8_0 score error grows with the score scale.
 const K_AMP: f32 = 250.0;
 
-fn long_parts(tag: &str, nt: usize, mtp: bool) -> (PathBuf, Plan, WeightStore, Option<crate::mtp::MtpWeights>, sched::Pool) {
+fn long_parts(
+    tag: &str,
+    nt: usize,
+    mtp: bool,
+) -> (
+    PathBuf,
+    Plan,
+    WeightStore,
+    Option<crate::mtp::MtpWeights>,
+    sched::Pool,
+) {
     let dir = std::env::temp_dir().join(format!("oxe-longctx-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("mini-long.gguf");
     mini_model_ctx(&path, mtp, CTX_TRAIN);
-    std::env::set_var("OXE_MODEL_SHA256", if mtp { "1".repeat(64) } else { "0".repeat(64) });
+    std::env::set_var(
+        "OXE_MODEL_SHA256",
+        if mtp { "1".repeat(64) } else { "0".repeat(64) },
+    );
     let opt = mini_opts(&dir);
     let g = gguf::Gguf::open(&path).unwrap();
     let desc = ModelDesc::from_header(&g.header).unwrap();
@@ -33,9 +46,31 @@ fn long_parts(tag: &str, nt: usize, mtp: bool) -> (PathBuf, Plan, WeightStore, O
     (dir, plan, ws, mw, pool)
 }
 
-fn long_engine<'a>(plan: &'a Plan, ws: &'a WeightStore, n_ctx: usize, kv: KvType, lanes: usize, mtp: Option<&'a crate::mtp::MtpWeights>) -> Engine<'a> {
-    let cfg = EngineConfig { n_ctx, logits: true, trace: false, profile: false };
-    Engine::with_options(plan, ws, cfg, EngineOptions { verify_lanes: lanes, mtp, kv_type: Some(kv) }).unwrap()
+fn long_engine<'a>(
+    plan: &'a Plan,
+    ws: &'a WeightStore,
+    n_ctx: usize,
+    kv: KvType,
+    lanes: usize,
+    mtp: Option<&'a crate::mtp::MtpWeights>,
+) -> Engine<'a> {
+    let cfg = EngineConfig {
+        n_ctx,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
+    Engine::with_options(
+        plan,
+        ws,
+        cfg,
+        EngineOptions {
+            verify_lanes: lanes,
+            mtp,
+            kv_type: Some(kv),
+        },
+    )
+    .unwrap()
 }
 
 fn h2f(h: u16) -> f32 {
@@ -101,7 +136,10 @@ fn synth_state_shift(e: &Engine, n_pos: usize, rec: &[u8], shift: usize) -> Vec<
             for p in 0..n_pos {
                 // x250 (the mini q is ~0.05 per dim): scores spread far enough that the softmax is peaked over a few positions
                 // (a diffuse 70K average is ~0 and vanishes in the activation quantisation)
-                let k: Vec<f32> = synth_row(ai, h, p, hd, true).iter().map(|x| x * K_AMP).collect();
+                let k: Vec<f32> = synth_row(ai, h, p, hd, true)
+                    .iter()
+                    .map(|x| x * K_AMP)
+                    .collect();
                 if kv.k8() {
                     b.extend(q8(&k));
                 } else {
@@ -149,7 +187,11 @@ fn rec_bytes(e: &Engine, pool: &sched::Pool) -> Vec<u8> {
 
 fn rel_diff(a: &[f32], b: &[f32]) -> f32 {
     let sc = b.iter().fold(1f32, |m, x| m.max(x.abs()));
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max) / sc
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0f32, f32::max)
+        / sc
 }
 
 /// (1) n_ctx is validated against the GGUF context_length and every context-sized buffer is sized
@@ -161,7 +203,9 @@ fn long_ctx_validation_and_buffer_sizing() {
     assert!(validate_n_ctx(0, 4096).is_err());
     assert_eq!(validate_n_ctx(1, 4096), Ok(256));
     assert_eq!(validate_n_ctx(4096, 4096), Ok(4096));
-    assert!(validate_n_ctx(4097, 4096).unwrap_err().contains("trained context"));
+    assert!(validate_n_ctx(4097, 4096)
+        .unwrap_err()
+        .contains("trained context"));
     assert_eq!(validate_n_ctx(262_144, 262_144), Ok(262_144));
     assert!(validate_n_ctx(262_145, 262_144).is_err());
     assert_eq!(validate_n_ctx(32_768, 262_144), Ok(32_768));
@@ -172,9 +216,30 @@ fn long_ctx_validation_and_buffer_sizing() {
     std::env::set_var("OXE_MODEL_SHA256", "0".repeat(64));
     let opt4 = mini_opts(&dir4);
     let (plan4, ws4, _pool4) = mini_engine_parts(&path4, &opt4, 1);
-    let err = Engine::new(&plan4, &ws4, EngineConfig { n_ctx: 8192, logits: false, trace: false, profile: false }).err().expect("8K on a 4K model must fail");
+    let err = Engine::new(
+        &plan4,
+        &ws4,
+        EngineConfig {
+            n_ctx: 8192,
+            logits: false,
+            trace: false,
+            profile: false,
+        },
+    )
+    .err()
+    .expect("8K on a 4K model must fail");
     assert!(err.contains("trained context"), "{err}");
-    assert!(Engine::new(&plan4, &ws4, EngineConfig { n_ctx: 4096, logits: false, trace: false, profile: false }).is_ok());
+    assert!(Engine::new(
+        &plan4,
+        &ws4,
+        EngineConfig {
+            n_ctx: 4096,
+            logits: false,
+            trace: false,
+            profile: false
+        }
+    )
+    .is_ok());
     std::fs::remove_dir_all(&dir4).ok();
 
     let (dir, plan, ws, _, pool) = long_parts("size", 2, false);
@@ -211,7 +276,11 @@ fn long_ctx_validation_and_buffer_sizing() {
     for kv in [KvType::F16, KvType::KV8] {
         let e = long_engine(&plan, &ws, 131_072, kv, 2, mw.as_ref());
         assert_eq!((e.n_att(), e.lanes(), e.verify_lanes()), (2, MAX_LANES, 2));
-        assert_eq!(e.ctx_mem(), ctx_mem(&plan.desc, 131_072, kv, 2, MAX_LANES, 2), "MTP {kv:?}");
+        assert_eq!(
+            e.ctx_mem(),
+            ctx_mem(&plan.desc, 131_072, kv, 2, MAX_LANES, 2),
+            "MTP {kv:?}"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -224,13 +293,30 @@ fn long_ctx_memory_table_of_ornith_and_qwen36() {
     for key in ["ornith", "qwen36"] {
         let h = header(&fixture(key));
         let d = ModelDesc::from_header(&h).unwrap();
-        assert_eq!((d.n_attention(), d.n_head_kv, d.head_dim, d.n_ctx_train), (10, 2, 256, 262_144), "{key}");
+        assert_eq!(
+            (d.n_attention(), d.n_head_kv, d.head_dim, d.n_ctx_train),
+            (10, 2, 256, 262_144),
+            "{key}"
+        );
         let lanes = MAX_LANES; // MTP engine
-        for (kv, n_att, per) in [(KvType::F16, 10, 20_480), (KvType::F16, 11, 22_528), (KvType::KV8, 11, 11_968), (KvType::K8, 11, 17_248)] {
-            assert_eq!(ctx_mem(&d, 4096, kv, n_att, lanes, 2).kv_per_pos, per, "{key} {kv:?} {n_att}");
+        for (kv, n_att, per) in [
+            (KvType::F16, 10, 20_480),
+            (KvType::F16, 11, 22_528),
+            (KvType::KV8, 11, 11_968),
+            (KvType::K8, 11, 17_248),
+        ] {
+            assert_eq!(
+                ctx_mem(&d, 4096, kv, n_att, lanes, 2).kv_per_pos,
+                per,
+                "{key} {kv:?} {n_att}"
+            );
         }
         let rec = ctx_mem(&d, 4096, KvType::F16, 11, lanes, 1).recurrent;
-        assert_eq!(rec, 30 * ((3 * 8192) + 32 * 128 * 128) * 4, "{key}: recurrent slot");
+        assert_eq!(
+            rec,
+            30 * ((3 * 8192) + 32 * 128 * 128) * 4,
+            "{key}: recurrent slot"
+        );
         let gib = |b: usize| b as f64 / (1u64 << 30) as f64;
         for n in [32_768usize, 65_536, 131_072, 262_144] {
             let f = ctx_mem(&d, n, KvType::F16, 11, lanes, 2);
@@ -247,13 +333,27 @@ fn long_ctx_memory_table_of_ornith_and_qwen36() {
 /// Exact attention of one query in f64 over stored K / V rows (`k(p)`, `v(p)` give the f32 values
 /// a read of position p sees); `p16`: round the normalised probabilities to f16 first, as the
 /// engine's tiled decode (and ggml's non-flash attention) does. Returns (output, prob of `needle`).
-fn attn64(q: &[f32], n: usize, hd: usize, scale: f64, k: &dyn Fn(usize, &mut [f32]), v: &dyn Fn(usize, &mut [f32]), p16: bool, needle: usize) -> (Vec<f64>, f64) {
+fn attn64(
+    q: &[f32],
+    n: usize,
+    hd: usize,
+    scale: f64,
+    k: &dyn Fn(usize, &mut [f32]),
+    v: &dyn Fn(usize, &mut [f32]),
+    p16: bool,
+    needle: usize,
+) -> (Vec<f64>, f64) {
     let mut row = vec![0f32; hd];
     let mut s = vec![0f64; n];
     let mut m = f64::NEG_INFINITY;
     for p in 0..n {
         k(p, &mut row);
-        s[p] = q.iter().zip(&row).map(|(a, b)| *a as f64 * *b as f64).sum::<f64>() * scale;
+        s[p] = q
+            .iter()
+            .zip(&row)
+            .map(|(a, b)| *a as f64 * *b as f64)
+            .sum::<f64>()
+            * scale;
         m = m.max(s[p]);
     }
     let mut sum = 0f64;
@@ -314,7 +414,10 @@ fn rel_l2(a: &[f64], b: &[f64]) -> f64 {
 fn long_ctx_int8_vs_f16_attention_error_vs_f64() {
     let hd = 256;
     let scale = 1.0 / (hd as f64).sqrt();
-    let q: Vec<f32> = synth_row(99, 0, 0, hd, true).iter().map(|x| x * 1.7).collect();
+    let q: Vec<f32> = synth_row(99, 0, 0, hd, true)
+        .iter()
+        .map(|x| x * 1.7)
+        .collect();
     for n in [32_768usize, 65_536, 131_072] {
         let needle = n / 3;
         // the true f32 rows (needle: K = 0.9 q: score ~17 against a diffuse rest whose
@@ -322,7 +425,14 @@ fn long_ctx_int8_vs_f16_attention_error_vs_f64() {
         let mut kt = vec![0f32; n * hd];
         let mut vt = vec![0f32; n * hd];
         for p in 0..n {
-            let k = if p == needle { q.iter().map(|x| x * 0.9).collect() } else { synth_row(0, 0, p, hd, true).iter().map(|x| x * 1.7).collect::<Vec<f32>>() };
+            let k = if p == needle {
+                q.iter().map(|x| x * 0.9).collect()
+            } else {
+                synth_row(0, 0, p, hd, true)
+                    .iter()
+                    .map(|x| x * 1.7)
+                    .collect::<Vec<f32>>()
+            };
             kt[p * hd..(p + 1) * hd].copy_from_slice(&k);
             vt[p * hd..(p + 1) * hd].copy_from_slice(&synth_row(0, 0, p, hd, false));
         }
@@ -330,7 +440,12 @@ fn long_ctx_int8_vs_f16_attention_error_vs_f64() {
         let (k16, v16) = (rows_f16(&kt, hd), rows_f16(&vt, hd));
         let (k8, v8) = (rows_q8(&kt, hd), rows_q8(&vt, hd));
         let (want, pn) = attn64(&q, n, hd, scale, &k32, &v32, false, needle);
-        let arms: [(&str, &dyn Fn(usize, &mut [f32]), &dyn Fn(usize, &mut [f32]), bool); 6] = [
+        let arms: [(
+            &str,
+            &dyn Fn(usize, &mut [f32]),
+            &dyn Fn(usize, &mut [f32]),
+            bool,
+        ); 6] = [
             ("f16", &k16, &v16, false),
             ("k8", &k8, &v16, false),
             ("v8", &k16, &v8, false),
@@ -344,7 +459,10 @@ fn long_ctx_int8_vs_f16_attention_error_vs_f64() {
             let (got, gn) = attn64(&q, n, hd, scale, k, v, p16, needle);
             let e = rel_l2(&got, &want);
             assert!(e.is_finite());
-            assert!(((gn - pn) / pn).abs() < 0.05, "n {n} {name}: needle probability {gn} vs {pn}");
+            assert!(
+                ((gn - pn) / pn).abs() < 0.05,
+                "n {n} {name}: needle probability {gn} vs {pn}"
+            );
             line += &format!(" {name} {e:.2e}");
             errs.push((name, e));
         }
@@ -352,9 +470,18 @@ fn long_ctx_int8_vs_f16_attention_error_vs_f64() {
         let err = |nm: &str| errs.iter().find(|x| x.0 == nm).unwrap().1;
         assert!(err("f16") < 1e-3, "n {n}: f16 KV {}", err("f16"));
         for nm in ["k8", "v8", "kv8"] {
-            assert!(err(nm) < 3e-2 && err(nm) >= err("f16") * 0.5, "n {n}: {nm} {}", err(nm));
+            assert!(
+                err(nm) < 3e-2 && err(nm) >= err("f16") * 0.5,
+                "n {n}: {nm} {}",
+                err(nm)
+            );
         }
-        assert!(err("f16+p16") < 5e-2 && err("kv8+p16") < 6e-2, "n {n}: f16-probability rounding {} / {}", err("f16+p16"), err("kv8+p16"));
+        assert!(
+            err("f16+p16") < 5e-2 && err("kv8+p16") < 6e-2,
+            "n {n}: f16-probability rounding {} / {}",
+            err("f16+p16"),
+            err("kv8+p16")
+        );
     }
 }
 
@@ -388,7 +515,10 @@ fn long_ctx_decode_verify_rollback_every_kv_type_at_70k() {
         for &t in &toks {
             let g = a.step(&pool, t);
             r.step(&pool, t);
-            assert!(a.logits().iter().all(|x| x.is_finite()), "{kv:?}: non-finite logits");
+            assert!(
+                a.logits().iter().all(|x| x.is_finite()),
+                "{kv:?}: non-finite logits"
+            );
             assert_eq!(g as usize, argmax(a.logits()));
             worst = worst.max(rel_diff(a.logits(), r.logits()));
             want.push(a.logits().to_vec());
@@ -399,34 +529,53 @@ fn long_ctx_decode_verify_rollback_every_kv_type_at_70k() {
             // sensitivity: V misaligned with K by one position (an off-by-one row bug)
             // must land far outside the tolerance used below
             let z = long_engine(&plan, &ws, n_ctx, kv, 0, None);
-            z.read_state(&mut &synth_state_shift(&z, n_pos, &rec, 1)[..], n_pos).unwrap();
+            z.read_state(&mut &synth_state_shift(&z, n_pos, &rec, 1)[..], n_pos)
+                .unwrap();
             let mut off = 0f32;
             for (i, &t) in toks.iter().enumerate() {
                 z.step(&pool, t);
                 off = off.max(rel_diff(z.logits(), &want[i]));
             }
             eprintln!("long-ctx sensitivity: off-by-one context differs by {off:.2e} (f16 vs reference {base:.2e})");
-            assert!(off > 10.0 * (2.0 * base + 1e-3), "the comparison cannot see an off-by-one context ({off})");
+            assert!(
+                off > 10.0 * (2.0 * base + 1e-3),
+                "the comparison cannot see an off-by-one context ({off})"
+            );
         } else {
-            assert!(worst <= 2.0 * base + 1e-3, "{kv:?}: {worst} vs the f32 reference (f16 cache: {base})");
+            assert!(
+                worst <= 2.0 * base + 1e-3,
+                "{kv:?}: {worst} vs the f32 reference (f16 cache: {base})"
+            );
         }
-        assert!(kv_all(&a, 1) == kv_all(&r, 1), "{kv:?}: reference engine stored other KV bytes");
+        assert!(
+            kv_all(&a, 1) == kv_all(&r, 1),
+            "{kv:?}: reference engine stored other KV bytes"
+        );
         eprintln!("long-ctx {kv:?} at {n_pos}: max relative logit diff vs f32 reference attention {worst:.2e}");
         // (b) verify lanes + rollback
         let b = long_engine(&plan, &ws, n_ctx, kv, 4, None);
         b.read_state(&mut &blob[..], n_pos).unwrap();
         let g = b.verify(&pool, &[toks[0], toks[1], toks[2], 63]);
         for ln in 0..3 {
-            assert!(bits_eq(b.logits_lane(ln), &want[ln]), "{kv:?}: verify lane {ln} differs from the step");
+            assert!(
+                bits_eq(b.logits_lane(ln), &want[ln]),
+                "{kv:?}: verify lane {ln} differs from the step"
+            );
             assert_eq!(g[ln] as usize, argmax(&want[ln]));
         }
         b.commit(2); // toks[2] and the junk lane rejected
         assert_eq!(b.pos(), n_pos + 2);
         for (i, &t) in toks.iter().enumerate().skip(2) {
             b.step(&pool, t);
-            assert!(bits_eq(b.logits(), &want[i]), "{kv:?}: step {i} after the rollback differs");
+            assert!(
+                bits_eq(b.logits(), &want[i]),
+                "{kv:?}: step {i} after the rollback differs"
+            );
         }
-        assert!(kv_all(&a, 1) == kv_all(&b, 1), "{kv:?}: KV after rollback differs");
+        assert!(
+            kv_all(&a, 1) == kv_all(&b, 1),
+            "{kv:?}: KV after rollback differs"
+        );
         // (d) checkpoint at n_pos + 2, wander off, restore, replay
         let c = long_engine(&plan, &ws, n_ctx, kv, 0, None);
         c.read_state(&mut &blob[..], n_pos).unwrap();
@@ -439,7 +588,10 @@ fn long_ctx_decode_verify_rollback_every_kv_type_at_70k() {
         c.restore_recurrent(&snap);
         for (i, &t) in toks.iter().enumerate().skip(2) {
             c.step(&pool, t);
-            assert!(bits_eq(c.logits(), &want[i]), "{kv:?}: step {i} after the checkpoint restore differs");
+            assert!(
+                bits_eq(c.logits(), &want[i]),
+                "{kv:?}: step {i} after the checkpoint restore differs"
+            );
         }
         // (c) legacy per-head path (f16 only: int8 always takes the tiled path)
         if kv == KvType::F16 {
@@ -448,7 +600,10 @@ fn long_ctx_decode_verify_rollback_every_kv_type_at_70k() {
             l.read_state(&mut &blob[..], n_pos).unwrap();
             for (i, &t) in toks.iter().enumerate() {
                 l.step(&pool, t);
-                assert!(bits_eq(l.logits(), &want[i]), "legacy attention differs from tiled at step {i}");
+                assert!(
+                    bits_eq(l.logits(), &want[i]),
+                    "legacy attention differs from tiled at step {i}"
+                );
             }
         }
     }
@@ -466,7 +621,8 @@ fn long_ctx_state_round_trip_beyond_32k() {
     for kv in [KvType::F16, KvType::K8, KvType::V8, KvType::KV8] {
         let a = long_engine(&plan, &ws, 65_536, kv, 0, None);
         let rec = rec_bytes(&a, &pool);
-        a.read_state(&mut &synth_state(&a, n_pos, &rec)[..], n_pos).unwrap();
+        a.read_state(&mut &synth_state(&a, n_pos, &rec)[..], n_pos)
+            .unwrap();
         for t in [3u32, 8, 13, 21, 34] {
             a.step(&pool, t);
         }
@@ -477,19 +633,31 @@ fn long_ctx_state_round_trip_beyond_32k() {
         assert_eq!(a.state_layout(), b.state_layout());
         b.read_state(&mut &buf[..], a.pos()).unwrap();
         assert_eq!(b.pos(), n_pos + 5);
-        assert!(kv_all(&a, 1) == kv_all(&b, 1), "{kv:?}: KV bytes differ after the round trip");
-        assert!(same_state(&a.dump_state(), &b.dump_state()), "{kv:?}: state differs after the round trip");
+        assert!(
+            kv_all(&a, 1) == kv_all(&b, 1),
+            "{kv:?}: KV bytes differ after the round trip"
+        );
+        assert!(
+            same_state(&a.dump_state(), &b.dump_state()),
+            "{kv:?}: state differs after the round trip"
+        );
         let (mut xa, mut xb) = (1u32, 1u32);
         for s in 0..6 {
             xa = a.step(&pool, xa);
             xb = b.step(&pool, xb);
-            assert!(bits_eq(a.logits(), b.logits()), "{kv:?}: decode step {s} after the round trip differs");
+            assert!(
+                bits_eq(a.logits(), b.logits()),
+                "{kv:?}: decode step {s} after the round trip differs"
+            );
         }
         // a smaller engine cannot take it
         let small = long_engine(&plan, &ws, 32_768, kv, 0, None);
         assert!(small.read_state(&mut &buf[..], n_pos + 5).is_err());
         if kv != KvType::F16 {
-            assert_ne!(a.state_layout(), long_engine(&plan, &ws, 1024, KvType::F16, 0, None).state_layout());
+            assert_ne!(
+                a.state_layout(),
+                long_engine(&plan, &ws, 1024, KvType::F16, 0, None).state_layout()
+            );
         }
     }
     std::fs::remove_dir_all(&dir).ok();
@@ -509,7 +677,8 @@ fn long_ctx_mtp_greedy_identical_at_70k() {
         // plain reference: the main layer's rows only (layout without the MTP layer)
         let r = long_engine(&plan, &ws, 131_072, kv, 0, None);
         let rec = rec_bytes(&r, &pool);
-        r.read_state(&mut &synth_state(&r, n_pos, &rec)[..], n_pos).unwrap();
+        r.read_state(&mut &synth_state(&r, n_pos, &rec)[..], n_pos)
+            .unwrap();
         let mut next = 0;
         for &t in &prompt {
             next = r.step(&pool, t);
@@ -548,7 +717,10 @@ fn long_ctx_mtp_greedy_identical_at_70k() {
                 for (i, &t) in out.iter().enumerate() {
                     let row = p + i + 1 - p0;
                     if row < want_rows.len() {
-                        assert!(bits_eq(e.logits_lane(i), &want_rows[row]), "{kv:?} depth {depth}: row {row} differs");
+                        assert!(
+                            bits_eq(e.logits_lane(i), &want_rows[row]),
+                            "{kv:?} depth {depth}: row {row} differs"
+                        );
                     }
                     ids.push(t);
                 }
@@ -556,7 +728,11 @@ fn long_ctx_mtp_greedy_identical_at_70k() {
             }
             ids.truncate(n_gen);
             assert_eq!(ids, want_ids, "{kv:?} depth {depth}: ids differ");
-            assert!(d.stats.accepted > 0 && d.stats.accepted < d.stats.drafted, "{kv:?} depth {depth}: {:?}", d.stats);
+            assert!(
+                d.stats.accepted > 0 && d.stats.accepted < d.stats.drafted,
+                "{kv:?} depth {depth}: {:?}",
+                d.stats
+            );
         }
     }
     std::fs::remove_dir_all(&dir).ok();
@@ -594,7 +770,11 @@ fn state_blocks_round_trip_bitwise() {
             for i in 0..2 {
                 let mut b = Vec::new();
                 src.write_kv_rows(i * 256, i * 256 + 256, &mut b).unwrap();
-                assert_eq!(b.len(), 256 * src.kv_row_bytes(), "{kv:?}: block payload size");
+                assert_eq!(
+                    b.len(),
+                    256 * src.kv_row_bytes(),
+                    "{kv:?}: block payload size"
+                );
                 blocks.push(b);
             }
             let snap = |pos: usize, rec: &crate::engine::RecurrentSnapshot| {
@@ -613,33 +793,51 @@ fn state_blocks_round_trip_bitwise() {
             let mut want_turn_state = Vec::new();
             src.write_state(&mut want_turn_state).unwrap();
             let want_turn = decode(&src, 8);
-            for (pos, s, want_st, want_rows) in [(700usize, &head, &want_state, &want), (600, &turn_s, &want_turn_state, &want_turn)] {
+            for (pos, s, want_st, want_rows) in [
+                (700usize, &head, &want_state, &want),
+                (600, &turn_s, &want_turn_state, &want_turn),
+            ] {
                 let dst = long_engine(&plan, &ws, 1024, kv, lanes, mw.as_ref());
                 // a used engine (other content first): the load must not depend on what was there
-                dst.prefill(&pool, &a[..300].iter().map(|x| (x + 1) % 64).collect::<Vec<_>>(), 256).unwrap();
+                dst.prefill(
+                    &pool,
+                    &a[..300].iter().map(|x| (x + 1) % 64).collect::<Vec<_>>(),
+                    256,
+                )
+                .unwrap();
                 dst.reset();
                 for (i, b) in blocks.iter().enumerate() {
-                    dst.read_kv_rows(i * 256, i * 256 + 256, &mut &b[..]).unwrap();
+                    dst.read_kv_rows(i * 256, i * 256 + 256, &mut &b[..])
+                        .unwrap();
                 }
                 let mut r = &s[..];
                 dst.read_kv_rows(512, pos, &mut r).unwrap();
-                let rec = crate::engine::RecurrentSnapshot::read_from(&mut r, dst.recurrent_lens()).unwrap();
+                let rec = crate::engine::RecurrentSnapshot::read_from(&mut r, dst.recurrent_lens())
+                    .unwrap();
                 assert!(r.is_empty());
                 dst.restore_recurrent(&rec);
                 assert_eq!(dst.pos(), pos);
                 let mut got_state = Vec::new();
                 dst.write_state(&mut got_state).unwrap();
-                assert!(got_state == *want_st, "{kv:?} mtp {mtp} pos {pos}: state bytes differ from the uninterrupted run");
+                assert!(
+                    got_state == *want_st,
+                    "{kv:?} mtp {mtp} pos {pos}: state bytes differ from the uninterrupted run"
+                );
                 let got = decode(&dst, 8);
                 for (i, (x, y)) in got.iter().zip(want_rows).enumerate() {
-                    assert!(x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits()), "{kv:?} mtp {mtp} pos {pos}: decode row {i} differs");
+                    assert!(
+                        x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits()),
+                        "{kv:?} mtp {mtp} pos {pos}: decode row {i} differs"
+                    );
                 }
             }
             // a recurrent snapshot of another layout is refused, rows beyond the position too
             let mut bad = Vec::new();
             src.save_recurrent().write_to(&mut bad).unwrap();
             assert!(crate::engine::RecurrentSnapshot::read_from(&mut &bad[..], (1, 1)).is_err());
-            assert!(src.write_kv_rows(0, src.pos() + 1, &mut Vec::new()).is_err());
+            assert!(src
+                .write_kv_rows(0, src.pos() + 1, &mut Vec::new())
+                .is_err());
         }
         std::fs::remove_dir_all(&dir).ok();
     }

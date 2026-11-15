@@ -20,5 +20,8 @@ pub fn exit_zero_on_epipe() {
 
 /// True for the panic message of a `print!` / `println!` (stdout or stderr) that hit a closed pipe.
 pub fn is_epipe_print_panic(msg: Option<&str>) -> bool {
-    msg.is_some_and(|m| m.starts_with("failed printing to std") && (m.contains("Broken pipe") || m.contains("os error 32")))
+    msg.is_some_and(|m| {
+        m.starts_with("failed printing to std")
+            && (m.contains("Broken pipe") || m.contains("os error 32"))
+    })
 }

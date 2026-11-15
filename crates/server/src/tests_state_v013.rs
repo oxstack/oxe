@@ -29,17 +29,35 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn greedy(n_predict: i64) -> GenParams {
-    GenParams { n_predict, sampling: SamplingParams { temperature: 0.0, ..Default::default() }, ..Default::default() }
+    GenParams {
+        n_predict,
+        sampling: SamplingParams {
+            temperature: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 /// Every snapshot of every manifest of the store at `root` (identity `id`) loads: blocks and
 /// snapshot on disk, checksums right. Returns how many plans were loaded.
 fn consistent(root: &Path, id: crate::state_store::Identity) -> usize {
     let mut s = open(root, id, 1 << 40);
-    let plans: Vec<Plan> = s.manifests.values().flat_map(|m| m.snaps.iter().map(move |x| Plan { sid: m.sid.clone(), blocks: m.blocks[..x.pos / BLOCK].to_vec(), snap: x.clone() })).collect();
+    let plans: Vec<Plan> = s
+        .manifests
+        .values()
+        .flat_map(|m| {
+            m.snaps.iter().map(move |x| Plan {
+                sid: m.sid.clone(),
+                blocks: m.blocks[..x.pos / BLOCK].to_vec(),
+                snap: x.clone(),
+            })
+        })
+        .collect();
     let mut e = StubEngine::new(1 << 16, 300, 0, vec![]);
     for p in &plans {
-        s.load(&mut e, p).unwrap_or_else(|err| panic!("manifest {} snapshot at {}: {err}", p.sid, p.snap.pos));
+        s.load(&mut e, p)
+            .unwrap_or_else(|err| panic!("manifest {} snapshot at {}: {err}", p.sid, p.snap.pos));
     }
     assert_eq!(s.stats.load_errors, 0);
     plans.len()
@@ -47,16 +65,28 @@ fn consistent(root: &Path, id: crate::state_store::Identity) -> usize {
 
 /// A stub server over the synthetic tokenizer, thinking on or off, 8 checkpoint slots, ubatch 16,
 /// an optional state store.
-pub(crate) fn srv(thinking: bool, scripts: &[&str], store: Option<&Path>) -> Arc<State<StubEngine>> {
+pub(crate) fn srv(
+    thinking: bool,
+    scripts: &[&str],
+    store: Option<&Path>,
+) -> Arc<State<StubEngine>> {
     let tok = synth_tokenizer();
-    let mut eng = StubEngine::new(1 << 16, tok.n_vocab(), tok.eos.unwrap(), tok.encode("x", false, true));
+    let mut eng = StubEngine::new(
+        1 << 16,
+        tok.n_vocab(),
+        tok.eos.unwrap(),
+        tok.encode("x", false, true),
+    );
     for s in scripts {
         eng.scripts.push_back(tok.encode(s, false, true));
     }
     let cfg = Config {
         model_name: "synth".into(),
         model_path: "/synth.gguf".into(),
-        chat_opts: chat::ServerChatOptions { enable_thinking: thinking, ..Default::default() },
+        chat_opts: chat::ServerChatOptions {
+            enable_thinking: thinking,
+            ..Default::default()
+        },
         fingerprint: "oxe-test".into(),
         slots: false,
         idle_reprefill: false,
@@ -78,7 +108,17 @@ pub(crate) fn body(msgs: &Json, thinking: bool, preserve: bool) -> Vec<u8> {
 /// server has a state store.
 async fn chat(st: &Arc<State<StubEngine>>, b: Vec<u8>, kind: Option<&str>) -> Json {
     let n0 = st.persist_done.load(Ordering::SeqCst);
-    let r = match handle_request(st.clone(), "POST", "/v1/chat/completions", "", &b, Some("h".into()), kind.map(str::to_string)).await {
+    let r = match handle_request(
+        st.clone(),
+        "POST",
+        "/v1/chat/completions",
+        "",
+        &b,
+        Some("h".into()),
+        kind.map(str::to_string),
+    )
+    .await
+    {
         Reply::Json(c, j) => {
             assert_eq!(c, 200, "{j}");
             j
@@ -113,7 +153,8 @@ async fn pre_think_checkpoint_serves_a_turn_whose_reasoning_was_stripped() {
         let m1 = json!([{"role":"system","content":SYS},{"role":"user","content":"do"}]);
         let r1 = chat(&s, body(&m1, true, false), None).await;
         assert_eq!(r1["choices"][0]["message"]["content"], "Done");
-        let n1 = (r1["timings"]["cache_n"].as_u64().unwrap() + r1["timings"]["prompt_n"].as_u64().unwrap()) as usize;
+        let n1 = (r1["timings"]["cache_n"].as_u64().unwrap()
+            + r1["timings"]["prompt_n"].as_u64().unwrap()) as usize;
         let think = s.tok.encode("<think>\n", false, true).len();
         let pt = n1 - think;
         if slots > 0 {
@@ -126,7 +167,10 @@ async fn pre_think_checkpoint_serves_a_turn_whose_reasoning_was_stripped() {
         if slots > 0 {
             assert_eq!(c2, pt, "resumed at the pre-think point");
         } else {
-            assert!(c2 < pt, "without the class the request re-prefills from below it: {c2} vs {pt}");
+            assert!(
+                c2 < pt,
+                "without the class the request re-prefills from below it: {c2} vs {pt}"
+            );
         }
         // the fed prompt is the plain render (uninterrupted run = a cold server fed the same request)
         let cold = srv(true, &["ok"], None);
@@ -134,7 +178,11 @@ async fn pre_think_checkpoint_serves_a_turn_whose_reasoning_was_stripped() {
         chat(&cold, body(&m2, true, false), None).await;
         let (a, b) = (kv(&s), kv(&cold));
         let n2 = c2 + r2["timings"]["prompt_n"].as_u64().unwrap() as usize;
-        assert_eq!(a[..n2], b[..n2], "the resumed request fed exactly the cold request's prompt");
+        assert_eq!(
+            a[..n2],
+            b[..n2],
+            "the resumed request fed exactly the cold request's prompt"
+        );
     }
 }
 
@@ -144,7 +192,14 @@ async fn no_pre_think_point_with_thinking_off() {
     let s = srv(false, &["Hello"], None);
     let m1 = json!([{"role":"system","content":SYS},{"role":"user","content":"hi"}]);
     chat(&s, body(&m1, false, true), None).await;
-    assert!(!s.worker.lock().unwrap().cache.snapshot_info().iter().any(|x| x.1 == PRIO_PRETHINK));
+    assert!(!s
+        .worker
+        .lock()
+        .unwrap()
+        .cache
+        .snapshot_info()
+        .iter()
+        .any(|x| x.1 == PRIO_PRETHINK));
 }
 
 /// v0.2.0 H5: `X-Oxe-Turn-Kind` is a ledger label only. A compaction request labelled `compaction`
@@ -153,31 +208,68 @@ async fn no_pre_think_point_with_thinking_off() {
 /// that wants a point to cut back to sends H4: tests_v020_hints.)
 #[tokio::test(flavor = "multi_thread")]
 async fn compaction_label_places_no_checkpoint() {
-    let long_sys: String = (0..30).map(|i| format!("Rule {i:02}: keep the change small and test it. ")).collect();
+    let long_sys: String = (0..30)
+        .map(|i| format!("Rule {i:02}: keep the change small and test it. "))
+        .collect();
     let instr = "Summarize the conversation above into a structured summary.";
     let mut seen = Vec::new();
     for labelled in [true, false] {
         let dir = tmp(&format!("v020-h5-{labelled}"));
-        let s = srv(false, &["Answer one with some words.", "Summary of it.", "Other.", "Summary again."], Some(&dir));
+        let s = srv(
+            false,
+            &[
+                "Answer one with some words.",
+                "Summary of it.",
+                "Other.",
+                "Summary again.",
+            ],
+            Some(&dir),
+        );
         let led = dir.join("ledger.jsonl");
         s.worker.lock().unwrap().ledger = Some(std::fs::File::create(&led).unwrap());
-        let m1 = json!([{"role":"system","content":long_sys},{"role":"user","content":"question one"}]);
+        let m1 =
+            json!([{"role":"system","content":long_sys},{"role":"user","content":"question one"}]);
         chat(&s, body(&m1, false, true), None).await;
         let mc = json!([{"role":"system","content":long_sys},{"role":"user","content":"question one"},{"role":"assistant","content":"Answer one with some words."},{"role":"user","content":instr}]);
         let rc = chat(&s, body(&mc, false, true), labelled.then_some("compaction")).await;
         let w = s.worker.lock().unwrap();
-        assert!(!w.cache.snapshot_info().iter().any(|x| x.1 == PRIO_CUT), "labelled={labelled}: no cut point");
+        assert!(
+            !w.cache.snapshot_info().iter().any(|x| x.1 == PRIO_CUT),
+            "labelled={labelled}: no cut point"
+        );
         let st = w.states.as_ref().unwrap();
-        assert!(!st.manifests.values().any(|m| m.snaps.iter().any(|x| x.class == "cut")), "labelled={labelled}: none on disk");
-        let calls: Vec<_> = w.engine.calls.iter().filter(|c| c.0 == "prefill" || c.0 == "decode").copied().collect();
+        assert!(
+            !st.manifests
+                .values()
+                .any(|m| m.snaps.iter().any(|x| x.class == "cut")),
+            "labelled={labelled}: none on disk"
+        );
+        let calls: Vec<_> = w
+            .engine
+            .calls
+            .iter()
+            .filter(|c| c.0 == "prefill" || c.0 == "decode")
+            .copied()
+            .collect();
         seen.push((rc["choices"].clone(), calls, w.cache.snapshot_info()));
         drop(w);
         let text = std::fs::read_to_string(&led).unwrap();
         let last: Json = serde_json::from_str(text.lines().last().unwrap()).unwrap();
-        assert_eq!(last["turn_kind"], if labelled { json!("compaction") } else { Json::Null }, "the label is in the ledger");
+        assert_eq!(
+            last["turn_kind"],
+            if labelled {
+                json!("compaction")
+            } else {
+                Json::Null
+            },
+            "the label is in the ledger"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
-    assert_eq!(seen[0], seen[1], "same reply, engine calls and checkpoints with and without the label");
+    assert_eq!(
+        seen[0], seen[1],
+        "same reply, engine calls and checkpoints with and without the label"
+    );
 }
 
 /// Item 2: user-message starts in the last 16K come first among the turn checkpoints (bounded by
@@ -197,9 +289,18 @@ fn user_starts_in_the_window_come_first_among_turn_points() {
         // the v0.1.3 rule (user starts as plain turn points); v0.1.4's own class: tests_v014_session.rs
         w.cache.max_user = 0;
         w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
-        let turns: Vec<usize> = w.cache.snapshot_info().iter().filter(|x| x.1 == PRIO_TURN).map(|x| x.0).collect();
+        let turns: Vec<usize> = w
+            .cache
+            .snapshot_info()
+            .iter()
+            .filter(|x| x.1 == PRIO_TURN)
+            .map(|x| x.0)
+            .collect();
         if window > 0 {
-            assert!(turns.contains(&288) && turns.contains(&592), "the user starts' grid floors: {turns:?}");
+            assert!(
+                turns.contains(&288) && turns.contains(&592),
+                "the user starts' grid floors: {turns:?}"
+            );
             assert_eq!(turns.len(), 4);
         } else {
             assert_eq!(turns, vec![496, 592, 688, 800], "newest message starts");
@@ -212,7 +313,13 @@ fn user_starts_in_the_window_come_first_among_turn_points() {
 /// 256K contexts.
 #[test]
 fn thinning_bounds_the_worst_re_prefill() {
-    for (n, step) in [(131_072usize, 1024usize), (131_072, 256), (262_144, 1024), (65_536, 512), (40_000, 300)] {
+    for (n, step) in [
+        (131_072usize, 1024usize),
+        (131_072, 256),
+        (262_144, 1024),
+        (65_536, 512),
+        (40_000, 300),
+    ] {
         let mut pos: Vec<(usize, bool)> = (1..n / step).map(|i| (i * step, false)).collect();
         pos.push((700, true));
         pos.push((n, true));
@@ -220,7 +327,10 @@ fn thinning_bounds_the_worst_re_prefill() {
         assert!(k.len() <= 12, "{n}: {}", k.len());
         assert!(k.contains(&700) && k.contains(&n));
         let newest = (n / step - 1) * step;
-        assert!(k.contains(&newest) && k.contains(&(newest - step)), "{n}: the two newest points stay");
+        assert!(
+            k.contains(&newest) && k.contains(&(newest - step)),
+            "{n}: the two newest points stay"
+        );
         let mut v = k.clone();
         v.push(0);
         v.sort_unstable();
@@ -230,7 +340,10 @@ fn thinning_bounds_the_worst_re_prefill() {
     // a smaller cap is honoured; must-keep points survive any cap
     let pos: Vec<(usize, bool)> = (1..200).map(|i| (i * 500, i == 3 || i == 199)).collect();
     let k = thin_max(pos, 99_500, 4);
-    assert!(k.len() <= 4 && k.contains(&1500) && k.contains(&99_500), "{k:?}");
+    assert!(
+        k.len() <= 4 && k.contains(&1500) && k.contains(&99_500),
+        "{k:?}"
+    );
 }
 
 /// A long session with RAM turn points (no post-reply write ran: a request came first).
@@ -261,19 +374,32 @@ fn a_session_being_left_keeps_its_resume_points_on_disk() {
         let s = w.states.as_ref().unwrap();
         let m = s.manifests.values().find(|m| m.n_tokens >= a.len());
         if !on {
-            assert!(m.is_none(), "park write off: the left session is not written");
+            assert!(
+                m.is_none(),
+                "park write off: the left session is not written"
+            );
             let _ = std::fs::remove_dir_all(&dir);
             continue;
         }
         let m = m.expect("the left session is on disk");
-        assert!(m.snaps.len() >= 4, "head + its turn points: {:?}", m.snaps.iter().map(|x| (x.pos, x.class.clone())).collect::<Vec<_>>());
+        assert!(
+            m.snaps.len() >= 4,
+            "head + its turn points: {:?}",
+            m.snaps
+                .iter()
+                .map(|x| (x.pos, x.class.clone()))
+                .collect::<Vec<_>>()
+        );
         drop(w);
         // restart, then an edit after the user turn at 900: resumes at its grid floor (896)
         let mut w2 = worker(&dir);
         let mut q = a[..1000].to_vec();
         q.extend((0..50).map(|k| (k % 40) as u32 + 200));
         let r = gen(&mut w2, &q, &greedy(2));
-        assert_eq!(r.timings.cache_n, 896, "resumed at the turn point below the edit");
+        assert_eq!(
+            r.timings.cache_n, 896,
+            "resumed at the turn point below the edit"
+        );
         assert_eq!(r.timings.resume_src, "disk");
         assert!(consistent(&dir, ident("sha256:m", "")) > 0);
         let _ = std::fs::remove_dir_all(&dir);
@@ -285,14 +411,29 @@ fn a_session_being_left_keeps_its_resume_points_on_disk() {
 #[test]
 fn echo_compaction_keeps_the_splice() {
     let dir = tmp("v013-echo-compact");
-    let cfg = EchoConfig { compact_bytes: 2048, ..Default::default() };
+    let cfg = EchoConfig {
+        compact_bytes: 2048,
+        ..Default::default()
+    };
     let mut es = EchoStore::new(cfg.clone());
     es.set_identity("id-1");
     es.attach(&dir).unwrap();
     let prompt: Vec<u32> = vec![1, 2, 3, 10, 11, 13];
-    let msg = chat::ChatMsg { content: "Done".into(), reasoning_content: "plan".into(), ..Default::default() };
+    let msg = chat::ChatMsg {
+        content: "Done".into(),
+        reasoning_content: "plan".into(),
+        ..Default::default()
+    };
     for _ in 0..200 {
-        assert!(es.record(&prompt, &[10, 11], 12, &msg, &[20, 21, 22, 12], true, Some("s1")));
+        assert!(es.record(
+            &prompt,
+            &[10, 11],
+            12,
+            &msg,
+            &[20, 21, 22, 12],
+            true,
+            Some("s1")
+        ));
     }
     assert!(es.compactions > 0, "the file was compacted");
     let f = files(&dir, ".jsonl");
@@ -300,7 +441,10 @@ fn echo_compaction_keeps_the_splice() {
     let size = std::fs::metadata(&f[0]).unwrap().len();
     assert!(size < 2 * 2048, "bounded: {size} bytes");
     let text = std::fs::read_to_string(&f[0]).unwrap();
-    assert!(text.lines().count() < 12, "only live lines (+ appends since the last rewrite)");
+    assert!(
+        text.lines().count() < 12,
+        "only live lines (+ appends since the last rewrite)"
+    );
     let rendered: Vec<u32> = vec![1, 2, 3, 10, 11, 99, 98, 12, 5, 6];
     let msgs = json!([{"role":"user","content":"q"},{"role":"assistant","content":"Done"}]);
     let (a, ra) = es.splice(&rendered, &msgs, &[None, None], Some(&[(3, 7)]));
@@ -310,21 +454,37 @@ fn echo_compaction_keeps_the_splice() {
     es2.set_identity("id-1");
     assert!(es2.attach(&dir).unwrap() >= 1);
     let (b, rb) = es2.splice(&rendered, &msgs, &[None, None], Some(&[(3, 7)]));
-    assert_eq!((b, rb.hits), (a, 1), "the splice after a restart is the one before");
+    assert_eq!(
+        (b, rb.hits),
+        (a, 1),
+        "the splice after a restart is the one before"
+    );
     // distinct live records are never compacted away
     let before = es2.compactions;
     for i in 0..20u32 {
-        let m = chat::ChatMsg { content: format!("Done {i}"), ..Default::default() };
+        let m = chat::ChatMsg {
+            content: format!("Done {i}"),
+            ..Default::default()
+        };
         es2.record(&prompt, &[10, 11], 12, &m, &[20 + i, 12], true, Some("s1"));
     }
     let n_lines = std::fs::read_to_string(&f[0]).unwrap().lines().count();
-    assert!(n_lines >= 21 || es2.compactions > before, "live records stay on disk");
+    assert!(
+        n_lines >= 21 || es2.compactions > before,
+        "live records stay on disk"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Sessions straight through a worker of identity `id` under `root`; each with a mid-session RAM
 /// checkpoint (an optional snapshot on disk) and an old atime (not pinned). Returns the worker.
-fn fill_id(root: &Path, id: crate::state_store::Identity, lens: &[usize], seed: usize, age_s: u64) -> Worker<StubEngine> {
+fn fill_id(
+    root: &Path,
+    id: crate::state_store::Identity,
+    lens: &[usize],
+    seed: usize,
+    age_s: u64,
+) -> Worker<StubEngine> {
     let mut w = Worker::new(StubEngine::new(1 << 16, 300, 0, vec![]), 8);
     w.ubatch = 16;
     w.states = Some(open(root, id, 1 << 40));
@@ -337,7 +497,10 @@ fn fill_id(root: &Path, id: crate::state_store::Identity, lens: &[usize], seed: 
         w.engine.prefill(&t[n / 2..]).unwrap();
         w.cache.appended(&t[n / 2..]);
         w.last_first_user = Some(BLOCK - 10);
-        assert!(w.persist(Some(&format!("s{seed}-{i}")), PersistMode::Reply, None).head.is_some());
+        assert!(w
+            .persist(Some(&format!("s{seed}-{i}")), PersistMode::Reply, None)
+            .head
+            .is_some());
     }
     let s = w.states.as_mut().unwrap();
     let now = crate::state_store::now_s();
@@ -352,16 +515,30 @@ fn fill_id(root: &Path, id: crate::state_store::Identity, lens: &[usize], seed: 
 /// Every manifest of every identity under `root` has all its blocks and snapshots on disk.
 fn closure_holds(root: &Path) -> usize {
     let mut n = 0;
-    for d in std::fs::read_dir(root).unwrap().flatten().filter(|d| d.path().is_dir()) {
+    for d in std::fs::read_dir(root)
+        .unwrap()
+        .flatten()
+        .filter(|d| d.path().is_dir())
+    {
         for m in files(&d.path().join("sessions"), ".json") {
             let j: Json = serde_json::from_slice(&std::fs::read(&m).unwrap()).unwrap();
             for b in j["blocks"].as_array().unwrap() {
                 let (h, c) = (b[0].as_str().unwrap(), b[1].as_str().unwrap());
-                assert!(d.path().join("blocks").join(&h[..2]).join(format!("{h}.{c}.kv")).is_file(), "a kept session's block is missing");
+                assert!(
+                    d.path()
+                        .join("blocks")
+                        .join(&h[..2])
+                        .join(format!("{h}.{c}.kv"))
+                        .is_file(),
+                    "a kept session's block is missing"
+                );
             }
             for s in j["snaps"].as_array().unwrap() {
                 let (k, c) = (s["key"].as_str().unwrap(), s["c"].as_str().unwrap());
-                assert!(d.path().join("snaps").join(format!("{k}.{c}.st")).is_file(), "a kept snapshot is missing");
+                assert!(
+                    d.path().join("snaps").join(format!("{k}.{c}.st")).is_file(),
+                    "a kept snapshot is missing"
+                );
             }
             n += 1;
         }
@@ -390,9 +567,17 @@ fn the_budget_evicts_across_identities_keeping_prefix_closure_and_the_cap() {
         s.set_budget(target);
         let b_bytes1 = crate::state_store::dir_bytes(&b_dir);
         if global {
-            assert!(s.used_bytes() <= target, "under the cap: {} > {target}", s.used_bytes());
+            assert!(
+                s.used_bytes() <= target,
+                "under the cap: {} > {target}",
+                s.used_bytes()
+            );
             assert!(b_bytes1 < b_bytes0, "B (older, worth least) gave bytes");
-            assert_eq!(s.manifests.len(), 2, "A's newer sessions are kept while B pays");
+            assert_eq!(
+                s.manifests.len(),
+                2,
+                "A's newer sessions are kept while B pays"
+            );
         } else {
             assert_eq!(b_bytes1, b_bytes0, "scope own: B untouched");
         }
@@ -409,13 +594,20 @@ fn the_budget_thins_optional_snapshots_before_whole_sessions() {
     let mut w = fill_id(&root, ident("sha256:m", ""), &[1500], 3, 3600);
     let s = w.states.as_mut().unwrap();
     let m0 = s.manifests.values().next().unwrap().clone();
-    assert!(m0.snaps.len() >= 2, "head + an optional point: {:?}", m0.snaps.iter().map(|x| x.pos).collect::<Vec<_>>());
+    assert!(
+        m0.snaps.len() >= 2,
+        "head + an optional point: {:?}",
+        m0.snaps.iter().map(|x| x.pos).collect::<Vec<_>>()
+    );
     let used = s.used_bytes();
     s.set_budget(used - 1);
     let m1 = s.manifests.get(&m0.sid).expect("the session itself stays");
     // store-depth: one value order; an optional point goes (as many as the overshoot needs), the head stays
     assert!(m1.snaps.len() < m0.snaps.len(), "an optional point went");
-    assert!(m1.snaps.iter().any(|x| x.pos == m0.n_tokens), "the head stays");
+    assert!(
+        m1.snaps.iter().any(|x| x.pos == m0.n_tokens),
+        "the head stays"
+    );
     closure_holds(&root);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -433,36 +625,72 @@ async fn a_request_does_not_wait_for_the_head_write() {
         st.stage_delay_ms = 1500;
         st.inflight.clone()
     };
-    let long_sys: String = (0..30).map(|i| format!("Rule {i:02}: keep the change small and test it. ")).collect();
+    let long_sys: String = (0..30)
+        .map(|i| format!("Rule {i:02}: keep the change small and test it. "))
+        .collect();
     let m1 = json!([{"role":"system","content":long_sys},{"role":"user","content":"one"}]);
     let n0 = s.persist_done.load(Ordering::SeqCst);
-    match handle_request(s.clone(), "POST", "/v1/chat/completions", "", &body(&m1, false, true), Some("h".into()), None).await {
+    match handle_request(
+        s.clone(),
+        "POST",
+        "/v1/chat/completions",
+        "",
+        &body(&m1, false, true),
+        Some("h".into()),
+        None,
+    )
+    .await
+    {
         Reply::Json(200, _) => {}
         _ => panic!("turn 1"),
     }
     let t0 = Instant::now();
     while inflight.lock().unwrap().is_empty() {
-        assert!(t0.elapsed().as_secs() < 10, "the off-lock write did not start");
+        assert!(
+            t0.elapsed().as_secs() < 10,
+            "the off-lock write did not start"
+        );
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
     let m2 = json!([{"role":"system","content":long_sys},{"role":"user","content":"one"},{"role":"assistant","content":"First answer here."},{"role":"user","content":"two"}]);
     let t1 = Instant::now();
-    match handle_request(s.clone(), "POST", "/v1/chat/completions", "", &body(&m2, false, true), Some("h".into()), None).await {
+    match handle_request(
+        s.clone(),
+        "POST",
+        "/v1/chat/completions",
+        "",
+        &body(&m2, false, true),
+        Some("h".into()),
+        None,
+    )
+    .await
+    {
         Reply::Json(200, j) => assert_eq!(j["choices"][0]["message"]["content"], "Second answer."),
         _ => panic!("turn 2"),
     }
     let waited = t1.elapsed();
-    assert!(waited < Duration::from_millis(1000), "the request waited {waited:?} for the head write");
+    assert!(
+        waited < Duration::from_millis(1000),
+        "the request waited {waited:?} for the head write"
+    );
     while s.persist_done.load(Ordering::SeqCst) < n0 + 2 {
         assert!(t0.elapsed().as_secs() < 30, "the writes did not finish");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert!(inflight.lock().unwrap().is_empty(), "every staged file released");
+    assert!(
+        inflight.lock().unwrap().is_empty(),
+        "every staged file released"
+    );
     let n_kv = kv(&s).len();
     {
         let w = s.worker.lock().unwrap();
         let st = w.states.as_ref().unwrap();
-        assert!(st.manifests.values().any(|m| m.snaps.iter().any(|x| x.class == "head" && x.pos == n_kv)), "turn 2's head is on disk");
+        assert!(
+            st.manifests
+                .values()
+                .any(|m| m.snaps.iter().any(|x| x.class == "head" && x.pos == n_kv)),
+            "turn 2's head is on disk"
+        );
     }
     assert!(files(&dir, ".pending").is_empty());
     assert!(consistent(&dir, ident("sha256:m", "")) > 0);
@@ -516,7 +744,10 @@ fn offlock_sweep_scenario(mutant: u8) -> Result<(), String> {
 #[test]
 fn a_sweep_during_an_off_lock_write_keeps_its_files_mutation_checked() {
     offlock_sweep_scenario(0).unwrap();
-    assert!(offlock_sweep_scenario(3).is_err(), "a sweep that ignores the in-flight list must fail this check");
+    assert!(
+        offlock_sweep_scenario(3).is_err(),
+        "a sweep that ignores the in-flight list must fail this check"
+    );
 }
 
 /// Kills around the off-lock write: after its files are written but before the commit (no
@@ -530,14 +761,20 @@ fn kills_around_the_off_lock_write_leave_a_consistent_store() {
         w.persist_every = 0;
         let t1 = toks(900, 5);
         gen(&mut w, &t1, &greedy(3));
-        assert!(w.persist(Some("k"), PersistMode::Reply, None).head.is_some());
+        assert!(w
+            .persist(Some("k"), PersistMode::Reply, None)
+            .head
+            .is_some());
         let mut t2 = w.cache.tokens.clone();
         t2.extend(toks(1300, 6)[BLOCK..].iter().take(400));
         gen(&mut w, &t2, &greedy(3));
         let s = w.stage_persist(Some("k")).expect("staged");
         if torn {
             // killed inside the head file: half a `.pending` stays
-            let p = s.dir.join("snaps").join(format!("{}.s.st.pending", s.head_key));
+            let p = s
+                .dir
+                .join("snaps")
+                .join(format!("{}.s.st.pending", s.head_key));
             std::fs::write(&p, &s.head_payload[..s.head_payload.len() / 2]).unwrap();
         } else {
             s.write().unwrap();
@@ -546,17 +783,32 @@ fn kills_around_the_off_lock_write_leave_a_consistent_store() {
         drop(w);
         // restart: start-up sweeps; the turn-1 manifest loads
         assert!(consistent(&dir, ident("sha256:m", "")) > 0);
-        assert!(files(&dir, ".pending").is_empty(), "start-up swept the .pending files");
+        assert!(
+            files(&dir, ".pending").is_empty(),
+            "start-up swept the .pending files"
+        );
         let st = open(&dir, ident("sha256:m", ""), 1 << 40);
         let named: usize = st.manifests.values().map(|m| m.snaps.len()).sum();
-        assert_eq!(files(&dir, ".st").len(), named, "no snapshot file without a manifest entry");
+        assert_eq!(
+            files(&dir, ".st").len(),
+            named,
+            "no snapshot file without a manifest entry"
+        );
         drop(st);
         let mut w2 = worker(&dir);
         let mut q = t2.clone();
         q.extend([40, 41, 42]);
         let r = gen(&mut w2, &q, &greedy(2));
-        assert!(r.timings.cache_n >= t1.len(), "resumed at least from turn 1: {}", r.timings.cache_n);
-        assert_eq!(w2.engine.tokens[..q.len()], q[..], "the request answered on the right state");
+        assert!(
+            r.timings.cache_n >= t1.len(),
+            "resumed at least from turn 1: {}",
+            r.timings.cache_n
+        );
+        assert_eq!(
+            w2.engine.tokens[..q.len()],
+            q[..],
+            "the request answered on the right state"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -571,7 +823,10 @@ fn old_format_files_are_refused_cleanly() {
     w.persist_every = 0;
     let t = toks(1100, 7);
     gen(&mut w, &t, &greedy(3));
-    assert!(w.persist(Some("o"), PersistMode::Reply, None).head.is_some());
+    assert!(w
+        .persist(Some("o"), PersistMode::Reply, None)
+        .head
+        .is_some());
     let mdir = w.states.as_ref().unwrap().dir.clone();
     drop(w);
     // snapshot files of format 1 (the version field after the magic)
@@ -581,19 +836,35 @@ fn old_format_files_are_refused_cleanly() {
         std::fs::write(&f, b).unwrap();
     }
     // a manifest of a future version next to the real one
-    let fake = mdir.join("sessions").join(format!("{}.json", "ab".repeat(16)));
-    std::fs::write(&fake, json!({"version": 99, "sid": "ab".repeat(16)}).to_string()).unwrap();
+    let fake = mdir
+        .join("sessions")
+        .join(format!("{}.json", "ab".repeat(16)));
+    std::fs::write(
+        &fake,
+        json!({"version": 99, "sid": "ab".repeat(16)}).to_string(),
+    )
+    .unwrap();
     let mut w2 = worker(&dir);
-    assert!(!fake.exists(), "a manifest of another version is removed unread");
+    assert!(
+        !fake.exists(),
+        "a manifest of another version is removed unread"
+    );
     let mut q = t.clone();
     q.extend([9, 9, 9]);
     let r = gen(&mut w2, &q, &greedy(2));
-    assert_eq!(r.timings.cache_n, 0, "the old-format snapshot was refused: cold, never a wrong state");
+    assert_eq!(
+        r.timings.cache_n, 0,
+        "the old-format snapshot was refused: cold, never a wrong state"
+    );
     assert_eq!(w2.engine.tokens[..q.len()], q[..]);
     assert!(w2.states.as_ref().unwrap().stats.load_errors > 0);
     // an echo line of another version is skipped
     let edir = tmp("v013-old-echo");
-    std::fs::write(edir.join("x.jsonl"), "{\"v\":2,\"id\":\"z\"}\t0000000000000000\n").unwrap();
+    std::fs::write(
+        edir.join("x.jsonl"),
+        "{\"v\":2,\"id\":\"z\"}\t0000000000000000\n",
+    )
+    .unwrap();
     let mut es = EchoStore::new(EchoConfig::default());
     es.set_identity("id");
     assert_eq!(es.attach(&edir).unwrap(), 0);
@@ -616,12 +887,25 @@ fn orphan_scenario(mutant: u8) -> Result<(), String> {
             w.cache.appended(&more);
             w.persist_states(Some("s0"), None);
         }
-        let listed: usize = w.states.as_ref().unwrap().manifests.values().map(|m| m.snaps.len()).sum();
+        let listed: usize = w
+            .states
+            .as_ref()
+            .unwrap()
+            .manifests
+            .values()
+            .map(|m| m.snaps.len())
+            .sum();
         if files(&dir, ".st").len() != listed {
-            return Err(format!("{} snapshot files, {listed} listed", files(&dir, ".st").len()));
+            return Err(format!(
+                "{} snapshot files, {listed} listed",
+                files(&dir, ".st").len()
+            ));
         }
         let gone = w.live_blocks[1].0.clone();
-        let victim = files(&dir, ".kv").into_iter().find(|p| p.to_string_lossy().contains(&gone)).unwrap();
+        let victim = files(&dir, ".kv")
+            .into_iter()
+            .find(|p| p.to_string_lossy().contains(&gone))
+            .unwrap();
         std::fs::remove_file(victim).unwrap();
         let more: Vec<u32> = (0..300).map(|k| k % 200 + 5).collect();
         w.engine.prefill(&more).unwrap();
@@ -629,7 +913,10 @@ fn orphan_scenario(mutant: u8) -> Result<(), String> {
         w.persist_states(Some("s0"), None);
         let s = w.states.as_ref().unwrap();
         let m = s.manifests.values().max_by_key(|m| m.n_tokens).unwrap();
-        if m.blocks.iter().any(|(h, c)| files(&dir, &format!("{h}.{c}.kv")).is_empty()) {
+        if m.blocks
+            .iter()
+            .any(|(h, c)| files(&dir, &format!("{h}.{c}.kv")).is_empty())
+        {
             return Err("a listed block is missing".into());
         }
         Ok(())
@@ -641,8 +928,14 @@ fn orphan_scenario(mutant: u8) -> Result<(), String> {
 #[test]
 fn the_sweep_tests_fail_on_a_broken_sweep() {
     orphan_scenario(0).unwrap();
-    assert!(orphan_scenario(1).is_err(), "no sweep on every enforce must be caught");
-    assert!(orphan_scenario(2).is_err(), "a swept live block counted as on disk must be caught");
+    assert!(
+        orphan_scenario(1).is_err(),
+        "no sweep on every enforce must be caught"
+    );
+    assert!(
+        orphan_scenario(2).is_err(),
+        "a swept live block counted as on disk must be caught"
+    );
 }
 
 /// Review-carried: tool arguments whose numbers do not survive a parse exactly are compared as
@@ -652,26 +945,69 @@ fn the_sweep_tests_fail_on_a_broken_sweep() {
 fn echo_compares_huge_numbers_exactly_and_reasoning_under_other_names() {
     let prompt: Vec<u32> = vec![1, 2, 3, 10, 11, 13];
     let rendered: Vec<u32> = vec![1, 2, 3, 10, 11, 99, 98, 12, 5, 6];
-    let call = |args: &str| chat::ToolCall { name: "f".into(), arguments: args.into(), id: "c".into() };
+    let call = |args: &str| chat::ToolCall {
+        name: "f".into(),
+        arguments: args.into(),
+        id: "c".into(),
+    };
     let splice_with = |rec: &chat::ChatMsg, sent: Json| {
         let mut es = EchoStore::new(EchoConfig::default());
         es.set_identity("id");
         assert!(es.record(&prompt, &[10, 11], 12, rec, &[20, 21, 12], true, None));
         let msgs = json!([{"role":"user","content":"q"}, sent]);
-        es.splice(&rendered, &msgs, &[None, None], Some(&[(3, 7)])).1
+        es.splice(&rendered, &msgs, &[None, None], Some(&[(3, 7)]))
+            .1
     };
-    let big = chat::ChatMsg { tool_calls: vec![call(r#"{"n": 123456789012345678901234567890}"#)], ..Default::default() };
+    let big = chat::ChatMsg {
+        tool_calls: vec![call(r#"{"n": 123456789012345678901234567890}"#)],
+        ..Default::default()
+    };
     let tc = |a: &str| json!({"role":"assistant","content":"","tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":a}}]});
-    assert_eq!(splice_with(&big, tc(r#"{"n": 123456789012345678901234567890}"#)).hits, 1, "the same text hits");
+    assert_eq!(
+        splice_with(&big, tc(r#"{"n": 123456789012345678901234567890}"#)).hits,
+        1,
+        "the same text hits"
+    );
     let r = splice_with(&big, tc(r#"{"n": 123456789012345678901234567891}"#));
-    assert_eq!((r.hits, r.miss_class()), (0, Some(crate::echo::MISS_TOOL)), "another huge number is a miss");
-    let small = chat::ChatMsg { tool_calls: vec![call(r#"{"x": 2.50, "y": 7}"#)], ..Default::default() };
-    assert_eq!(splice_with(&small, tc(r#"{"y":7,"x":2.5}"#)).hits, 1, "re-serialised small numbers still hit");
-    let rs = chat::ChatMsg { content: "Done".into(), reasoning_content: "plan".into(), ..Default::default() };
-    assert_eq!(splice_with(&rs, json!({"role":"assistant","content":"Done","reasoning":"plan"})).hits, 1);
-    let r = splice_with(&rs, json!({"role":"assistant","content":"Done","reasoning":"other"}));
-    assert_eq!((r.hits, r.miss_class()), (0, Some(crate::echo::MISS_REASONING)));
-    let r = splice_with(&rs, json!({"role":"assistant","content":"Done","thinking":{"text":"plan"}}));
+    assert_eq!(
+        (r.hits, r.miss_class()),
+        (0, Some(crate::echo::MISS_TOOL)),
+        "another huge number is a miss"
+    );
+    let small = chat::ChatMsg {
+        tool_calls: vec![call(r#"{"x": 2.50, "y": 7}"#)],
+        ..Default::default()
+    };
+    assert_eq!(
+        splice_with(&small, tc(r#"{"y":7,"x":2.5}"#)).hits,
+        1,
+        "re-serialised small numbers still hit"
+    );
+    let rs = chat::ChatMsg {
+        content: "Done".into(),
+        reasoning_content: "plan".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        splice_with(
+            &rs,
+            json!({"role":"assistant","content":"Done","reasoning":"plan"})
+        )
+        .hits,
+        1
+    );
+    let r = splice_with(
+        &rs,
+        json!({"role":"assistant","content":"Done","reasoning":"other"}),
+    );
+    assert_eq!(
+        (r.hits, r.miss_class()),
+        (0, Some(crate::echo::MISS_REASONING))
+    );
+    let r = splice_with(
+        &rs,
+        json!({"role":"assistant","content":"Done","thinking":{"text":"plan"}}),
+    );
     assert_eq!(r.hits, 0, "a reasoning object cannot be compared: a miss");
 }
 
@@ -681,19 +1017,46 @@ pub(crate) fn mini_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("oxe-v013-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("cache")).unwrap();
-    std::fs::set_permissions(dir.join("cache"), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(
+        dir.join("cache"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
     model::testkit::mini_model_ext(&dir.join("mini-mtp.gguf"), true);
     dir
 }
 
-pub(crate) fn mini_worker(dir: &Path, depth: usize, store: Option<&Path>) -> Worker<crate::oxe_engine::OxeEngine> {
-    let n = std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1);
-    let eng = crate::oxe_engine::OxeEngine::open_cache(&dir.join("mini-mtp.gguf"), None, &[n - 1], None, 64, 2048, depth, Some(dir.join("cache"))).unwrap();
+pub(crate) fn mini_worker(
+    dir: &Path,
+    depth: usize,
+    store: Option<&Path>,
+) -> Worker<crate::oxe_engine::OxeEngine> {
+    let n = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1);
+    let eng = crate::oxe_engine::OxeEngine::open_cache(
+        &dir.join("mini-mtp.gguf"),
+        None,
+        &[n - 1],
+        None,
+        64,
+        2048,
+        depth,
+        Some(dir.join("cache")),
+    )
+    .unwrap();
     let mut w = Worker::new(eng, 8);
     w.ubatch = 64;
     w.persist_every = 0;
     if let Some(root) = store {
-        let id = crate::state_store::Identity::new("sha256:mini", &w.engine.state_id().unwrap(), 64, &w.engine.arith_id(), "b", false);
+        let id = crate::state_store::Identity::new(
+            "sha256:mini",
+            &w.engine.state_id().unwrap(),
+            64,
+            &w.engine.arith_id(),
+            "b",
+            false,
+        );
         let mut st = StateStore::open(root, id, 1 << 40, 3600, true).unwrap();
         st.min_tokens = 0;
         st.min_free_bytes = 0;
@@ -710,10 +1073,19 @@ pub(crate) fn state_bytes<E: Engine>(e: &mut E) -> Vec<u8> {
 }
 
 /// (generated tokens, state bytes after, (drafted, accepted))
-pub(crate) fn run_mini(w: &mut Worker<crate::oxe_engine::OxeEngine>, prompt: &[u32], gp: &GenParams) -> (Vec<u32>, Vec<u8>, (u64, u64), usize) {
+pub(crate) fn run_mini(
+    w: &mut Worker<crate::oxe_engine::OxeEngine>,
+    prompt: &[u32],
+    gp: &GenParams,
+) -> (Vec<u32>, Vec<u8>, (u64, u64), usize) {
     let tok = synth_tokenizer();
     let r = w.generate(&tok, prompt, gp, &mut |_| true).unwrap();
-    (r.tokens.clone(), state_bytes(&mut w.engine), (r.timings.draft_n, r.timings.draft_n_accepted), r.timings.cache_n)
+    (
+        r.tokens.clone(),
+        state_bytes(&mut w.engine),
+        (r.timings.draft_n, r.timings.draft_n_accepted),
+        r.timings.cache_n,
+    )
 }
 
 /// Items 1 and 2 on real numerics (MTP off and on): a request that diverges exactly at a pre-think
@@ -754,7 +1126,10 @@ fn new_snapshot_classes_resume_bitwise_on_the_mini_model() {
             run_mini(&mut w1, &p1, &gp1);
             assert!(w1.persist(None, PersistMode::Reply, None).head.is_some());
             let got = run_mini(&mut w1, &p2, &greedy(8));
-            assert_eq!(got.3, at, "depth {depth} {class}: resumed at the point (RAM)");
+            assert_eq!(
+                got.3, at,
+                "depth {depth} {class}: resumed at the point (RAM)"
+            );
             // the reference: a cold run with an exact split at the point (on the grid for cut: no split)
             let mut gpr = greedy(8);
             if class == "pre-think" {
@@ -775,7 +1150,10 @@ fn new_snapshot_classes_resume_bitwise_on_the_mini_model() {
                 let d = run_mini(&mut w3, &p2, &greedy(8));
                 assert_eq!(d.3, at, "depth {depth}: resumed at the cut from disk");
                 assert_eq!((&d.0, d.2), (&want.0, want.2));
-                assert!(d.1 == want.1, "depth {depth}: disk resume state bytes differ");
+                assert!(
+                    d.1 == want.1,
+                    "depth {depth}: disk resume state bytes differ"
+                );
             }
         }
         // the echo-shaped continuation: turn 2 = turn 1's prompt + its generated ids + new tokens
@@ -787,12 +1165,26 @@ fn new_snapshot_classes_resume_bitwise_on_the_mini_model() {
         q.extend(&t1.0[..t1.0.len() - 1]);
         q.extend([5, 6, 7]);
         let live = run_mini(&mut wa, &q, &greedy(8));
-        assert_eq!(live.3, p1.len() + t1.0.len() - 1, "depth {depth}: every generated token reused");
+        assert_eq!(
+            live.3,
+            p1.len() + t1.0.len() - 1,
+            "depth {depth}: every generated token reused"
+        );
         let mut wb = mini_worker(&dir, depth, Some(&root));
         let disk = run_mini(&mut wb, &q, &greedy(8));
-        assert_eq!(disk.3, live.3, "depth {depth}: the disk head is the live state");
-        assert_eq!((&disk.0, disk.2), (&live.0, live.2), "depth {depth}: echo continuation tokens / drafts");
-        assert!(disk.1 == live.1, "depth {depth}: echo continuation state bytes");
+        assert_eq!(
+            disk.3, live.3,
+            "depth {depth}: the disk head is the live state"
+        );
+        assert_eq!(
+            (&disk.0, disk.2),
+            (&live.0, live.2),
+            "depth {depth}: echo continuation tokens / drafts"
+        );
+        assert!(
+            disk.1 == live.1,
+            "depth {depth}: echo continuation state bytes"
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -812,9 +1204,22 @@ fn the_prefill_attention_path_is_in_the_identity() {
     // over a reader, not the process environment: the engines of parallel tests read OXE_PF_ATTN
     // at construction (lane A), so a process-wide set_var here would race them
     let a = crate::state_store::arith_env_with(|_| None);
-    let set = [("OXE_PF_ATTN", "fa2"), ("OXE_ATTN_FUSED_MIN_KV", "8192"), ("OXE_ATTN_FUSED_1LANE_MIN_KV", "4096")];
-    let b = crate::state_store::arith_env_with(|k| set.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string()));
-    assert!(b.contains("OXE_PF_ATTN=fa2") && b.contains("OXE_ATTN_FUSED_MIN_KV=8192") && b.contains("OXE_ATTN_FUSED_1LANE_MIN_KV=4096"), "{b}");
+    let set = [
+        ("OXE_PF_ATTN", "fa2"),
+        ("OXE_ATTN_FUSED_MIN_KV", "8192"),
+        ("OXE_ATTN_FUSED_1LANE_MIN_KV", "4096"),
+    ];
+    let b = crate::state_store::arith_env_with(|k| {
+        set.iter()
+            .find(|(n, _)| *n == k)
+            .map(|(_, v)| v.to_string())
+    });
+    assert!(
+        b.contains("OXE_PF_ATTN=fa2")
+            && b.contains("OXE_ATTN_FUSED_MIN_KV=8192")
+            && b.contains("OXE_ATTN_FUSED_1LANE_MIN_KV=4096"),
+        "{b}"
+    );
     assert_ne!(ident("sha256:m", &a).hash, ident("sha256:m", &b).hash);
 }
 
@@ -823,8 +1228,12 @@ fn the_prefill_attention_path_is_in_the_identity() {
 #[tokio::test(flavor = "multi_thread")]
 async fn native_completion_persists_after_the_reply() {
     let dir = tmp("v013-raw-persist");
-    let long: String = (0..30).map(|i| format!("Rule {i:02}: keep the change small and test it. ")).collect();
-    let req = |stream: bool| serde_json::to_vec(&json!({"prompt": long, "temperature": 0, "stream": stream})).unwrap();
+    let long: String = (0..30)
+        .map(|i| format!("Rule {i:02}: keep the change small and test it. "))
+        .collect();
+    let req = |stream: bool| {
+        serde_json::to_vec(&json!({"prompt": long, "temperature": 0, "stream": stream})).unwrap()
+    };
     let wait_persist = |s: Arc<State<StubEngine>>, n0: u64| async move {
         let t0 = Instant::now();
         while s.persist_done.load(Ordering::SeqCst) == n0 {
@@ -834,9 +1243,23 @@ async fn native_completion_persists_after_the_reply() {
     };
 
     // JSON reply: one post-reply write, its head at the engine's position
-    let s = srv(false, &["First raw answer.", "Second raw answer."], Some(&dir));
+    let s = srv(
+        false,
+        &["First raw answer.", "Second raw answer."],
+        Some(&dir),
+    );
     let n0 = s.persist_done.load(Ordering::SeqCst);
-    match handle_request(s.clone(), "POST", "/completion", "", &req(false), Some("raw".into()), None).await {
+    match handle_request(
+        s.clone(),
+        "POST",
+        "/completion",
+        "",
+        &req(false),
+        Some("raw".into()),
+        None,
+    )
+    .await
+    {
         Reply::Json(200, _) => {}
         _ => panic!("json completion"),
     }
@@ -845,14 +1268,29 @@ async fn native_completion_persists_after_the_reply() {
     {
         let w = s.worker.lock().unwrap();
         let st = w.states.as_ref().unwrap();
-        assert!(st.manifests.values().any(|m| m.snaps.iter().any(|x| x.class == "head" && x.pos == n_kv)), "the raw reply's head is on disk");
+        assert!(
+            st.manifests
+                .values()
+                .any(|m| m.snaps.iter().any(|x| x.class == "head" && x.pos == n_kv)),
+            "the raw reply's head is on disk"
+        );
     }
     assert!(files(&dir, ".pending").is_empty());
     assert!(consistent(&dir, ident("sha256:m", "")) > 0);
 
     // SSE reply: the write happens before the final frame, so it is counted when the stream ends
     let n1 = s.persist_done.load(Ordering::SeqCst);
-    let mut rx = match handle_request(s.clone(), "POST", "/completion", "", &req(true), Some("raw".into()), None).await {
+    let mut rx = match handle_request(
+        s.clone(),
+        "POST",
+        "/completion",
+        "",
+        &req(true),
+        Some("raw".into()),
+        None,
+    )
+    .await
+    {
         Reply::Stream(rx) => rx,
         Reply::Json(c, j) => panic!("stream expected, got {c} {j}"),
     };
@@ -860,7 +1298,10 @@ async fn native_completion_persists_after_the_reply() {
     while let Some(f) = rx.recv().await {
         last = f;
     }
-    assert!(last.contains("stop") || last.contains("content"), "final frame: {last}");
+    assert!(
+        last.contains("stop") || last.contains("content"),
+        "final frame: {last}"
+    );
     wait_persist(s.clone(), n1).await;
     assert!(consistent(&dir, ident("sha256:m", "")) > 0);
     let _ = std::fs::remove_dir_all(&dir);
@@ -869,11 +1310,26 @@ async fn native_completion_persists_after_the_reply() {
     let dir2 = tmp("v013-raw-ephemeral");
     let s2 = srv(false, &["Ephemeral answer."], Some(&dir2));
     let n2 = s2.persist_done.load(Ordering::SeqCst);
-    match handle_policy(s2.clone(), "POST", "/completion", "", &req(false), Some("raw".into()), None, true).await {
+    match handle_policy(
+        s2.clone(),
+        "POST",
+        "/completion",
+        "",
+        &req(false),
+        Some("raw".into()),
+        None,
+        true,
+    )
+    .await
+    {
         Reply::Json(200, _) => {}
         _ => panic!("ephemeral completion"),
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(s2.persist_done.load(Ordering::SeqCst), n2, "an ephemeral completion writes no state");
+    assert_eq!(
+        s2.persist_done.load(Ordering::SeqCst),
+        n2,
+        "an ephemeral completion writes no state"
+    );
     let _ = std::fs::remove_dir_all(&dir2);
 }

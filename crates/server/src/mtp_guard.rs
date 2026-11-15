@@ -33,7 +33,15 @@ impl MtpGuard {
     /// `min_accept`, then refuses speculation for `cooldown` calls of [`MtpGuard::allow`].
     /// A window of 0 is read as 1.
     pub fn new(min_accept: f32, window: usize, cooldown: usize) -> MtpGuard {
-        MtpGuard { min_accept, window: window.max(1), cooldown, flags: VecDeque::new(), hits: 0, cooldown_left: 0, trips: 0 }
+        MtpGuard {
+            min_accept,
+            window: window.max(1),
+            cooldown,
+            flags: VecDeque::new(),
+            hits: 0,
+            cooldown_left: 0,
+            trips: 0,
+        }
     }
 
     /// `OXE_MTP_GUARD` (read at each call; the startup check has already refused a malformed
@@ -80,7 +88,9 @@ impl MtpGuard {
                 self.hits -= 1;
             }
         }
-        if self.flags.len() == self.window && (self.hits as f32) < self.min_accept * self.window as f32 {
+        if self.flags.len() == self.window
+            && (self.hits as f32) < self.min_accept * self.window as f32
+        {
             self.trips += 1;
             self.cooldown_left = self.cooldown;
             self.flags.clear();
@@ -104,7 +114,9 @@ pub fn parse(s: &str) -> Result<Option<MtpGuard>, String> {
     if parts.len() > 3 {
         return Err("expected RATIO or RATIO:WINDOW:COOLDOWN".into());
     }
-    let ratio: f32 = parts[0].trim().parse().map_err(|_| "the ratio is not a number (off | RATIO | RATIO:WINDOW:COOLDOWN)".to_string())?;
+    let ratio: f32 = parts[0].trim().parse().map_err(|_| {
+        "the ratio is not a number (off | RATIO | RATIO:WINDOW:COOLDOWN)".to_string()
+    })?;
     if !(ratio.is_finite() && ratio > 0.0 && ratio <= 1.0) {
         return Err(format!("the ratio {} is outside (0, 1]", parts[0].trim()));
     }
@@ -117,7 +129,10 @@ pub fn parse(s: &str) -> Result<Option<MtpGuard>, String> {
     };
     let cooldown = match parts.get(2) {
         None => DEFAULT_COOLDOWN,
-        Some(c) => c.trim().parse::<usize>().map_err(|_| format!("the cooldown {:?} is not a non-negative integer", c.trim()))?,
+        Some(c) => c
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| format!("the cooldown {:?} is not a non-negative integer", c.trim()))?,
     };
     Ok(Some(MtpGuard::new(ratio, window, cooldown)))
 }
@@ -222,7 +237,18 @@ mod tests {
 
     #[test]
     fn parse_errors() {
-        for bad in ["-0.1", "1.5", "nan", "inf", "x", "0.5:0:1", "0.5:x:1", "0.5:8:-1", "0.5:8:1:9", "0.5:8:"] {
+        for bad in [
+            "-0.1",
+            "1.5",
+            "nan",
+            "inf",
+            "x",
+            "0.5:0:1",
+            "0.5:x:1",
+            "0.5:8:-1",
+            "0.5:8:1:9",
+            "0.5:8:",
+        ] {
             assert!(parse(bad).is_err(), "{bad:?} must be refused");
         }
     }

@@ -75,11 +75,30 @@ const USAGE: &str = "usage: oxe-server --model PATH [--alias NAME] [--host 127.0
 
 /// llama-server flags accepted for drop-in argv compatibility (flag, takes a value)
 const IGNORED: &[(&str, bool)] = &[
-    ("--threads", true), ("-t", true), ("--threads-batch", true), ("-tb", true), ("--n-gpu-layers", true), ("-ngl", true),
-    ("--jinja", false), ("--parallel", true), ("-np", true), ("--batch-size", true), ("-b", true), ("--flash-attn", true), ("-fa", true),
-    ("--cache-ram", true), ("--reasoning-budget", true),
-    ("--slot-save-path", true), ("--no-webui", false), ("--metrics", false), ("--no-mmap", false),
-    ("--no-warmup", false), ("--log-verbosity", true), ("--perf", false), ("--cont-batching", false), ("--no-cache-prompt", false),
+    ("--threads", true),
+    ("-t", true),
+    ("--threads-batch", true),
+    ("-tb", true),
+    ("--n-gpu-layers", true),
+    ("-ngl", true),
+    ("--jinja", false),
+    ("--parallel", true),
+    ("-np", true),
+    ("--batch-size", true),
+    ("-b", true),
+    ("--flash-attn", true),
+    ("-fa", true),
+    ("--cache-ram", true),
+    ("--reasoning-budget", true),
+    ("--slot-save-path", true),
+    ("--no-webui", false),
+    ("--metrics", false),
+    ("--no-mmap", false),
+    ("--no-warmup", false),
+    ("--log-verbosity", true),
+    ("--perf", false),
+    ("--cont-batching", false),
+    ("--no-cache-prompt", false),
 ];
 
 fn main() {
@@ -122,7 +141,7 @@ fn main() {
     // IO CPUs during a batched prefill (comma list; empty = same as --flash-io-cpu)
     let mut flash_pf_order = true;
     let mut flash_pf_order_last = false; // F123: --flash-pf-order 2
-    // G4' (2026-11-11): order on, read-ahead off, FP-8 off, no per-phase IO core
+                                         // G4' (2026-11-11): order on, read-ahead off, FP-8 off, no per-phase IO core
     let mut flash_pf_readahead: Option<usize> = Some(0);
     let mut flash_cache_auto = false;
     let mut flash_admit_harness: Option<f64> = None;
@@ -240,18 +259,28 @@ fn main() {
             }
             "--engine" => engine = need(i),
             "--prefix-cache" => prefix_dir = Some(need(i)),
-            "--prefix-cache-max-bytes" => prefix_max = need(i).parse().expect("--prefix-cache-max-bytes"),
-            "--prefix-cache-min-tokens" => prefix_min = need(i).parse().expect("--prefix-cache-min-tokens"),
+            "--prefix-cache-max-bytes" => {
+                prefix_max = need(i).parse().expect("--prefix-cache-max-bytes")
+            }
+            "--prefix-cache-min-tokens" => {
+                prefix_min = need(i).parse().expect("--prefix-cache-min-tokens")
+            }
             "--prefix-cache-ttl-h" => prefix_ttl_h = need(i).parse().expect("--prefix-cache-ttl-h"),
-            "--prefix-cache-save-floor-mib" => prefix_save_floor_mib = Some(need(i).parse().expect("--prefix-cache-save-floor-mib")),
+            "--prefix-cache-save-floor-mib" => {
+                prefix_save_floor_mib =
+                    Some(need(i).parse().expect("--prefix-cache-save-floor-mib"))
+            }
             "--turn-checkpoints" => turn_checkpoints = need(i).parse().expect("--turn-checkpoints"),
             "--session-ram-bytes" => session_ram = need(i).parse().expect("--session-ram-bytes"),
             "--park-min-tokens" => park_min = need(i).parse().expect("--park-min-tokens"),
-            "--park-disk-min-bytes" => park_disk_min = need(i).parse().expect("--park-disk-min-bytes"),
+            "--park-disk-min-bytes" => {
+                park_disk_min = need(i).parse().expect("--park-disk-min-bytes")
+            }
             "--session-cache" => session_dir = Some(need(i)),
             "--session-cache-writes" => {
                 session_writes = need(i);
-                if server::generate::legacy_session_writes(&session_writes, false, false).is_none() {
+                if server::generate::legacy_session_writes(&session_writes, false, false).is_none()
+                {
                     eprintln!("--session-cache-writes {session_writes}: auto|on|off");
                     std::process::exit(2)
                 }
@@ -267,7 +296,13 @@ fn main() {
             "--pre-think-snapshots" => pre_think = need(i).parse().expect("--pre-think-snapshots"),
             "--turn-user-window" => user_window = need(i).parse().expect("--turn-user-window"),
             "--user-snapshots" => user_snaps = need(i).parse().expect("--user-snapshots"),
-            "--state-snaps" => state_snaps = need(i).parse::<usize>().ok().filter(|&n| n >= 1).expect("--state-snaps: a number >= 1"),
+            "--state-snaps" => {
+                state_snaps = need(i)
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n >= 1)
+                    .expect("--state-snaps: a number >= 1")
+            }
             "--state-park-write" | "--state-write-offlock" => {
                 let on = match need(i).as_str() {
                     "on" | "1" | "true" => true,
@@ -292,7 +327,10 @@ fn main() {
                     }
                 };
                 // read by StateStore::open, whose start-up pass already applies the budget (single-threaded here)
-                std::env::set_var("OXE_STATE_BUDGET_SCOPE", if budget_global { "global" } else { "own" });
+                std::env::set_var(
+                    "OXE_STATE_BUDGET_SCOPE",
+                    if budget_global { "global" } else { "own" },
+                );
             }
             // F123 (lane G): protect hot residents in a batched Flash op; the flag sets the engine's switch
             "--flash-pf-protect-hot" => std::env::set_var(
@@ -306,7 +344,13 @@ fn main() {
                     }
                 },
             ),
-            "--echo-compact-bytes" => std::env::set_var("OXE_ECHO_COMPACT_BYTES", need(i).parse::<u64>().expect("--echo-compact-bytes").to_string()),
+            "--echo-compact-bytes" => std::env::set_var(
+                "OXE_ECHO_COMPACT_BYTES",
+                need(i)
+                    .parse::<u64>()
+                    .expect("--echo-compact-bytes")
+                    .to_string(),
+            ),
             "--ledger" => ledger = Some(need(i)),
             "--api-key-file" => api_key_file = Some(need(i)),
             "--api-key" => {
@@ -315,11 +359,37 @@ fn main() {
             }
             "--allow-host" => allow_hosts.push(need(i).trim().to_ascii_lowercase()),
             // S8: read by State::new (single-threaded here)
-            "--default-max-tokens" => std::env::set_var("OXE_DEFAULT_MAX_TOKENS", need(i).parse::<u32>().expect("--default-max-tokens").to_string()),
-            "--sse-keepalive" => std::env::set_var("OXE_SSE_KEEPALIVE_SECS", need(i).parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0).expect("--sse-keepalive").to_string()),
-            "--stream-stall-timeout" => std::env::set_var("OXE_STREAM_STALL_SECS", need(i).parse::<f64>().ok().filter(|v| *v > 0.0).expect("--stream-stall-timeout").to_string()),
-            "--session-cache-max-bytes" => session_max = need(i).parse().expect("--session-cache-max-bytes"),
-            "--session-cache-ttl-hours" => session_ttl_h = need(i).parse().expect("--session-cache-ttl-hours"),
+            "--default-max-tokens" => std::env::set_var(
+                "OXE_DEFAULT_MAX_TOKENS",
+                need(i)
+                    .parse::<u32>()
+                    .expect("--default-max-tokens")
+                    .to_string(),
+            ),
+            "--sse-keepalive" => std::env::set_var(
+                "OXE_SSE_KEEPALIVE_SECS",
+                need(i)
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+                    .expect("--sse-keepalive")
+                    .to_string(),
+            ),
+            "--stream-stall-timeout" => std::env::set_var(
+                "OXE_STREAM_STALL_SECS",
+                need(i)
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| *v > 0.0)
+                    .expect("--stream-stall-timeout")
+                    .to_string(),
+            ),
+            "--session-cache-max-bytes" => {
+                session_max = need(i).parse().expect("--session-cache-max-bytes")
+            }
+            "--session-cache-ttl-hours" => {
+                session_ttl_h = need(i).parse().expect("--session-cache-ttl-hours")
+            }
             "--prefill-split" => {
                 prefill_split = Some(match need(i).as_str() {
                     "messages" => true,
@@ -331,7 +401,10 @@ fn main() {
                 })
             }
             "--flash-hotset" => hotset = Some(need(i)),
-            "--flash-attn-tile" | "--flash-dense-gemm" | "--flash-expert-tile" | "--flash-warmup" => {
+            "--flash-attn-tile"
+            | "--flash-dense-gemm"
+            | "--flash-expert-tile"
+            | "--flash-warmup" => {
                 if let Err(e) = flash_sw.parse_flag(a, &need(i)) {
                     eprintln!("oxe-server: {e}");
                     std::process::exit(2)
@@ -340,13 +413,32 @@ fn main() {
             "--stub-reply" => stub_reply = need(i),
             // test aid for client contract jobs (stub engine only): a slow prefill, so keepalive
             // comments and queueing can be observed over HTTP without a model
-            "--stub-prefill-us" => stub_prefill_us = need(i).parse::<u64>().expect("--stub-prefill-us"),
+            "--stub-prefill-us" => {
+                stub_prefill_us = need(i).parse::<u64>().expect("--stub-prefill-us")
+            }
             // test aid (stub engine only): a slow decode, so fair slicing can be observed over HTTP
-            "--stub-decode-us" => stub_decode_us = need(i).parse::<u64>().expect("--stub-decode-us"),
+            "--stub-decode-us" => {
+                stub_decode_us = need(i).parse::<u64>().expect("--stub-decode-us")
+            }
             // fair time-slicing between generations (fair.rs); read by State::new
-            "--fair-quantum-ms" => std::env::set_var("OXE_FAIR_QUANTUM_MS", need(i).parse::<u32>().ok().filter(|&v| v <= 600_000).expect("--fair-quantum-ms (0..=600000)").to_string()),
+            "--fair-quantum-ms" => std::env::set_var(
+                "OXE_FAIR_QUANTUM_MS",
+                need(i)
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|&v| v <= 600_000)
+                    .expect("--fair-quantum-ms (0..=600000)")
+                    .to_string(),
+            ),
             // CACHE-PERFECT ECHO (echo.rs): on by default; read by State::new from the environment
-            "--echo" => std::env::set_var("OXE_ECHO", if matches!(need(i).as_str(), "off" | "0" | "false") { "0" } else { "1" }),
+            "--echo" => std::env::set_var(
+                "OXE_ECHO",
+                if matches!(need(i).as_str(), "off" | "0" | "false") {
+                    "0"
+                } else {
+                    "1"
+                },
+            ),
             // MTP acceptance guard (mtp_guard.rs): validated here, since the start-up check ran before the flags
             "--mtp-guard" => {
                 let v = need(i);
@@ -356,8 +448,17 @@ fn main() {
                 }
                 std::env::set_var("OXE_MTP_GUARD", v)
             }
-            "--echo-max-tokens" => std::env::set_var("OXE_ECHO_MAX_TOKENS", need(i).parse::<usize>().expect("--echo-max-tokens").to_string()),
-            "--echo-ttl-secs" => std::env::set_var("OXE_ECHO_TTL_SECS", need(i).parse::<u64>().expect("--echo-ttl-secs").to_string()),
+            "--echo-max-tokens" => std::env::set_var(
+                "OXE_ECHO_MAX_TOKENS",
+                need(i)
+                    .parse::<usize>()
+                    .expect("--echo-max-tokens")
+                    .to_string(),
+            ),
+            "--echo-ttl-secs" => std::env::set_var(
+                "OXE_ECHO_TTL_SECS",
+                need(i).parse::<u64>().expect("--echo-ttl-secs").to_string(),
+            ),
             "--oxe-cpus" => oxe_cpus = need(i),
             "--oxe-prefill-cpus" => oxe_prefill_cpus = Some(need(i)),
             "--flash-threads" => flash_threads = need(i).parse().unwrap_or(4),
@@ -371,7 +472,9 @@ fn main() {
                     _ if v == "auto" => flash_cache_gib,
                     Ok(g) if g.is_finite() && g > 0.0 => g,
                     _ => {
-                        eprintln!("oxe-server: --flash-cache-gib {v:?}: not a positive number of GiB");
+                        eprintln!(
+                            "oxe-server: --flash-cache-gib {v:?}: not a positive number of GiB"
+                        );
                         std::process::exit(2);
                     }
                 };
@@ -382,7 +485,9 @@ fn main() {
                 flash_admit_harness = match v.parse::<f64>() {
                     Ok(g) if g.is_finite() && g >= 0.0 => Some(g),
                     _ => {
-                        eprintln!("oxe-server: --flash-admit-harness-gib {v:?}: not a number of GiB >= 0");
+                        eprintln!(
+                            "oxe-server: --flash-admit-harness-gib {v:?}: not a number of GiB >= 0"
+                        );
                         std::process::exit(2);
                     }
                 };
@@ -391,10 +496,11 @@ fn main() {
                 let v = need(i);
                 #[cfg(feature = "flash")]
                 {
-                    flash_cache_pref = qwen4exp::pf_plan::parse_cache_pref(&v).unwrap_or_else(|e| {
-                        eprintln!("oxe-server: {e}");
-                        std::process::exit(2)
-                    });
+                    flash_cache_pref =
+                        qwen4exp::pf_plan::parse_cache_pref(&v).unwrap_or_else(|e| {
+                            eprintln!("oxe-server: {e}");
+                            std::process::exit(2)
+                        });
                 }
                 #[cfg(not(feature = "flash"))]
                 let _ = v;
@@ -438,12 +544,30 @@ fn main() {
                 flash_pf_order_last = v == "2";
             }
             "--flash-pf-readahead" => flash_pf_readahead = need(i).parse().ok(), // "auto" (or anything not a number) = auto
-            "--flash-pf-max-pass" => flash_pf_max_pass = if need(i) == "auto" { 8192 } else { need(i).parse().unwrap_or(0) },
-            "--flash-io-cpu-prefill" => flash_io_cpu_prefill = need(i).split(',').filter_map(|x| x.parse().ok()).collect(),
+            "--flash-pf-max-pass" => {
+                flash_pf_max_pass = if need(i) == "auto" {
+                    8192
+                } else {
+                    need(i).parse().unwrap_or(0)
+                }
+            }
+            "--flash-io-cpu-prefill" => {
+                flash_io_cpu_prefill = need(i).split(',').filter_map(|x| x.parse().ok()).collect()
+            }
             "--flash-sidecar" => flash_sidecar = Some(std::path::PathBuf::from(need(i))),
             "--flash-lookahead" => flash_lookahead = Some(std::path::PathBuf::from(need(i))),
-            "--flash-la-max" => flash_la_max = need(i).parse().unwrap_or_else(|_| { eprintln!("--flash-la-max: not a number"); std::process::exit(2) }),
-            "--flash-la-pending" => flash_la_pending = need(i).parse().unwrap_or_else(|_| { eprintln!("--flash-la-pending: not a number"); std::process::exit(2) }),
+            "--flash-la-max" => {
+                flash_la_max = need(i).parse().unwrap_or_else(|_| {
+                    eprintln!("--flash-la-max: not a number");
+                    std::process::exit(2)
+                })
+            }
+            "--flash-la-pending" => {
+                flash_la_pending = need(i).parse().unwrap_or_else(|_| {
+                    eprintln!("--flash-la-pending: not a number");
+                    std::process::exit(2)
+                })
+            }
             "--flash-cache-policy" => flash_cache_lfu = need(i) != "clock",
             "--flash-quota-weights" => flash_quota_weights = Some(need(i)),
             "--flash-exact" => {
@@ -471,7 +595,9 @@ fn main() {
                     }
                 }
             }
-            "--spec-draft-n-max" => draft_n_max = Some(need(i).parse().expect("--spec-draft-n-max")),
+            "--spec-draft-n-max" => {
+                draft_n_max = Some(need(i).parse().expect("--spec-draft-n-max"))
+            }
             "--draft" | "--draft-max" | "--draft-n" => {
                 draft_n_max = Some(need(i).parse().expect("--draft"));
                 spec_mtp = Some(true);
@@ -494,8 +620,14 @@ fn main() {
             "--mtp-head" => mtp_head = Some(need(i)),
             "--mtp-tune" => mtp_tune = Some(need(i)),
             // set before the engine reads them (single-threaded here)
-            "--pf-group-t1" => std::env::set_var("OXE_PF_GROUP_T1", need(i).parse::<usize>().expect("--pf-group-t1").to_string()),
-            "--pf-group-t2" => std::env::set_var("OXE_PF_GROUP_T2", need(i).parse::<usize>().expect("--pf-group-t2").to_string()),
+            "--pf-group-t1" => std::env::set_var(
+                "OXE_PF_GROUP_T1",
+                need(i).parse::<usize>().expect("--pf-group-t1").to_string(),
+            ),
+            "--pf-group-t2" => std::env::set_var(
+                "OXE_PF_GROUP_T2",
+                need(i).parse::<usize>().expect("--pf-group-t2").to_string(),
+            ),
             // PREFILL-POLICY (v0.1.3 #2): validated here, read by the engine from the environment
             "--pf-attn" => {
                 let v = need(i);
@@ -530,7 +662,9 @@ fn main() {
                     "--pf-pfg-tb" => "OXE_PF_PFG_TB",
                     _ => "OXE_PF_PFG_MK",
                 };
-                if model::engine::GParams::try_from_lookup(|k| (k == key).then(|| v.clone())).is_none() {
+                if model::engine::GParams::try_from_lookup(|k| (k == key).then(|| v.clone()))
+                    .is_none()
+                {
                     let flag = a;
                     eprintln!("{flag} {v}: fold 16|32|QK:PV, ch 32..256 (multiple of 32), tb 8|16|32, mk ld1r|elem");
                     std::process::exit(2)
@@ -562,14 +696,24 @@ fn main() {
         }
         i += used;
     }
-    if oxe_npu_prefill.is_some() && (engine!="oxe" || !cfg!(feature="npu-prefill")) {
-        eprintln!("oxe-server: --oxe-npu-prefill needs engine=oxe and the optional npu-prefill build");std::process::exit(2);
+    if oxe_npu_prefill.is_some() && (engine != "oxe" || !cfg!(feature = "npu-prefill")) {
+        eprintln!(
+            "oxe-server: --oxe-npu-prefill needs engine=oxe and the optional npu-prefill build"
+        );
+        std::process::exit(2);
     }
     // B1: API key (fails closed: a named but unusable key file stops the server)
-    let api_key_file = api_key_file.or_else(|| std::env::var("OXE_API_KEY_FILE").ok().filter(|v| !v.is_empty()));
+    let api_key_file = api_key_file.or_else(|| {
+        std::env::var("OXE_API_KEY_FILE")
+            .ok()
+            .filter(|v| !v.is_empty())
+    });
     if let Some(p) = &api_key_file {
         use std::os::unix::fs::PermissionsExt;
-        match std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| server::http::parse_key_file(&t)) {
+        match std::fs::read_to_string(p)
+            .map_err(|e| e.to_string())
+            .and_then(|t| server::http::parse_key_file(&t))
+        {
             Ok(k) => api_keys.extend(k),
             Err(e) => {
                 eprintln!("oxe-server: API key file {p}: {e}");
@@ -578,7 +722,9 @@ fn main() {
         }
         if let Ok(m) = std::fs::metadata(p) {
             if m.permissions().mode() & 0o077 != 0 {
-                eprintln!("oxe-server: WARNING: API key file {p} is readable by other users (chmod 600)");
+                eprintln!(
+                    "oxe-server: WARNING: API key file {p} is readable by other users (chmod 600)"
+                );
             }
         }
     }
@@ -600,7 +746,11 @@ fn main() {
             });
         }
     }
-    let access = server::http::Access { port: 0, extra_hosts: allow_hosts, keys: api_keys };
+    let access = server::http::Access {
+        port: 0,
+        extra_hosts: allow_hosts,
+        keys: api_keys,
+    };
     if !access.keys.is_empty() {
         eprintln!("oxe-server: API key required on every route");
     }
@@ -617,7 +767,12 @@ fn main() {
     if flash_admit_dry_run {
         #[cfg(feature = "flash")]
         {
-            let (d, line) = server::flash_engine::cache_decide_now(n_ctx, flash_admit_harness, flash_cache_pref, flash_desktop_floor);
+            let (d, line) = server::flash_engine::cache_decide_now(
+                n_ctx,
+                flash_admit_harness,
+                flash_cache_pref,
+                flash_desktop_floor,
+            );
             println!("{line}");
             println!("{}", d.status_json());
             return;
@@ -638,11 +793,18 @@ fn main() {
     let mut engine_status: Option<Json> = None;
     #[cfg(feature = "flash")]
     if engine == "flash" && flash_cache_auto {
-        let (d, line) = server::flash_engine::cache_decide_now(n_ctx, flash_admit_harness, flash_cache_pref, flash_desktop_floor);
+        let (d, line) = server::flash_engine::cache_decide_now(
+            n_ctx,
+            flash_admit_harness,
+            flash_cache_pref,
+            flash_desktop_floor,
+        );
         eprintln!("oxe-server: {line}");
         let st = d.status_json();
         eprintln!("oxe-server: flash cache status {st}");
-        engine_status = serde_json::from_str::<Json>(&st).ok().map(|v| serde_json::json!({ "flash_cache": v }));
+        engine_status = serde_json::from_str::<Json>(&st)
+            .ok()
+            .map(|v| serde_json::json!({ "flash_cache": v }));
         match d.cache_gib {
             Some(c) => {
                 flash_cache_gib = c;
@@ -661,11 +823,21 @@ fn main() {
         eprintln!("tokenizer: {e}");
         std::process::exit(1)
     });
-    let model_name = alias.unwrap_or_else(|| std::path::Path::new(&model).file_name().unwrap().to_string_lossy().into_owned());
+    let model_name = alias.unwrap_or_else(|| {
+        std::path::Path::new(&model)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    });
     let cfg = Config {
         model_name,
         model_path: model.clone(),
-        chat_opts: chat::ServerChatOptions { chat_template_kwargs: kwargs, reasoning_format, enable_thinking },
+        chat_opts: chat::ServerChatOptions {
+            chat_template_kwargs: kwargs,
+            reasoning_format,
+            enable_thinking,
+        },
         fingerprint: format!("oxe-{}", env!("CARGO_PKG_VERSION")),
         slots,
         idle_reprefill,
@@ -673,17 +845,27 @@ fn main() {
     };
     let prefix = prefix_dir.map(|d| {
         let dir = if d == "default" {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/local-ai/snapdragon-engine/prefix")
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".cache/local-ai/snapdragon-engine/prefix")
         } else {
             std::path::PathBuf::from(d)
         };
         // FLASH-PREFIX-2: Flash saves only with MemAvailable >= this + 2 x entry (default = the controller's 1 GiB host floor)
-        let save_floor_mib = prefix_save_floor_mib.unwrap_or(if engine == "flash" { 1024 } else { 0 });
-        PrefixOpts { dir, max_bytes: prefix_max, min_tokens: prefix_min, ttl_h: prefix_ttl_h, save_floor_bytes: save_floor_mib << 20, model: std::path::PathBuf::from(&model) }
+        let save_floor_mib =
+            prefix_save_floor_mib.unwrap_or(if engine == "flash" { 1024 } else { 0 });
+        PrefixOpts {
+            dir,
+            max_bytes: prefix_max,
+            min_tokens: prefix_min,
+            ttl_h: prefix_ttl_h,
+            save_floor_bytes: save_floor_mib << 20,
+            model: std::path::PathBuf::from(&model),
+        }
     });
     let warm = hotset.filter(|h| h != "off").map(|h| {
         if h == "default" {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/local-ai/snapdragon-engine/flash/hotset.bin")
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".cache/local-ai/snapdragon-engine/flash/hotset.bin")
         } else {
             std::path::PathBuf::from(h)
         }
@@ -703,7 +885,8 @@ fn main() {
         ledger: ledger.map(std::path::PathBuf::from),
         state_dir: state_dir.map(|d| {
             if d == "default" {
-                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/local-ai/snapdragon-engine/state")
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                    .join(".cache/local-ai/snapdragon-engine/state")
             } else {
                 std::path::PathBuf::from(d)
             }
@@ -727,7 +910,22 @@ fn main() {
             let mut eng = StubEngine::new(n_ctx, tok.n_vocab(), tok.eos.unwrap_or(0), script);
             eng.prefill_sleep_per_token = std::time::Duration::from_micros(stub_prefill_us);
             eng.decode_sleep = std::time::Duration::from_micros(stub_decode_us);
-            serve(cfg, tok, eng, sess, ubatch, prefix, host, port, engine, n_ctx, repeat_watchdog, None, None, access)
+            serve(
+                cfg,
+                tok,
+                eng,
+                sess,
+                ubatch,
+                prefix,
+                host,
+                port,
+                engine,
+                n_ctx,
+                repeat_watchdog,
+                None,
+                None,
+                access,
+            )
         }
         "oxe" => {
             let cpus = sched::parse_cpu_list(&oxe_cpus).unwrap_or_else(|e| {
@@ -755,8 +953,14 @@ fn main() {
             };
             let cpus = clamp("--oxe-cpus", cpus);
             let pcpus = pcpus.map(|l| clamp("--oxe-prefill-cpus", l));
-            let head = server::oxe_engine::mtp_head_path(std::path::Path::new(&model), mtp_head.as_deref().map(std::path::Path::new));
-            let model_default = server::oxe_engine::default_mtp_depth(std::path::Path::new(&model), head.as_deref());
+            let head = server::oxe_engine::mtp_head_path(
+                std::path::Path::new(&model),
+                mtp_head.as_deref().map(std::path::Path::new),
+            );
+            let model_default = server::oxe_engine::default_mtp_depth(
+                std::path::Path::new(&model),
+                head.as_deref(),
+            );
             let tune_path = mtp_tune.map(std::path::PathBuf::from).or_else(|| {
                 let p = std::path::Path::new(&model).with_extension("mtp-tune.json");
                 p.exists().then_some(p)
@@ -769,17 +973,25 @@ fn main() {
             });
             let mut depth = match spec_mtp {
                 Some(false) => 0,
-                Some(true) => draft_n_max.unwrap_or(if model_default > 0 { model_default } else { 2 }),
+                Some(true) => {
+                    draft_n_max.unwrap_or(if model_default > 0 { model_default } else { 2 })
+                }
                 None if model_default > 0 => draft_n_max.unwrap_or(model_default),
                 None => 0,
             };
             // with a tune table (and MTP not forced off, and a head available) the engine is built
             // for the deepest tuned depth; requests then use their bucket's depth (0 = off)
             if let Some(t) = &table {
-                if spec_mtp != Some(false) && (model_default > 0 || head.is_some() || spec_mtp == Some(true)) {
+                if spec_mtp != Some(false)
+                    && (model_default > 0 || head.is_some() || spec_mtp == Some(true))
+                {
                     depth = draft_n_max.unwrap_or(t.buckets.iter().map(|b| b.1).max().unwrap_or(0));
                 }
-                eprintln!("oxe-server: MTP tune table {}: {:?} (context <= positions -> depth)", tune_path.as_ref().unwrap().display(), t.buckets);
+                eprintln!(
+                    "oxe-server: MTP tune table {}: {:?} (context <= positions -> depth)",
+                    tune_path.as_ref().unwrap().display(),
+                    t.buckets
+                );
             }
             if depth > 3 {
                 eprintln!("--spec-draft-n-max must be 1..3 for draft-mtp");
@@ -787,7 +999,11 @@ fn main() {
             }
             eprintln!(
                 "oxe-server: MTP speculative decoding {} (model default {model_default})",
-                if depth > 0 { format!("on, {depth} draft tokens (greedy requests)") } else { "off".into() }
+                if depth > 0 {
+                    format!("on, {depth} draft tokens (greedy requests)")
+                } else {
+                    "off".into()
+                }
             );
             if depth > 0 {
                 if let Some(h) = &head {
@@ -809,32 +1025,75 @@ fn main() {
                 std::env::set_var("OXE_KV_TYPE", kv);
                 eprintln!("oxe-server: KV cache {kv} (K {cache_k}, V {cache_v})");
             }
-            eprintln!("oxe-server: engine switches: {}", model::engine::effective_switches());
-            let mut eng = server::oxe_engine::OxeEngine::open_head(std::path::Path::new(&model), head.as_deref(), &cpus, pcpus.as_deref(), ubatch, n_ctx, depth).unwrap_or_else(|e| {
+            eprintln!(
+                "oxe-server: engine switches: {}",
+                model::engine::effective_switches()
+            );
+            let mut eng = server::oxe_engine::OxeEngine::open_head(
+                std::path::Path::new(&model),
+                head.as_deref(),
+                &cpus,
+                pcpus.as_deref(),
+                ubatch,
+                n_ctx,
+                depth,
+            )
+            .unwrap_or_else(|e| {
                 eprintln!("oxe engine: {e}");
                 std::process::exit(1)
             });
             // CI-TRUTH: draft-mtp asked for on a model without a usable MTP block runs without
             // speculation (the engine warned); no tune table either, /props reports the fallback
-            let (depth, table) = if eng.spec_fallback().is_some() { (0, None) } else { (depth, table) };
+            let (depth, table) = if eng.spec_fallback().is_some() {
+                (0, None)
+            } else {
+                (depth, table)
+            };
             // PREFILL-POLICY: the resolved prefill attention path (what the state identity keys on)
             eprintln!("oxe-server: {}", eng.pf_attn_summary());
-            eprintln!("oxe-server: decode attention output kernel {}", eng.attn_out().name());
-            if let Some(mode)=oxe_npu_prefill.as_deref(){
-                #[cfg(feature="npu-prefill")]
-                eng.enable_npu_prefill(std::path::Path::new(&model),mode,oxe_npu_go_file.as_deref().map(std::path::Path::new),pcpus.as_deref().unwrap_or(&cpus)).unwrap_or_else(|e|{
-                    eprintln!("oxe-server: NPU proof preparation failed: {e}");std::process::exit(1)
+            eprintln!(
+                "oxe-server: decode attention output kernel {}",
+                eng.attn_out().name()
+            );
+            if let Some(mode) = oxe_npu_prefill.as_deref() {
+                #[cfg(feature = "npu-prefill")]
+                eng.enable_npu_prefill(
+                    std::path::Path::new(&model),
+                    mode,
+                    oxe_npu_go_file.as_deref().map(std::path::Path::new),
+                    pcpus.as_deref().unwrap_or(&cpus),
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("oxe-server: NPU proof preparation failed: {e}");
+                    std::process::exit(1)
                 });
-                #[cfg(not(feature="npu-prefill"))]
-                {let _=mode;eprintln!("oxe-server: build with npu-prefill/npu-device for this opt-in proof");std::process::exit(2);}
+                #[cfg(not(feature = "npu-prefill"))]
+                {
+                    let _ = mode;
+                    eprintln!(
+                        "oxe-server: build with npu-prefill/npu-device for this opt-in proof"
+                    );
+                    std::process::exit(2);
+                }
             }
             // W4-4 a: one stable, machine-checkable MTP line (the T1 gate checks it)
             eprintln!(
                 "oxe-server: mtp depth={depth} head={} head_cache={} max_ctx={} table={}",
-                if depth == 0 { "none".to_string() } else { head.as_ref().map(|h| h.display().to_string()).unwrap_or_else(|| "own".into()) },
+                if depth == 0 {
+                    "none".to_string()
+                } else {
+                    head.as_ref()
+                        .map(|h| h.display().to_string())
+                        .unwrap_or_else(|| "own".into())
+                },
                 eng.mtp_identity().unwrap_or("none"),
-                mtp_max_ctx.map(|m| m.to_string()).unwrap_or_else(|| "off".into()),
-                tune_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "none".into())
+                mtp_max_ctx
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "off".into()),
+                tune_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "none".into())
             );
             // LONG-CTX: what the context costs (full context; scratch pages become resident as it fills)
             let m = eng.ctx_mem();
@@ -844,9 +1103,28 @@ fn main() {
                 m.n_ctx, gib(m.kv), m.kv_per_pos, gib(m.recurrent), gib(m.decode_scratch), gib(m.prefill_per_thread)
             );
             if mtp_max_ctx.is_some_and(|c| c >= m.n_ctx) {
-                eprintln!("oxe-server: note: --mtp-max-ctx {} >= the context {}: never reached", mtp_max_ctx.unwrap(), m.n_ctx);
+                eprintln!(
+                    "oxe-server: note: --mtp-max-ctx {} >= the context {}: never reached",
+                    mtp_max_ctx.unwrap(),
+                    m.n_ctx
+                );
             }
-            serve(cfg, tok, eng, sess, ubatch, prefix, host, port, engine, n_ctx, repeat_watchdog, table, mtp_max_ctx, access)
+            serve(
+                cfg,
+                tok,
+                eng,
+                sess,
+                ubatch,
+                prefix,
+                host,
+                port,
+                engine,
+                n_ctx,
+                repeat_watchdog,
+                table,
+                mtp_max_ctx,
+                access,
+            )
         }
         #[cfg(feature = "flash")]
         "flash" => {
@@ -874,12 +1152,17 @@ fn main() {
                     None | Some("builtin") => Some(qwen4exp::stream::FLASH_QUOTA_WEIGHTS.to_vec()),
                     Some("equal") => None,
                     Some(p) => Some({
-                    let t = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("--flash-quota-weights {p}: {e}"));
-                    t.lines()
-                        .filter(|l| !l.trim_start().starts_with('#'))
-                        .flat_map(|l| l.split_whitespace())
-                        .map(|x| x.parse::<f64>().unwrap_or_else(|_| panic!("--flash-quota-weights: bad value {x}")))
-                        .collect()
+                        let t = std::fs::read_to_string(p)
+                            .unwrap_or_else(|e| panic!("--flash-quota-weights {p}: {e}"));
+                        t.lines()
+                            .filter(|l| !l.trim_start().starts_with('#'))
+                            .flat_map(|l| l.split_whitespace())
+                            .map(|x| {
+                                x.parse::<f64>().unwrap_or_else(|_| {
+                                    panic!("--flash-quota-weights: bad value {x}")
+                                })
+                            })
+                            .collect()
                     }),
                 },
                 exact: flash_exact,
@@ -899,14 +1182,37 @@ fn main() {
                 psi_some: flash_psi_some,
                 psi_full: flash_psi_full,
             };
-            let eng = server::flash_engine::FlashEngine::open(std::path::Path::new(&model), &o).unwrap_or_else(|e| {
-                eprintln!("flash engine: {e}");
-                std::process::exit(1)
-            });
-            serve(cfg, tok, eng, sess, if ubatch_set { ubatch } else { 4096 }, prefix, host, port, engine, n_ctx, repeat_watchdog, None, None, access)
+            let eng = server::flash_engine::FlashEngine::open(std::path::Path::new(&model), &o)
+                .unwrap_or_else(|e| {
+                    eprintln!("flash engine: {e}");
+                    std::process::exit(1)
+                });
+            serve(
+                cfg,
+                tok,
+                eng,
+                sess,
+                if ubatch_set { ubatch } else { 4096 },
+                prefix,
+                host,
+                port,
+                engine,
+                n_ctx,
+                repeat_watchdog,
+                None,
+                None,
+                access,
+            )
         }
         x => {
-            eprintln!("unknown engine {x} (stub|oxe{})", if cfg!(feature = "flash") { "|flash" } else { "" });
+            eprintln!(
+                "unknown engine {x} (stub|oxe{})",
+                if cfg!(feature = "flash") {
+                    "|flash"
+                } else {
+                    ""
+                }
+            );
             std::process::exit(2)
         }
     }
@@ -964,21 +1270,41 @@ struct PrefixOpts {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: SessionOpts, ubatch: usize, prefix: Option<PrefixOpts>, host: String, port: u16, engine: String, n_ctx: usize, repeat_watchdog: usize, spec_table: Option<server::generate::SpecTable>, mtp_max_ctx: Option<usize>, mut access: server::http::Access) {
+fn serve<E: Engine>(
+    cfg: Config,
+    tok: tokenizer::Tokenizer,
+    eng: E,
+    sess: SessionOpts,
+    ubatch: usize,
+    prefix: Option<PrefixOpts>,
+    host: String,
+    port: u16,
+    engine: String,
+    n_ctx: usize,
+    repeat_watchdog: usize,
+    spec_table: Option<server::generate::SpecTable>,
+    mtp_max_ctx: Option<usize>,
+    mut access: server::http::Access,
+) {
     let mut w = Worker::new(eng, sess.checkpoints);
     w.ubatch = ubatch;
     w.spec_table = spec_table;
     w.mtp_max_ctx = mtp_max_ctx;
     w.mtp_guard = server::mtp_guard::MtpGuard::from_env();
     if w.mtp_guard.is_some() {
-        eprintln!("oxe-server: MTP acceptance guard on (OXE_MTP_GUARD={})", std::env::var("OXE_MTP_GUARD").unwrap_or_default());
+        eprintln!(
+            "oxe-server: MTP acceptance guard on (OXE_MTP_GUARD={})",
+            std::env::var("OXE_MTP_GUARD").unwrap_or_default()
+        );
     }
     w.repeat_watchdog = repeat_watchdog;
     if repeat_watchdog > 0 {
         eprintln!("oxe-server: repetition watchdog on (window {repeat_watchdog} tokens)");
     }
     // turn checkpoints only use slots beyond the 4 the anchor/query/tail checkpoints need
-    let turns = sess.turn_checkpoints.min(sess.checkpoints.saturating_sub(4));
+    let turns = sess
+        .turn_checkpoints
+        .min(sess.checkpoints.saturating_sub(4));
     w.turn_checkpoints = turns;
     w.cache.max_turn = turns;
     w.cache.park_budget = sess.session_ram;
@@ -991,7 +1317,11 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
     w.offlock = sess.offlock;
     w.msg_split = sess.msg_split;
     // stored states are only valid for the schedule that computed them
-    let sched = if sess.msg_split { " sched=messages" } else { "" };
+    let sched = if sess.msg_split {
+        " sched=messages"
+    } else {
+        ""
+    };
     if let Some(path) = &sess.warm {
         // the hint names cache contents of this model; any server build may use it
         let id = server::prefix_store::identity(&sess.model, "warm", 0);
@@ -1005,7 +1335,12 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
     let warm_file = w.warm.is_some();
     if let Some(p) = &sess.ledger {
         use std::os::unix::fs::OpenOptionsExt;
-        match std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(p) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(p)
+        {
             Ok(f) => w.ledger = Some(f),
             Err(e) => eprintln!("oxe-server: ledger {} disabled: {e}", p.display()),
         }
@@ -1014,15 +1349,26 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
     if let Some(dir) = &sess.dir {
         match w.engine.state_id() {
             Some(sid) => {
-                let id = server::prefix_store::identity(&sess.model, &format!("{sid}{sched}"), ubatch);
-                match server::prefix_store::PrefixStore::open(dir, id, sess.max_bytes, sess.park_min.max(1)) {
+                let id =
+                    server::prefix_store::identity(&sess.model, &format!("{sid}{sched}"), ubatch);
+                match server::prefix_store::PrefixStore::open(
+                    dir,
+                    id,
+                    sess.max_bytes,
+                    sess.park_min.max(1),
+                ) {
                     Ok(mut s) => {
                         // TTL: only this identity's sessions (W4-4 c: a shared directory is safe)
-                        let gone = s.prune_older_than(std::time::Duration::from_secs(sess.ttl_h * 3600));
+                        let gone =
+                            s.prune_older_than(std::time::Duration::from_secs(sess.ttl_h * 3600));
                         if gone > 0 {
                             eprintln!("oxe-server: session cache: {gone} sessions older than {} h removed", sess.ttl_h);
                         }
-                        eprintln!("oxe-server: session cache {} ({} usable sessions)", dir.display(), s.n_entries());
+                        eprintln!(
+                            "oxe-server: session cache {} ({} usable sessions)",
+                            dir.display(),
+                            s.n_entries()
+                        );
                         w.sessions = Some(s);
                         w.cache.spill = true;
                         session_cache = true;
@@ -1036,11 +1382,18 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
     eprintln!(
         "oxe-server: {} checkpoints ({turns} for turns), parked sessions {}",
         sess.checkpoints,
-        if sess.session_ram > 0 { format!("up to {} MiB", sess.session_ram >> 20) } else { "off".into() }
+        if sess.session_ram > 0 {
+            format!("up to {} MiB", sess.session_ram >> 20)
+        } else {
+            "off".into()
+        }
     );
     if sess.park_disk_min > 0 {
         if session_cache {
-            eprintln!("oxe-server: sessions of >= {} MiB park to the session cache (streamed)", sess.park_disk_min >> 20);
+            eprintln!(
+                "oxe-server: sessions of >= {} MiB park to the session cache (streamed)",
+                sess.park_disk_min >> 20
+            );
         } else {
             eprintln!("oxe-server: --park-disk-min-bytes needs --session-cache: large sessions park in RAM");
         }
@@ -1049,12 +1402,14 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
         match w.engine.state_id() {
             Some(sid) => {
                 let id = server::prefix_store::identity(&p.model, &format!("{sid}{sched}"), ubatch);
-                match server::prefix_store::PrefixStore::open(&p.dir, id, p.max_bytes, p.min_tokens) {
+                match server::prefix_store::PrefixStore::open(&p.dir, id, p.max_bytes, p.min_tokens)
+                {
                     Ok(mut s) => {
                         s.save_floor_bytes = p.save_floor_bytes;
                         if p.ttl_h > 0 {
                             // own entries + the same model's orphans of older builds (W4-4 c rules)
-                            let gone = s.prune_older_than(std::time::Duration::from_secs(p.ttl_h * 3600));
+                            let gone =
+                                s.prune_older_than(std::time::Duration::from_secs(p.ttl_h * 3600));
                             if gone > 0 {
                                 eprintln!("oxe-server: prefix store: {gone} entries unused for {} h removed", p.ttl_h);
                             }
@@ -1104,17 +1459,27 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
     }
     let state_cache = w.states.is_some();
     // v0.1.3 store-depth: the legacy session cache is read-only while the state store holds the state
-    w.legacy_writes = server::generate::legacy_session_writes(&sess.session_writes, state_cache && w.states.as_ref().is_some_and(|s| s.budget > 0), sess.park_write).unwrap_or(true);
+    w.legacy_writes = server::generate::legacy_session_writes(
+        &sess.session_writes,
+        state_cache && w.states.as_ref().is_some_and(|s| s.budget > 0),
+        sess.park_write,
+    )
+    .unwrap_or(true);
     if session_cache && !w.legacy_writes {
         w.cache.spill = false;
         eprintln!("oxe-server: session cache: read only (--session-cache-writes {}: the state cache holds the sessions)", sess.session_writes);
     }
-    let echo_dir = w.states.as_ref().map(|s| (s.dir.join("echo"), s.ident.text.clone()));
+    let echo_dir = w
+        .states
+        .as_ref()
+        .map(|s| (s.dir.join("echo"), s.ident.text.clone()));
     // a disk budget of 0: no conversation state on disk at all (Codex P2/P3 review 2): the echo
     // files and the legacy prefix / session stores are off too until the budget rises
     let budget_off = w.states.as_ref().is_some_and(|s| s.budget == 0);
     if budget_off && (w.store.is_some() || w.sessions.is_some()) {
-        eprintln!("oxe-server: state cache budget 0: the prefix store and session cache are off too");
+        eprintln!(
+            "oxe-server: state cache budget 0: the prefix store and session cache are off too"
+        );
         w.legacy_off = Some((w.store.take(), w.sessions.take()));
     }
     let st = State::new(cfg, tok, w).unwrap_or_else(|e| {
@@ -1136,8 +1501,14 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
     let st = Arc::new(st);
     // SIGTERM/SIGINT (controller unload, model switch): write the sessions, then exit
     unsafe {
-        libc::signal(libc::SIGTERM, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
-        libc::signal(libc::SIGINT, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        libc::signal(
+            libc::SIGTERM,
+            on_term as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGINT,
+            on_term as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        );
     }
     let st_term = st.clone();
     std::thread::spawn(move || loop {
@@ -1145,7 +1516,7 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
         if !TERM.load(std::sync::atomic::Ordering::SeqCst) {
             continue;
         }
-        if session_cache || warm_file || state_cache || cfg!(feature="npu-prefill") {
+        if session_cache || warm_file || state_cache || cfg!(feature = "npu-prefill") {
             // P2b M2: a guard trip allows 3 s (unload 10 s). Cancel the running generation (it stops
             // within one prefill chunk or one token, leaving a consistent prefix), take the worker
             // within 1 s, then write only what is not on disk yet (with M1 at most ~4K tokens of
@@ -1153,7 +1524,12 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
             // signal; the manifest of what was written goes last. Logged in one line.
             let t0 = std::time::Instant::now();
             let deadline = t0 + std::time::Duration::from_millis(2500);
-            for f in [&st_term.running, &st_term.idle, &st_term.persist, &st_term.preload] {
+            for f in [
+                &st_term.running,
+                &st_term.idle,
+                &st_term.persist,
+                &st_term.preload,
+            ] {
                 if let Some(f) = f.lock().unwrap_or_else(|p| p.into_inner()).take() {
                     f.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
@@ -1163,10 +1539,13 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
             st_term.fair.cancel_all();
             loop {
                 if let Ok(mut w) = st_term.worker.try_lock() {
-                    for l in w.shutdown_writes(state_cache, session_cache, t0, deadline, &mut |w| w.persist_sessions()) {
+                    for l in w.shutdown_writes(state_cache, session_cache, t0, deadline, &mut |w| {
+                        w.persist_sessions()
+                    }) {
                         eprintln!("oxe-server: {l}");
                     }
-                    #[cfg(feature="npu-prefill")] w.engine.release_accelerators();
+                    #[cfg(feature = "npu-prefill")]
+                    w.engine.release_accelerators();
                     break;
                 }
                 if t0.elapsed().as_millis() >= 1000 {
@@ -1178,14 +1557,23 @@ fn serve<E: Engine>(cfg: Config, tok: tokenizer::Tokenizer, eng: E, sess: Sessio
         }
         std::process::exit(0);
     });
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async move {
-        let l = tokio::net::TcpListener::bind((host.as_str(), port)).await.unwrap_or_else(|e| {
-            eprintln!("bind {host}:{port}: {e}");
-            std::process::exit(1)
-        });
+        let l = tokio::net::TcpListener::bind((host.as_str(), port))
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("bind {host}:{port}: {e}");
+                std::process::exit(1)
+            });
         access.port = l.local_addr().map(|a| a.port()).unwrap_or(port);
-        eprintln!("oxe-server listening on http://{host}:{} (engine {engine}, n_ctx {n_ctx})", access.port);
+        eprintln!(
+            "oxe-server listening on http://{host}:{} (engine {engine}, n_ctx {n_ctx})",
+            access.port
+        );
         server::http::serve_with(st, l, access).await.unwrap();
     });
 }

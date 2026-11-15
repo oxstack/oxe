@@ -19,7 +19,8 @@ fn parse_decoder_table() -> Vec<(String, Vec<usize>)> {
     let mut out = Vec::new();
     for line in text.lines() {
         let mut parts = line.split('\t');
-        let (Some(name), Some(_dtype), Some(shape)) = (parts.next(), parts.next(), parts.next()) else {
+        let (Some(name), Some(_dtype), Some(shape)) = (parts.next(), parts.next(), parts.next())
+        else {
             continue;
         };
         if !(name.starts_with("decoder.")) {
@@ -79,7 +80,11 @@ fn compare(a: &[f32], b: &[f32]) -> (f64, f64, f64) {
         inside += (b.abs() <= 1.0) as usize;
     }
     let n = a.len() as f64;
-    let psnr = if mse_px > 0.0 { 10.0 * (255.0f64 * 255.0 / (mse_px / n)).log10() } else { f64::INFINITY };
+    let psnr = if mse_px > 0.0 {
+        10.0 * (255.0f64 * 255.0 / (mse_px / n)).log10()
+    } else {
+        f64::INFINITY
+    };
     ((e / sig).sqrt(), psnr, inside as f64 / n)
 }
 
@@ -99,7 +104,10 @@ fn run(h: usize, threads: usize) {
             ((s >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
         })
         .collect();
-    let reps: usize = std::env::var("OXI_VAE_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+    let reps: usize = std::env::var("OXI_VAE_REPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
     // arms: (name, int8, channel-last, winograd)
     let arms = [
         ("f32 channel-major (8531151)", false, false, false),
@@ -113,7 +121,9 @@ fn run(h: usize, threads: usize) {
     let mut outs: Vec<Vec<f32>> = vec![Vec::new(); NA];
     let mut all_totals: Vec<Vec<f64>> = vec![Vec::new(); NA];
     // OXI_VAE_ARMS=1,3 runs only those arms (profiling); the comparison lines then cover what ran
-    let only: Option<Vec<usize>> = std::env::var("OXI_VAE_ARMS").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect());
+    let only: Option<Vec<usize>> = std::env::var("OXI_VAE_ARMS")
+        .ok()
+        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect());
     let runs = |ai: usize| only.as_ref().is_none_or(|o| o.contains(&ai));
     for rep in 0..reps + 1 {
         for (ai, (_, int8, last, wino)) in arms.iter().enumerate() {
@@ -122,7 +132,12 @@ fn run(h: usize, threads: usize) {
             }
             set_int8_conv(*int8);
             set_winograd(*wino);
-            let (out, tm) = if *last { dec.decode_timed(&z, 128, h, h, threads) } else { dec.decode_timed_channel_major(&z, 128, h, h, threads) }.expect("decode");
+            let (out, tm) = if *last {
+                dec.decode_timed(&z, 128, h, h, threads)
+            } else {
+                dec.decode_timed_channel_major(&z, 128, h, h, threads)
+            }
+            .expect("decode");
             set_int8_conv(false);
             set_winograd(false);
             if rep == 0 {
@@ -130,7 +145,13 @@ fn run(h: usize, threads: usize) {
                 outs[ai] = out;
                 continue;
             }
-            assert!(out.iter().zip(&outs[ai]).all(|(a, b)| a.to_bits() == b.to_bits()), "{}: two runs differ", arms[ai].0);
+            assert!(
+                out.iter()
+                    .zip(&outs[ai])
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{}: two runs differ",
+                arms[ai].0
+            );
             all_totals[ai].push(tm.total);
             if best[ai].as_ref().is_none_or(|b| tm.total < b.total) {
                 best[ai] = Some(tm);
@@ -140,20 +161,58 @@ fn run(h: usize, threads: usize) {
     println!("prod_shape h={h} (output {}x{}) threads={threads}, best of {reps} interleaved reps after one warm-up pass", 16 * h, 16 * h);
     let ran: Vec<usize> = (0..NA).filter(|&ai| runs(ai)).collect();
     let best: Vec<Option<DecodeTimes>> = best;
-    let cell = |ai: usize, f: &dyn Fn(&DecodeTimes) -> f64| best[ai].as_ref().map(|b| format!("{:>12.4}", f(b))).unwrap_or_else(|| format!("{:>12}", "-"));
-    println!("  {:<36} {:>12} {:>12} {:>12} {:>12} {:>12}", "stage [s]", "f32 major", "f32 last", "int8 major", "int8 last", "f32 wino");
+    let cell = |ai: usize, f: &dyn Fn(&DecodeTimes) -> f64| {
+        best[ai]
+            .as_ref()
+            .map(|b| format!("{:>12.4}", f(b)))
+            .unwrap_or_else(|| format!("{:>12}", "-"))
+    };
+    println!(
+        "  {:<36} {:>12} {:>12} {:>12} {:>12} {:>12}",
+        "stage [s]", "f32 major", "f32 last", "int8 major", "int8 last", "f32 wino"
+    );
     let nstages = best[ran[0]].as_ref().expect("ran").stages.len();
     for i in 0..nstages {
         let name = best[ran[0]].as_ref().unwrap().stages[i].0.clone();
-        println!("  {name:<36} {} {} {} {} {}", cell(0, &|b| b.stages[i].1), cell(1, &|b| b.stages[i].1), cell(2, &|b| b.stages[i].1), cell(3, &|b| b.stages[i].1), cell(4, &|b| b.stages[i].1));
+        println!(
+            "  {name:<36} {} {} {} {} {}",
+            cell(0, &|b| b.stages[i].1),
+            cell(1, &|b| b.stages[i].1),
+            cell(2, &|b| b.stages[i].1),
+            cell(3, &|b| b.stages[i].1),
+            cell(4, &|b| b.stages[i].1)
+        );
     }
-    println!("  {:<36} {} {} {} {} {}", "TOTAL", cell(0, &|b| b.total), cell(1, &|b| b.total), cell(2, &|b| b.total), cell(3, &|b| b.total), cell(4, &|b| b.total));
+    println!(
+        "  {:<36} {} {} {} {} {}",
+        "TOTAL",
+        cell(0, &|b| b.total),
+        cell(1, &|b| b.total),
+        cell(2, &|b| b.total),
+        cell(3, &|b| b.total),
+        cell(4, &|b| b.total)
+    );
     for &ai in &ran {
-        println!("  all totals, {}: {:?}", arms[ai].0, all_totals[ai].iter().map(|v| (v * 1000.0).round() / 1000.0).collect::<Vec<_>>());
+        println!(
+            "  all totals, {}: {:?}",
+            arms[ai].0,
+            all_totals[ai]
+                .iter()
+                .map(|v| (v * 1000.0).round() / 1000.0)
+                .collect::<Vec<_>>()
+        );
     }
     for ai in [1usize, 3, 4] {
         if let Some(b) = &best[ai] {
-            println!("  kinds, {}: {}", arms[ai].0, b.kinds.iter().map(|(k, v)| format!("{k} {v:.3}")).collect::<Vec<_>>().join(", "));
+            println!(
+                "  kinds, {}: {}",
+                arms[ai].0,
+                b.kinds
+                    .iter()
+                    .map(|(k, v)| format!("{k} {v:.3}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
     }
     if ran.len() < NA {
@@ -163,15 +222,32 @@ fn run(h: usize, threads: usize) {
         assert_eq!(o.len(), 3 * 16 * h * 16 * h);
         assert!(o.iter().all(|v| v.is_finite()), "non-finite output");
     }
-    let bitwise = outs[1].iter().zip(&outs[0]).all(|(a, b)| a.to_bits() == b.to_bits());
-    let max_abs = outs[1].iter().zip(&outs[0]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    let bitwise = outs[1]
+        .iter()
+        .zip(&outs[0])
+        .all(|(a, b)| a.to_bits() == b.to_bits());
+    let max_abs = outs[1]
+        .iter()
+        .zip(&outs[0])
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max);
     let (rel, psnr, inside) = compare(&outs[1], &outs[0]);
     println!("  f32 channel-last vs f32 channel-major: bitwise {bitwise}, rel RMSE {rel:.3e}, max abs diff {max_abs:.3e}, PSNR {psnr:.1} dB ({:.0}% of the values inside [-1, 1])", inside * 100.0);
-    assert!(psnr >= 50.0, "channel-last f32 decode is {psnr:.1} dB from the channel-major decode (gate 50 dB)");
-    let max_abs = outs[4].iter().zip(&outs[0]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(
+        psnr >= 50.0,
+        "channel-last f32 decode is {psnr:.1} dB from the channel-major decode (gate 50 dB)"
+    );
+    let max_abs = outs[4]
+        .iter()
+        .zip(&outs[0])
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max);
     let (rel, psnr, _) = compare(&outs[4], &outs[0]);
     println!("  f32 channel-last winograd vs f32 channel-major: rel RMSE {rel:.3e}, max abs diff {max_abs:.3e}, PSNR {psnr:.1} dB");
-    assert!(psnr >= 50.0, "winograd f32 decode is {psnr:.1} dB from the channel-major decode (gate 50 dB)");
+    assert!(
+        psnr >= 50.0,
+        "winograd f32 decode is {psnr:.1} dB from the channel-major decode (gate 50 dB)"
+    );
     let (rel, psnr, _) = compare(&outs[3], &outs[1]);
     println!("  int8 channel-last vs f32 channel-last: rel RMSE {rel:.4}, PSNR {psnr:.1} dB (random weights)");
     let (rel, psnr, _) = compare(&outs[2], &outs[0]);

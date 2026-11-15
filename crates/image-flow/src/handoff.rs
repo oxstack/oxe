@@ -64,14 +64,21 @@ impl Handoff {
     }
 
     /// Load with explicit model widths (tests use tiny ones).
-    pub fn load_with(dir: &Path, in_ch: usize, ctx_dim: usize, out_ch: usize) -> Result<Handoff, String> {
+    pub fn load_with(
+        dir: &Path,
+        in_ch: usize,
+        ctx_dim: usize,
+        out_ch: usize,
+    ) -> Result<Handoff, String> {
         let img_calls = list_calls(dir, "dump.flux.img")?;
         if img_calls.is_empty() {
             return Err(format!("{}: no dump.flux.img.call<n> files", dir.display()));
         }
         let steps = img_calls.len();
         if img_calls != (0..steps).collect::<Vec<_>>() {
-            return Err(format!("dump.flux.img calls are not 0..{steps}: {img_calls:?}"));
+            return Err(format!(
+                "dump.flux.img calls are not 0..{steps}: {img_calls:?}"
+            ));
         }
 
         // img per step
@@ -102,7 +109,10 @@ impl Handoff {
             for c in 0..steps {
                 let t = req_call(dir, "dump.flux.timesteps", c)?;
                 if t.data.len() != 1 {
-                    return Err(format!("dump.flux.timesteps call {c}: {} elements, want 1", t.data.len()));
+                    return Err(format!(
+                        "dump.flux.timesteps call {c}: {} elements, want 1",
+                        t.data.len()
+                    ));
                 }
                 v.push(t.data[0]);
             }
@@ -142,7 +152,11 @@ impl Handoff {
                 return Err(format!("dump.flux.out call {c} beyond {steps} steps"));
             }
             let t = req_call(dir, "dump.flux.out", c)?;
-            expect_ne(&t, &format!("dump.flux.out call {c}"), [out_ch, n_img, 1, 1])?;
+            expect_ne(
+                &t,
+                &format!("dump.flux.out call {c}"),
+                [out_ch, n_img, 1, 1],
+            )?;
             out_steps[c] = Some(t.data);
         }
 
@@ -162,7 +176,9 @@ impl Handoff {
                 match single_hidden {
                     None => single_hidden = Some(hidden),
                     Some(h) if h != hidden => {
-                        return Err(format!("{tag}: hidden {hidden} differs from earlier dumps ({h})"))
+                        return Err(format!(
+                            "{tag}: hidden {hidden} differs from earlier dumps ({h})"
+                        ))
                     }
                     _ => {}
                 }
@@ -175,7 +191,10 @@ impl Handoff {
             Some(c) => {
                 let t = req_call(dir, "dump.vae.z", c)?;
                 if t.ne[2] != in_ch || t.ne[3] != 1 || t.ne[0] == 0 || t.ne[1] == 0 {
-                    return Err(format!("dump.vae.z: ne {:?}, want [w, h, {in_ch}, 1]", t.ne));
+                    return Err(format!(
+                        "dump.vae.z: ne {:?}, want [w, h, {in_ch}, 1]",
+                        t.ne
+                    ));
                 }
                 Some(t)
             }
@@ -221,12 +240,19 @@ impl Handoff {
 
     /// Input of single block `block` (0 or 1) at step `i`, if dumped.
     pub fn single_in_at(&self, block: usize, i: usize) -> Option<&[f32]> {
-        self.single_in.get(block).and_then(|v| v.get(i)).and_then(|o| o.as_deref())
+        self.single_in
+            .get(block)
+            .and_then(|v| v.get(i))
+            .and_then(|o| o.as_deref())
     }
 
     /// Sigma of step `i` and the sigma after it (0 after the last step).
     pub fn sigma_pair(&self, i: usize) -> (f32, f32) {
-        let next = if i + 1 < self.steps { self.sigmas[i + 1] } else { self.sigma_end };
+        let next = if i + 1 < self.steps {
+            self.sigmas[i + 1]
+        } else {
+            self.sigma_end
+        };
         (self.sigmas[i], next)
     }
 
@@ -273,10 +299,16 @@ pub fn read_tag_call(dir: &Path, tag: &str, call: usize) -> Result<Option<DumpTe
     match hits.len() {
         0 => return Ok(None),
         1 => {}
-        n => return Err(format!("{n} dump files for {tag} call {call} in {}: {hits:?}", dir.display())),
+        n => {
+            return Err(format!(
+                "{n} dump files for {tag} call {call} in {}: {hits:?}",
+                dir.display()
+            ))
+        }
     }
     let name = &hits[0];
-    let bad = || format!("bad dump file name '{name}' (want <tag>.call<n>.<type>.<a>x<b>x<c>x<d>.bin)");
+    let bad =
+        || format!("bad dump file name '{name}' (want <tag>.call<n>.<type>.<a>x<b>x<c>x<d>.bin)");
     let body = name[prefix.len()..].strip_suffix(".bin").ok_or_else(bad)?;
     let parts: Vec<&str> = body.split('.').collect();
     if parts.len() != 2 {
@@ -308,15 +340,22 @@ pub fn read_tag_call(dir: &Path, tag: &str, call: usize) -> Result<Option<DumpTe
         ));
     }
     let data: Vec<f32> = if ty == "f32" {
-        bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+        bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
     } else {
-        bytes.chunks_exact(2).map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect()
+        bytes
+            .chunks_exact(2)
+            .map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]])))
+            .collect()
     };
     Ok(Some(DumpTensor { ne, data }))
 }
 
 fn req_call(dir: &Path, tag: &str, call: usize) -> Result<DumpTensor, String> {
-    read_tag_call(dir, tag, call)?.ok_or_else(|| format!("{}: missing {tag} call {call}", dir.display()))
+    read_tag_call(dir, tag, call)?
+        .ok_or_else(|| format!("{}: missing {tag} call {call}", dir.display()))
 }
 
 fn expect_ne(t: &DumpTensor, what: &str, want: [usize; 4]) -> Result<(), String> {
@@ -331,7 +370,8 @@ mod tests {
     use super::*;
 
     fn tmpdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("image-flow-handoff-{tag}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("image-flow-handoff-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -343,7 +383,10 @@ mod tests {
         for v in data {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
-        let name = format!("{tag}.call{call}.f32.{}x{}x{}x{}.bin", ne[0], ne[1], ne[2], ne[3]);
+        let name = format!(
+            "{tag}.call{call}.f32.{}x{}x{}x{}.bin",
+            ne[0], ne[1], ne[2], ne[3]
+        );
         std::fs::write(dir.join(name), bytes).unwrap();
     }
 
@@ -353,16 +396,48 @@ mod tests {
 
     // tiny: in 8, ctx 24, out 8, n_img 7, n_txt 5, head_dim 16 (pe half 8), hidden 32, 2 steps
     fn write_valid(dir: &Path) {
-        let (ic, cx, oc, ni, nt, half, hid, steps) = (8usize, 24usize, 8usize, 7usize, 5usize, 8usize, 32usize, 2usize);
+        let (ic, cx, oc, ni, nt, half, hid, steps) = (
+            8usize, 24usize, 8usize, 7usize, 5usize, 8usize, 32usize, 2usize,
+        );
         for c in 0..steps {
-            write(dir, "dump.flux.img", c, [ic, ni, 1, 1], &vals(ic * ni, c as f32));
-            write(dir, "dump.flux.timesteps", c, [1, 1, 1, 1], &[1.0 - c as f32 * 0.5]);
+            write(
+                dir,
+                "dump.flux.img",
+                c,
+                [ic, ni, 1, 1],
+                &vals(ic * ni, c as f32),
+            );
+            write(
+                dir,
+                "dump.flux.timesteps",
+                c,
+                [1, 1, 1, 1],
+                &[1.0 - c as f32 * 0.5],
+            );
             write(dir, "dump.flux.out", c, [oc, ni, 1, 1], &vals(oc * ni, 5.0));
         }
         write(dir, "dump.flux.txt", 0, [cx, nt, 1, 1], &vals(cx * nt, 2.0));
-        write(dir, "dump.pe", 0, [2, 2, half, nt + ni], &vals(4 * half * (nt + ni), 0.5));
-        write(dir, "dump.single.0.in", 0, [hid, nt + ni, 1, 1], &vals(hid * (nt + ni), 1.0));
-        write(dir, "dump.single.0.in", 1, [hid, nt + ni, 1, 1], &vals(hid * (nt + ni), 1.5));
+        write(
+            dir,
+            "dump.pe",
+            0,
+            [2, 2, half, nt + ni],
+            &vals(4 * half * (nt + ni), 0.5),
+        );
+        write(
+            dir,
+            "dump.single.0.in",
+            0,
+            [hid, nt + ni, 1, 1],
+            &vals(hid * (nt + ni), 1.0),
+        );
+        write(
+            dir,
+            "dump.single.0.in",
+            1,
+            [hid, nt + ni, 1, 1],
+            &vals(hid * (nt + ni), 1.5),
+        );
         // dump.single.1.in deliberately missing (optional)
         write(dir, "dump.vae.z", 1, [4, 2, ic, 1], &vals(4 * 2 * ic, 3.0));
     }
@@ -384,7 +459,10 @@ mod tests {
         assert_eq!(h.out_at(1).map(|o| o.len()), Some(8 * 7));
         assert!(h.single_in_at(0, 0).is_some());
         assert!(h.single_in_at(0, 1).is_some());
-        assert!(h.single_in_at(1, 0).is_none(), "missing optional tap must be None");
+        assert!(
+            h.single_in_at(1, 0).is_none(),
+            "missing optional tap must be None"
+        );
         assert_eq!(h.single_hidden, Some(32));
         assert_eq!(h.vae_grid(), Some((2, 4)));
         assert!(h.vae_image.is_none());
@@ -395,10 +473,28 @@ mod tests {
     fn missing_optional_outputs_are_none_not_errors() {
         let dir = tmpdir("minimal");
         let (ic, cx, ni, nt) = (8usize, 24usize, 7usize, 5usize);
-        write(&dir, "dump.flux.img", 0, [ic, ni, 1, 1], &vals(ic * ni, 0.0));
+        write(
+            &dir,
+            "dump.flux.img",
+            0,
+            [ic, ni, 1, 1],
+            &vals(ic * ni, 0.0),
+        );
         write(&dir, "dump.flux.timesteps", 0, [1, 1, 1, 1], &[1.0]);
-        write(&dir, "dump.flux.txt", 0, [cx, nt, 1, 1], &vals(cx * nt, 0.0));
-        write(&dir, "dump.pe", 0, [2, 2, 8, nt + ni], &vals(32 * (nt + ni), 0.0));
+        write(
+            &dir,
+            "dump.flux.txt",
+            0,
+            [cx, nt, 1, 1],
+            &vals(cx * nt, 0.0),
+        );
+        write(
+            &dir,
+            "dump.pe",
+            0,
+            [2, 2, 8, nt + ni],
+            &vals(32 * (nt + ni), 0.0),
+        );
         let h = Handoff::load_with(&dir, 8, 24, 8).expect("load");
         assert_eq!(h.steps, 1);
         assert!(h.out_at(0).is_none());
@@ -415,7 +511,10 @@ mod tests {
         std::fs::remove_file(dir.join("dump.flux.img.call1.f32.8x7x1x1.bin")).unwrap();
         write(&dir, "dump.flux.img", 1, [8, 6, 1, 1], &vals(48, 0.0));
         let e = Handoff::load_with(&dir, 8, 24, 8).err().expect("must fail");
-        assert!(e.contains("dump.flux.img call 1") && e.contains("want"), "{e}");
+        assert!(
+            e.contains("dump.flux.img call 1") && e.contains("want"),
+            "{e}"
+        );
         std::fs::remove_dir_all(&dir).ok();
 
         // pe with the wrong token count
@@ -448,7 +547,11 @@ mod tests {
     fn f16_dump_is_decoded() {
         let dir = tmpdir("f16");
         // 1.0 = 0x3c00, 2.0 = 0x4000
-        std::fs::write(dir.join("dump.flux.img.call0.f16.2x1x1x1.bin"), [0x00u8, 0x3c, 0x00, 0x40]).unwrap();
+        std::fs::write(
+            dir.join("dump.flux.img.call0.f16.2x1x1x1.bin"),
+            [0x00u8, 0x3c, 0x00, 0x40],
+        )
+        .unwrap();
         let t = read_tag_call(&dir, "dump.flux.img", 0).unwrap().unwrap();
         assert_eq!(t.ne, [2, 1, 1, 1]);
         assert_eq!(t.data, vec![1.0, 2.0]);

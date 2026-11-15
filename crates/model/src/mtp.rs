@@ -62,7 +62,9 @@ unsafe impl Send for MtpWeights {}
 unsafe impl Sync for MtpWeights {}
 
 fn bf16_to_f32(b: &[u8]) -> Box<[f32]> {
-    b.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect()
+    b.chunks_exact(2)
+        .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+        .collect()
 }
 
 impl MtpWeights {
@@ -71,7 +73,12 @@ impl MtpWeights {
         let g = Gguf::open(model).map_err(|e| e.to_string())?;
         let h = &g.header;
         let il = plan.desc.n_layer;
-        let find = |s: &str| h.tensors.iter().position(|t| t.name == format!("blk.{il}.{s}")).ok_or(format!("MTP head: missing blk.{il}.{s}"));
+        let find = |s: &str| {
+            h.tensors
+                .iter()
+                .position(|t| t.name == format!("blk.{il}.{s}"))
+                .ok_or(format!("MTP head: missing blk.{il}.{s}"))
+        };
         let layer = LayerTensors {
             attn_norm: find("attn_norm.weight")?,
             post_norm: find("post_attention_norm.weight")?,
@@ -92,9 +99,15 @@ impl MtpWeights {
             up_shexp: find("ffn_up_shexp.weight")?,
             down_shexp: find("ffn_down_shexp.weight")?,
         };
-        let (eh_proj, enorm, hnorm, head_norm) =
-            (find("nextn.eh_proj.weight")?, find("nextn.enorm.weight")?, find("nextn.hnorm.weight")?, find("nextn.shared_head_norm.weight")?);
-        if find("nextn.embed_tokens.weight").is_ok() || find("nextn.shared_head_head.weight").is_ok() {
+        let (eh_proj, enorm, hnorm, head_norm) = (
+            find("nextn.eh_proj.weight")?,
+            find("nextn.enorm.weight")?,
+            find("nextn.hnorm.weight")?,
+            find("nextn.shared_head_norm.weight")?,
+        );
+        if find("nextn.embed_tokens.weight").is_ok()
+            || find("nextn.shared_head_head.weight").is_ok()
+        {
             return Err("MTP head with its own embedding/head is not supported (both GGUFs share the target's)".into());
         }
         let d = &plan.desc;
@@ -126,7 +139,11 @@ impl MtpWeights {
                 f32s.push(v);
             }
         }
-        let rest: Vec<Tid> = ids.iter().copied().filter(|id| !conv.iter().any(|c| c.0 == *id)).collect();
+        let rest: Vec<Tid> = ids
+            .iter()
+            .copied()
+            .filter(|id| !conv.iter().any(|c| c.0 == *id))
+            .collect();
         let n_tensors = h.tensors.len();
         let store = WeightStore::load_ids(g, rest, None, opt, "-mtp")?;
         let mut refs = vec![None; n_tensors];
@@ -141,7 +158,21 @@ impl MtpWeights {
         // move the ids out of the target's range (see MTP_TID_BASE)
         let b = MTP_TID_BASE;
         let mixer = match layer.mixer {
-            Mixer::Attention { q, k, v, q_norm, k_norm, out } => Mixer::Attention { q: q + b, k: k + b, v: v + b, q_norm: q_norm + b, k_norm: k_norm + b, out: out + b },
+            Mixer::Attention {
+                q,
+                k,
+                v,
+                q_norm,
+                k_norm,
+                out,
+            } => Mixer::Attention {
+                q: q + b,
+                k: k + b,
+                v: v + b,
+                q_norm: q_norm + b,
+                k_norm: k_norm + b,
+                out: out + b,
+            },
             Mixer::Recurrent { .. } => unreachable!("the MTP block is an attention layer"),
         };
         let layer = LayerTensors {
@@ -157,23 +188,47 @@ impl MtpWeights {
             up_shexp: layer.up_shexp + b,
             down_shexp: layer.down_shexp + b,
         };
-        Ok(MtpWeights { layer, eh_proj: eh_proj + b, enorm: enorm + b, hnorm: hnorm + b, head_norm: head_norm + b, refs, store, _f32: f32s, draft: None })
+        Ok(MtpWeights {
+            layer,
+            eh_proj: eh_proj + b,
+            enorm: enorm + b,
+            hnorm: hnorm + b,
+            head_norm: head_norm + b,
+            refs,
+            store,
+            _f32: f32s,
+            draft: None,
+        })
     }
 
     /// The local ref of an offset MTP tensor id.
     pub fn get(&self, id: Tid) -> Option<&WeightRef> {
-        id.checked_sub(MTP_TID_BASE).and_then(|i| self.refs.get(i)).and_then(|r| r.as_ref())
+        id.checked_sub(MTP_TID_BASE)
+            .and_then(|i| self.refs.get(i))
+            .and_then(|r| r.as_ref())
     }
 
     /// Restrict the draft head to `ids` (WP-D3b): rows of the target's `output.weight`, read from
     /// the target GGUF `target` (row-major quantised rows), gathered and repacked.
     pub fn set_draft_vocab(&mut self, target: &Path, ids: &[u32]) -> Result<(), String> {
         let g = Gguf::open(target).map_err(|e| e.to_string())?;
-        let ti = g.header.tensors.iter().find(|t| t.name == "output.weight").ok_or("target has no output.weight")?;
-        let q = crate::desc::qtype(ti.ty).ok_or(format!("output.weight type {} not supported for a draft head", ti.ty.name()))?;
+        let ti = g
+            .header
+            .tensors
+            .iter()
+            .find(|t| t.name == "output.weight")
+            .ok_or("target has no output.weight")?;
+        let q = crate::desc::qtype(ti.ty).ok_or(format!(
+            "output.weight type {} not supported for a draft head",
+            ti.ty.name()
+        ))?;
         let k = ti.shape[0] as usize;
         let n_vocab = ti.shape[1] as usize;
-        let mut v: Vec<u32> = ids.iter().copied().filter(|&i| (i as usize) < n_vocab).collect();
+        let mut v: Vec<u32> = ids
+            .iter()
+            .copied()
+            .filter(|&i| (i as usize) < n_vocab)
+            .collect();
         v.sort_unstable();
         v.dedup();
         if v.is_empty() {
@@ -187,23 +242,45 @@ impl MtpWeights {
         let src = g.tensor_data(ti);
         let mut rows = vec![0u8; v.len() * rb];
         for (j, &id) in v.iter().enumerate() {
-            rows[j * rb..(j + 1) * rb].copy_from_slice(&src[id as usize * rb..(id as usize + 1) * rb]);
+            rows[j * rb..(j + 1) * rb]
+                .copy_from_slice(&src[id as usize * rb..(id as usize + 1) * rb]);
         }
         let mut buf = vec![0u8; v.len() * rb].into_boxed_slice();
         kernels_sys::repack(q, &rows, &mut buf, v.len(), k);
-        let w = WeightRef { ptr: buf.as_ptr() as usize, layout: crate::weights::Layout::Packed(q), k, rows: v.len(), n_expert: 1, bytes: buf.len() };
-        self.draft = Some(DraftHead { w, ids: v, _buf: buf });
+        let w = WeightRef {
+            ptr: buf.as_ptr() as usize,
+            layout: crate::weights::Layout::Packed(q),
+            k,
+            rows: v.len(),
+            n_expert: 1,
+            bytes: buf.len(),
+        };
+        self.draft = Some(DraftHead {
+            w,
+            ids: v,
+            _buf: buf,
+        });
         Ok(())
     }
 
     /// Apply the draft vocabulary for an MTP head read from `src`, for target `target`: the
     /// ranking file `ranking` (one token id per line, most frequent first) cut to `k` ids if
     /// given, else the vocabulary stored in the sidecar `src` if any. Returns the draft rows.
-    pub fn apply_draft_vocab(&mut self, src: &Path, target: &Path, ranking: Option<&Path>, k: Option<usize>) -> Result<Option<usize>, String> {
+    pub fn apply_draft_vocab(
+        &mut self,
+        src: &Path,
+        target: &Path,
+        ranking: Option<&Path>,
+        k: Option<usize>,
+    ) -> Result<Option<usize>, String> {
         let ids = match ranking {
             Some(r) => {
-                let text = std::fs::read_to_string(r).map_err(|e| format!("{}: {e}", r.display()))?;
-                let mut v: Vec<u32> = text.lines().filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect();
+                let text =
+                    std::fs::read_to_string(r).map_err(|e| format!("{}: {e}", r.display()))?;
+                let mut v: Vec<u32> = text
+                    .lines()
+                    .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+                    .collect();
                 if let Some(k) = k {
                     v.truncate(k);
                 }
@@ -223,11 +300,26 @@ impl MtpWeights {
     /// The draft vocabulary stored in an MTP-head sidecar (tensor `oxe.draft_vocab.ids`, I32), if any.
     pub fn sidecar_draft_vocab(src: &Path) -> Result<Option<Vec<u32>>, String> {
         let g = Gguf::open(src).map_err(|e| e.to_string())?;
-        let Some(ti) = g.header.tensors.iter().find(|t| t.name == "oxe.draft_vocab.ids") else { return Ok(None) };
+        let Some(ti) = g
+            .header
+            .tensors
+            .iter()
+            .find(|t| t.name == "oxe.draft_vocab.ids")
+        else {
+            return Ok(None);
+        };
         if ti.ty != GgmlType(26) {
-            return Err(format!("oxe.draft_vocab.ids: type {}, expected I32", ti.ty.name()));
+            return Err(format!(
+                "oxe.draft_vocab.ids: type {}, expected I32",
+                ti.ty.name()
+            ));
         }
-        Ok(Some(g.tensor_data(ti).chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as u32).collect()))
+        Ok(Some(
+            g.tensor_data(ti)
+                .chunks_exact(4)
+                .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as u32)
+                .collect(),
+        ))
     }
 
     /// Bytes of the MTP head arena (cache file) plus the converted tensors.
@@ -239,26 +331,83 @@ impl MtpWeights {
 /// The MTP block's phases (layer index n_layer: attention + MoE + head) and the per-thread
 /// rows of eh_proj (the entry runs before them, then a barrier).
 /// `head_rows`: rows of a restricted draft head (None: the full vocabulary).
-pub fn phases(d: &ModelDesc, n: usize, head_rows: Option<usize>) -> (Vec<Phase>, Vec<Range<usize>>) {
+pub fn phases(
+    d: &ModelDesc,
+    n: usize,
+    head_rows: Option<usize>,
+) -> (Vec<Phase>, Vec<Range<usize>>) {
     let il = d.n_layer;
     let qh = split(d.n_head, n);
     let kv_rows = d.n_head_kv * d.head_dim;
     let (ks, vs) = (split_rows(kv_rows, n), split_rows(kv_rows, n));
     let mut p = Vec::new();
-    let ph = |kind, work, barrier_after| Phase { kind, layer: il, barrier_after, work };
+    let ph = |kind, work, barrier_after| Phase {
+        kind,
+        layer: il,
+        barrier_after,
+        work,
+    };
     p.push(ph(
         PhaseKind::AttnQkv,
-        (0..n).map(|t| Work::AttnQkv { qheads: qh[t].clone(), k_rows: ks[t].clone(), v_rows: vs[n - 1 - t].clone() }).collect(),
+        (0..n)
+            .map(|t| Work::AttnQkv {
+                qheads: qh[t].clone(),
+                k_rows: ks[t].clone(),
+                v_rows: vs[n - 1 - t].clone(),
+            })
+            .collect(),
         true,
     ));
-    p.push(ph(PhaseKind::AttnCore, qh.iter().map(|q| Work::AttnCore { qheads: q.clone() }).collect(), true));
-    p.push(ph(PhaseKind::AttnOut, split_rows(d.n_embd, n).into_iter().map(|rows| Work::AttnOut { rows }).collect(), true));
+    p.push(ph(
+        PhaseKind::AttnCore,
+        qh.iter()
+            .map(|q| Work::AttnCore { qheads: q.clone() })
+            .collect(),
+        true,
+    ));
+    p.push(ph(
+        PhaseKind::AttnOut,
+        split_rows(d.n_embd, n)
+            .into_iter()
+            .map(|rows| Work::AttnOut { rows })
+            .collect(),
+        true,
+    ));
     let sh = split_rows(d.ff_shexp, n);
-    p.push(ph(PhaseKind::MoeRouter, split(d.n_expert, n).into_iter().zip(sh).map(|(rows, sh_rows)| Work::MoeRouter { rows, sh_rows }).collect(), true));
+    p.push(ph(
+        PhaseKind::MoeRouter,
+        split(d.n_expert, n)
+            .into_iter()
+            .zip(sh)
+            .map(|(rows, sh_rows)| Work::MoeRouter { rows, sh_rows })
+            .collect(),
+        true,
+    ));
     let units = d.n_expert_used * (d.ff_exp / kernels_sys::QK_K);
-    p.push(ph(PhaseKind::MoeGateUp, split(units, n).into_iter().map(|units| Work::MoeGateUp { units }).collect(), true));
-    p.push(ph(PhaseKind::MoeDown, split_rows(d.n_embd, n).into_iter().map(|rows| Work::MoeDown { rows }).collect(), true));
-    p.push(ph(PhaseKind::Head, split_rows(head_rows.unwrap_or(d.n_vocab), n).into_iter().map(|rows| Work::Head { rows }).collect(), false));
+    p.push(ph(
+        PhaseKind::MoeGateUp,
+        split(units, n)
+            .into_iter()
+            .map(|units| Work::MoeGateUp { units })
+            .collect(),
+        true,
+    ));
+    p.push(ph(
+        PhaseKind::MoeDown,
+        split_rows(d.n_embd, n)
+            .into_iter()
+            .map(|rows| Work::MoeDown { rows })
+            .collect(),
+        true,
+    ));
+    p.push(ph(
+        PhaseKind::Head,
+        split_rows(head_rows.unwrap_or(d.n_vocab), n)
+            .into_iter()
+            .map(|rows| Work::Head { rows })
+            .collect(),
+        false,
+    ));
     (p, split_rows(d.n_embd, n))
 }
 
@@ -350,10 +499,26 @@ impl MtpDriver {
             return Err("engine has no MTP head".into());
         }
         if depth == 0 || depth + 1 > eng.verify_lanes() {
-            return Err(format!("MTP depth {depth}: the engine verifies {} tokens per run", eng.verify_lanes()));
+            return Err(format!(
+                "MTP depth {depth}: the engine verifies {} tokens per run",
+                eng.verify_lanes()
+            ));
         }
         let ne = eng.plan.desc.n_embd;
-        let mut d = MtpDriver { depth, ne, q: 0, cu_tok: vec![], cu_h: vec![], hl: vec![0.0; ne], last_h: vec![], last: None, stats: MtpStats::default(), draft_override: None, scratch: Vec::new(), prefill_chunk: 0 };
+        let mut d = MtpDriver {
+            depth,
+            ne,
+            q: 0,
+            cu_tok: vec![],
+            cu_h: vec![],
+            hl: vec![0.0; ne],
+            last_h: vec![],
+            last: None,
+            stats: MtpStats::default(),
+            draft_override: None,
+            scratch: Vec::new(),
+            prefill_chunk: 0,
+        };
         d.sync(eng, None);
         Ok(d)
     }
@@ -384,12 +549,27 @@ impl MtpDriver {
     /// Driver state for the persistent prefix store: (q, pending catch-up tokens, their h
     /// rows, h_prev). The MTP KV of positions < q is in the engine's state.
     pub fn export_state(&self) -> (usize, Vec<u32>, Vec<f32>, Vec<f32>) {
-        (self.q, self.cu_tok.clone(), self.cu_h.clone(), self.hl.clone())
+        (
+            self.q,
+            self.cu_tok.clone(),
+            self.cu_h.clone(),
+            self.hl.clone(),
+        )
     }
 
     /// Restore [`MtpDriver::export_state`] after the engine state was read back.
-    pub fn import_state(&mut self, eng: &Engine, q: usize, cu_tok: Vec<u32>, cu_h: Vec<f32>, hl: &[f32]) -> Result<(), String> {
-        if cu_h.len() != cu_tok.len() * self.ne || hl.len() != self.ne || q + cu_tok.len() != eng.pos() {
+    pub fn import_state(
+        &mut self,
+        eng: &Engine,
+        q: usize,
+        cu_tok: Vec<u32>,
+        cu_h: Vec<f32>,
+        hl: &[f32],
+    ) -> Result<(), String> {
+        if cu_h.len() != cu_tok.len() * self.ne
+            || hl.len() != self.ne
+            || q + cu_tok.len() != eng.pos()
+        {
             return Err("MTP state does not match the engine".into());
         }
         self.q = q;
@@ -434,7 +614,9 @@ impl MtpDriver {
         while self.cu_tok.len() > keep {
             let t = Instant::now();
             let n = l.min(self.cu_tok.len());
-            let hs: Vec<&[f32]> = (0..n).map(|i| &self.cu_h[i * self.ne..(i + 1) * self.ne]).collect();
+            let hs: Vec<&[f32]> = (0..n)
+                .map(|i| &self.cu_h[i * self.ne..(i + 1) * self.ne])
+                .collect();
             eng.mtp_seed(pool, &self.cu_tok[..n], self.q, &hs);
             self.cu_tok.drain(..n);
             self.cu_h.drain(..n * self.ne);
@@ -465,14 +647,25 @@ impl MtpDriver {
     /// KV, recurrent state and last-token logits as `Engine::prefill`), then seed the MTP KV
     /// from every position's h_nextn (catch-up runs on `pool`, the decode team). Returns the
     /// argmax after the last token; its logits are `eng.logits()`.
-    pub fn prefill_batched<T: Team + ?Sized, P: Team + ?Sized>(&mut self, eng: &Engine, team: &T, pool: &P, toks: &[u32], ubatch: usize) -> u32 {
+    pub fn prefill_batched<T: Team + ?Sized, P: Team + ?Sized>(
+        &mut self,
+        eng: &Engine,
+        team: &T,
+        pool: &P,
+        toks: &[u32],
+        ubatch: usize,
+    ) -> u32 {
         if toks.len() == 1 {
             let mut out = Vec::new();
             self.step_plain(eng, pool, toks[0], &mut out);
             return out[0];
         }
         let ub = ubatch.max(1);
-        let want = if self.prefill_chunk == 0 { PREFILL_CHUNK_TOKENS } else { self.prefill_chunk };
+        let want = if self.prefill_chunk == 0 {
+            PREFILL_CHUNK_TOKENS
+        } else {
+            self.prefill_chunk
+        };
         let chunk = (want / ub).max(1) * ub;
         let (mut pf_s, mut seed_s) = (0f64, 0f64);
         let mut g = 0;
@@ -480,7 +673,9 @@ impl MtpDriver {
         for c in toks.chunks(chunk) {
             let p0 = eng.pos();
             let t0 = Instant::now();
-            g = eng.prefill_nextn(team, c, ubatch, &mut hid).expect("non-empty prompt");
+            g = eng
+                .prefill_nextn(team, c, ubatch, &mut hid)
+                .expect("non-empty prompt");
             let t1 = Instant::now();
             let ne = self.ne;
             self.note_with(p0, c, |i| &hid[i * ne..(i + 1) * ne]);
@@ -493,7 +688,12 @@ impl MtpDriver {
         self.stats.prefill_seed_s += seed_s;
         self.stats.prefill_tokens += toks.len() as u64;
         if std::env::var_os("OXE_MTP_LOG").is_some() {
-            eprintln!("oxe mtp: prefill {} tokens: prefill_nextn {:.1} ms, MTP seeding {:.1} ms", toks.len(), pf_s * 1e3, seed_s * 1e3);
+            eprintln!(
+                "oxe mtp: prefill {} tokens: prefill_nextn {:.1} ms, MTP seeding {:.1} ms",
+                toks.len(),
+                pf_s * 1e3,
+                seed_s * 1e3
+            );
         }
         self.last = None;
         g
@@ -501,7 +701,13 @@ impl MtpDriver {
 
     /// One plain (non-speculative) target step that keeps the MTP catch-up in sync (sampled
     /// requests). `out` = [argmax after `x`].
-    pub fn step_plain<P: Team + ?Sized>(&mut self, eng: &Engine, pool: &P, x: u32, out: &mut Vec<u32>) {
+    pub fn step_plain<P: Team + ?Sized>(
+        &mut self,
+        eng: &Engine,
+        pool: &P,
+        x: u32,
+        out: &mut Vec<u32>,
+    ) {
         out.clear();
         let p = eng.pos();
         let g = eng.step(pool, x);
@@ -569,7 +775,11 @@ impl MtpDriver {
         eng.commit(a + 1);
         let t2 = Instant::now();
         if mtp_trace() {
-            eprintln!("oxe mtp step: pos {p} x {x} drafts {:?} target {:?} accepted {a}", &drafts[..k], &g[..=k]);
+            eprintln!(
+                "oxe mtp step: pos {p} x {x} drafts {:?} target {:?} accepted {a}",
+                &drafts[..k],
+                &g[..=k]
+            );
         }
         // the pair (x, h_{P-1}) is already in the MTP KV (q = P+1): record d_1..d_a
         self.last_h.clear();
@@ -603,7 +813,8 @@ impl MtpDriver {
         let keep = (p0 + m).saturating_sub(self.q).min(self.cu_tok.len());
         self.cu_tok.truncate(keep);
         self.cu_h.truncate(keep * self.ne);
-        self.hl.copy_from_slice(&self.last_h[(m - 1) * self.ne..m * self.ne]);
+        self.hl
+            .copy_from_slice(&self.last_h[(m - 1) * self.ne..m * self.ne]);
         self.last = Some((p0, m));
     }
 }

@@ -57,7 +57,11 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
 pub fn gemm_f32(m: &Mat, x: &[f32], n: usize, y: &mut [f32], threads: usize) -> Result<(), String> {
     let (o, k) = m.shape();
     if x.len() != n * k || y.len() != n * o {
-        return Err(format!("gemm: x {} y {} for n {n} o {o} k {k}", x.len(), y.len()));
+        return Err(format!(
+            "gemm: x {} y {} for n {n} o {o} k {k}",
+            x.len(),
+            y.len()
+        ));
     }
     const RB: usize = 4;
     let yp = SendPtr(y.as_mut_ptr());
@@ -114,7 +118,11 @@ pub fn gemm_q8(m: &Mat, x: &[f32], n: usize, y: &mut [f32], threads: usize) -> R
     let (o, k) = m.shape();
     let wq = m.q8_0().ok_or("gemm_q8: weight is not Q8_0")?;
     if x.len() != n * k || y.len() != n * o || k % 32 != 0 {
-        return Err(format!("gemm_q8: x {} y {} for n {n} o {o} k {k}", x.len(), y.len()));
+        return Err(format!(
+            "gemm_q8: x {} y {} for n {n} o {o} k {k}",
+            x.len(),
+            y.len()
+        ));
     }
     let nb = k / 32;
     let mut xd = vec![0f32; n * nb];

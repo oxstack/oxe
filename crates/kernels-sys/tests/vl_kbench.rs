@@ -29,7 +29,10 @@ use std::time::Instant;
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) as u32
     }
     fn f(&mut self) -> f32 {
@@ -150,14 +153,26 @@ fn run_case(c: &Case, nt: usize, reps: usize) -> Vec<(usize, f64, f64)> {
                 let r0 = tid * per;
                 for m in 0..c.mats {
                     // pool sampling: a different set of matrices every rep (cold), same for every thread
-                    let mi = if c.pool == c.mats { m } else { (m * 2654435761usize + rep * 40503 + 17) % c.pool };
+                    let mi = if c.pool == c.mats {
+                        m
+                    } else {
+                        (m * 2654435761usize + rep * 40503 + 17) % c.pool
+                    };
                     let base = unsafe { wp.p().add(mi * mrb) };
-                    let outs: [*mut f32; 4] = std::array::from_fn(|l| unsafe { out.as_mut_ptr().add(l * per) });
+                    let outs: [*mut f32; 4] =
+                        std::array::from_fn(|l| unsafe { out.as_mut_ptr().add(l * per) });
                     let av: [*const u8; 4] = std::array::from_fn(|l| ap[l].p());
                     if mode == 1 {
                         // SAFETY: rows r0..r0+per of matrix mi; per floats per lane.
                         unsafe {
-                            assert!(gemv_lanes_raw(c.ty, c.k, &outs[..nl], base.add(r0 * c.ty.row_bytes(c.k)), &av[..nl], per));
+                            assert!(gemv_lanes_raw(
+                                c.ty,
+                                c.k,
+                                &outs[..nl],
+                                base.add(r0 * c.ty.row_bytes(c.k)),
+                                &av[..nl],
+                                per
+                            ));
                         }
                     } else {
                         let mut r = 0;
@@ -165,7 +180,16 @@ fn run_case(c: &Case, nt: usize, reps: usize) -> Vec<(usize, f64, f64)> {
                             let n = c.chunk.min(per - r);
                             for l in 0..nl {
                                 // SAFETY: as above, rows r0+r..r0+r+n.
-                                unsafe { gemv_raw(c.ty, c.k, outs[l].add(r), base.add((r0 + r) * c.ty.row_bytes(c.k)), av[l], n) };
+                                unsafe {
+                                    gemv_raw(
+                                        c.ty,
+                                        c.k,
+                                        outs[l].add(r),
+                                        base.add((r0 + r) * c.ty.row_bytes(c.k)),
+                                        av[l],
+                                        n,
+                                    )
+                                };
                             }
                             r += n;
                         }
@@ -212,19 +236,69 @@ fn run_case(c: &Case, nt: usize, reps: usize) -> Vec<(usize, f64, f64)> {
 #[test]
 #[ignore]
 fn kbench_verify_lanes() {
-    let reps: usize = std::env::var("OXE_KBENCH_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
-    let nt: usize = std::env::var("OXE_KBENCH_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
-    let want = std::env::var("OXE_KBENCH_CASES").unwrap_or_else(|_| "head,dense,shexp,experts,qdense".into());
+    let reps: usize = std::env::var("OXE_KBENCH_REPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    let nt: usize = std::env::var("OXE_KBENCH_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8);
+    let want = std::env::var("OXE_KBENCH_CASES")
+        .unwrap_or_else(|_| "head,dense,shexp,experts,qdense".into());
     let cases = [
-        Case { name: "head", ty: QType::Q6K, k: 2048, mat_rows: 248320, mats: 1, pool: 1, chunk: 256 },
-        Case { name: "dense", ty: QType::Q4K, k: 2048, mat_rows: 8192, mats: 90, pool: 90, chunk: lane_chunk(QType::Q4K, 2048) },
-        Case { name: "shexp", ty: QType::Q6K, k: 2048, mat_rows: 512, mats: 120, pool: 120, chunk: lane_chunk(QType::Q6K, 2048) },
-        Case { name: "experts", ty: QType::Q3K, k: 2048, mat_rows: 512, mats: 720, pool: 1800, chunk: lane_chunk(QType::Q3K, 2048) },
-        Case { name: "qdense", ty: QType::Q8_0, k: 2048, mat_rows: 8192, mats: 78, pool: 78, chunk: lane_chunk(QType::Q8_0, 2048) },
+        Case {
+            name: "head",
+            ty: QType::Q6K,
+            k: 2048,
+            mat_rows: 248320,
+            mats: 1,
+            pool: 1,
+            chunk: 256,
+        },
+        Case {
+            name: "dense",
+            ty: QType::Q4K,
+            k: 2048,
+            mat_rows: 8192,
+            mats: 90,
+            pool: 90,
+            chunk: lane_chunk(QType::Q4K, 2048),
+        },
+        Case {
+            name: "shexp",
+            ty: QType::Q6K,
+            k: 2048,
+            mat_rows: 512,
+            mats: 120,
+            pool: 120,
+            chunk: lane_chunk(QType::Q6K, 2048),
+        },
+        Case {
+            name: "experts",
+            ty: QType::Q3K,
+            k: 2048,
+            mat_rows: 512,
+            mats: 720,
+            pool: 1800,
+            chunk: lane_chunk(QType::Q3K, 2048),
+        },
+        Case {
+            name: "qdense",
+            ty: QType::Q8_0,
+            k: 2048,
+            mat_rows: 8192,
+            mats: 78,
+            pool: 78,
+            chunk: lane_chunk(QType::Q8_0, 2048),
+        },
     ];
     println!("vl_kbench: {nt} threads, {reps} reps x best of 3, weights cold (streamed), base = one-column GEMV per lane on cache-warm chunks");
     let mut tot = [[0f64; 2]; 5];
-    for c in cases.iter().filter(|c| want.split(',').any(|w| w == c.name)) {
+    for c in cases
+        .iter()
+        .filter(|c| want.split(',').any(|w| w == c.name))
+    {
         let r = run_case(c, nt, reps);
         if c.name != "qdense" {
             for &(nl, b, v) in &r {
@@ -234,7 +308,9 @@ fn kbench_verify_lanes() {
         }
     }
     if tot[1][0] > 0.0 {
-        println!("sum of the Ornith cases run (head + dense + shexp + experts shared by all lanes):");
+        println!(
+            "sum of the Ornith cases run (head + dense + shexp + experts shared by all lanes):"
+        );
         for nl in 2..=4 {
             println!(
                 "         {nl} lanes: base {:.3} ms, vl {:.3} ms (1 lane {:.3} ms): extra lanes cost {:.3} -> {:.3} ms",

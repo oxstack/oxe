@@ -2,8 +2,8 @@
 //! `MemSource` (the same tensor names as the klein GGUF).
 
 use super::*;
-use image_dit::fast_model::{FastModel, MemSource};
 use image_dit::fast::FastConfig;
+use image_dit::fast_model::{FastModel, MemSource};
 use image_dit::types::rel_rmse;
 use image_dit::weights::quant_q8_0;
 
@@ -39,7 +39,17 @@ struct Tiny {
 impl Tiny {
     /// The brief's shapes: hidden 64, heads 2, head_dim 32, mlp 192, in 16, context 48, out 16.
     fn standard(n_double: usize, n_single: usize) -> Tiny {
-        Tiny { hidden: 64, heads: 2, head_dim: 32, mlp: 192, in_ch: 16, ctx: 48, out_ch: 16, n_double, n_single }
+        Tiny {
+            hidden: 64,
+            heads: 2,
+            head_dim: 32,
+            mlp: 192,
+            in_ch: 16,
+            ctx: 48,
+            out_ch: 16,
+            n_double,
+            n_single,
+        }
     }
 }
 
@@ -49,7 +59,8 @@ fn put_f(src: &mut MemSource, name: &str, v: Vec<f32>, rows: usize, k: usize) {
 
 fn put_q(src: &mut MemSource, name: &str, r: &mut Rng, rows: usize, k: usize) {
     let v = r.vec(rows * k, 1.0 / (k as f32).sqrt());
-    src.q8.insert(name.to_string(), (quant_q8_0(&v, rows, k), rows, k));
+    src.q8
+        .insert(name.to_string(), (quant_q8_0(&v, rows, k), rows, k));
 }
 
 fn put_norm(src: &mut MemSource, name: &str, r: &mut Rng, len: usize) {
@@ -59,8 +70,13 @@ fn put_norm(src: &mut MemSource, name: &str, r: &mut Rng, len: usize) {
 
 /// Like `put_q` with every value multiplied by `g`.
 fn put_qg(src: &mut MemSource, name: &str, r: &mut Rng, rows: usize, k: usize, g: f32) {
-    let v: Vec<f32> = r.vec(rows * k, 1.0 / (k as f32).sqrt()).iter().map(|x| x * g).collect();
-    src.q8.insert(name.to_string(), (quant_q8_0(&v, rows, k), rows, k));
+    let v: Vec<f32> = r
+        .vec(rows * k, 1.0 / (k as f32).sqrt())
+        .iter()
+        .map(|x| x * g)
+        .collect();
+    src.q8
+        .insert(name.to_string(), (quant_q8_0(&v, rows, k), rows, k));
 }
 
 fn scaled(v: Vec<f32>, g: f32) -> Vec<f32> {
@@ -90,31 +106,99 @@ fn tiny_source_gain(c: Tiny, seed: u64, g: f32) -> MemSource {
     put_f(&mut src, "time_in.in_layer.weight", v, h, TIME_DIM);
     let v = r.vec(h * h, fi(h));
     put_f(&mut src, "time_in.out_layer.weight", v, h, h);
-    for name in ["double_stream_modulation_img.lin.weight", "double_stream_modulation_txt.lin.weight"] {
+    for name in [
+        "double_stream_modulation_img.lin.weight",
+        "double_stream_modulation_txt.lin.weight",
+    ] {
         let v = scaled(r.vec(6 * h * h, fi(h)), g);
         put_f(&mut src, name, v, 6 * h, h);
     }
     let v = scaled(r.vec(3 * h * h, fi(h)), g);
     put_f(&mut src, "single_stream_modulation.lin.weight", v, 3 * h, h);
     let v = scaled(r.vec(2 * h * h, fi(h)), g);
-    put_f(&mut src, "final_layer.adaLN_modulation.1.weight", v, 2 * h, h);
+    put_f(
+        &mut src,
+        "final_layer.adaLN_modulation.1.weight",
+        v,
+        2 * h,
+        h,
+    );
     let v = r.vec(c.out_ch * h, fi(h));
     put_f(&mut src, "final_layer.linear.weight", v, c.out_ch, h);
     for i in 0..c.n_double {
         for s in ["img", "txt"] {
-            put_q(&mut src, &format!("double_blocks.{i}.{s}_attn.qkv.weight"), &mut r, 3 * h, h);
-            put_qg(&mut src, &format!("double_blocks.{i}.{s}_attn.proj.weight"), &mut r, h, h, g);
-            put_q(&mut src, &format!("double_blocks.{i}.{s}_mlp.0.weight"), &mut r, 2 * m, h);
-            put_qg(&mut src, &format!("double_blocks.{i}.{s}_mlp.2.weight"), &mut r, h, m, g);
-            put_norm(&mut src, &format!("double_blocks.{i}.{s}_attn.norm.query_norm.scale"), &mut r, hd);
-            put_norm(&mut src, &format!("double_blocks.{i}.{s}_attn.norm.key_norm.scale"), &mut r, hd);
+            put_q(
+                &mut src,
+                &format!("double_blocks.{i}.{s}_attn.qkv.weight"),
+                &mut r,
+                3 * h,
+                h,
+            );
+            put_qg(
+                &mut src,
+                &format!("double_blocks.{i}.{s}_attn.proj.weight"),
+                &mut r,
+                h,
+                h,
+                g,
+            );
+            put_q(
+                &mut src,
+                &format!("double_blocks.{i}.{s}_mlp.0.weight"),
+                &mut r,
+                2 * m,
+                h,
+            );
+            put_qg(
+                &mut src,
+                &format!("double_blocks.{i}.{s}_mlp.2.weight"),
+                &mut r,
+                h,
+                m,
+                g,
+            );
+            put_norm(
+                &mut src,
+                &format!("double_blocks.{i}.{s}_attn.norm.query_norm.scale"),
+                &mut r,
+                hd,
+            );
+            put_norm(
+                &mut src,
+                &format!("double_blocks.{i}.{s}_attn.norm.key_norm.scale"),
+                &mut r,
+                hd,
+            );
         }
     }
     for i in 0..c.n_single {
-        put_q(&mut src, &format!("single_blocks.{i}.linear1.weight"), &mut r, 3 * h + 2 * m, h);
-        put_qg(&mut src, &format!("single_blocks.{i}.linear2.weight"), &mut r, h, h + m, g);
-        put_norm(&mut src, &format!("single_blocks.{i}.norm.query_norm.scale"), &mut r, hd);
-        put_norm(&mut src, &format!("single_blocks.{i}.norm.key_norm.scale"), &mut r, hd);
+        put_q(
+            &mut src,
+            &format!("single_blocks.{i}.linear1.weight"),
+            &mut r,
+            3 * h + 2 * m,
+            h,
+        );
+        put_qg(
+            &mut src,
+            &format!("single_blocks.{i}.linear2.weight"),
+            &mut r,
+            h,
+            h + m,
+            g,
+        );
+        put_norm(
+            &mut src,
+            &format!("single_blocks.{i}.norm.query_norm.scale"),
+            &mut r,
+            hd,
+        );
+        put_norm(
+            &mut src,
+            &format!("single_blocks.{i}.norm.key_norm.scale"),
+            &mut r,
+            hd,
+        );
     }
     src
 }
@@ -154,7 +238,11 @@ fn threads_do_not_change_the_result_and_txt_cache_is_exact() {
     assert_eq!(a, b, "threads 1 and 3 must agree bitwise");
     assert_eq!(a.len(), 7 * c.out_ch);
     // second call hits the txt cache and must give the same numbers
-    assert_eq!(m3.forward(&input), b, "cached txt embedding changed the result");
+    assert_eq!(
+        m3.forward(&input),
+        b,
+        "cached txt embedding changed the result"
+    );
     // a different context must not reuse the old embedding
     let mut other = random_input(c, 5, 7, 2, 0.7);
     other.txt[0] += 0.5;
@@ -182,8 +270,16 @@ fn timestep_embedding_matches_hand_values_dim8() {
     let got = timestep_embedding(0.5, 8, 10000.0, 1000.0);
     let args = [500.0f64, 50.0, 5.0, 0.5];
     for j in 0..4 {
-        assert!((got[j] as f64 - args[j].cos()).abs() < 1e-4, "cos slot {j}: {} vs {}", got[j], args[j].cos());
-        assert!((got[j + 4] as f64 - args[j].sin()).abs() < 1e-4, "sin slot {j}");
+        assert!(
+            (got[j] as f64 - args[j].cos()).abs() < 1e-4,
+            "cos slot {j}: {} vs {}",
+            got[j],
+            args[j].cos()
+        );
+        assert!(
+            (got[j + 4] as f64 - args[j].sin()).abs() < 1e-4,
+            "sin slot {j}"
+        );
     }
     // odd dim gets a trailing zero
     let odd = timestep_embedding(0.5, 7, 10000.0, 1000.0);
@@ -238,7 +334,14 @@ fn naive_lin(w: &[f32], inn: usize, out: usize, x: &[f64], rows: usize) -> Vec<f
     y
 }
 
-fn naive_stream_qkv(d: Dims, s: &StreamF32, x: &[f64], shift: &[f32], scale: &[f32], pe: &[f32]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+fn naive_stream_qkv(
+    d: Dims,
+    s: &StreamF32,
+    x: &[f64],
+    shift: &[f32],
+    scale: &[f32],
+    pe: &[f32],
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let (h, hd) = (d.hidden, d.head_dim);
     let n = x.len() / h;
     let mut xm = Vec::with_capacity(n * h);
@@ -257,7 +360,10 @@ fn naive_stream_qkv(d: Dims, s: &StreamF32, x: &[f64], shift: &[f32], scale: &[f
             for buf in [(&mut q, &s.q_scale), (&mut k, &s.k_scale)] {
                 let (vals, sc) = buf;
                 let base = t * h + hh * hd;
-                let ms = (0..hd).map(|j| vals[base + j] * vals[base + j]).sum::<f64>() / hd as f64;
+                let ms = (0..hd)
+                    .map(|j| vals[base + j] * vals[base + j])
+                    .sum::<f64>()
+                    / hd as f64;
                 let den = (ms + 1e-6).sqrt();
                 for j in 0..hd {
                     vals[base + j] = vals[base + j] / den * sc[j] as f64;
@@ -266,7 +372,12 @@ fn naive_stream_qkv(d: Dims, s: &StreamF32, x: &[f64], shift: &[f32], scale: &[f
                 for p in 0..hd / 2 {
                     let pe_i = (t * (hd / 2) + p) * 4;
                     let (a, b) = (vals[base + 2 * p], vals[base + 2 * p + 1]);
-                    let (p0, p1, p2, p3) = (pe[pe_i] as f64, pe[pe_i + 1] as f64, pe[pe_i + 2] as f64, pe[pe_i + 3] as f64);
+                    let (p0, p1, p2, p3) = (
+                        pe[pe_i] as f64,
+                        pe[pe_i + 1] as f64,
+                        pe[pe_i + 2] as f64,
+                        pe[pe_i + 3] as f64,
+                    );
                     vals[base + 2 * p] = p0 * a + p1 * b;
                     vals[base + 2 * p + 1] = p2 * a + p3 * b;
                 }
@@ -276,15 +387,37 @@ fn naive_stream_qkv(d: Dims, s: &StreamF32, x: &[f64], shift: &[f32], scale: &[f
     (q, k, v)
 }
 
-fn naive_double(d: Dims, b: &DoubleBlockF32, img: &[f32], txt: &[f32], mi: &Mods6, mt: &Mods6, pe: &[f32]) -> (Vec<f64>, Vec<f64>) {
+fn naive_double(
+    d: Dims,
+    b: &DoubleBlockF32,
+    img: &[f32],
+    txt: &[f32],
+    mi: &Mods6,
+    mt: &Mods6,
+    pe: &[f32],
+) -> (Vec<f64>, Vec<f64>) {
     let (h, hd, m) = (d.hidden, d.head_dim, d.mlp);
     let nt = txt.len() / h;
     let ni = img.len() / h;
     let n = nt + ni;
     let txt64: Vec<f64> = txt.iter().map(|&v| v as f64).collect();
     let img64: Vec<f64> = img.iter().map(|&v| v as f64).collect();
-    let (qt, kt, vt) = naive_stream_qkv(d, &b.txt, &txt64, &mt.shift1, &mt.scale1, &pe[..nt * (hd / 2) * 4]);
-    let (qi, ki, vi) = naive_stream_qkv(d, &b.img, &img64, &mi.shift1, &mi.scale1, &pe[nt * (hd / 2) * 4..]);
+    let (qt, kt, vt) = naive_stream_qkv(
+        d,
+        &b.txt,
+        &txt64,
+        &mt.shift1,
+        &mt.scale1,
+        &pe[..nt * (hd / 2) * 4],
+    );
+    let (qi, ki, vi) = naive_stream_qkv(
+        d,
+        &b.img,
+        &img64,
+        &mi.shift1,
+        &mi.scale1,
+        &pe[nt * (hd / 2) * 4..],
+    );
     let q: Vec<f64> = [qt, qi].concat();
     let k: Vec<f64> = [kt, ki].concat();
     let v: Vec<f64> = [vt, vi].concat();
@@ -295,19 +428,30 @@ fn naive_double(d: Dims, b: &DoubleBlockF32, img: &[f32], txt: &[f32], mi: &Mods
         for hh in 0..d.heads {
             let base = hh * hd;
             let logits: Vec<f64> = (0..n)
-                .map(|tk| (0..hd).map(|j| q[t * h + base + j] * k[tk * h + base + j]).sum::<f64>() * sc)
+                .map(|tk| {
+                    (0..hd)
+                        .map(|j| q[t * h + base + j] * k[tk * h + base + j])
+                        .sum::<f64>()
+                        * sc
+                })
                 .collect();
             let mx = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
             let ex: Vec<f64> = logits.iter().map(|l| (l - mx).exp()).collect();
             let z: f64 = ex.iter().sum();
             for j in 0..hd {
-                attn[t * h + base + j] = (0..n).map(|tk| ex[tk] / z * v[tk * h + base + j]).sum::<f64>();
+                attn[t * h + base + j] = (0..n)
+                    .map(|tk| ex[tk] / z * v[tk * h + base + j])
+                    .sum::<f64>();
             }
         }
     }
     let post = |s: &StreamF32, x: &[f64], a: &[f64], mm: &Mods6, rows: usize| -> Vec<f64> {
         let p = naive_lin(&s.proj, h, h, a, rows);
-        let mut x: Vec<f64> = x.iter().enumerate().map(|(i, &xv)| xv + mm.gate1[i % h] as f64 * p[i]).collect();
+        let mut x: Vec<f64> = x
+            .iter()
+            .enumerate()
+            .map(|(i, &xv)| xv + mm.gate1[i % h] as f64 * p[i])
+            .collect();
         let mut xm = Vec::with_capacity(rows * h);
         for t in 0..rows {
             xm.extend(naive_ln_mod(&x[t * h..(t + 1) * h], &mm.shift2, &mm.scale2));
@@ -333,7 +477,12 @@ fn naive_double(d: Dims, b: &DoubleBlockF32, img: &[f32], txt: &[f32], mi: &Mods
 
 #[test]
 fn double_block_matches_naive_f64() {
-    let d = Dims { hidden: 32, heads: 2, head_dim: 16, mlp: 96 };
+    let d = Dims {
+        hidden: 32,
+        heads: 2,
+        head_dim: 16,
+        mlp: 96,
+    };
     let (h, hd, m) = (d.hidden, d.head_dim, d.mlp);
     let mut r = Rng(77);
     let stream = |r: &mut Rng| StreamF32 {
@@ -344,7 +493,10 @@ fn double_block_matches_naive_f64() {
         q_scale: (0..hd).map(|_| 1.0 + 0.3 * r.next()).collect(),
         k_scale: (0..hd).map(|_| 1.0 + 0.3 * r.next()).collect(),
     };
-    let blk = DoubleBlockF32 { img: stream(&mut r), txt: stream(&mut r) };
+    let blk = DoubleBlockF32 {
+        img: stream(&mut r),
+        txt: stream(&mut r),
+    };
     let mi = Mods6::from_vec(&r.vec(6 * h, 0.5), h);
     let mt = Mods6::from_vec(&r.vec(6 * h, 0.5), h);
     let (n_txt, n_img) = (5, 7);
@@ -366,7 +518,10 @@ fn double_block_matches_naive_f64() {
 // ---- cross-check: RefModel (this crate) against FastModel (lead's int8 path) ----------------
 
 fn clone_src(s: &MemSource) -> MemSource {
-    MemSource { q8: s.q8.clone(), f: s.f.clone() }
+    MemSource {
+        q8: s.q8.clone(),
+        f: s.f.clone(),
+    }
 }
 
 /// The same source with every block output projection zeroed (attn proj, mlp.2, single linear2):
@@ -376,7 +531,11 @@ fn no_block_source(src: &MemSource) -> MemSource {
     let names: Vec<String> = out
         .q8
         .keys()
-        .filter(|k| k.ends_with("_attn.proj.weight") || k.ends_with("_mlp.2.weight") || k.ends_with("linear2.weight"))
+        .filter(|k| {
+            k.ends_with("_attn.proj.weight")
+                || k.ends_with("_mlp.2.weight")
+                || k.ends_with("linear2.weight")
+        })
         .cloned()
         .collect();
     for n in names {
@@ -420,7 +579,14 @@ struct Case {
 
 /// `src_ref` drives the reference (and its no-block baseline), `src_fast` the fast model;
 /// `in_ref` / `in_fast` are the inputs for each.
-fn run_case(src_ref: &MemSource, src_fast: &MemSource, in_ref: &ModelInput, in_fast: &ModelInput, cfg: FastConfig, pool: &sched::Pool) -> Case {
+fn run_case(
+    src_ref: &MemSource,
+    src_fast: &MemSource,
+    in_ref: &ModelInput,
+    in_fast: &ModelInput,
+    cfg: FastConfig,
+    pool: &sched::Pool,
+) -> Case {
     let mut rm = RefModel::from_source(src_ref, 3).expect("ref model");
     let want = rm.forward(in_ref);
     let mut nm = RefModel::from_source(&no_block_source(src_ref), 3).expect("no-block model");
@@ -435,7 +601,14 @@ fn run_case(src_ref: &MemSource, src_fast: &MemSource, in_ref: &ModelInput, in_f
 }
 
 fn standard_case(c: Tiny, label: &str) -> Case {
-    let cfg = FastConfig { chunk1: 32, chunk2: 32, batch_groups: 2, lin2_row_block: 16, key_chunk: 16, ..FastConfig::default() };
+    let cfg = FastConfig {
+        chunk1: 32,
+        chunk2: 32,
+        batch_groups: 2,
+        lin2_row_block: 16,
+        key_chunk: 16,
+        ..FastConfig::default()
+    };
     let pool = sched::Pool::new(&[0, 1, 2], std::time::Duration::from_millis(2)).expect("pool");
     let src = tiny_source(c, 9);
     let input = random_input(c, 13, 19, 5, 0.7);
@@ -449,9 +622,21 @@ fn standard_case(c: Tiny, label: &str) -> Case {
 
 fn assert_agreement(c: Tiny, label: &str) {
     let k = standard_case(c, label);
-    assert!(k.contrib > 0.3, "{label}: blocks must matter (contribution {})", k.contrib);
-    assert!(k.full_e < 0.08, "{label}: fast vs ref full rel rmse {}", k.full_e);
-    assert!(k.err_delta < 0.08, "{label}: error relative to contribution {}", k.err_delta);
+    assert!(
+        k.contrib > 0.3,
+        "{label}: blocks must matter (contribution {})",
+        k.contrib
+    );
+    assert!(
+        k.full_e < 0.08,
+        "{label}: fast vs ref full rel rmse {}",
+        k.full_e
+    );
+    assert!(
+        k.err_delta < 0.08,
+        "{label}: error relative to contribution {}",
+        k.err_delta
+    );
 }
 
 #[test]
@@ -481,14 +666,32 @@ fn fast_model_float_attention_agrees_and_is_closer() {
     let input = random_input(c, 13, 19, 5, 0.7);
     let mut errs = Vec::new();
     for prec in [AttnPrec::Int8, AttnPrec::F16, AttnPrec::F32] {
-        let cfg = FastConfig { chunk1: 32, chunk2: 32, batch_groups: 2, lin2_row_block: 16, key_chunk: 16, attn_prec: prec };
+        let cfg = FastConfig {
+            chunk1: 32,
+            chunk2: 32,
+            batch_groups: 2,
+            lin2_row_block: 16,
+            key_chunk: 16,
+            attn_prec: prec,
+        };
         let k = run_case(&src, &src, &input, &input, cfg, &pool);
-        println!("attn-prec {}: full rel rmse {:.4e}, err relative to contribution {:.4e}", prec.name(), k.full_e, k.err_delta);
+        println!(
+            "attn-prec {}: full rel rmse {:.4e}, err relative to contribution {:.4e}",
+            prec.name(),
+            k.full_e,
+            k.err_delta
+        );
         assert!(k.full_e < 0.08 && k.err_delta < 0.08, "{prec:?}: {k:?}");
         errs.push(k.err_delta);
     }
-    assert!(errs[2] < errs[0], "f32 attention must be closer to the reference than int8: {errs:?}");
-    assert!(errs[1] < errs[0], "f16 attention must be closer to the reference than int8: {errs:?}");
+    assert!(
+        errs[2] < errs[0],
+        "f32 attention must be closer to the reference than int8: {errs:?}"
+    );
+    assert!(
+        errs[1] < errs[0],
+        "f16 attention must be closer to the reference than int8: {errs:?}"
+    );
 }
 
 // Negative controls: each perturbation of the fast side must make the error relative to the
@@ -497,19 +700,36 @@ fn fast_model_float_attention_agrees_and_is_closer() {
 #[test]
 fn negative_control_negated_rope_angles_is_detected() {
     let c = Tiny::standard(1, 2);
-    let cfg = FastConfig { chunk1: 32, chunk2: 32, batch_groups: 2, lin2_row_block: 16, key_chunk: 16, ..FastConfig::default() };
+    let cfg = FastConfig {
+        chunk1: 32,
+        chunk2: 32,
+        batch_groups: 2,
+        lin2_row_block: 16,
+        key_chunk: 16,
+        ..FastConfig::default()
+    };
     let pool = sched::Pool::new(&[0, 1, 2], std::time::Duration::from_millis(2)).expect("pool");
     let src = tiny_source(c, 9);
     let input = random_input(c, 13, 19, 5, 0.7);
     let k = run_case(&src, &src, &input, &negate_pe(&input), cfg, &pool);
-    println!("negative control (negated pe angles): err relative to contribution {:.4e}", k.err_delta);
+    println!(
+        "negative control (negated pe angles): err relative to contribution {:.4e}",
+        k.err_delta
+    );
     assert!(k.err_delta > 0.2, "{k:?}");
 }
 
 #[test]
 fn negative_control_swapped_qk_norm_scales_is_detected() {
     let c = Tiny::standard(1, 2);
-    let cfg = FastConfig { chunk1: 32, chunk2: 32, batch_groups: 2, lin2_row_block: 16, key_chunk: 16, ..FastConfig::default() };
+    let cfg = FastConfig {
+        chunk1: 32,
+        chunk2: 32,
+        batch_groups: 2,
+        lin2_row_block: 16,
+        key_chunk: 16,
+        ..FastConfig::default()
+    };
     let pool = sched::Pool::new(&[0, 1, 2], std::time::Duration::from_millis(2)).expect("pool");
     let src = tiny_source(c, 9);
     let mut bad = clone_src(&src);
@@ -530,18 +750,33 @@ fn negative_control_swapped_qk_norm_scales_is_detected() {
 #[test]
 fn negative_control_different_linear2_is_detected() {
     let c = Tiny::standard(1, 2);
-    let cfg = FastConfig { chunk1: 32, chunk2: 32, batch_groups: 2, lin2_row_block: 16, key_chunk: 16, ..FastConfig::default() };
+    let cfg = FastConfig {
+        chunk1: 32,
+        chunk2: 32,
+        batch_groups: 2,
+        lin2_row_block: 16,
+        key_chunk: 16,
+        ..FastConfig::default()
+    };
     let pool = sched::Pool::new(&[0, 1, 2], std::time::Duration::from_millis(2)).expect("pool");
     let src = tiny_source(c, 9);
     let mut bad = clone_src(&src);
     let name = "single_blocks.0.linear2.weight";
     let (_, rows, k_in) = bad.q8[name].clone();
     let mut r = Rng(4242);
-    let v: Vec<f32> = r.vec(rows * k_in, 1.0 / (k_in as f32).sqrt()).iter().map(|x| x * GAIN).collect();
-    bad.q8.insert(name.to_string(), (quant_q8_0(&v, rows, k_in), rows, k_in));
+    let v: Vec<f32> = r
+        .vec(rows * k_in, 1.0 / (k_in as f32).sqrt())
+        .iter()
+        .map(|x| x * GAIN)
+        .collect();
+    bad.q8
+        .insert(name.to_string(), (quant_q8_0(&v, rows, k_in), rows, k_in));
     let input = random_input(c, 13, 19, 5, 0.7);
     let k = run_case(&src, &bad, &input, &input, cfg, &pool);
-    println!("negative control (different single block 0 linear2): err relative to contribution {:.4e}", k.err_delta);
+    println!(
+        "negative control (different single block 0 linear2): err relative to contribution {:.4e}",
+        k.err_delta
+    );
     assert!(k.err_delta > 0.2, "{k:?}");
 }
 
@@ -576,8 +811,14 @@ fn text_stream_is_not_step_invariant() {
     let by_time = rel_rmse(&tb, &ta);
     let by_image = rel_rmse(&td, &ta);
     println!("text rows entering single block 0: change by timestep {by_time:.3e}, by image latent {by_image:.3e}");
-    assert!(by_time > 1e-3, "text rows did not change with the timestep: {by_time:e}");
-    assert!(by_image > 1e-3, "text rows did not change with the image latent: {by_image:e}");
+    assert!(
+        by_time > 1e-3,
+        "text rows did not change with the timestep: {by_time:e}"
+    );
+    assert!(
+        by_image > 1e-3,
+        "text rows did not change with the image latent: {by_image:e}"
+    );
     // and the same input twice is identical (the test measures the model, not noise)
     assert_eq!(tap(&mut m, &a), ta);
 }
@@ -636,10 +877,13 @@ fn parity_mode_rounds_activations_and_stays_close() {
     // in single block 0 it differs from the f32 forward's only through the upstream double block
     let (_, st) = taps.single0.as_ref().unwrap();
     assert_eq!(st.x_mod.len(), 12 * c.hidden);
-    assert!(st.x_mod.chunks_exact(32).any(|blk| {
-        let d = blk.iter().fold(0f32, |a, v| a.max(v.abs())) / 127.0;
-        d > 0.0 && blk.iter().any(|v| ((v / d) - (v / d).round()).abs() > 1e-2)
-    }), "x_mod tap must be the unrounded f32 values");
+    assert!(
+        st.x_mod.chunks_exact(32).any(|blk| {
+            let d = blk.iter().fold(0f32, |a, v| a.max(v.abs())) / 127.0;
+            d > 0.0 && blk.iter().any(|v| ((v / d) - (v / d).round()).abs() > 1e-2)
+        }),
+        "x_mod tap must be the unrounded f32 values"
+    );
     // switching back gives the f32 reference bitwise (txt cache dropped on the switch)
     m.set_arith(Arith::F32);
     assert_eq!(m.forward(&input), f32_out);
@@ -681,7 +925,10 @@ fn perturbation_control_is_off_by_default_and_small_when_on() {
     m.set_perturb_ulp(1);
     let p = m.forward(&input);
     let e = rel_rmse(&p, &base);
-    assert!(e > 0.0 && e < 1e-4, "1-ulp perturbation moved the f32 output by {e}");
+    assert!(
+        e > 0.0 && e < 1e-4,
+        "1-ulp perturbation moved the f32 output by {e}"
+    );
 }
 
 #[test]
@@ -702,7 +949,14 @@ fn perturb_moves_each_value_by_at_most_n_ulps() {
 
 /// Fast config of the tiny-model tests (as `standard_case`).
 fn tiny_fast_cfg() -> FastConfig {
-    FastConfig { chunk1: 32, chunk2: 32, batch_groups: 2, lin2_row_block: 16, key_chunk: 16, ..FastConfig::default() }
+    FastConfig {
+        chunk1: 32,
+        chunk2: 32,
+        batch_groups: 2,
+        lin2_row_block: 16,
+        key_chunk: 16,
+        ..FastConfig::default()
+    }
 }
 
 /// The emulator with every accelerator option: budget, sessions, token-row split (percent), K chunk limit
@@ -727,16 +981,34 @@ fn npu_cfg(
         max_blob_bytes,
         audit,
     };
-    Some((Box::new(oxn::emu::Emu::new(8 << 20, sessions)) as Box<dyn oxn::Backend>, cfg))
+    Some((
+        Box::new(oxn::emu::Emu::new(8 << 20, sessions)) as Box<dyn oxn::Backend>,
+        cfg,
+    ))
 }
 
 /// The emulator with a budget, `sessions` sessions and a token-row split of `cpu_rows_pct` percent; kc_max 64 so that K = 192 and 256 linears are split into 3 and 4 chunks.
-fn npu_emu_pct(budget_bytes: usize, sessions: usize, cpu_rows_pct: u32) -> Option<(Box<dyn oxn::Backend>, image_dit::npu::NpuConfig)> {
-    npu_cfg(budget_bytes, sessions, cpu_rows_pct, 64, oxn::wfmt::WFmt::W8, 0, false)
+fn npu_emu_pct(
+    budget_bytes: usize,
+    sessions: usize,
+    cpu_rows_pct: u32,
+) -> Option<(Box<dyn oxn::Backend>, image_dit::npu::NpuConfig)> {
+    npu_cfg(
+        budget_bytes,
+        sessions,
+        cpu_rows_pct,
+        64,
+        oxn::wfmt::WFmt::W8,
+        0,
+        false,
+    )
 }
 
 /// The emulator with a budget and `sessions` sessions (no token-row split).
-fn npu_emu_n(budget_bytes: usize, sessions: usize) -> Option<(Box<dyn oxn::Backend>, image_dit::npu::NpuConfig)> {
+fn npu_emu_n(
+    budget_bytes: usize,
+    sessions: usize,
+) -> Option<(Box<dyn oxn::Backend>, image_dit::npu::NpuConfig)> {
     npu_emu_pct(budget_bytes, sessions, 0)
 }
 
@@ -778,7 +1050,8 @@ fn linear_count(c: Tiny) -> usize {
 fn all_linear_bytes(c: Tiny) -> usize {
     use oxn::tiles::w8_bytes;
     let (h, m) = (c.hidden, c.mlp);
-    let per_double = 2 * (w8_bytes(3 * h, h) + w8_bytes(h, h) + w8_bytes(2 * m, h) + w8_bytes(h, m));
+    let per_double =
+        2 * (w8_bytes(3 * h, h) + w8_bytes(h, h) + w8_bytes(2 * m, h) + w8_bytes(h, m));
     let per_single = w8_bytes(3 * h + 2 * m, h) + w8_bytes(h, h + m);
     c.n_double * per_double + c.n_single * per_single
 }
@@ -798,15 +1071,23 @@ fn fast_model_npu_emu_all_linears_agrees_with_reference() {
     let want = rm.forward(&input);
     let mut cpu = FastModel::from_source(&src, &pool, tiny_fast_cfg()).expect("cpu fast model");
     let got_cpu = cpu.forward(&input);
-    let mut nm = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(1usize << 40)).expect("npu fast model");
+    let mut nm = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(1usize << 40))
+        .expect("npu fast model");
     let got = nm.forward(&input);
     let s = nm.npu_stats().expect("npu stats");
-    assert_eq!(s.linears, linear_count(c), "every linear must be on the accelerator");
+    assert_eq!(
+        s.linears,
+        linear_count(c),
+        "every linear must be on the accelerator"
+    );
     let e_npu = rel_rmse(&got, &want);
     let e_cpu = rel_rmse(&got_cpu, &want);
     eprintln!("npu emu, all {} linears: rel rmse vs reference {e_npu:.4e}; plain cpu fast path {e_cpu:.4e}", s.linears);
     assert!(e_npu < 0.02, "npu rel rmse {e_npu}");
-    assert!(e_npu <= e_cpu, "npu ({e_npu}) must be at least as close to the reference as the cpu path ({e_cpu})");
+    assert!(
+        e_npu <= e_cpu,
+        "npu ({e_npu}) must be at least as close to the reference as the cpu path ({e_cpu})"
+    );
 }
 
 #[test]
@@ -821,14 +1102,28 @@ fn fast_model_npu_emu_partial_budget() {
     // about half of the linears and of their bytes (the second half is then left on the CPU)
     let (h, m) = (c.hidden, c.mlp);
     use oxn::tiles::w8_bytes;
-    let budget = (w8_bytes(3 * h, h) + w8_bytes(h, h) + w8_bytes(2 * m, h) + w8_bytes(h, m)) + (w8_bytes(3 * h, h) + w8_bytes(h, h));
+    let budget = (w8_bytes(3 * h, h) + w8_bytes(h, h) + w8_bytes(2 * m, h) + w8_bytes(h, m))
+        + (w8_bytes(3 * h, h) + w8_bytes(h, h));
     assert!(budget < all_linear_bytes(c));
-    let mut nm = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(budget)).expect("npu fast model");
+    let mut nm = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(budget))
+        .expect("npu fast model");
     let got = nm.forward(&input);
     let s = nm.npu_stats().expect("npu stats");
-    eprintln!("npu emu, budget {budget} bytes: {} of {} linears on the accelerator ({} bytes)", s.linears, linear_count(c), s.weights_bytes);
-    assert!(s.linears > 0 && s.linears < linear_count(c), "linears on the accelerator: {}", s.linears);
-    assert_eq!(s.linears, 6, "the first six linears in model order fit the budget exactly");
+    eprintln!(
+        "npu emu, budget {budget} bytes: {} of {} linears on the accelerator ({} bytes)",
+        s.linears,
+        linear_count(c),
+        s.weights_bytes
+    );
+    assert!(
+        s.linears > 0 && s.linears < linear_count(c),
+        "linears on the accelerator: {}",
+        s.linears
+    );
+    assert_eq!(
+        s.linears, 6,
+        "the first six linears in model order fit the budget exactly"
+    );
     assert!(s.weights_bytes <= budget);
     let e = rel_rmse(&got, &want);
     assert!(e < 0.08, "partial npu rel rmse {e}");
@@ -842,12 +1137,16 @@ fn fast_model_npu_budget_zero_is_bitwise_cpu() {
     let input = npu_input(c);
     let mut cpu = FastModel::from_source(&src, &pool, tiny_fast_cfg()).expect("cpu fast model");
     let a = cpu.forward(&input);
-    let mut nm = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(0)).expect("npu fast model");
+    let mut nm = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(0))
+        .expect("npu fast model");
     let b = nm.forward(&input);
     let s = nm.npu_stats().expect("npu stats");
     assert_eq!(s.linears, 0, "budget 0 places nothing");
     assert_eq!(a.len(), b.len());
-    assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "budget 0 must be bitwise the cpu path");
+    assert!(
+        a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+        "budget 0 must be bitwise the cpu path"
+    );
 }
 
 #[test]
@@ -859,11 +1158,15 @@ fn fast_model_npu_emu_two_sessions() {
     let mut rm = RefModel::from_source(&src, 3).expect("ref model");
     let want = rm.forward(&input);
     // one session: the arithmetic every two-session run must reproduce
-    let mut one = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(1usize << 40)).expect("npu fast model");
+    let mut one = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(1usize << 40))
+        .expect("npu fast model");
     let got1 = one.forward(&input);
     // two sessions, the same linears and budget
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let backend = SessionLog { inner: oxn::emu::Emu::new(8 << 20, 2), seen: seen.clone() };
+    let backend = SessionLog {
+        inner: oxn::emu::Emu::new(8 << 20, 2),
+        seen: seen.clone(),
+    };
     let cfg = image_dit::npu::NpuConfig {
         budget_bytes: 1usize << 40,
         kc_max: 64,
@@ -874,18 +1177,37 @@ fn fast_model_npu_emu_two_sessions() {
         max_blob_bytes: 0,
         audit: false,
     };
-    let mut two = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), Some((Box::new(backend), cfg))).expect("npu fast model");
+    let mut two =
+        FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), Some((Box::new(backend), cfg)))
+            .expect("npu fast model");
     let got2 = two.forward(&input);
     let s = two.npu_stats().expect("npu stats");
     assert_eq!(s.sessions, 2);
-    assert_eq!(s.linears, linear_count(c), "every linear must be on the accelerator");
+    assert_eq!(
+        s.linears,
+        linear_count(c),
+        "every linear must be on the accelerator"
+    );
     let log = seen.lock().expect("session log");
-    assert!(log.contains(&0) && log.contains(&1), "both sessions must run GEMMs, sessions seen: {:?}", &log[..log.len().min(8)]);
+    assert!(
+        log.contains(&0) && log.contains(&1),
+        "both sessions must run GEMMs, sessions seen: {:?}",
+        &log[..log.len().min(8)]
+    );
     let e = rel_rmse(&got2, &want);
-    eprintln!("npu emu, 2 sessions, {} linears, {} gemm calls: rel rmse vs reference {e:.4e}", s.linears, log.len());
+    eprintln!(
+        "npu emu, 2 sessions, {} linears, {} gemm calls: rel rmse vs reference {e:.4e}",
+        s.linears,
+        log.len()
+    );
     assert!(e < 0.02, "two-session npu rel rmse {e}");
     assert_eq!(got1.len(), got2.len());
-    assert!(got1.iter().zip(&got2).all(|(x, y)| x.to_bits() == y.to_bits()), "two sessions must be bitwise the one-session run");
+    assert!(
+        got1.iter()
+            .zip(&got2)
+            .all(|(x, y)| x.to_bits() == y.to_bits()),
+        "two sessions must be bitwise the one-session run"
+    );
 }
 
 /// 128 tokens (40 text + 88 image): every stream's linears have a non-trivial token-row split at 25 and 50 percent.
@@ -899,16 +1221,34 @@ fn fast_model_npu_emu_row_split_zero_is_unchanged() {
     let pool = sched::Pool::new(&[0, 1, 2], std::time::Duration::from_millis(2)).expect("pool");
     let src = tiny_source(c, 9);
     let input = npu_input(c);
-    let mut base = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(1usize << 40)).expect("npu fast model");
+    let mut base = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu(1usize << 40))
+        .expect("npu fast model");
     let a = base.forward(&input);
-    let mut zero = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu_pct(1usize << 40, 1, 0)).expect("npu fast model");
+    let mut zero = FastModel::from_source_npu(
+        &src,
+        &pool,
+        tiny_fast_cfg(),
+        npu_emu_pct(1usize << 40, 1, 0),
+    )
+    .expect("npu fast model");
     let b = zero.forward(&input);
     let s = zero.npu_stats().expect("npu stats");
-    assert_eq!(s.linears, linear_count(c), "every linear must be on the accelerator");
-    assert_eq!((s.cpu_rows, s.split_cpu_s), (0, 0.0), "no CPU rows without a split");
+    assert_eq!(
+        s.linears,
+        linear_count(c),
+        "every linear must be on the accelerator"
+    );
+    assert_eq!(
+        (s.cpu_rows, s.split_cpu_s),
+        (0, 0.0),
+        "no CPU rows without a split"
+    );
     assert!(s.npu_rows > 0, "the accelerator computed rows");
     assert_eq!(a.len(), b.len());
-    assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "cpu_rows_pct 0 must be bitwise the unsplit run");
+    assert!(
+        a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+        "cpu_rows_pct 0 must be bitwise the unsplit run"
+    );
 }
 
 #[test]
@@ -919,7 +1259,13 @@ fn fast_model_npu_emu_row_split_25() {
     let mut rm = RefModel::from_source(&src, 3).expect("ref model");
     for (label, input) in [("34 tokens", npu_input(c)), ("128 tokens", split_input(c))] {
         let want = rm.forward(&input);
-        let mut nm = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu_pct(1usize << 40, 1, 25)).expect("npu fast model");
+        let mut nm = FastModel::from_source_npu(
+            &src,
+            &pool,
+            tiny_fast_cfg(),
+            npu_emu_pct(1usize << 40, 1, 25),
+        )
+        .expect("npu fast model");
         let got = nm.forward(&input);
         let s = nm.npu_stats().expect("npu stats");
         let e = rel_rmse(&got, &want);
@@ -929,7 +1275,12 @@ fn fast_model_npu_emu_row_split_25() {
         );
         assert!(e < 0.08, "{label}: row split 25% rel rmse {e}");
         if label == "128 tokens" {
-            assert!(s.cpu_rows > 0 && s.npu_rows > 0, "rows npu {} cpu {}", s.npu_rows, s.cpu_rows);
+            assert!(
+                s.cpu_rows > 0 && s.npu_rows > 0,
+                "rows npu {} cpu {}",
+                s.npu_rows,
+                s.cpu_rows
+            );
         }
     }
 }
@@ -942,14 +1293,32 @@ fn fast_model_npu_emu_row_split_two_sessions() {
     let input = split_input(c);
     let mut rm = RefModel::from_source(&src, 3).expect("ref model");
     let want = rm.forward(&input);
-    let mut nm = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_emu_pct(1usize << 40, 2, 50)).expect("npu fast model");
+    let mut nm = FastModel::from_source_npu(
+        &src,
+        &pool,
+        tiny_fast_cfg(),
+        npu_emu_pct(1usize << 40, 2, 50),
+    )
+    .expect("npu fast model");
     let got = nm.forward(&input);
     let s = nm.npu_stats().expect("npu stats");
     assert_eq!(s.sessions, 2);
-    assert_eq!(s.linears, linear_count(c), "every linear must be on the accelerator");
+    assert_eq!(
+        s.linears,
+        linear_count(c),
+        "every linear must be on the accelerator"
+    );
     let e = rel_rmse(&got, &want);
-    eprintln!("npu emu, row split 50%, 2 sessions: rel rmse vs reference {e:.4e}; rows npu {} cpu {}", s.npu_rows, s.cpu_rows);
-    assert!(s.cpu_rows > 0 && s.npu_rows > 0, "rows npu {} cpu {}", s.npu_rows, s.cpu_rows);
+    eprintln!(
+        "npu emu, row split 50%, 2 sessions: rel rmse vs reference {e:.4e}; rows npu {} cpu {}",
+        s.npu_rows, s.cpu_rows
+    );
+    assert!(
+        s.cpu_rows > 0 && s.npu_rows > 0,
+        "rows npu {} cpu {}",
+        s.npu_rows,
+        s.cpu_rows
+    );
     assert!(e < 0.08, "row split 50%, two sessions: rel rmse {e}");
 }
 
@@ -964,12 +1333,28 @@ fn fast_model_npu_emu_fp16_weights() {
     let input = npu_input(c);
     let mut rm = RefModel::from_source(&src, 3).expect("ref model");
     let want = rm.forward(&input);
-    let mut w8 = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_cfg(1usize << 40, 1, 0, 64, WFmt::W8, 0, false)).expect("npu fast model");
+    let mut w8 = FastModel::from_source_npu(
+        &src,
+        &pool,
+        tiny_fast_cfg(),
+        npu_cfg(1usize << 40, 1, 0, 64, WFmt::W8, 0, false),
+    )
+    .expect("npu fast model");
     let got_w8 = w8.forward(&input);
-    let mut fp = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_cfg(1usize << 40, 1, 0, 64, WFmt::Fp16, 0, false)).expect("npu fast model");
+    let mut fp = FastModel::from_source_npu(
+        &src,
+        &pool,
+        tiny_fast_cfg(),
+        npu_cfg(1usize << 40, 1, 0, 64, WFmt::Fp16, 0, false),
+    )
+    .expect("npu fast model");
     let got = fp.forward(&input);
     let s = fp.npu_stats().expect("npu stats");
-    assert_eq!((s.linears, s.weights), (linear_count(c), WFmt::Fp16), "every linear on the accelerator, in fp16");
+    assert_eq!(
+        (s.linears, s.weights),
+        (linear_count(c), WFmt::Fp16),
+        "every linear on the accelerator, in fp16"
+    );
     let e = rel_rmse(&got, &want);
     let d = rel_rmse(&got, &got_w8);
     eprintln!("npu emu, fp16 weights: rel rmse vs reference {e:.4e}; vs W8 run {d:.4e}");
@@ -988,9 +1373,21 @@ fn fast_model_npu_emu_fp16_vs_w8_bound() {
     let pool = sched::Pool::new(&[0, 1, 2], std::time::Duration::from_millis(2)).expect("pool");
     let src = tiny_source(c, 9);
     let input = npu_input(c);
-    let mut w8 = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_cfg(1usize << 40, 1, 0, 64, WFmt::W8, 0, false)).expect("npu fast model");
+    let mut w8 = FastModel::from_source_npu(
+        &src,
+        &pool,
+        tiny_fast_cfg(),
+        npu_cfg(1usize << 40, 1, 0, 64, WFmt::W8, 0, false),
+    )
+    .expect("npu fast model");
     let got_w8 = w8.forward(&input);
-    let mut fp = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_cfg(1usize << 40, 1, 0, 64, WFmt::Fp16, 0, false)).expect("npu fast model");
+    let mut fp = FastModel::from_source_npu(
+        &src,
+        &pool,
+        tiny_fast_cfg(),
+        npu_cfg(1usize << 40, 1, 0, 64, WFmt::Fp16, 0, false),
+    )
+    .expect("npu fast model");
     let got = fp.forward(&input);
     let d = rel_rmse(&got, &got_w8);
     assert!(d < 2e-3, "fp16 weights rel rmse vs the W8 run {d}");
@@ -1005,11 +1402,21 @@ fn fast_model_npu_emu_no_k_chunks() {
     let input = npu_input(c);
     let mut rm = RefModel::from_source(&src, 3).expect("ref model");
     let want = rm.forward(&input);
-    let mut nm = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_cfg(1usize << 40, 1, 0, 0, WFmt::W8, 0, false)).expect("npu fast model");
+    let mut nm = FastModel::from_source_npu(
+        &src,
+        &pool,
+        tiny_fast_cfg(),
+        npu_cfg(1usize << 40, 1, 0, 0, WFmt::W8, 0, false),
+    )
+    .expect("npu fast model");
     let got = nm.forward(&input);
     let s = nm.npu_stats().expect("npu stats");
     // one K chunk and one output part per linear: one blob each
-    assert_eq!((s.linears, s.blobs, s.parts), (linear_count(c), linear_count(c), linear_count(c)), "no K chunking, no output parts");
+    assert_eq!(
+        (s.linears, s.blobs, s.parts),
+        (linear_count(c), linear_count(c), linear_count(c)),
+        "no K chunking, no output parts"
+    );
     let e = rel_rmse(&got, &want);
     eprintln!("npu emu, kc 0 (no K chunks): rel rmse vs reference {e:.4e}");
     assert!(e < 0.02, "no-K-chunk npu rel rmse {e}");
@@ -1025,19 +1432,42 @@ fn fast_model_npu_emu_output_parts_bitwise() {
     for fmt in [WFmt::W8, WFmt::Fp16] {
         // four output tiles per blob: the widest linear (linear1, 3h + 2m = 576 rows = 18 tiles) is in 5 parts
         let max_blob = 4 * fmt.strip_bytes(64);
-        let mut def = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_cfg(1usize << 40, 1, 0, 64, fmt, 0, false)).expect("npu fast model");
+        let mut def = FastModel::from_source_npu(
+            &src,
+            &pool,
+            tiny_fast_cfg(),
+            npu_cfg(1usize << 40, 1, 0, 64, fmt, 0, false),
+        )
+        .expect("npu fast model");
         let a = def.forward(&input);
         let sd = def.npu_stats().expect("npu stats");
-        let mut split = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_cfg(1usize << 40, 1, 0, 64, fmt, max_blob, false)).expect("npu fast model");
+        let mut split = FastModel::from_source_npu(
+            &src,
+            &pool,
+            tiny_fast_cfg(),
+            npu_cfg(1usize << 40, 1, 0, 64, fmt, max_blob, false),
+        )
+        .expect("npu fast model");
         let b = split.forward(&input);
         let ss = split.npu_stats().expect("npu stats");
         eprintln!("npu emu, {fmt:?}, output parts: default {} blobs, max_blob {max_blob}: {} blobs in {} parts", sd.blobs, ss.blobs, ss.parts);
-        assert_eq!((sd.linears, sd.parts), (linear_count(c), linear_count(c)), "default: one part per linear");
+        assert_eq!(
+            (sd.linears, sd.parts),
+            (linear_count(c), linear_count(c)),
+            "default: one part per linear"
+        );
         assert_eq!(ss.linears, linear_count(c));
-        assert!(ss.parts >= linear_count(c) + 2, "the widest linear must have at least 3 parts: parts {}", ss.parts);
+        assert!(
+            ss.parts >= linear_count(c) + 2,
+            "the widest linear must have at least 3 parts: parts {}",
+            ss.parts
+        );
         assert!(ss.blobs > sd.blobs, "more blobs with a smaller max_blob");
         assert_eq!(a.len(), b.len());
-        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "{fmt:?}: output parts must be bitwise the unsplit run");
+        assert!(
+            a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+            "{fmt:?}: output parts must be bitwise the unsplit run"
+        );
     }
 }
 
@@ -1050,14 +1480,32 @@ fn fast_model_npu_emu_audit() {
     // 128 tokens: tokens 0 and 61 are audited in every linear
     let input = split_input(c);
     for (fmt, kc_max) in [(WFmt::W8, 64usize), (WFmt::Fp16, 0usize)] {
-        let mut plain = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_cfg(1usize << 40, 1, 0, kc_max, fmt, 0, false)).expect("npu fast model");
+        let mut plain = FastModel::from_source_npu(
+            &src,
+            &pool,
+            tiny_fast_cfg(),
+            npu_cfg(1usize << 40, 1, 0, kc_max, fmt, 0, false),
+        )
+        .expect("npu fast model");
         let a = plain.forward(&input);
-        assert!(plain.npu_audit().is_none(), "no audit report with the audit off");
-        let mut audited = FastModel::from_source_npu(&src, &pool, tiny_fast_cfg(), npu_cfg(1usize << 40, 1, 0, kc_max, fmt, 0, true)).expect("npu fast model");
+        assert!(
+            plain.npu_audit().is_none(),
+            "no audit report with the audit off"
+        );
+        let mut audited = FastModel::from_source_npu(
+            &src,
+            &pool,
+            tiny_fast_cfg(),
+            npu_cfg(1usize << 40, 1, 0, kc_max, fmt, 0, true),
+        )
+        .expect("npu fast model");
         let b = audited.forward(&input);
         let s = audited.npu_stats().expect("npu stats");
         let lines = audited.npu_audit().expect("audit report");
-        assert!(a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "{fmt:?}: the audit must not change the output");
+        assert!(
+            a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+            "{fmt:?}: the audit must not change the output"
+        );
         assert_eq!(lines.len(), s.linears, "one audit line per placed linear");
         eprintln!("npu audit, {fmt:?}, kc_max {kc_max}:");
         for l in &lines {
@@ -1068,8 +1516,12 @@ fn fast_model_npu_emu_audit() {
         }
         for l in &lines {
             assert!(l.samples > 0, "{}: no audited samples", l.name);
-            assert!(l.rel_rmse < 3e-3, "{}: rel_rmse {:.3e} (see the table above)", l.name, l.rel_rmse);
+            assert!(
+                l.rel_rmse < 3e-3,
+                "{}: rel_rmse {:.3e} (see the table above)",
+                l.name,
+                l.rel_rmse
+            );
         }
     }
 }
-

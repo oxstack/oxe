@@ -15,12 +15,37 @@ use crate::config::KleinSpec;
 /// (stable-diffusion.cpp 5a1ba5d `tokenizers/qwen2_tokenizer.cpp`). A user prompt that contains one
 /// of them would depend on two tokenizers agreeing about special-token partitioning: refused.
 pub const SD_SPECIALS: &[&str] = &[
-    "<|endoftext|>", "<|im_start|>", "<|im_end|>", "<|object_ref_start|>", "<|object_ref_end|>",
-    "<|box_start|>", "<|box_end|>", "<|quad_start|>", "<|quad_end|>", "<|vision_start|>",
-    "<|vision_end|>", "<|vision_pad|>", "<|image_pad|>", "<|video_pad|>", "<tool_call>", "</tool_call>",
-    "<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|fim_pad|>", "<|repo_name|>", "<|file_sep|>",
-    "<tool_response>", "</tool_response>", "<think>", "</think>", "<|boi_token|>", "<|bor_token|>",
-    "<|eor_token|>", "<|bot_token|>", "<|tms_token|>",
+    "<|endoftext|>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|object_ref_start|>",
+    "<|object_ref_end|>",
+    "<|box_start|>",
+    "<|box_end|>",
+    "<|quad_start|>",
+    "<|quad_end|>",
+    "<|vision_start|>",
+    "<|vision_end|>",
+    "<|vision_pad|>",
+    "<|image_pad|>",
+    "<|video_pad|>",
+    "<tool_call>",
+    "</tool_call>",
+    "<|fim_prefix|>",
+    "<|fim_middle|>",
+    "<|fim_suffix|>",
+    "<|fim_pad|>",
+    "<|repo_name|>",
+    "<|file_sep|>",
+    "<tool_response>",
+    "</tool_response>",
+    "<think>",
+    "</think>",
+    "<|boi_token|>",
+    "<|bor_token|>",
+    "<|eor_token|>",
+    "<|bot_token|>",
+    "<|tms_token|>",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,8 +80,13 @@ impl Tokenize for tokenizer::Tokenizer {
 
 /// Is `text` in the subset whose sd.cpp parse is the identity with weight 1.0?
 pub fn check_plain(text: &str) -> Result<(), PromptError> {
-    if let Some(c) = text.chars().find(|c| matches!(c, '(' | ')' | '[' | ']' | '\\')) {
-        return Err(PromptError::NeedsReference(format!("emphasis/escape character '{c}'")));
+    if let Some(c) = text
+        .chars()
+        .find(|c| matches!(c, '(' | ')' | '[' | ']' | '\\'))
+    {
+        return Err(PromptError::NeedsReference(format!(
+            "emphasis/escape character '{c}'"
+        )));
     }
     if has_word(text, "BREAK") {
         return Err(PromptError::NeedsReference("BREAK keyword".into()));
@@ -66,7 +96,9 @@ pub fn check_plain(text: &str) -> Result<(), PromptError> {
         return Err(PromptError::NeedsReference("LoRA tag".into()));
     }
     if let Some(s) = SD_SPECIALS.iter().find(|s| text.contains(*s)) {
-        return Err(PromptError::NeedsReference(format!("special token string {s}")));
+        return Err(PromptError::NeedsReference(format!(
+            "special token string {s}"
+        )));
     }
     Ok(())
 }
@@ -100,13 +132,22 @@ pub struct Encoded {
 }
 
 /// Build the klein encoder input for `user` (the prompt text as typed).
-pub fn klein_tokens(tok: &dyn Tokenize, spec: &KleinSpec, user: &str) -> Result<Encoded, PromptError> {
+pub fn klein_tokens(
+    tok: &dyn Tokenize,
+    spec: &KleinSpec,
+    user: &str,
+) -> Result<Encoded, PromptError> {
     check_plain(user)?;
-    let mut ids = tok.encode_piece(spec.prefix).map_err(PromptError::Tokenizer)?;
+    let mut ids = tok
+        .encode_piece(spec.prefix)
+        .map_err(PromptError::Tokenizer)?;
     if !user.is_empty() {
         ids.extend(tok.encode_piece(user).map_err(PromptError::Tokenizer)?);
     }
-    ids.extend(tok.encode_piece(spec.suffix).map_err(PromptError::Tokenizer)?);
+    ids.extend(
+        tok.encode_piece(spec.suffix)
+            .map_err(PromptError::Tokenizer)?,
+    );
     Ok(pad(ids, spec))
 }
 
@@ -116,5 +157,9 @@ pub fn pad(mut ids: Vec<u32>, spec: &KleinSpec) -> Encoded {
     let n = n_real.max(spec.min_len);
     ids.resize(n, spec.pad_id);
     let mask = (0..n).map(|i| i < n_real).collect();
-    Encoded { tokens: ids, mask, n_real }
+    Encoded {
+        tokens: ids,
+        mask,
+        n_real,
+    }
 }

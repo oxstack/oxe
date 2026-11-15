@@ -77,19 +77,44 @@ pub struct GgufSource<'a>(pub &'a gguf::Gguf);
 
 impl WeightSource for GgufSource<'_> {
     fn q8(&self, name: &str) -> Result<(&[u8], usize, usize), String> {
-        let t = self.0.header.tensor(name).ok_or_else(|| format!("{name}: missing"))?;
+        let t = self
+            .0
+            .header
+            .tensor(name)
+            .ok_or_else(|| format!("{name}: missing"))?;
         if t.ty.name() != "Q8_0" || t.shape.len() != 2 {
-            return Err(format!("{name}: expected a 2-D Q8_0 tensor, found {} {:?}", t.ty.name(), t.shape));
+            return Err(format!(
+                "{name}: expected a 2-D Q8_0 tensor, found {} {:?}",
+                t.ty.name(),
+                t.shape
+            ));
         }
-        Ok((self.0.tensor_data(t), t.shape[1] as usize, t.shape[0] as usize))
+        Ok((
+            self.0.tensor_data(t),
+            t.shape[1] as usize,
+            t.shape[0] as usize,
+        ))
     }
     fn f32(&self, name: &str) -> Result<(Vec<f32>, usize, usize), String> {
-        let t = self.0.header.tensor(name).ok_or_else(|| format!("{name}: missing"))?;
+        let t = self
+            .0
+            .header
+            .tensor(name)
+            .ok_or_else(|| format!("{name}: missing"))?;
         let b = self.0.tensor_data(t);
         let v: Vec<f32> = match t.ty.name() {
-            "F32" => b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
-            "F16" => b.chunks_exact(2).map(|c| int8_gemm::f16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect(),
-            "BF16" => b.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
+            "F32" => b
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect(),
+            "F16" => b
+                .chunks_exact(2)
+                .map(|c| int8_gemm::f16_to_f32(u16::from_le_bytes([c[0], c[1]])))
+                .collect(),
+            "BF16" => b
+                .chunks_exact(2)
+                .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                .collect(),
             other => return Err(format!("{name}: unsupported float type {other}")),
         };
         let (k, rows) = match t.shape.len() {
@@ -116,10 +141,16 @@ pub struct MemSource {
 
 impl WeightSource for MemSource {
     fn q8(&self, name: &str) -> Result<(&[u8], usize, usize), String> {
-        self.q8.get(name).map(|(b, r, k)| (&b[..], *r, *k)).ok_or_else(|| format!("{name}: missing"))
+        self.q8
+            .get(name)
+            .map(|(b, r, k)| (&b[..], *r, *k))
+            .ok_or_else(|| format!("{name}: missing"))
     }
     fn f32(&self, name: &str) -> Result<(Vec<f32>, usize, usize), String> {
-        self.f.get(name).cloned().ok_or_else(|| format!("{name}: missing"))
+        self.f
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("{name}: missing"))
     }
     fn has(&self, name: &str) -> bool {
         self.q8.contains_key(name) || self.f.contains_key(name)
@@ -143,7 +174,9 @@ impl<T> SyncPtr<T> {
 }
 
 fn even_split(n: usize, parts: usize) -> Vec<Range<usize>> {
-    (0..parts).map(|p| n * p / parts..n * (p + 1) / parts).collect()
+    (0..parts)
+        .map(|p| n * p / parts..n * (p + 1) / parts)
+        .collect()
 }
 
 /// Work-shared two-level loop for one parallel stage: `n_outer` items (a weight block), each with
@@ -160,7 +193,13 @@ struct Share {
 
 impl Share {
     fn new(n_outer: usize, n_inner: usize) -> Share {
-        Share { next_outer: AtomicUsize::new(0), inner: (0..n_outer).map(|_| sched::Padded(AtomicUsize::new(0))).collect(), n_inner }
+        Share {
+            next_outer: AtomicUsize::new(0),
+            inner: (0..n_outer)
+                .map(|_| sched::Padded(AtomicUsize::new(0)))
+                .collect(),
+            n_inner,
+        }
     }
     #[inline]
     fn drain<F: FnMut(usize, usize)>(&self, o: usize, body: &mut F) {
@@ -205,7 +244,11 @@ pub struct LinTune {
 
 impl LinTune {
     fn from_cfg(cfg: &FastConfig) -> LinTune {
-        LinTune { unit_batch: cfg.batch_groups, plain_batch: cfg.batch_groups, plain_rows: cfg.lin2_row_block }
+        LinTune {
+            unit_batch: cfg.batch_groups,
+            plain_batch: cfg.batch_groups,
+            plain_rows: cfg.lin2_row_block,
+        }
     }
 }
 
@@ -249,7 +292,13 @@ struct UnitLayout {
     perm: Vec<u32>,
 }
 
-fn unit_layout(rows: usize, chunk_out: usize, heads: usize, hd: usize, layout: &Layout) -> UnitLayout {
+fn unit_layout(
+    rows: usize,
+    chunk_out: usize,
+    heads: usize,
+    hd: usize,
+    layout: &Layout,
+) -> UnitLayout {
     let hidden = heads * hd;
     let mut perm: Vec<u32> = Vec::new();
     let mut units = Vec::new();
@@ -257,13 +306,28 @@ fn unit_layout(rows: usize, chunk_out: usize, heads: usize, hd: usize, layout: &
         let g0 = perm.len() / G;
         perm.extend(rows.map(|r| r as u32));
         assert!(perm.len() % G == 0, "unit rows must be a multiple of 8");
-        units.push(Unit { kind, rg: g0..perm.len() / G });
+        units.push(Unit {
+            kind,
+            rg: g0..perm.len() / G,
+        });
     };
     if let Some(q0) = layout.qkv {
         for head in 0..heads {
-            push(UnitKind::Q(head), &mut (q0 + head * hd..q0 + (head + 1) * hd), &mut perm);
-            push(UnitKind::K(head), &mut (q0 + hidden + head * hd..q0 + hidden + (head + 1) * hd), &mut perm);
-            push(UnitKind::V(head), &mut (q0 + 2 * hidden + head * hd..q0 + 2 * hidden + (head + 1) * hd), &mut perm);
+            push(
+                UnitKind::Q(head),
+                &mut (q0 + head * hd..q0 + (head + 1) * hd),
+                &mut perm,
+            );
+            push(
+                UnitKind::K(head),
+                &mut (q0 + hidden + head * hd..q0 + hidden + (head + 1) * hd),
+                &mut perm,
+            );
+            push(
+                UnitKind::V(head),
+                &mut (q0 + 2 * hidden + head * hd..q0 + 2 * hidden + (head + 1) * hd),
+                &mut perm,
+            );
         }
     }
     let mut mlp_unit = 0;
@@ -280,7 +344,11 @@ fn unit_layout(rows: usize, chunk_out: usize, heads: usize, hd: usize, layout: &
         }
     }
     assert_eq!(perm.len(), rows, "layout must cover every row once");
-    UnitLayout { units, mlp_unit, perm }
+    UnitLayout {
+        units,
+        mlp_unit,
+        perm,
+    }
 }
 
 /// Run a unit linear over the `n` tokens of `x`, token groups `g_lo..` only (`g_lo = 0`: all of them;
@@ -288,13 +356,27 @@ fn unit_layout(rows: usize, chunk_out: usize, heads: usize, hd: usize, layout: &
 /// token) of that range, on whichever thread runs that step; `row` is that token's f32 output
 /// for the unit's rows; `scratch` has `scratch_len` elements.
 #[allow(clippy::too_many_arguments)]
-fn run_units<F>(pool: &Pool, clk: &StageClock, tune: &LinTune, x: &Packed, ul: &UnitLinear, n: usize, g_lo: usize, scratch_len: usize, sink: F)
-where
+fn run_units<F>(
+    pool: &Pool,
+    clk: &StageClock,
+    tune: &LinTune,
+    x: &Packed,
+    ul: &UnitLinear,
+    n: usize,
+    g_lo: usize,
+    scratch_len: usize,
+    sink: F,
+) where
     F: Fn(UnitKind, usize, &[f32], &mut [f32]) + Sync,
 {
-    let w = ul.w.as_ref().expect("CPU weights of a linear that is not on the accelerator");
+    let w =
+        ul.w.as_ref()
+            .expect("CPU weights of a linear that is not on the accelerator");
     let groups = n.div_ceil(G);
-    assert!(g_lo <= groups, "first token group {g_lo} beyond {groups} groups");
+    assert!(
+        g_lo <= groups,
+        "first token group {g_lo} beyond {groups} groups"
+    );
     let bg = tune.unit_batch.max(1);
     let t_run = Instant::now();
     let busy_max = AtomicU64::new(0);
@@ -312,7 +394,16 @@ where
                 block_buf.resize(ntok * nr, 0.0);
             }
             let block = &mut block_buf[..ntok * nr];
-            gemm(x, w, g0..g1, unit.rg.clone(), block, nr, Order::MulAdd, false);
+            gemm(
+                x,
+                w,
+                g0..g1,
+                unit.rg.clone(),
+                block,
+                nr,
+                Order::MulAdd,
+                false,
+            );
             for ti in 0..ntok {
                 let t = g0 * G + ti;
                 if t >= n {
@@ -325,7 +416,8 @@ where
         clk.units_busy.fetch_add(d, Relaxed);
         busy_max.fetch_max(d, Relaxed);
     });
-    clk.units_busy_max.fetch_add(busy_max.load(Relaxed), Relaxed);
+    clk.units_busy_max
+        .fetch_add(busy_max.load(Relaxed), Relaxed);
     clk_add(&clk.units, t_run);
 }
 
@@ -341,13 +433,26 @@ struct PlainLinear {
 /// f32 outputs `z` of columns `first column .. + z.len()` for one real token; every (row block, token) of
 /// that range is delivered exactly once.
 #[allow(clippy::too_many_arguments)]
-fn run_plain<F>(pool: &Pool, clk: &StageClock, tune: &LinTune, x: &Packed, pl: &PlainLinear, n: usize, g_lo: usize, sink: F)
-where
+fn run_plain<F>(
+    pool: &Pool,
+    clk: &StageClock,
+    tune: &LinTune,
+    x: &Packed,
+    pl: &PlainLinear,
+    n: usize,
+    g_lo: usize,
+    sink: F,
+) where
     F: Fn(usize, usize, &[f32]) + Sync,
 {
-    let w = pl.w.as_ref().expect("CPU weights of a linear that is not on the accelerator");
+    let w =
+        pl.w.as_ref()
+            .expect("CPU weights of a linear that is not on the accelerator");
     let groups = n.div_ceil(G);
-    assert!(g_lo <= groups, "first token group {g_lo} beyond {groups} groups");
+    assert!(
+        g_lo <= groups,
+        "first token group {g_lo} beyond {groups} groups"
+    );
     let rb = (tune.plain_rows / G).max(1);
     let bg = tune.plain_batch.max(1);
     let row_groups = w.groups();
@@ -379,7 +484,8 @@ where
         clk.plain_busy.fetch_add(d, Relaxed);
         busy_max.fetch_max(d, Relaxed);
     });
-    clk.plain_busy_max.fetch_add(busy_max.load(Relaxed), Relaxed);
+    clk.plain_busy_max
+        .fetch_add(busy_max.load(Relaxed), Relaxed);
     clk_add(&clk.plain, t_run);
 }
 
@@ -423,12 +529,16 @@ impl ActAudit {
 
 /// The audited f32 row of token `t`, when the activation kept one.
 fn audit_row(audit: Option<&ActAudit>, t: usize) -> Option<Vec<f32>> {
-    audit.filter(|_| t % AUDIT_TOKEN_STRIDE == 0).and_then(|a| a.row(t))
+    audit
+        .filter(|_| t % AUDIT_TOKEN_STRIDE == 0)
+        .and_then(|a| a.row(t))
 }
 
 impl ActBuf {
     fn cpu(&self) -> &Packed {
-        self.packed.as_ref().expect("a CPU linear needs its int8 activation")
+        self.packed
+            .as_ref()
+            .expect("a CPU linear needs its int8 activation")
     }
 
     /// Write f32 `row` of token `t` into columns `k0 ..` of whichever activation holds token `t`.
@@ -466,7 +576,14 @@ fn row_split(pct: u32, n: usize) -> Option<(usize, usize)> {
 }
 
 /// Offer a linear to the accelerator (None when there is none, or when the budget has no room).
-fn offer_npu(npu: &mut Option<NpuCtx>, name: &str, q8: &[u8], rows: usize, k: usize, perm: Option<&[u32]>) -> Result<Option<NpuLinear>, String> {
+fn offer_npu(
+    npu: &mut Option<NpuCtx>,
+    name: &str,
+    q8: &[u8],
+    rows: usize,
+    k: usize,
+    perm: Option<&[u32]>,
+) -> Result<Option<NpuLinear>, String> {
     match npu {
         Some(ctx) => ctx.add_linear(name, q8, rows, k, perm),
         None => Ok(None),
@@ -490,7 +607,16 @@ fn scan_values(vals: &[f32], nonfinite: &mut u64, max_abs: &mut f32) {
 }
 
 /// LayerNorm (no affine, eps 1e-6) + modulation of the `n` rows of `x` (`[n][h]`), into `dst`.
-fn norm_mod_quant(pool: &Pool, clk: &StageClock, x: &[f32], n: usize, h: usize, shift: &[f32], scale: &[f32], dst: &ActBuf) {
+fn norm_mod_quant(
+    pool: &Pool,
+    clk: &StageClock,
+    x: &[f32],
+    n: usize,
+    h: usize,
+    shift: &[f32],
+    scale: &[f32],
+    dst: &ActBuf,
+) {
     let t_run = Instant::now();
     let plan = even_split(n.div_ceil(G), pool.nthreads());
     pool.run(|ctx| {
@@ -524,7 +650,16 @@ fn layer_norm_modulate(x: &[f32], shift: &[f32], scale: &[f32], out: &mut [f32])
 }
 
 /// Quantise rows `src[(off + t) * width ..][..width]`, t in 0..n, into columns `k0..k0+width` of `dst`.
-fn quant_rows(pool: &Pool, clk: &StageClock, src: &[f32], off: usize, width: usize, n: usize, dst: &ActBuf, k0: usize) {
+fn quant_rows(
+    pool: &Pool,
+    clk: &StageClock,
+    src: &[f32],
+    off: usize,
+    width: usize,
+    n: usize,
+    dst: &ActBuf,
+    k0: usize,
+) {
     let t_run = Instant::now();
     let plan = even_split(n.div_ceil(G), pool.nthreads());
     pool.run(|ctx| {
@@ -565,11 +700,27 @@ impl AttnStore {
     fn new(heads: usize, hd: usize, n: usize, prec: AttnPrec) -> AttnStore {
         let n_pad = n.div_ceil(G) * G;
         let nsteps = n_pad / G;
-        let float = if prec.is_float() { Some(FloatStore::new(heads, hd, n, prec)) } else { None };
+        let float = if prec.is_float() {
+            Some(FloatStore::new(heads, hd, n, prec))
+        } else {
+            None
+        };
         let heads = (0..if float.is_some() { 0 } else { heads })
-            .map(|_| HeadStore { q: Packed::zeroed(n, hd, hd), k: Packed::zeroed(n, hd, hd), vt: AlignedBytes::zeroed((hd / G) * nsteps * 64), sv: AlignedBytes::zeroed(n_pad * 4) })
+            .map(|_| HeadStore {
+                q: Packed::zeroed(n, hd, hd),
+                k: Packed::zeroed(n, hd, hd),
+                vt: AlignedBytes::zeroed((hd / G) * nsteps * 64),
+                sv: AlignedBytes::zeroed(n_pad * 4),
+            })
             .collect();
-        AttnStore { heads, float, n, n_pad, hd, nsteps }
+        AttnStore {
+            heads,
+            float,
+            n,
+            n_pad,
+            hd,
+            nsteps,
+        }
     }
 
     /// RMS norm, scale, RoPE, then int8 for one (head, token) of q or k. For q the 1/sqrt(d) of
@@ -577,7 +728,16 @@ impl AttnStore {
     ///
     /// # Safety
     /// (head, q|k, token) must be written by one thread only, with no concurrent reader.
-    unsafe fn put_qk(&self, head: usize, t: usize, is_q: bool, row: &[f32], scale: &[f32], pe_t: &[f32], vals: &mut [f32]) {
+    unsafe fn put_qk(
+        &self,
+        head: usize,
+        t: usize,
+        is_q: bool,
+        row: &[f32],
+        scale: &[f32],
+        pe_t: &[f32],
+        vals: &mut [f32],
+    ) {
         let hd = self.hd;
         let mut ms = 0.0f32;
         for &v in row {
@@ -597,7 +757,11 @@ impl AttnStore {
             }
             return;
         }
-        let dst = if is_q { &self.heads[head].q } else { &self.heads[head].k };
+        let dst = if is_q {
+            &self.heads[head].q
+        } else {
+            &self.heads[head].k
+        };
         dst.quantize_unsync(t, 0, &vals[..hd]);
     }
 
@@ -615,7 +779,8 @@ impl AttnStore {
         let mut codes = [0i8; 512];
         if self.hd <= codes.len() {
             // scale = max|row| / 127, code = round_half_away(row / scale) clamped to +-127 (NEON, same rule as below)
-            *(hs.sv.as_ptr() as *mut f32).add(t) = sinks::quant_chunk(&row[..self.hd], &mut codes[..self.hd], 8);
+            *(hs.sv.as_ptr() as *mut f32).add(t) =
+                sinks::quant_chunk(&row[..self.hd], &mut codes[..self.hd], 8);
             for dg in 0..self.hd / G {
                 let dst = vt.add((dg * self.nsteps + t / G) * 64 + t % G);
                 for i in 0..G {
@@ -628,7 +793,11 @@ impl AttnStore {
         for &v in row {
             amax = amax.max(v.abs());
         }
-        let (scale, inv) = if amax > 0.0 && amax.is_finite() { (amax / 127.0, 127.0 / amax) } else { (0.0, 0.0) };
+        let (scale, inv) = if amax > 0.0 && amax.is_finite() {
+            (amax / 127.0, 127.0 / amax)
+        } else {
+            (0.0, 0.0)
+        };
         *(hs.sv.as_ptr() as *mut f32).add(t) = scale;
         for d in 0..self.hd {
             let code = (row[d] * inv).round().clamp(-127.0, 127.0) as i8;
@@ -667,7 +836,14 @@ fn attention(pool: &Pool, store: &AttnStore, key_chunk: usize, out: &mut [f32]) 
                 let mut c0 = 0;
                 while c0 < n_pad {
                     let kc = key_chunk.min(n_pad - c0);
-                    gemm_rows1(&hs.q, &hs.k, g, c0 / G..(c0 + kc) / G, &mut scores[..(G - 1) * kc_max + kc], kc_max);
+                    gemm_rows1(
+                        &hs.q,
+                        &hs.k,
+                        g,
+                        c0 / G..(c0 + kc) / G,
+                        &mut scores[..(G - 1) * kc_max + kc],
+                        kc_max,
+                    );
                     let mut sp = [0.0f32; G];
                     for qi in 0..G {
                         let s = &mut scores[qi * kc_max..qi * kc_max + kc];
@@ -679,7 +855,11 @@ fn attention(pool: &Pool, store: &AttnStore, key_chunk: usize, out: &mut [f32]) 
                         // SAFETY: s holds kc floats, kc is a multiple of 8.
                         let cmax = unsafe { raw::i8g_row_max(s.as_ptr(), kc) };
                         if cmax > m[qi] {
-                            let f = if m[qi] == f32::NEG_INFINITY { 0.0 } else { exp_fast(m[qi] - cmax) };
+                            let f = if m[qi] == f32::NEG_INFINITY {
+                                0.0
+                            } else {
+                                exp_fast(m[qi] - cmax)
+                            };
                             for v in &mut o[qi * hd..(qi + 1) * hd] {
                                 *v *= f;
                             }
@@ -688,7 +868,18 @@ fn attention(pool: &Pool, store: &AttnStore, key_chunk: usize, out: &mut [f32]) 
                         }
                         let (mut sum, mut scale) = (0.0f32, 0.0f32);
                         // SAFETY: s and sv[c0..] hold kc floats; pcodes holds kc/8 steps of 64 bytes; qi < 8.
-                        unsafe { raw::i8g_softmax_pack(s.as_mut_ptr(), kc, m[qi], sv.as_ptr().add(c0), pcodes.as_mut_ptr(), qi, &mut sum, &mut scale) };
+                        unsafe {
+                            raw::i8g_softmax_pack(
+                                s.as_mut_ptr(),
+                                kc,
+                                m[qi],
+                                sv.as_ptr().add(c0),
+                                pcodes.as_mut_ptr(),
+                                qi,
+                                &mut sum,
+                                &mut scale,
+                            )
+                        };
                         l[qi] += sum as f64;
                         sp[qi] = scale;
                     }
@@ -696,7 +887,17 @@ fn attention(pool: &Pool, store: &AttnStore, key_chunk: usize, out: &mut [f32]) 
                         // SAFETY: pcodes holds kc/8 steps; vt holds (hd/8) x nsteps steps and
                         // c0/8 + kc/8 <= nsteps; o is 8 x hd with stride hd.
                         unsafe {
-                            raw::i8g_utile8x8(pcodes.as_ptr(), (hs.vt.as_ptr() as *const i8).add((dg * nsteps + c0 / G) * 64), kc / G, 1, sp.as_ptr(), ones.as_ptr(), o.as_mut_ptr().add(dg * G), hd as isize, 1);
+                            raw::i8g_utile8x8(
+                                pcodes.as_ptr(),
+                                (hs.vt.as_ptr() as *const i8).add((dg * nsteps + c0 / G) * 64),
+                                kc / G,
+                                1,
+                                sp.as_ptr(),
+                                ones.as_ptr(),
+                                o.as_mut_ptr().add(dg * G),
+                                hd as isize,
+                                1,
+                            );
                         }
                     }
                     c0 += kc;
@@ -708,7 +909,9 @@ fn attention(pool: &Pool, store: &AttnStore, key_chunk: usize, out: &mut [f32]) 
                     }
                     let inv = (1.0 / l[qi]) as f32;
                     // SAFETY: (head, query group) is delivered exactly once: these columns of row t are ours.
-                    let dst = unsafe { std::slice::from_raw_parts_mut(out_ptr.get().add(t * h + head * hd), hd) };
+                    let dst = unsafe {
+                        std::slice::from_raw_parts_mut(out_ptr.get().add(t * h + head * hd), hd)
+                    };
                     for d in 0..hd {
                         dst[d] = o[qi * hd + d] * inv;
                     }
@@ -733,7 +936,9 @@ fn attention_float(pool: &Pool, fs: &FloatStore, hd: usize, key_chunk: usize, ou
             for g in qb * QB..((qb + 1) * QB).min(groups) {
                 fs.attend(head, g, key_chunk, &mut sc, |t, row| {
                     // SAFETY: (head, query group) is delivered exactly once: these columns of row t are ours.
-                    let dst = unsafe { std::slice::from_raw_parts_mut(out_ptr.get().add(t * h + head * hd), hd) };
+                    let dst = unsafe {
+                        std::slice::from_raw_parts_mut(out_ptr.get().add(t * h + head * hd), hd)
+                    };
                     dst.copy_from_slice(row);
                 });
             }
@@ -776,7 +981,9 @@ impl Mat {
     }
     fn apply(&self, x: &[f32]) -> Vec<f32> {
         assert_eq!(x.len(), self.k);
-        (0..self.rows).map(|r| dot(&self.w[r * self.k..(r + 1) * self.k], x)).collect()
+        (0..self.rows)
+            .map(|r| dot(&self.w[r * self.k..(r + 1) * self.k], x))
+            .collect()
     }
     /// `[n][k] -> [n][rows]`, parallel over tokens.
     fn apply_tokens(&self, pool: &Pool, x: &[f32], n: usize) -> Vec<f32> {
@@ -788,7 +995,9 @@ impl Mat {
             for t in plan[ctx.tid].clone() {
                 let xt = &x[t * self.k..(t + 1) * self.k];
                 // SAFETY: row t of out is written by one thread.
-                let dst = unsafe { std::slice::from_raw_parts_mut(ptr.get().add(t * self.rows), self.rows) };
+                let dst = unsafe {
+                    std::slice::from_raw_parts_mut(ptr.get().add(t * self.rows), self.rows)
+                };
                 for r in 0..self.rows {
                     dst[r] = dot(&self.w[r * self.k..(r + 1) * self.k], xt);
                 }
@@ -915,17 +1124,30 @@ fn count_blocks(src: &dyn WeightSource, prefix: &str, suffix: &str) -> usize {
 
 impl<'p> FastModel<'p> {
     /// Map a klein GGUF and pack every block (int8 codes + chunk scales stay resident).
-    pub fn open(gguf_path: &Path, pool: &'p Pool, cfg: FastConfig) -> Result<FastModel<'p>, String> {
+    pub fn open(
+        gguf_path: &Path,
+        pool: &'p Pool,
+        cfg: FastConfig,
+    ) -> Result<FastModel<'p>, String> {
         FastModel::open_npu(gguf_path, pool, cfg, None)
     }
 
     /// As [`FastModel::open`], with an optional accelerator (see [`FastModel::from_source_npu`]).
-    pub fn open_npu(gguf_path: &Path, pool: &'p Pool, cfg: FastConfig, npu: Option<(Box<dyn oxn::Backend>, NpuConfig)>) -> Result<FastModel<'p>, String> {
+    pub fn open_npu(
+        gguf_path: &Path,
+        pool: &'p Pool,
+        cfg: FastConfig,
+        npu: Option<(Box<dyn oxn::Backend>, NpuConfig)>,
+    ) -> Result<FastModel<'p>, String> {
         let g = gguf::Gguf::open(gguf_path).map_err(|e| e.0)?;
         FastModel::from_source_npu(&GgufSource(&g), pool, cfg, npu)
     }
 
-    pub fn from_source(src: &dyn WeightSource, pool: &'p Pool, cfg: FastConfig) -> Result<FastModel<'p>, String> {
+    pub fn from_source(
+        src: &dyn WeightSource,
+        pool: &'p Pool,
+        cfg: FastConfig,
+    ) -> Result<FastModel<'p>, String> {
         FastModel::from_source_npu(src, pool, cfg, None)
     }
 
@@ -933,7 +1155,12 @@ impl<'p> FastModel<'p> {
     /// accelerator in model order (per double block: img qkv, img proj, img mlp.0, img mlp.2, txt ...;
     /// then per single block: linear1, linear2). A linear that fits the budget runs on the accelerator
     /// and gets no CPU copy; every other linear is packed for the CPU as before.
-    pub fn from_source_npu(src: &dyn WeightSource, pool: &'p Pool, cfg: FastConfig, npu: Option<(Box<dyn oxn::Backend>, NpuConfig)>) -> Result<FastModel<'p>, String> {
+    pub fn from_source_npu(
+        src: &dyn WeightSource,
+        pool: &'p Pool,
+        cfg: FastConfig,
+        npu: Option<(Box<dyn oxn::Backend>, NpuConfig)>,
+    ) -> Result<FastModel<'p>, String> {
         let mut npu: Option<NpuCtx> = match npu {
             Some((backend, ncfg)) => Some(NpuCtx::new(backend, ncfg)?.with_pack_cpus(pool.cpus())),
             None => None,
@@ -954,11 +1181,22 @@ impl<'p> FastModel<'p> {
             (hidden, hd, mlp)
         };
         if hd == 0 || hidden % hd != 0 {
-            return Err(format!("hidden {hidden} is not a multiple of head_dim {hd}"));
+            return Err(format!(
+                "hidden {hidden} is not a multiple of head_dim {hd}"
+            ));
         }
         let heads = hidden / hd;
-        if hd % 8 != 0 || hidden % cfg.chunk1 != 0 || hidden % cfg.chunk2 != 0 || mlp % cfg.chunk2 != 0 || cfg.chunk1 % 32 != 0 || cfg.chunk2 % 32 != 0 {
-            return Err(format!("chunk sizes {}/{} do not fit hidden {hidden}, mlp {mlp}, head_dim {hd}", cfg.chunk1, cfg.chunk2));
+        if hd % 8 != 0
+            || hidden % cfg.chunk1 != 0
+            || hidden % cfg.chunk2 != 0
+            || mlp % cfg.chunk2 != 0
+            || cfg.chunk1 % 32 != 0
+            || cfg.chunk2 % 32 != 0
+        {
+            return Err(format!(
+                "chunk sizes {}/{} do not fit hidden {hidden}, mlp {mlp}, head_dim {hd}",
+                cfg.chunk1, cfg.chunk2
+            ));
         }
         let scale = |name: String| -> Result<Vec<f32>, String> {
             let (v, _, k) = src.f32(&name)?;
@@ -967,7 +1205,10 @@ impl<'p> FastModel<'p> {
             }
             Ok(v)
         };
-        let unit = |name: String, layout: Layout, npu: &mut Option<NpuCtx>| -> Result<UnitLinear, String> {
+        let unit = |name: String,
+                    layout: Layout,
+                    npu: &mut Option<NpuCtx>|
+         -> Result<UnitLinear, String> {
             let (b, rows, k) = src.q8(&name)?;
             if k != hidden {
                 return Err(format!("{name}: in features {k}, expected {hidden}"));
@@ -976,19 +1217,38 @@ impl<'p> FastModel<'p> {
             let npu_lin = offer_npu(npu, &name, b, rows, k, Some(&lay.perm))?;
             // the CPU copy is built for a linear that stays on the CPU, and for an accelerator linear when rows are split
             let keep_cpu = matches!(npu, Some(c) if c.cpu_rows_pct() > 0);
-            let w = if npu_lin.is_some() && !keep_cpu { None } else { Some(Packed::from_q8_0(b, rows, k, cfg.chunk1, Some(&lay.perm))) };
-            Ok(UnitLinear { w, units: lay.units, mlp_unit: lay.mlp_unit, npu: npu_lin })
+            let w = if npu_lin.is_some() && !keep_cpu {
+                None
+            } else {
+                Some(Packed::from_q8_0(b, rows, k, cfg.chunk1, Some(&lay.perm)))
+            };
+            Ok(UnitLinear {
+                w,
+                units: lay.units,
+                mlp_unit: lay.mlp_unit,
+                npu: npu_lin,
+            })
         };
-        let plain = |name: String, want_rows: usize, want_k: usize, npu: &mut Option<NpuCtx>| -> Result<PlainLinear, String> {
+        let plain = |name: String,
+                     want_rows: usize,
+                     want_k: usize,
+                     npu: &mut Option<NpuCtx>|
+         -> Result<PlainLinear, String> {
             let (b, rows, k) = src.q8(&name)?;
             if rows != want_rows || k != want_k {
-                return Err(format!("{name}: shape [{rows}][{k}], expected [{want_rows}][{want_k}]"));
+                return Err(format!(
+                    "{name}: shape [{rows}][{k}], expected [{want_rows}][{want_k}]"
+                ));
             }
             assert!(rows % G == 0);
             let npu_lin = offer_npu(npu, &name, b, rows, k, None)?;
             // the CPU copy is built for a linear that stays on the CPU, and for an accelerator linear when rows are split
             let keep_cpu = matches!(npu, Some(c) if c.cpu_rows_pct() > 0);
-            let w = if npu_lin.is_some() && !keep_cpu { None } else { Some(Packed::from_q8_0(b, rows, k, cfg.chunk2, None)) };
+            let w = if npu_lin.is_some() && !keep_cpu {
+                None
+            } else {
+                Some(Packed::from_q8_0(b, rows, k, cfg.chunk2, None))
+            };
             Ok(PlainLinear { w, npu: npu_lin })
         };
         let n_double = count_blocks(src, "double_blocks", "img_attn.qkv.weight");
@@ -998,22 +1258,51 @@ impl<'p> FastModel<'p> {
             let stream = |s: &str, npu: &mut Option<NpuCtx>| -> Result<Stream, String> {
                 let p = format!("double_blocks.{i}.{s}");
                 Ok(Stream {
-                    qkv: unit(format!("{p}_attn.qkv.weight"), Layout { qkv: Some(0), mlp: None }, &mut *npu)?,
+                    qkv: unit(
+                        format!("{p}_attn.qkv.weight"),
+                        Layout {
+                            qkv: Some(0),
+                            mlp: None,
+                        },
+                        &mut *npu,
+                    )?,
                     proj: plain(format!("{p}_attn.proj.weight"), hidden, hidden, &mut *npu)?,
-                    mlp0: unit(format!("{p}_mlp.0.weight"), Layout { qkv: None, mlp: Some((0, mlp, mlp)) }, &mut *npu)?,
+                    mlp0: unit(
+                        format!("{p}_mlp.0.weight"),
+                        Layout {
+                            qkv: None,
+                            mlp: Some((0, mlp, mlp)),
+                        },
+                        &mut *npu,
+                    )?,
                     mlp2: plain(format!("{p}_mlp.2.weight"), hidden, mlp, &mut *npu)?,
                     q_scale: scale(format!("{p}_attn.norm.query_norm.scale"))?,
                     k_scale: scale(format!("{p}_attn.norm.key_norm.scale"))?,
                 })
             };
-            doubles.push(Double { img: stream("img", &mut npu)?, txt: stream("txt", &mut npu)? });
+            doubles.push(Double {
+                img: stream("img", &mut npu)?,
+                txt: stream("txt", &mut npu)?,
+            });
         }
         let mut singles = Vec::with_capacity(n_single);
         for i in 0..n_single {
             let p = format!("single_blocks.{i}");
             singles.push(Single {
-                lin1: unit(format!("{p}.linear1.weight"), Layout { qkv: Some(0), mlp: Some((3 * hidden, 3 * hidden + mlp, mlp)) }, &mut npu)?,
-                lin2: plain(format!("{p}.linear2.weight"), hidden, hidden + mlp, &mut npu)?,
+                lin1: unit(
+                    format!("{p}.linear1.weight"),
+                    Layout {
+                        qkv: Some(0),
+                        mlp: Some((3 * hidden, 3 * hidden + mlp, mlp)),
+                    },
+                    &mut npu,
+                )?,
+                lin2: plain(
+                    format!("{p}.linear2.weight"),
+                    hidden,
+                    hidden + mlp,
+                    &mut npu,
+                )?,
                 q_scale: scale(format!("{p}.norm.query_norm.scale"))?,
                 k_scale: scale(format!("{p}.norm.key_norm.scale"))?,
             });
@@ -1058,7 +1347,10 @@ impl<'p> FastModel<'p> {
             ("final_layer.linear", &m.final_lin, m.final_lin.rows, h),
         ] {
             if mat.rows != rows || mat.k != k {
-                return Err(format!("{name}: shape [{}][{}], expected [{rows}][{k}]", mat.rows, mat.k));
+                return Err(format!(
+                    "{name}: shape [{}][{}], expected [{rows}][{k}]",
+                    mat.rows, mat.k
+                ));
             }
         }
         Ok(m)
@@ -1070,22 +1362,51 @@ impl<'p> FastModel<'p> {
 
     /// Activation of a linear whose consumer is `lin_npu` (accelerator tiles in buffer `id`, or the
     /// CPU's int8 `Packed` with scale chunk `chunk`). Panics on an accelerator error (no error channel in `forward`).
-    fn act_for(&self, lin_npu: Option<&NpuLinear>, id: usize, n: usize, k: usize, chunk: usize) -> ActBuf {
+    fn act_for(
+        &self,
+        lin_npu: Option<&NpuLinear>,
+        id: usize,
+        n: usize,
+        k: usize,
+        chunk: usize,
+    ) -> ActBuf {
         match (lin_npu, &self.npu) {
             (Some(nl), Some(ctx)) => {
-                let audit = ctx.audit_on().then(|| ActAudit { k, rows: Mutex::new(HashMap::new()) });
+                let audit = ctx.audit_on().then(|| ActAudit {
+                    k,
+                    rows: Mutex::new(HashMap::new()),
+                });
                 match self.split_of(lin_npu, n) {
                     Some((n_npu, _)) => {
-                        let a = ctx.act(nl.session, id, n_npu, k, nl.kc).unwrap_or_else(|e| panic!("npu activation: {e}"));
-                        ActBuf { packed: Some(Packed::zeroed(n, k, chunk)), npu: Some(a), n_npu, audit }
+                        let a = ctx
+                            .act(nl.session, id, n_npu, k, nl.kc)
+                            .unwrap_or_else(|e| panic!("npu activation: {e}"));
+                        ActBuf {
+                            packed: Some(Packed::zeroed(n, k, chunk)),
+                            npu: Some(a),
+                            n_npu,
+                            audit,
+                        }
                     }
                     None => {
-                        let a = ctx.act(nl.session, id, n, k, nl.kc).unwrap_or_else(|e| panic!("npu activation: {e}"));
-                        ActBuf { packed: None, npu: Some(a), n_npu: n, audit }
+                        let a = ctx
+                            .act(nl.session, id, n, k, nl.kc)
+                            .unwrap_or_else(|e| panic!("npu activation: {e}"));
+                        ActBuf {
+                            packed: None,
+                            npu: Some(a),
+                            n_npu: n,
+                            audit,
+                        }
                     }
                 }
             }
-            _ => ActBuf { packed: Some(Packed::zeroed(n, k, chunk)), npu: None, n_npu: 0, audit: None },
+            _ => ActBuf {
+                packed: Some(Packed::zeroed(n, k, chunk)),
+                npu: None,
+                n_npu: 0,
+                audit: None,
+            },
         }
     }
 
@@ -1107,8 +1428,13 @@ impl<'p> FastModel<'p> {
             let t = Instant::now();
             cpu_phase();
             let cpu_s = t.elapsed().as_secs_f64();
-            let out = helper.join().unwrap_or_else(|_| panic!("npu helper thread panicked"));
-            (out.unwrap_or_else(|e| panic!("npu linear failed: {e}")), cpu_s)
+            let out = helper
+                .join()
+                .unwrap_or_else(|_| panic!("npu helper thread panicked"));
+            (
+                out.unwrap_or_else(|e| panic!("npu linear failed: {e}")),
+                cpu_s,
+            )
         })
     }
 
@@ -1121,8 +1447,12 @@ impl<'p> FastModel<'p> {
     /// Run the accelerator for `nl` on activation `act`. Panics on error (the forward has no error channel).
     fn npu_run(&self, nl: &NpuLinear, act: &ActBuf) -> NpuOut {
         let ctx = self.npu.as_ref().expect("npu context");
-        let x = act.npu.as_ref().expect("an accelerator linear needs its accelerator activation");
-        ctx.run(nl, x).unwrap_or_else(|e| panic!("npu linear failed: {e}"))
+        let x = act
+            .npu
+            .as_ref()
+            .expect("an accelerator linear needs its accelerator activation");
+        ctx.run(nl, x)
+            .unwrap_or_else(|e| panic!("npu linear failed: {e}"))
     }
 
     /// `run_units` for either path. On the accelerator: one run, then the outputs are delivered to
@@ -1132,7 +1462,17 @@ impl<'p> FastModel<'p> {
         F: Fn(UnitKind, usize, &[f32], &mut [f32]) + Sync,
     {
         let Some(nl) = &ul.npu else {
-            return run_units(self.pool, &self.clk, &self.tune, act.cpu(), ul, n, 0, scratch_len, sink);
+            return run_units(
+                self.pool,
+                &self.clk,
+                &self.tune,
+                act.cpu(),
+                ul,
+                n,
+                0,
+                scratch_len,
+                sink,
+            );
         };
         let t_all = Instant::now();
         match self.split_of(ul.npu.as_ref(), n) {
@@ -1145,10 +1485,27 @@ impl<'p> FastModel<'p> {
             Some((n_npu, _)) => {
                 // the CPU phase (token groups n_npu / G ..) runs while the accelerator does tokens ..n_npu;
                 // run_units times its own phase, so only the rest of the call is added here
-                let x = act.npu.as_ref().expect("a split linear has an accelerator activation");
-                let (out, cpu_s) = self.overlapped(nl, x, || run_units(self.pool, &self.clk, &self.tune, act.cpu(), ul, n, n_npu / G, scratch_len, &sink));
+                let x = act
+                    .npu
+                    .as_ref()
+                    .expect("a split linear has an accelerator activation");
+                let (out, cpu_s) = self.overlapped(nl, x, || {
+                    run_units(
+                        self.pool,
+                        &self.clk,
+                        &self.tune,
+                        act.cpu(),
+                        ul,
+                        n,
+                        n_npu / G,
+                        scratch_len,
+                        &sink,
+                    )
+                });
                 self.deliver_units(ul, nl, out, n_npu, scratch_len, act.audit.as_ref(), &sink);
-                let rest = t_all.elapsed().saturating_sub(Duration::from_secs_f64(cpu_s));
+                let rest = t_all
+                    .elapsed()
+                    .saturating_sub(Duration::from_secs_f64(cpu_s));
                 self.clk.units.fetch_add(rest.as_nanos() as u64, Relaxed);
                 self.note_rows(n_npu, n - n_npu, cpu_s);
             }
@@ -1172,10 +1529,26 @@ impl<'p> FastModel<'p> {
                 self.note_rows(n, 0, 0.0);
             }
             Some((n_npu, _)) => {
-                let x = act.npu.as_ref().expect("a split linear has an accelerator activation");
-                let (out, cpu_s) = self.overlapped(nl, x, || run_plain(self.pool, &self.clk, &self.tune, act.cpu(), pl, n, n_npu / G, &sink));
+                let x = act
+                    .npu
+                    .as_ref()
+                    .expect("a split linear has an accelerator activation");
+                let (out, cpu_s) = self.overlapped(nl, x, || {
+                    run_plain(
+                        self.pool,
+                        &self.clk,
+                        &self.tune,
+                        act.cpu(),
+                        pl,
+                        n,
+                        n_npu / G,
+                        &sink,
+                    )
+                });
                 self.deliver_plain(out, nl, n_npu, act.audit.as_ref(), &sink);
-                let rest = t_all.elapsed().saturating_sub(Duration::from_secs_f64(cpu_s));
+                let rest = t_all
+                    .elapsed()
+                    .saturating_sub(Duration::from_secs_f64(cpu_s));
                 self.clk.plain.fetch_add(rest.as_nanos() as u64, Relaxed);
                 self.note_rows(n_npu, n - n_npu, cpu_s);
             }
@@ -1187,8 +1560,16 @@ impl<'p> FastModel<'p> {
     /// tile with one `tile_rows` call and then hands out the rows token by token. With the audit on, the
     /// audited tokens (`audit`) are checked against the exact product on every `AUDIT_OUTPUT_STRIDE`-th output.
     #[allow(clippy::too_many_arguments)]
-    fn deliver_units<F>(&self, ul: &UnitLinear, nl: &NpuLinear, out: NpuOut, n: usize, scratch_len: usize, audit: Option<&ActAudit>, sink: F)
-    where
+    fn deliver_units<F>(
+        &self,
+        ul: &UnitLinear,
+        nl: &NpuLinear,
+        out: NpuOut,
+        n: usize,
+        scratch_len: usize,
+        audit: Option<&ActAudit>,
+        sink: F,
+    ) where
         F: Fn(UnitKind, usize, &[f32], &mut [f32]) + Sync,
     {
         #[cfg(test)]
@@ -1209,7 +1590,8 @@ impl<'p> FastModel<'p> {
             for rt in split[pc.tid].clone() {
                 // real tokens of this row tile (the rest is padding and is not delivered)
                 let rows = (n - TILE * rt).min(TILE);
-                let xrows: Vec<Option<Vec<f32>>> = (0..rows).map(|r| audit_row(audit, TILE * rt + r)).collect();
+                let xrows: Vec<Option<Vec<f32>>> =
+                    (0..rows).map(|r| audit_row(audit, TILE * rt + r)).collect();
                 for unit in &ul.units {
                     let nr = unit.rg.len() * G;
                     let base = unit.rg.start * G;
@@ -1223,7 +1605,10 @@ impl<'p> FastModel<'p> {
                             scan_values(row, &mut nonfinite, &mut max_abs);
                         }
                         if let Some(x) = &xrows[r] {
-                            let ns: Vec<usize> = (0..nr).step_by(AUDIT_OUTPUT_STRIDE).map(|i| base + i).collect();
+                            let ns: Vec<usize> = (0..nr)
+                                .step_by(AUDIT_OUTPUT_STRIDE)
+                                .map(|i| base + i)
+                                .collect();
                             ctx.audit_rows(nl, x, &|m: usize| row[m - base], &ns);
                         }
                         sink(unit.kind, t, row, &mut vals);
@@ -1237,7 +1622,9 @@ impl<'p> FastModel<'p> {
             self.clk.units_busy.fetch_add(d, Relaxed);
             busy_max.fetch_max(d, Relaxed);
         });
-        self.clk.units_busy_max.fetch_add(busy_max.load(Relaxed), Relaxed);
+        self.clk
+            .units_busy_max
+            .fetch_add(busy_max.load(Relaxed), Relaxed);
         ctx.add_unpack(t_run.elapsed().as_secs_f64());
     }
 
@@ -1245,8 +1632,14 @@ impl<'p> FastModel<'p> {
     /// `(token, first column, z)` (audit as in [`FastModel::deliver_units`]). Row tiles are split over the threads
     /// as there; a tile uses a whole row up to 8192 columns, then pieces of 2048 columns
     /// (at most 1 MiB of f32 scratch per tile).
-    fn deliver_plain<F>(&self, out: NpuOut, nl: &NpuLinear, n: usize, audit: Option<&ActAudit>, sink: F)
-    where
+    fn deliver_plain<F>(
+        &self,
+        out: NpuOut,
+        nl: &NpuLinear,
+        n: usize,
+        audit: Option<&ActAudit>,
+        sink: F,
+    ) where
         F: Fn(usize, usize, &[f32]) + Sync,
     {
         #[cfg(test)]
@@ -1255,7 +1648,11 @@ impl<'p> FastModel<'p> {
         }
         let ctx = self.npu.as_ref().expect("npu context");
         let o = out.lay.o;
-        let pw = if TILE * o * 4 <= 1 << 20 { o } else { 2048.min(o) };
+        let pw = if TILE * o * 4 <= 1 << 20 {
+            o
+        } else {
+            2048.min(o)
+        };
         let split = even_split(n.div_ceil(TILE), self.pool.nthreads());
         let check = self.npu_check;
         let t_run = Instant::now();
@@ -1268,7 +1665,8 @@ impl<'p> FastModel<'p> {
             let (mut nonfinite, mut max_abs) = (0u64, 0.0f32);
             for rt in split[pc.tid].clone() {
                 let rows = (n - TILE * rt).min(TILE);
-                let xrows: Vec<Option<Vec<f32>>> = (0..rows).map(|r| audit_row(audit, TILE * rt + r)).collect();
+                let xrows: Vec<Option<Vec<f32>>> =
+                    (0..rows).map(|r| audit_row(audit, TILE * rt + r)).collect();
                 for c0 in (0..o).step_by(pw) {
                     let len = pw.min(o - c0);
                     let blk = &mut block[..TILE * len];
@@ -1300,14 +1698,24 @@ impl<'p> FastModel<'p> {
             self.clk.plain_busy.fetch_add(d, Relaxed);
             busy_max.fetch_max(d, Relaxed);
         });
-        self.clk.plain_busy_max.fetch_add(busy_max.load(Relaxed), Relaxed);
+        self.clk
+            .plain_busy_max
+            .fetch_add(busy_max.load(Relaxed), Relaxed);
         ctx.add_unpack(t_run.elapsed().as_secs_f64());
     }
 
     // Frozen 37da7f0 row-wise oracle; compiled only for delivery regression tests.
     #[cfg(test)]
-    fn deliver_units_legacy<F>(&self, ul: &UnitLinear, nl: &NpuLinear, out: NpuOut, n: usize, scratch_len: usize, audit: Option<&ActAudit>, sink: F)
-    where
+    fn deliver_units_legacy<F>(
+        &self,
+        ul: &UnitLinear,
+        nl: &NpuLinear,
+        out: NpuOut,
+        n: usize,
+        scratch_len: usize,
+        audit: Option<&ActAudit>,
+        sink: F,
+    ) where
         F: Fn(UnitKind, usize, &[f32], &mut [f32]) + Sync,
     {
         let ctx = self.npu.as_ref().expect("npu context");
@@ -1334,7 +1742,10 @@ impl<'p> FastModel<'p> {
                         scan_values(r, &mut nonfinite, &mut max_abs);
                     }
                     if let Some(x) = &xrow {
-                        let ns: Vec<usize> = (0..nr).step_by(AUDIT_OUTPUT_STRIDE).map(|i| base + i).collect();
+                        let ns: Vec<usize> = (0..nr)
+                            .step_by(AUDIT_OUTPUT_STRIDE)
+                            .map(|i| base + i)
+                            .collect();
                         ctx.audit_rows(nl, x, &|m: usize| r[m - base], &ns);
                     }
                     sink(unit.kind, t, r, &mut vals);
@@ -1347,14 +1758,22 @@ impl<'p> FastModel<'p> {
             self.clk.units_busy.fetch_add(d, Relaxed);
             busy_max.fetch_max(d, Relaxed);
         });
-        self.clk.units_busy_max.fetch_add(busy_max.load(Relaxed), Relaxed);
+        self.clk
+            .units_busy_max
+            .fetch_add(busy_max.load(Relaxed), Relaxed);
         ctx.add_unpack(t_run.elapsed().as_secs_f64());
     }
 
     // Frozen 37da7f0 row-wise oracle; compiled only for delivery regression tests.
     #[cfg(test)]
-    fn deliver_plain_legacy<F>(&self, out: NpuOut, nl: &NpuLinear, n: usize, audit: Option<&ActAudit>, sink: F)
-    where
+    fn deliver_plain_legacy<F>(
+        &self,
+        out: NpuOut,
+        nl: &NpuLinear,
+        n: usize,
+        audit: Option<&ActAudit>,
+        sink: F,
+    ) where
         F: Fn(usize, usize, &[f32]) + Sync,
     {
         let ctx = self.npu.as_ref().expect("npu context");
@@ -1386,13 +1805,25 @@ impl<'p> FastModel<'p> {
             self.clk.plain_busy.fetch_add(d, Relaxed);
             busy_max.fetch_max(d, Relaxed);
         });
-        self.clk.plain_busy_max.fetch_add(busy_max.load(Relaxed), Relaxed);
+        self.clk
+            .plain_busy_max
+            .fetch_add(busy_max.load(Relaxed), Relaxed);
         ctx.add_unpack(t_run.elapsed().as_secs_f64());
     }
 
     /// One stream's qkv into the joint attention store at token offset `off`.
     #[allow(clippy::too_many_arguments)]
-    fn stream_qkv(&self, st: &Stream, x: &[f32], n_s: usize, off: usize, shift: &[f32], scale: &[f32], pe: &[f32], store: &AttnStore) {
+    fn stream_qkv(
+        &self,
+        st: &Stream,
+        x: &[f32],
+        n_s: usize,
+        off: usize,
+        shift: &[f32],
+        scale: &[f32],
+        pe: &[f32],
+        store: &AttnStore,
+    ) {
         let (h, hd) = (self.hidden, self.hd);
         let x1 = self.act_for(st.qkv.npu.as_ref(), 0, n_s, h, self.cfg.chunk1);
         norm_mod_quant(self.pool, &self.clk, x, n_s, h, shift, scale, &x1);
@@ -1402,8 +1833,24 @@ impl<'p> FastModel<'p> {
             // SAFETY: every (unit, token) is delivered exactly once (`Share`), and units write disjoint cells.
             unsafe {
                 match kind {
-                    UnitKind::Q(head) => store.put_qk(head, tt, true, row, &st.q_scale, &pe[tt * pe_w..(tt + 1) * pe_w], vals),
-                    UnitKind::K(head) => store.put_qk(head, tt, false, row, &st.k_scale, &pe[tt * pe_w..(tt + 1) * pe_w], vals),
+                    UnitKind::Q(head) => store.put_qk(
+                        head,
+                        tt,
+                        true,
+                        row,
+                        &st.q_scale,
+                        &pe[tt * pe_w..(tt + 1) * pe_w],
+                        vals,
+                    ),
+                    UnitKind::K(head) => store.put_qk(
+                        head,
+                        tt,
+                        false,
+                        row,
+                        &st.k_scale,
+                        &pe[tt * pe_w..(tt + 1) * pe_w],
+                        vals,
+                    ),
                     UnitKind::V(head) => store.put_v(head, tt, row),
                     UnitKind::Mlp(_) => unreachable!("qkv linear has no MLP units"),
                 }
@@ -1412,7 +1859,14 @@ impl<'p> FastModel<'p> {
     }
 
     /// `x += gate * W x_q` for a plain linear, in place on the residual stream `x` (`[n][h]`).
-    fn plain_residual(&self, pl: &PlainLinear, xq: &ActBuf, n_s: usize, gate: &[f32], x: &mut [f32]) {
+    fn plain_residual(
+        &self,
+        pl: &PlainLinear,
+        xq: &ActBuf,
+        n_s: usize,
+        gate: &[f32],
+        x: &mut [f32],
+    ) {
         let h = self.hidden;
         let ptr = SyncPtr(x.as_mut_ptr());
         self.run_plain_any(pl, xq, n_s, |t, c0, z| {
@@ -1426,9 +1880,22 @@ impl<'p> FastModel<'p> {
 
     /// Second half of a double-block stream: proj of the attention rows, then the gated MLP.
     #[allow(clippy::too_many_arguments)]
-    fn stream_post(&self, st: &Stream, x: &mut [f32], n_s: usize, off: usize, attn: &[f32], m: &[f32]) {
+    fn stream_post(
+        &self,
+        st: &Stream,
+        x: &mut [f32],
+        n_s: usize,
+        off: usize,
+        attn: &[f32],
+        m: &[f32],
+    ) {
         let (h, mlp) = (self.hidden, self.mlp);
-        let (gate1, shift2, scale2, gate2) = (&m[2 * h..3 * h], &m[3 * h..4 * h], &m[4 * h..5 * h], &m[5 * h..6 * h]);
+        let (gate1, shift2, scale2, gate2) = (
+            &m[2 * h..3 * h],
+            &m[3 * h..4 * h],
+            &m[4 * h..5 * h],
+            &m[5 * h..6 * h],
+        );
         // buffer 0 holds proj's input, then mlp.0's (proj has finished); buffer 1 holds mlp.2's input
         let xa = self.act_for(st.proj.npu.as_ref(), 0, n_s, h, self.cfg.chunk2);
         quant_rows(self.pool, &self.clk, attn, off, h, n_s, &xa, 0);
@@ -1447,7 +1914,15 @@ impl<'p> FastModel<'p> {
         self.plain_residual(&st.mlp2, &xh, n_s, gate2, x);
     }
 
-    fn single_block(&self, sb: &Single, x: &mut [f32], n: usize, pe: &[f32], m: &[f32], attn_secs: &mut f64) {
+    fn single_block(
+        &self,
+        sb: &Single,
+        x: &mut [f32],
+        n: usize,
+        pe: &[f32],
+        m: &[f32],
+        attn_secs: &mut f64,
+    ) {
         let (h, hd, mlp) = (self.hidden, self.hd, self.mlp);
         let (shift, scale, gate) = (&m[..h], &m[h..2 * h], &m[2 * h..3 * h]);
         let t_al = Instant::now();
@@ -1465,8 +1940,24 @@ impl<'p> FastModel<'p> {
             // covers whole chunks of columns h + u*U.. of token t.
             unsafe {
                 match kind {
-                    UnitKind::Q(head) => store.put_qk(head, t, true, row, &sb.q_scale, &pe[t * pe_w..(t + 1) * pe_w], vals),
-                    UnitKind::K(head) => store.put_qk(head, t, false, row, &sb.k_scale, &pe[t * pe_w..(t + 1) * pe_w], vals),
+                    UnitKind::Q(head) => store.put_qk(
+                        head,
+                        t,
+                        true,
+                        row,
+                        &sb.q_scale,
+                        &pe[t * pe_w..(t + 1) * pe_w],
+                        vals,
+                    ),
+                    UnitKind::K(head) => store.put_qk(
+                        head,
+                        t,
+                        false,
+                        row,
+                        &sb.k_scale,
+                        &pe[t * pe_w..(t + 1) * pe_w],
+                        vals,
+                    ),
                     UnitKind::V(head) => store.put_v(head, t, row),
                     UnitKind::Mlp(u) => {
                         sinks::silu_gate(&row[..2 * u_len], &mut vals[..u_len]);
@@ -1528,8 +2019,26 @@ impl DitBackend for FastModel<'_> {
         let t0 = Instant::now();
         for db in &self.doubles {
             let store = AttnStore::new(self.heads, hd, n, self.cfg.attn_prec);
-            self.stream_qkv(&db.txt, &txt, n_txt, 0, &m_txt[..h], &m_txt[h..2 * h], &input.pe, &store);
-            self.stream_qkv(&db.img, &img, n_img, n_txt, &m_img[..h], &m_img[h..2 * h], &input.pe, &store);
+            self.stream_qkv(
+                &db.txt,
+                &txt,
+                n_txt,
+                0,
+                &m_txt[..h],
+                &m_txt[h..2 * h],
+                &input.pe,
+                &store,
+            );
+            self.stream_qkv(
+                &db.img,
+                &img,
+                n_img,
+                n_txt,
+                &m_img[..h],
+                &m_img[h..2 * h],
+                &input.pe,
+                &store,
+            );
             let mut attn = vec![0.0f32; n * h];
             let ta = Instant::now();
             attention(self.pool, &store, self.cfg.key_chunk, &mut attn);
@@ -1556,7 +2065,12 @@ impl DitBackend for FastModel<'_> {
         let (shift, scale) = (&ada[..h], &ada[h..2 * h]);
         let mut xm = vec![0.0f32; n_img * h];
         for t in 0..n_img {
-            layer_norm_modulate(&x[(n_txt + t) * h..(n_txt + t + 1) * h], shift, scale, &mut xm[t * h..(t + 1) * h]);
+            layer_norm_modulate(
+                &x[(n_txt + t) * h..(n_txt + t + 1) * h],
+                shift,
+                scale,
+                &mut xm[t * h..(t + 1) * h],
+            );
         }
         let out = self.final_lin.apply_tokens(self.pool, &xm, n_img);
         times.final_layer = t0.elapsed().as_secs_f64();
@@ -1594,7 +2108,10 @@ impl FastModel<'_> {
     /// The accuracy audit of the accelerator linears: one line per audited linear, in first-use order.
     /// None unless the accelerator was built with `NpuConfig::audit`.
     pub fn npu_audit(&self) -> Option<Vec<AuditLine>> {
-        self.npu.as_ref().filter(|c| c.audit_on()).map(|c| c.audit_report())
+        self.npu
+            .as_ref()
+            .filter(|c| c.audit_on())
+            .map(|c| c.audit_report())
     }
 }
 
@@ -1608,73 +2125,144 @@ mod tests {
         let mut src = MemSource::default();
         let h = 64;
         for (name, rows, k) in [
-            ("img_in.weight", h, 128), ("txt_in.weight", h, 64),
-            ("time_in.in_layer.weight", h, 256), ("time_in.out_layer.weight", h, h),
-            ("double_stream_modulation_img.lin.weight", 6*h, h),
-            ("double_stream_modulation_txt.lin.weight", 6*h, h),
-            ("single_stream_modulation.lin.weight", 3*h, h),
-            ("final_layer.adaLN_modulation.1.weight", 2*h, h),
+            ("img_in.weight", h, 128),
+            ("txt_in.weight", h, 64),
+            ("time_in.in_layer.weight", h, 256),
+            ("time_in.out_layer.weight", h, h),
+            ("double_stream_modulation_img.lin.weight", 6 * h, h),
+            ("double_stream_modulation_txt.lin.weight", 6 * h, h),
+            ("single_stream_modulation.lin.weight", 3 * h, h),
+            ("final_layer.adaLN_modulation.1.weight", 2 * h, h),
             ("final_layer.linear.weight", 128, h),
         ] {
-            src.f.insert(name.into(), ((0..rows*k).map(|_| rng.unit() / (k as f32).sqrt()).collect(), rows, k));
+            src.f.insert(
+                name.into(),
+                (
+                    (0..rows * k)
+                        .map(|_| rng.unit() / (k as f32).sqrt())
+                        .collect(),
+                    rows,
+                    k,
+                ),
+            );
         }
         for stream in ["img", "txt"] {
-            for (suffix, rows, k) in [("attn.qkv", 3*h, h), ("attn.proj", h, h), ("mlp.0", 2*h, h), ("mlp.2", h, h)] {
-                src.q8.insert(format!("double_blocks.0.{stream}_{suffix}.weight"), (random_q8(rows, k, &mut rng), rows, k));
+            for (suffix, rows, k) in [
+                ("attn.qkv", 3 * h, h),
+                ("attn.proj", h, h),
+                ("mlp.0", 2 * h, h),
+                ("mlp.2", h, h),
+            ] {
+                src.q8.insert(
+                    format!("double_blocks.0.{stream}_{suffix}.weight"),
+                    (random_q8(rows, k, &mut rng), rows, k),
+                );
             }
             for axis in ["query", "key"] {
-                src.f.insert(format!("double_blocks.0.{stream}_attn.norm.{axis}_norm.scale"), (vec![1.;32],1,32));
+                src.f.insert(
+                    format!("double_blocks.0.{stream}_attn.norm.{axis}_norm.scale"),
+                    (vec![1.; 32], 1, 32),
+                );
             }
         }
-        for (name, rows, k) in [("single_blocks.0.linear1.weight", 5*h, h), ("single_blocks.0.linear2.weight", h, 2*h)] {
-            src.q8.insert(name.into(), (random_q8(rows,k,&mut rng), rows,k));
+        for (name, rows, k) in [
+            ("single_blocks.0.linear1.weight", 5 * h, h),
+            ("single_blocks.0.linear2.weight", h, 2 * h),
+        ] {
+            src.q8
+                .insert(name.into(), (random_q8(rows, k, &mut rng), rows, k));
         }
         for axis in ["query", "key"] {
-            src.f.insert(format!("single_blocks.0.norm.{axis}_norm.scale"), (vec![1.;32],1,32));
+            src.f.insert(
+                format!("single_blocks.0.norm.{axis}_norm.scale"),
+                (vec![1.; 32], 1, 32),
+            );
         }
         src
     }
 
-    fn tiny_npu<'p>(src: &MemSource, pool: &'p Pool, cpu_rows_pct: u32, audit: bool) -> FastModel<'p> {
-        let cfg = FastConfig { chunk1:32, chunk2:32, attn_prec:crate::attn_float::AttnPrec::F32, ..Default::default() };
-        let ncfg = NpuConfig { budget_bytes: 1<<30, kc_max:0, ycol:true, pack_threads:2,
-            cpu_rows_pct, weights:oxn::wfmt::WFmt::Fp16, max_blob_bytes:8192, audit };
-        FastModel::from_source_npu(src,pool,cfg,Some((Box::new(oxn::emu::Emu::new(8<<20,1)),ncfg))).unwrap()
+    fn tiny_npu<'p>(
+        src: &MemSource,
+        pool: &'p Pool,
+        cpu_rows_pct: u32,
+        audit: bool,
+    ) -> FastModel<'p> {
+        let cfg = FastConfig {
+            chunk1: 32,
+            chunk2: 32,
+            attn_prec: crate::attn_float::AttnPrec::F32,
+            ..Default::default()
+        };
+        let ncfg = NpuConfig {
+            budget_bytes: 1 << 30,
+            kc_max: 0,
+            ycol: true,
+            pack_threads: 2,
+            cpu_rows_pct,
+            weights: oxn::wfmt::WFmt::Fp16,
+            max_blob_bytes: 8192,
+            audit,
+        };
+        FastModel::from_source_npu(
+            src,
+            pool,
+            cfg,
+            Some((Box::new(oxn::emu::Emu::new(8 << 20, 1)), ncfg)),
+        )
+        .unwrap()
     }
 
     #[test]
     fn emu_tile_delivery_matches_frozen_rowwise_model_with_tails_split_and_audit() {
         use crate::prod_fixture::Rng;
         let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
-        let allowed = status.lines().find_map(|l| l.strip_prefix("Cpus_allowed_list:")).unwrap();
+        let allowed = status
+            .lines()
+            .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+            .unwrap();
         let cpus = sched::parse_cpu_list(allowed.trim()).unwrap();
         let pool = Pool::new(&cpus[..cpus.len().min(2)], Duration::ZERO).unwrap();
         let src = tiny_source();
-        for cpu_pct in [0,25] {
-            for audit in [false,true] {
-                let mut old = tiny_npu(&src,&pool,cpu_pct,audit);
+        for cpu_pct in [0, 25] {
+            for audit in [false, true] {
+                let mut old = tiny_npu(&src, &pool, cpu_pct, audit);
                 old.legacy_delivery = true;
-                let mut new = tiny_npu(&src,&pool,cpu_pct,audit);
+                let mut new = tiny_npu(&src, &pool, cpu_pct, audit);
                 let mut rng = Rng(0x369f_25ab_1122_3344);
-                for (nt,ni) in [(1,3),(13,21),(17,34),(32,64)] {
-                    let mut inp = ModelInput { n_img:ni,n_txt:nt,timestep:0.6,
-                        img:(0..ni*128).map(|_|rng.unit()).collect(),
-                        txt:(0..nt*64).map(|_|rng.unit()).collect(),pe:Vec::new() };
-                    for _ in 0..(nt+ni)*16 {
-                        let a=rng.unit(); inp.pe.extend_from_slice(&[a.cos(),-a.sin(),a.sin(),a.cos()]);
+                for (nt, ni) in [(1, 3), (13, 21), (17, 34), (32, 64)] {
+                    let mut inp = ModelInput {
+                        n_img: ni,
+                        n_txt: nt,
+                        timestep: 0.6,
+                        img: (0..ni * 128).map(|_| rng.unit()).collect(),
+                        txt: (0..nt * 64).map(|_| rng.unit()).collect(),
+                        pe: Vec::new(),
+                    };
+                    for _ in 0..(nt + ni) * 16 {
+                        let a = rng.unit();
+                        inp.pe
+                            .extend_from_slice(&[a.cos(), -a.sin(), a.sin(), a.cos()]);
                     }
-                    let want=old.forward(&inp); let got=new.forward(&inp);
-                    assert!(got.iter().all(|v|v.is_finite()));
-                    assert_eq!(new.npu_stats().unwrap().nonfinite,0);
-                    assert_eq!(got.iter().map(|v|v.to_bits()).collect::<Vec<_>>(),want.iter().map(|v|v.to_bits()).collect::<Vec<_>>(),
-                        "txt {nt} img {ni} cpu {cpu_pct} audit {audit}");
+                    let want = old.forward(&inp);
+                    let got = new.forward(&inp);
+                    assert!(got.iter().all(|v| v.is_finite()));
+                    assert_eq!(new.npu_stats().unwrap().nonfinite, 0);
+                    assert_eq!(
+                        got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                        want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                        "txt {nt} img {ni} cpu {cpu_pct} audit {audit}"
+                    );
                 }
                 if audit {
-                    let a=old.npu_audit().unwrap(); let b=new.npu_audit().unwrap();
-                    assert_eq!(a.len(),b.len());
-                    for (a,b) in a.iter().zip(&b) {
-                        assert_eq!((&a.name,a.samples,a.max_abs_err.to_bits()),(&b.name,b.samples,b.max_abs_err.to_bits()));
-                        assert!((a.rel_rmse-b.rel_rmse).abs()<1e-12);
+                    let a = old.npu_audit().unwrap();
+                    let b = new.npu_audit().unwrap();
+                    assert_eq!(a.len(), b.len());
+                    for (a, b) in a.iter().zip(&b) {
+                        assert_eq!(
+                            (&a.name, a.samples, a.max_abs_err.to_bits()),
+                            (&b.name, b.samples, b.max_abs_err.to_bits())
+                        );
+                        assert!((a.rel_rmse - b.rel_rmse).abs() < 1e-12);
                     }
                 }
             }
@@ -1684,44 +2272,70 @@ mod tests {
     #[test]
     fn emu_plain_delivery_column_pieces_cover_tail_once_and_assemble_audit() {
         use crate::prod_fixture::{random_q8, Rng};
-        let status=std::fs::read_to_string("/proc/thread-self/status").unwrap();
-        let allowed=status.lines().find_map(|l|l.strip_prefix("Cpus_allowed_list:")).unwrap();
-        let cpus=sched::parse_cpu_list(allowed.trim()).unwrap();
-        let pool=Pool::new(&cpus[..cpus.len().min(2)],Duration::ZERO).unwrap();
-        let mut model=tiny_npu(&tiny_source(),&pool,0,true);
-        let (n,o,k)=(62,8224,32); // Audited token 61 lies in a partial tile; also a 32-column tail.
-        let mut rng=Rng(0x9876_5544_1122_aaab);
-        let q8=random_q8(o,k,&mut rng);
-        let ctx=model.npu.as_mut().unwrap();
-        let lin=ctx.add_linear("wide",&q8,o,k,None).unwrap().unwrap();
-        let ctx=model.npu.as_ref().unwrap();
-        let act=ctx.act(lin.session,0,n,k,k).unwrap();
-        let audit=ActAudit{k,rows:Mutex::new(HashMap::new())};
+        let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
+        let allowed = status
+            .lines()
+            .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+            .unwrap();
+        let cpus = sched::parse_cpu_list(allowed.trim()).unwrap();
+        let pool = Pool::new(&cpus[..cpus.len().min(2)], Duration::ZERO).unwrap();
+        let mut model = tiny_npu(&tiny_source(), &pool, 0, true);
+        let (n, o, k) = (62, 8224, 32); // Audited token 61 lies in a partial tile; also a 32-column tail.
+        let mut rng = Rng(0x9876_5544_1122_aaab);
+        let q8 = random_q8(o, k, &mut rng);
+        let ctx = model.npu.as_mut().unwrap();
+        let lin = ctx.add_linear("wide", &q8, o, k, None).unwrap().unwrap();
+        let ctx = model.npu.as_ref().unwrap();
+        let act = ctx.act(lin.session, 0, n, k, k).unwrap();
+        let audit = ActAudit {
+            k,
+            rows: Mutex::new(HashMap::new()),
+        };
         for t in 0..n {
-            let row:Vec<_>=(0..k).map(|_|rng.unit()).collect();
-            unsafe { act.put(t,0,&row) };
-            audit.store(t,0,&row);
+            let row: Vec<_> = (0..k).map(|_| rng.unit()).collect();
+            unsafe { act.put(t, 0, &row) };
+            audit.store(t, 0, &row);
         }
-        let out=ctx.run(&lin,&act).unwrap();
-        let mut want=vec![0.;n*o];
-        for t in 0..n { unsafe { out.row(t,0,&mut want[t*o..(t+1)*o]) }; }
-        let got=Mutex::new((vec![f32::NAN;n*o],vec![0u8;n*o],false));
-        model.deliver_plain(out,&lin,n,Some(&audit),|t,c0,row| {
-            assert!(t<n && c0+row.len()<=o);
-            let mut g=got.lock().unwrap();
-            if c0>0 {g.2=true;}
-            g.0[t*o+c0..t*o+c0+row.len()].copy_from_slice(row);
-            for v in &mut g.1[t*o+c0..t*o+c0+row.len()] { *v+=1; }
+        let out = ctx.run(&lin, &act).unwrap();
+        let mut want = vec![0.; n * o];
+        for t in 0..n {
+            unsafe { out.row(t, 0, &mut want[t * o..(t + 1) * o]) };
+        }
+        let got = Mutex::new((vec![f32::NAN; n * o], vec![0u8; n * o], false));
+        model.deliver_plain(out, &lin, n, Some(&audit), |t, c0, row| {
+            assert!(t < n && c0 + row.len() <= o);
+            let mut g = got.lock().unwrap();
+            if c0 > 0 {
+                g.2 = true;
+            }
+            g.0[t * o + c0..t * o + c0 + row.len()].copy_from_slice(row);
+            for v in &mut g.1[t * o + c0..t * o + c0 + row.len()] {
+                *v += 1;
+            }
         });
-        let got=got.into_inner().unwrap();
-        assert!(got.2,"fragmented delivery must use nonzero column offsets");
-        assert!(got.1.iter().all(|&c|c==1),"each real output must be delivered exactly once");
-        assert_eq!(got.0.iter().map(|v|v.to_bits()).collect::<Vec<_>>(),want.iter().map(|v|v.to_bits()).collect::<Vec<_>>());
-        let first=ctx.audit_report().into_iter().find(|a|a.name=="wide").unwrap();
-        model.deliver_plain_legacy(out,&lin,n,Some(&audit),|_,_,_|{});
-        let both=ctx.audit_report().into_iter().find(|a|a.name=="wide").unwrap();
-        assert_eq!(both.samples,2*first.samples);
-        assert_eq!(both.max_abs_err.to_bits(),first.max_abs_err.to_bits());
+        let got = got.into_inner().unwrap();
+        assert!(got.2, "fragmented delivery must use nonzero column offsets");
+        assert!(
+            got.1.iter().all(|&c| c == 1),
+            "each real output must be delivered exactly once"
+        );
+        assert_eq!(
+            got.0.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            want.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        let first = ctx
+            .audit_report()
+            .into_iter()
+            .find(|a| a.name == "wide")
+            .unwrap();
+        model.deliver_plain_legacy(out, &lin, n, Some(&audit), |_, _, _| {});
+        let both = ctx
+            .audit_report()
+            .into_iter()
+            .find(|a| a.name == "wide")
+            .unwrap();
+        assert_eq!(both.samples, 2 * first.samples);
+        assert_eq!(both.max_abs_err.to_bits(), first.max_abs_err.to_bits());
     }
 
     #[test]
@@ -1739,8 +2353,16 @@ mod tests {
     fn row_split_rules() {
         assert_eq!(row_split(25, 96), Some((72, 24)));
         assert_eq!(row_split(25, 34), Some((24, 10)));
-        assert_eq!(row_split(25, 8), None, "2 CPU tokens round to no group: unsplit");
-        assert_eq!(row_split(25, 13), None, "3 CPU tokens round to no group: unsplit");
+        assert_eq!(
+            row_split(25, 8),
+            None,
+            "2 CPU tokens round to no group: unsplit"
+        );
+        assert_eq!(
+            row_split(25, 13),
+            None,
+            "3 CPU tokens round to no group: unsplit"
+        );
         for n in [8usize, 13, 34, 96, 512, 1536] {
             for pct in [0u32, 10, 25, 50, 90] {
                 let got = row_split(pct, n);
@@ -1752,10 +2374,20 @@ mod tests {
                 let cpu_groups_tokens = (n * pct as usize / 100) / G * G;
                 let npu_tokens = (n - cpu_groups_tokens) / G * G;
                 match got {
-                    None => assert!(cpu_groups_tokens == 0 || npu_tokens == 0, "n {n} pct {pct}: unsplit without the fallback rule"),
+                    None => assert!(
+                        cpu_groups_tokens == 0 || npu_tokens == 0,
+                        "n {n} pct {pct}: unsplit without the fallback rule"
+                    ),
                     Some((n_npu, n_cpu)) => {
-                        assert!(cpu_groups_tokens > 0 && npu_tokens > 0, "n {n} pct {pct}: split without the fallback rule");
-                        assert_eq!(n_npu % G, 0, "n {n} pct {pct}: n_npu {n_npu} is not a multiple of {G}");
+                        assert!(
+                            cpu_groups_tokens > 0 && npu_tokens > 0,
+                            "n {n} pct {pct}: split without the fallback rule"
+                        );
+                        assert_eq!(
+                            n_npu % G,
+                            0,
+                            "n {n} pct {pct}: n_npu {n_npu} is not a multiple of {G}"
+                        );
                         assert_eq!(n_npu + n_cpu, n, "n {n} pct {pct}");
                         assert_eq!(n_npu, npu_tokens);
                         assert!(n_cpu > 0);

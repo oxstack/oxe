@@ -17,7 +17,6 @@ pub fn rng_bytes(n: usize, seed: u64) -> Vec<u8> {
         .collect()
 }
 
-
 pub fn fix_scales(q: QType, v: &mut [u8]) {
     let one = [0x00u8, 0x20]; // f16 0.0078125
     for blk in v.chunks_mut(q.block_bytes()) {
@@ -66,19 +65,36 @@ impl GgufWriter {
         self.kv.extend(v.as_bytes());
     }
     pub fn tensor(&mut self, name: &str, shape: &[u64], ty: GgmlType, seed: u64) {
-        let t = TensorInfo { name: name.into(), shape: shape.to_vec(), ty, offset: 0 };
+        let t = TensorInfo {
+            name: name.into(),
+            shape: shape.to_vec(),
+            ty,
+            offset: 0,
+        };
         let n = t.bytes() as usize;
         let data = if ty == GgmlType(30) {
             // BF16: small finite values
-            (0..n / 2).flat_map(|i| ((((((i * 7 + seed as usize) % 19) as f32) * 0.01 - 0.09).to_bits() >> 16) as u16).to_le_bytes()).collect()
-        } else { match crate::desc::qtype(ty) {
-            Some(q) => {
-                let mut v = rng_bytes(n, seed);
-                fix_scales(q, &mut v);
-                v
+            (0..n / 2)
+                .flat_map(|i| {
+                    ((((((i * 7 + seed as usize) % 19) as f32) * 0.01 - 0.09).to_bits() >> 16)
+                        as u16)
+                        .to_le_bytes()
+                })
+                .collect()
+        } else {
+            match crate::desc::qtype(ty) {
+                Some(q) => {
+                    let mut v = rng_bytes(n, seed);
+                    fix_scales(q, &mut v);
+                    v
+                }
+                None => (0..n / 4)
+                    .flat_map(|i| {
+                        (((i * 7 + seed as usize) % 19) as f32 * 0.01 - 0.09).to_le_bytes()
+                    })
+                    .collect(),
             }
-            None => (0..n / 4).flat_map(|i| (((i * 7 + seed as usize) % 19) as f32 * 0.01 - 0.09).to_le_bytes()).collect(),
-        } };
+        };
         self.tensors.push((name.into(), shape.to_vec(), ty, data));
     }
     pub fn write(&self, path: &std::path::Path) {
@@ -139,7 +155,11 @@ pub fn mini_model_used(path: &std::path::Path, used: u32) {
 }
 
 fn mini_model_full(path: &std::path::Path, mtp: bool, ctx_len: u32, used: u32, vocab: u64) {
-    let mut w = GgufWriter { kv: vec![], n_kv: 0, tensors: vec![] };
+    let mut w = GgufWriter {
+        kv: vec![],
+        n_kv: 0,
+        tensors: vec![],
+    };
     let a = "qwen35moe";
     w.str("general.architecture", a);
     w.u32("general.alignment", 32);
@@ -169,7 +189,13 @@ fn mini_model_full(path: &std::path::Path, mtp: bool, ctx_len: u32, used: u32, v
     w.u32(&format!("{a}.context_length"), ctx_len);
     w.f32(&format!("{a}.rope.freq_base"), 1e7);
     w.arr_i32(&format!("{a}.rope.dimension_sections"), &[11, 11, 10, 0]);
-    let (e, f32_, q3, q4, q6) = (256u64, GgmlType::F32, GgmlType::Q3_K, GgmlType::Q4_K, GgmlType::Q6_K);
+    let (e, f32_, q3, q4, q6) = (
+        256u64,
+        GgmlType::F32,
+        GgmlType::Q3_K,
+        GgmlType::Q4_K,
+        GgmlType::Q6_K,
+    );
     w.tensor("token_embd.weight", &[e, vocab], q4, 1);
     w.tensor("output_norm.weight", &[e], f32_, 2);
     w.tensor("output.weight", &[e, vocab], q6, 3);
@@ -233,5 +259,3 @@ fn mini_model_full(path: &std::path::Path, mtp: bool, ctx_len: u32, used: u32, v
     }
     w.write(path);
 }
-
-

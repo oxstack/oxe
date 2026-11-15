@@ -24,7 +24,10 @@ impl Drop for DefaultMode {
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> f32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((self.0 >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0 // [-1, 1)
     }
     fn vec(&mut self, n: usize, scale: f32) -> Vec<f32> {
@@ -51,7 +54,8 @@ impl Gen {
         let scale = (3.0 / (cin * k * k) as f32).sqrt();
         let w = self.rng.vec(cout * cin * k * k, scale);
         let b = self.rng.vec(cout, 0.1);
-        self.t.insert(format!("{name}.weight"), (vec![cout, cin, k, k], w));
+        self.t
+            .insert(format!("{name}.weight"), (vec![cout, cin, k, k], w));
         self.t.insert(format!("{name}.bias"), (vec![cout], b));
     }
     fn norm(&mut self, name: &str, c: usize) {
@@ -72,7 +76,10 @@ impl Gen {
 }
 
 fn make_tensors(seed: u64) -> Tensors {
-    let mut g = Gen { rng: Lcg(seed), t: HashMap::new() };
+    let mut g = Gen {
+        rng: Lcg(seed),
+        t: HashMap::new(),
+    };
     let ch = MID / MULTS[MULTS.len() - 1];
     g.conv("decoder.post_quant_conv", Z, Z, 1);
     g.conv("decoder.conv_in", MID, Z, 3);
@@ -103,7 +110,10 @@ fn make_tensors(seed: u64) -> Tensors {
 #[test]
 fn from_tensors_rejects_value_length_mismatch() {
     let base = make_tensors(3);
-    assert!(VaeDecoder::from_tensors(base.clone(), GROUPS).is_ok(), "the consistent map must load");
+    assert!(
+        VaeDecoder::from_tensors(base.clone(), GROUPS).is_ok(),
+        "the consistent map must load"
+    );
     for (name, longer) in [
         ("decoder.conv_in.bias", false),
         ("decoder.conv_in.weight", true),
@@ -123,7 +133,10 @@ fn from_tensors_rejects_value_length_mismatch() {
         } else {
             entry.1.pop();
         }
-        assert!(VaeDecoder::from_tensors(t, GROUPS).is_err(), "{name}: inconsistent value count accepted");
+        assert!(
+            VaeDecoder::from_tensors(t, GROUPS).is_err(),
+            "{name}: inconsistent value count accepted"
+        );
     }
 }
 
@@ -145,10 +158,16 @@ fn extreme_latents_decode_finite_in_every_mode() {
         for (label, z) in [("zero", &zero), ("1e20", &huge)] {
             let a = dec.decode(z, c, h, w, 1).expect("decode");
             let b = dec.decode(z, c, h, w, 3).expect("decode");
-            assert!(a.iter().all(|v| v.is_finite()), "{mode} {label}: non-finite output");
+            assert!(
+                a.iter().all(|v| v.is_finite()),
+                "{mode} {label}: non-finite output"
+            );
             let amax = a.iter().fold(0.0f32, |m, v| m.max(v.abs()));
             assert!(amax < 1e4, "{mode} {label}: output magnitude {amax:e}");
-            assert!(a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "{mode} {label}: depends on the thread count");
+            assert!(
+                a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                "{mode} {label}: depends on the thread count"
+            );
         }
     }
 }

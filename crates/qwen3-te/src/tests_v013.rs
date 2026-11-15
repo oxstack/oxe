@@ -13,8 +13,14 @@ fn bits(v: &[f32]) -> Vec<u32> {
 
 /// (heads, kv_heads, hd, n, n_real): GQA groups 1/2/4/8 take the grouped kernel, 3 the fallback;
 /// hd 20 has a non-multiple-of-8 tail; 32/8/128 is the Qwen3-4B shape.
-const SHAPES: [(usize, usize, usize, usize, usize); 6] =
-    [(4, 2, 16, 37, 37), (8, 2, 16, 41, 13), (32, 8, 128, 70, 23), (4, 4, 24, 9, 5), (8, 1, 20, 33, 30), (6, 2, 16, 17, 11)];
+const SHAPES: [(usize, usize, usize, usize, usize); 6] = [
+    (4, 2, 16, 37, 37),
+    (8, 2, 16, 41, 13),
+    (32, 8, 128, 70, 23),
+    (4, 4, 24, 9, 5),
+    (8, 1, 20, 33, 30),
+    (6, 2, 16, 17, 11),
+];
 
 #[test]
 fn gqa_attention_is_bitwise_the_reference() {
@@ -33,7 +39,10 @@ fn gqa_attention_is_bitwise_the_reference() {
         for threads in [1, 2, 5, 16] {
             let mut got = vec![f32::NAN; n * heads * hd];
             attention_gqa(&q, &k, &v, &mask, n, heads, kvh, hd, &mut got, threads);
-            assert!(bits(&got) == bits(&want), "heads {heads} kv {kvh} hd {hd} n {n} threads {threads}: bits differ");
+            assert!(
+                bits(&got) == bits(&want),
+                "heads {heads} kv {kvh} hd {hd} n {n} threads {threads}: bits differ"
+            );
         }
     }
 }
@@ -75,7 +84,10 @@ fn ggml_shared_activation_projection_is_bitwise_per_projection() {
                 for (i, &kd) in kinds.iter().enumerate() {
                     let mut one = Vec::new();
                     crate::ggml::gemm_one(&g, l, kd, inp, n, &mut one).unwrap();
-                    assert!(bits(&shared[i]) == bits(&one), "layer {l} {kd:?} n {n} threads {threads}");
+                    assert!(
+                        bits(&shared[i]) == bits(&one),
+                        "layer {l} {kd:?} n {n} threads {threads}"
+                    );
                 }
             }
         }
@@ -92,6 +104,9 @@ fn ggml_encoder_with_grouped_attention_is_thread_invariant() {
     let g = crate::ggml::GgmlLinears::new(&w, 2).unwrap();
     let a = run(&w, &spec, &e, &g, 2);
     let b = run(&w, &spec, &e, &g, 6);
-    assert!(bits(&a) == bits(&b), "thread count changed bits through the grouped attention");
+    assert!(
+        bits(&a) == bits(&b),
+        "thread count changed bits through the grouped attention"
+    );
     assert!(a.iter().all(|v| v.is_finite()));
 }

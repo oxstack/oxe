@@ -30,7 +30,9 @@ pub fn dims_from_header(h: &Header) -> Result<Dims, String> {
         ));
     }
     if lin2_in < hidden {
-        return Err(format!("linear2 input {lin2_in} is smaller than hidden {hidden}"));
+        return Err(format!(
+            "linear2 input {lin2_in} is smaller than hidden {hidden}"
+        ));
     }
     let mlp = lin2_in - hidden;
     if lin1_out != 3 * hidden + 2 * mlp {
@@ -41,13 +43,21 @@ pub fn dims_from_header(h: &Header) -> Result<Dims, String> {
     if lin2_out != hidden {
         return Err(format!("linear2 output {lin2_out} != hidden {hidden}"));
     }
-    Ok(Dims { hidden, heads: hidden / head_dim, head_dim, mlp })
+    Ok(Dims {
+        hidden,
+        heads: hidden / head_dim,
+        head_dim,
+        mlp,
+    })
 }
 
 /// Number of single blocks: consecutive indices from 0 that have a `linear1.weight` tensor.
 pub fn count_single_blocks(h: &Header) -> usize {
     (0usize..)
-        .take_while(|i| h.tensor(&format!("single_blocks.{i}.linear1.weight")).is_some())
+        .take_while(|i| {
+            h.tensor(&format!("single_blocks.{i}.linear1.weight"))
+                .is_some()
+        })
         .count()
 }
 
@@ -74,10 +84,16 @@ pub fn single_block_raw<'a>(g: &'a Gguf, idx: usize) -> Result<SingleBlockRaw<'a
     let want1 = vec![dims.hidden as u64, dims.lin1_out() as u64];
     let want2 = vec![dims.lin2_in() as u64, dims.hidden as u64];
     if t1.shape != want1 {
-        return Err(format!("{}: shape {:?}, want {:?}", t1.name, t1.shape, want1));
+        return Err(format!(
+            "{}: shape {:?}, want {:?}",
+            t1.name, t1.shape, want1
+        ));
     }
     if t2.shape != want2 {
-        return Err(format!("{}: shape {:?}, want {:?}", t2.name, t2.shape, want2));
+        return Err(format!(
+            "{}: shape {:?}, want {:?}",
+            t2.name, t2.shape, want2
+        ));
     }
     let qn = req(h, &format!("single_blocks.{idx}.norm.query_norm.scale"))?;
     let kn = req(h, &format!("single_blocks.{idx}.norm.key_norm.scale"))?;
@@ -135,7 +151,11 @@ pub fn quant_q8_0(rows_f32: &[f32], rows: usize, k: usize) -> Vec<u8> {
         let d = f16_to_f32(d_half);
         out.extend_from_slice(&d_half.to_le_bytes());
         for &v in blk {
-            let c = if d == 0.0 { 0i8 } else { (v / d).round().clamp(-127.0, 127.0) as i8 };
+            let c = if d == 0.0 {
+                0i8
+            } else {
+                (v / d).round().clamp(-127.0, 127.0) as i8
+            };
             out.push(c as u8);
         }
     }
@@ -150,7 +170,11 @@ pub fn f32_to_f16(f: f32) -> u16 {
     let exp = ((x >> 23) & 0xff) as i32;
     let man = x & 0x007f_ffff;
     if exp == 0xff {
-        return if man == 0 { sign | 0x7c00 } else { sign | 0x7e00 };
+        return if man == 0 {
+            sign | 0x7c00
+        } else {
+            sign | 0x7e00
+        };
     }
     if exp == 0 {
         // f32 zero or subnormal: far below the smallest half subnormal (2^-24).
@@ -186,7 +210,8 @@ pub fn f32_to_f16(f: f32) -> u16 {
 }
 
 fn req<'a>(h: &'a Header, name: &str) -> Result<&'a TensorInfo, String> {
-    h.tensor(name).ok_or_else(|| format!("missing tensor {name}"))
+    h.tensor(name)
+        .ok_or_else(|| format!("missing tensor {name}"))
 }
 
 fn check_ty(t: &TensorInfo, want: &str) -> Result<(), String> {

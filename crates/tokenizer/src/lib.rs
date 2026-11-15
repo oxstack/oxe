@@ -77,13 +77,43 @@ pub struct Tokenizer {
 }
 
 const EOT_NAMES: &[&str] = &[
-    "<|eot_id|>", "<|im_end|>", "<|end|>", "<end_of_turn>", "<|endoftext|>", "<|end_of_text|>", "<EOT>", "_<EOT>",
-    "[EOT]", "<｜end▁of▁sentence｜>", "<end_of_utterance>",
+    "<|eot_id|>",
+    "<|im_end|>",
+    "<|end|>",
+    "<end_of_turn>",
+    "<|endoftext|>",
+    "<|end_of_text|>",
+    "<EOT>",
+    "_<EOT>",
+    "[EOT]",
+    "<｜end▁of▁sentence｜>",
+    "<end_of_utterance>",
 ];
 const EOG_NAMES: &[&str] = &[
-    "<|eot_id|>", "<|eot|>", "<|im_end|>", "<|end|>", "<|return|>", "<|call|>", "<|flush|>", "<|calls|>",
-    "<end_of_turn>", "<|endoftext|>", "</s>", "<|eom_id|>", "<EOT>", "_<EOT>", "[EOT]", "[EOS]", "<|end_of_text|>",
-    "<end_of_utterance>", "<eos>", "<turn|>", "<|tool_response>", "<｜end▁of▁sentence｜>", "[e~[", "<|ifm|im_end|>",
+    "<|eot_id|>",
+    "<|eot|>",
+    "<|im_end|>",
+    "<|end|>",
+    "<|return|>",
+    "<|call|>",
+    "<|flush|>",
+    "<|calls|>",
+    "<end_of_turn>",
+    "<|endoftext|>",
+    "</s>",
+    "<|eom_id|>",
+    "<EOT>",
+    "_<EOT>",
+    "[EOT]",
+    "[EOS]",
+    "<|end_of_text|>",
+    "<end_of_utterance>",
+    "<eos>",
+    "<turn|>",
+    "<|tool_response>",
+    "<｜end▁of▁sentence｜>",
+    "[e~[",
+    "<|ifm|im_end|>",
 ];
 
 fn fnv(h: &mut u64, b: &[u8]) {
@@ -103,20 +133,39 @@ impl Tokenizer {
     }
 
     pub fn from_metadata(md: &HashMap<String, Meta>) -> Result<Tokenizer, Error> {
-        let model = md.get("tokenizer.ggml.model").and_then(Meta::as_str).unwrap_or("");
+        let model = md
+            .get("tokenizer.ggml.model")
+            .and_then(Meta::as_str)
+            .unwrap_or("");
         if model != "gpt2" {
-            return Err(e(format!("unsupported tokenizer model '{model}' (only gpt2/BPE)")));
+            return Err(e(format!(
+                "unsupported tokenizer model '{model}' (only gpt2/BPE)"
+            )));
         }
-        let pre = match md.get("tokenizer.ggml.pre").and_then(Meta::as_str).unwrap_or("") {
+        let pre = match md
+            .get("tokenizer.ggml.pre")
+            .and_then(Meta::as_str)
+            .unwrap_or("")
+        {
             "qwen2" | "deepseek-r1-qwen" | "kormo" | "f2llmv2" => PreType::Qwen2,
             "qwen35" => PreType::Qwen35,
-            p => return Err(e(format!("unsupported pre-tokenizer '{p}' (only qwen2/qwen35)"))),
+            p => {
+                return Err(e(format!(
+                    "unsupported pre-tokenizer '{p}' (only qwen2/qwen35)"
+                )))
+            }
         };
-        let toks = md.get("tokenizer.ggml.tokens").and_then(Meta::as_array).ok_or_else(|| e("missing tokens"))?;
+        let toks = md
+            .get("tokenizer.ggml.tokens")
+            .and_then(Meta::as_array)
+            .ok_or_else(|| e("missing tokens"))?;
         let mut fp = 0xcbf29ce484222325u64;
         let mut tokens = Vec::with_capacity(toks.len());
         for (i, t) in toks.iter().enumerate() {
-            let mut s = t.as_str().ok_or_else(|| e("token not a string"))?.to_string();
+            let mut s = t
+                .as_str()
+                .ok_or_else(|| e("token not a string"))?
+                .to_string();
             if s.is_empty() {
                 s = format!("[EMPTY_{i}]");
             }
@@ -165,7 +214,9 @@ impl Tokenizer {
                         ranks.entry((x, y)).or_insert(i as u32);
                     }
                     _ => {
-                        ranks_str.entry((a.to_string(), b.to_string())).or_insert(i as u32);
+                        ranks_str
+                            .entry((a.to_string(), b.to_string()))
+                            .or_insert(i as u32);
                     }
                 }
             }
@@ -173,18 +224,32 @@ impl Tokenizer {
             return Err(e("cannot find tokenizer merges in model file"));
         }
 
-        let id = |k: &str| md.get(k).and_then(Meta::as_i64).filter(|&v| v >= 0 && (v as usize) < n).map(|v| v as Token);
+        let id = |k: &str| {
+            md.get(k)
+                .and_then(Meta::as_i64)
+                .filter(|&v| v >= 0 && (v as usize) < n)
+                .map(|v| v as Token)
+        };
         let bos = id("tokenizer.ggml.bos_token_id");
         let eos = id("tokenizer.ggml.eos_token_id");
         let pad = id("tokenizer.ggml.padding_token_id");
         let mut eot = id("tokenizer.ggml.eot_token_id");
-        let add_bos = md.get("tokenizer.ggml.add_bos_token").and_then(Meta::as_bool).unwrap_or(false);
-        let add_eos = md.get("tokenizer.ggml.add_eos_token").and_then(Meta::as_bool).unwrap_or(false);
+        let add_bos = md
+            .get("tokenizer.ggml.add_bos_token")
+            .and_then(Meta::as_bool)
+            .unwrap_or(false);
+        let add_eos = md
+            .get("tokenizer.ggml.add_eos_token")
+            .and_then(Meta::as_bool)
+            .unwrap_or(false);
 
         // auto-detect EOT by text (first match in hash order in llama.cpp; we pick the
         // lowest id among matches, which is what single-match vocabs give anyway)
         if eot.is_none() {
-            eot = EOT_NAMES.iter().filter_map(|t| token_to_id.get(*t).copied()).min();
+            eot = EOT_NAMES
+                .iter()
+                .filter_map(|t| token_to_id.get(*t).copied())
+                .min();
             if let Some(t) = eot {
                 attrs[t as usize] |= attr::CONTROL;
             }
@@ -217,11 +282,21 @@ impl Tokenizer {
         eog.dedup();
 
         let mut special_cache: Vec<Token> = (0..n as Token)
-            .filter(|&t| attrs[t as usize] & (attr::CONTROL | attr::USER_DEFINED | attr::UNKNOWN) != 0)
+            .filter(|&t| {
+                attrs[t as usize] & (attr::CONTROL | attr::USER_DEFINED | attr::UNKNOWN) != 0
+            })
             .collect();
-        special_cache.sort_by(|&a, &b| tokens[b as usize].len().cmp(&tokens[a as usize].len()).then(a.cmp(&b)));
+        special_cache.sort_by(|&a, &b| {
+            tokens[b as usize]
+                .len()
+                .cmp(&tokens[a as usize].len())
+                .then(a.cmp(&b))
+        });
 
-        let chat_template = md.get("tokenizer.chat_template").and_then(Meta::as_str).map(str::to_string);
+        let chat_template = md
+            .get("tokenizer.chat_template")
+            .and_then(Meta::as_str)
+            .map(str::to_string);
         if let Some(t) = &chat_template {
             fnv(&mut fp, t.as_bytes());
         }
@@ -256,7 +331,10 @@ impl Tokenizer {
         self.tokens.get(t as usize).map(String::as_str)
     }
     pub fn token_attr(&self, t: Token) -> u32 {
-        self.attrs.get(t as usize).copied().unwrap_or(attr::UNDEFINED)
+        self.attrs
+            .get(t as usize)
+            .copied()
+            .unwrap_or(attr::UNDEFINED)
     }
     pub fn token_id(&self, text: &str) -> Option<Token> {
         self.token_to_id.get(text).copied()
@@ -297,7 +375,13 @@ impl Tokenizer {
     /// there when a special token (parse_special) begins exactly at that byte, else None (the cut
     /// lies inside ordinary text, where BPE could merge across it). `cuts` must be sorted and unique. The tokens are exactly
     /// `encode(text, add_special, parse_special)`.
-    pub fn encode_cuts(&self, text: &str, add_special: bool, parse_special: bool, cuts: &[usize]) -> (Vec<Token>, Vec<Option<usize>>) {
+    pub fn encode_cuts(
+        &self,
+        text: &str,
+        add_special: bool,
+        parse_special: bool,
+        cuts: &[usize],
+    ) -> (Vec<Token>, Vec<Option<usize>>) {
         let mut out = Vec::new();
         let mut at: Vec<Option<usize>> = vec![None; cuts.len()];
         if add_special && self.add_bos {
@@ -344,13 +428,17 @@ impl Tokenizer {
                 while let Some(m) = s.find(needle) {
                     let mut left = &s[..m];
                     if a & attr::LSTRIP != 0 {
-                        left = left.trim_end_matches(|c: char| c.is_ascii_whitespace() || c == '\x0b');
+                        left =
+                            left.trim_end_matches(|c: char| c.is_ascii_whitespace() || c == '\x0b');
                     }
                     if !left.is_empty() {
                         next.push(Frag::Text(left));
                     }
                     // byte offset of the special token's text in `text` (s is a subslice of it)
-                    next.push(Frag::Tok(sid, s.as_ptr() as usize - text.as_ptr() as usize + m));
+                    next.push(Frag::Tok(
+                        sid,
+                        s.as_ptr() as usize - text.as_ptr() as usize + m,
+                    ));
                     s = &s[m + needle.len()..];
                     if a & attr::RSTRIP != 0 {
                         s = s.trim_start_matches(|c: char| c.is_ascii_whitespace() || c == '\x0b');
@@ -368,7 +456,9 @@ impl Tokenizer {
     fn rank(&self, a: &str, b: &str) -> Option<u32> {
         match (self.token_to_id.get(a), self.token_to_id.get(b)) {
             (Some(&x), Some(&y)) => self.ranks.get(&(x, y)).copied(),
-            _ if !self.ranks_str.is_empty() => self.ranks_str.get(&(a.to_string(), b.to_string())).copied(),
+            _ if !self.ranks_str.is_empty() => {
+                self.ranks_str.get(&(a.to_string(), b.to_string())).copied()
+            }
             _ => None,
         }
     }
@@ -407,7 +497,12 @@ impl Tokenizer {
         let mut off = 0usize;
         for (i, ch) in word.char_indices() {
             let l = ch.len_utf8();
-            syms.push(Sym { prev: syms.len() as i32 - 1, next: -1, start: i, n: l });
+            syms.push(Sym {
+                prev: syms.len() as i32 - 1,
+                next: -1,
+                start: i,
+                n: l,
+            });
             off = i + l;
         }
         let ns = syms.len();
@@ -418,7 +513,10 @@ impl Tokenizer {
 
         // (rank, left, right, text_len) ; min-heap on (rank, left)
         let mut heap: BinaryHeap<Reverse<(u32, i32, i32, usize)>> = BinaryHeap::new();
-        let push = |heap: &mut BinaryHeap<Reverse<(u32, i32, i32, usize)>>, syms: &Vec<Sym>, l: i32, r: i32| {
+        let push = |heap: &mut BinaryHeap<Reverse<(u32, i32, i32, usize)>>,
+                    syms: &Vec<Sym>,
+                    l: i32,
+                    r: i32| {
             if l < 0 || r < 0 {
                 return;
             }

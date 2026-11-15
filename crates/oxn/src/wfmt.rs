@@ -26,7 +26,9 @@ impl WFmt {
     pub fn strip_bytes(self, kc: usize) -> usize {
         match self {
             WFmt::W8 => tiles::w8_strip_bytes(kc),
-            WFmt::Fp16 => (kc / TILE).checked_mul(TILE_BYTES).expect("wfmt: fp16 strip size overflow"),
+            WFmt::Fp16 => (kc / TILE)
+                .checked_mul(TILE_BYTES)
+                .expect("wfmt: fp16 strip size overflow"),
         }
     }
 
@@ -46,11 +48,25 @@ impl WFmt {
     }
 }
 
-fn check_pack(q8: &[u8], o: usize, k: usize, kc: usize, perm: Option<&[u32]>, chunk: usize, ot: usize) {
+fn check_pack(
+    q8: &[u8],
+    o: usize,
+    k: usize,
+    kc: usize,
+    perm: Option<&[u32]>,
+    chunk: usize,
+    ot: usize,
+) {
     assert!(o % TILE == 0, "wfmt: o={o} not a multiple of 32");
     assert!(k % TILE == 0, "wfmt: k={k} not a multiple of 32");
-    assert!(kc > 0 && kc % TILE == 0 && k % kc == 0, "wfmt: bad kc={kc} for k={k}");
-    let q8_bytes = o.checked_mul(k / TILE).and_then(|v| v.checked_mul(34)).expect("wfmt: q8 shape overflow");
+    assert!(
+        kc > 0 && kc % TILE == 0 && k % kc == 0,
+        "wfmt: bad kc={kc} for k={k}"
+    );
+    let q8_bytes = o
+        .checked_mul(k / TILE)
+        .and_then(|v| v.checked_mul(34))
+        .expect("wfmt: q8 shape overflow");
     assert_eq!(q8.len(), q8_bytes, "wfmt: q8 length");
     if let Some(p) = perm {
         assert_eq!(p.len(), o, "wfmt: perm length");
@@ -64,9 +80,22 @@ fn check_pack(q8: &[u8], o: usize, k: usize, kc: usize, perm: Option<&[u32]>, ch
 /// at u16 index `tiles::wt_elem_idx(k % 32, n % 32)`, little-endian. Packed row n takes source row perm[n]
 /// (identity if None). Every byte of `dst` is written.
 #[allow(clippy::too_many_arguments)]
-pub fn pack_fp16_strip(dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize, perm: Option<&[u32]>, chunk: usize, ot: usize) {
+pub fn pack_fp16_strip(
+    dst: &mut [u8],
+    q8: &[u8],
+    o: usize,
+    k: usize,
+    kc: usize,
+    perm: Option<&[u32]>,
+    chunk: usize,
+    ot: usize,
+) {
     check_pack(q8, o, k, kc, perm, chunk, ot);
-    assert_eq!(dst.len(), WFmt::Fp16.strip_bytes(kc), "pack_fp16_strip: strip length");
+    assert_eq!(
+        dst.len(),
+        WFmt::Fp16.strip_bytes(kc),
+        "pack_fp16_strip: strip length"
+    );
     let nb = k / TILE;
     let kct = kc / TILE;
     for nl in 0..TILE {
@@ -79,7 +108,9 @@ pub fn pack_fp16_strip(dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize,
         for ktl in 0..kct {
             let kt = chunk * kct + ktl;
             // one 34-byte Q8_0 block: half scale, then 32 int8 codes (code kl of the block is blk[2 + kl])
-            let blk: &[u8; 34] = q8[(s * nb + kt) * 34..(s * nb + kt + 1) * 34].try_into().expect("Q8_0 block");
+            let blk: &[u8; 34] = q8[(s * nb + kt) * 34..(s * nb + kt + 1) * 34]
+                .try_into()
+                .expect("Q8_0 block");
             let d = tiles::half_to_f32(u16::from_le_bytes([blk[0], blk[1]]));
             let mut prod = [0f32; TILE];
             for (p, &c) in prod.iter_mut().zip(&blk[2..]) {
@@ -108,9 +139,22 @@ pub fn pack_fp16_strip(dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize,
 /// The previous element-wise fp16 strip packer, kept as the bit-exact reference for the tests.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-fn pack_fp16_strip_ref(dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize, perm: Option<&[u32]>, chunk: usize, ot: usize) {
+fn pack_fp16_strip_ref(
+    dst: &mut [u8],
+    q8: &[u8],
+    o: usize,
+    k: usize,
+    kc: usize,
+    perm: Option<&[u32]>,
+    chunk: usize,
+    ot: usize,
+) {
     check_pack(q8, o, k, kc, perm, chunk, ot);
-    assert_eq!(dst.len(), WFmt::Fp16.strip_bytes(kc), "pack_fp16_strip: strip length");
+    assert_eq!(
+        dst.len(),
+        WFmt::Fp16.strip_bytes(kc),
+        "pack_fp16_strip: strip length"
+    );
     let nb = k / TILE;
     let kct = kc / TILE;
     for ktl in 0..kct {
@@ -137,7 +181,17 @@ fn pack_fp16_strip_ref(dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize,
 
 /// Pack one strip in format `fmt` (see `tiles::pack_w8_strip` and [`pack_fp16_strip`]).
 #[allow(clippy::too_many_arguments)]
-pub fn pack_strip(fmt: WFmt, dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: usize, perm: Option<&[u32]>, chunk: usize, ot: usize) {
+pub fn pack_strip(
+    fmt: WFmt,
+    dst: &mut [u8],
+    q8: &[u8],
+    o: usize,
+    k: usize,
+    kc: usize,
+    perm: Option<&[u32]>,
+    chunk: usize,
+    ot: usize,
+) {
     match fmt {
         WFmt::W8 => tiles::pack_w8_strip(dst, q8, o, k, kc, perm, chunk, ot),
         WFmt::Fp16 => pack_fp16_strip(dst, q8, o, k, kc, perm, chunk, ot),
@@ -150,10 +204,20 @@ pub fn pack_strip(fmt: WFmt, dst: &mut [u8], q8: &[u8], o: usize, k: usize, kc: 
 ///
 /// # Safety
 /// `strips` must be valid for `((n / 32 - ot0) + 1) * fmt.strip_bytes(kc)` bytes.
-pub unsafe fn weight_row(fmt: WFmt, strips: *const u8, kc: usize, ot0: usize, n: usize, out: &mut [f32]) {
+pub unsafe fn weight_row(
+    fmt: WFmt,
+    strips: *const u8,
+    kc: usize,
+    ot0: usize,
+    n: usize,
+    out: &mut [f32],
+) {
     assert!(kc > 0 && kc % TILE == 0, "weight_row: bad kc {kc}");
     assert_eq!(out.len(), kc, "weight_row: out length");
-    assert!(n / TILE >= ot0, "weight_row: row {n} before output tile {ot0}");
+    assert!(
+        n / TILE >= ot0,
+        "weight_row: row {n} before output tile {ot0}"
+    );
     let sb = fmt.strip_bytes(kc);
     // SAFETY: the caller's contract covers this strip (strip index n/32 - ot0).
     let strip = unsafe { std::slice::from_raw_parts(strips.add((n / TILE - ot0) * sb), sb) };
@@ -164,7 +228,10 @@ pub unsafe fn weight_row(fmt: WFmt, strips: *const u8, kc: usize, ot0: usize, n:
             WFmt::W8 => {
                 let rec = &strip[kt * W8_RECORD_BYTES..(kt + 1) * W8_RECORD_BYTES];
                 let s = 2 * nl;
-                let scale = tiles::half_to_f32(u16::from_le_bytes([rec[W8_SCALE_OFF + s], rec[W8_SCALE_OFF + s + 1]]));
+                let scale = tiles::half_to_f32(u16::from_le_bytes([
+                    rec[W8_SCALE_OFF + s],
+                    rec[W8_SCALE_OFF + s + 1],
+                ]));
                 let q = rec[tiles::wt_elem_idx(kli, nl)] as i8;
                 scale * q as f32
             }
@@ -242,7 +309,14 @@ mod tests {
 
     /// The weight (packed row n, reduction index kk) of the packed linear, written from the formulas:
     /// block scale d and code q of source row perm[n], block kk / 32, code kk % 32.
-    fn ref_weight(q8: &[u8], k: usize, perm: Option<&[u32]>, fmt: WFmt, n: usize, kk: usize) -> f32 {
+    fn ref_weight(
+        q8: &[u8],
+        k: usize,
+        perm: Option<&[u32]>,
+        fmt: WFmt,
+        n: usize,
+        kk: usize,
+    ) -> f32 {
         let s = perm.map_or(n, |p| p[n] as usize);
         let blk = (s * (k / 32) + kk / 32) * 34;
         let d = tiles::half_to_f32(u16::from_le_bytes([q8[blk], q8[blk + 1]]));
@@ -254,7 +328,14 @@ mod tests {
     }
 
     /// Reference bytes of one fp16 strip, element by element.
-    fn ref_fp16_strip(q8: &[u8], k: usize, kc: usize, perm: Option<&[u32]>, chunk: usize, ot: usize) -> Vec<u8> {
+    fn ref_fp16_strip(
+        q8: &[u8],
+        k: usize,
+        kc: usize,
+        perm: Option<&[u32]>,
+        chunk: usize,
+        ot: usize,
+    ) -> Vec<u8> {
         let mut buf = vec![0u8; (kc / 32) * 2048];
         for ktl in 0..kc / 32 {
             for nl in 0..32 {
@@ -283,7 +364,11 @@ mod tests {
                         let mut got = vec![0xabu8; WFmt::Fp16.strip_bytes(kc)];
                         pack_fp16_strip(&mut got, &q8, o, k, kc, p, chunk, ot);
                         let want = ref_fp16_strip(&q8, k, kc, p, chunk, ot);
-                        assert!(got == want, "o {o} k {k} kc {kc} perm {} chunk {chunk} ot {ot}", p.is_some());
+                        assert!(
+                            got == want,
+                            "o {o} k {k} kc {kc} perm {} chunk {chunk} ot {ot}",
+                            p.is_some()
+                        );
                     }
                 }
             }
@@ -294,8 +379,8 @@ mod tests {
     /// normal), random bit patterns, and small normals so that products underflow; codes include -128, -1, 0, 127.
     fn random_q8_special(r: &mut Rng, o: usize, k: usize) -> Vec<u8> {
         const SPECIAL: [u16; 16] = [
-            0x0000, 0x8000, 0x0001, 0x8001, 0x03ff, 0x0200, 0x0400, 0x0800, 0x7bff, 0xfbff, 0x3c00, 0xbc00, 0x7c00,
-            0xfc00, 0x7c01, 0xfe55,
+            0x0000, 0x8000, 0x0001, 0x8001, 0x03ff, 0x0200, 0x0400, 0x0800, 0x7bff, 0xfbff, 0x3c00,
+            0xbc00, 0x7c00, 0xfc00, 0x7c01, 0xfe55,
         ];
         let mut q8 = Vec::with_capacity(o * (k / 32) * 34);
         for _ in 0..o * (k / 32) {
@@ -325,7 +410,11 @@ mod tests {
     #[test]
     fn fp16_strips_match_ref_bitwise() {
         let mut r = Rng(0x7f4a_7c15_9e37_79b9);
-        for &(o, k, kc) in &[(64usize, 128usize, 64usize), (96, 256, 256), (96, 3072, 1536)] {
+        for &(o, k, kc) in &[
+            (64usize, 128usize, 64usize),
+            (96, 256, 256),
+            (96, 3072, 1536),
+        ] {
             for _ in 0..2 {
                 let q8 = random_q8_special(&mut r, o, k);
                 let perm = random_perm(&mut r, o);
@@ -337,7 +426,11 @@ mod tests {
                             pack_fp16_strip(&mut got, &q8, o, k, kc, p, chunk, ot);
                             let mut want = vec![0x5au8; sb];
                             pack_fp16_strip_ref(&mut want, &q8, o, k, kc, p, chunk, ot);
-                            assert!(got == want, "o {o} k {k} kc {kc} perm {} chunk {chunk} ot {ot}", p.is_some());
+                            assert!(
+                                got == want,
+                                "o {o} k {k} kc {kc} perm {} chunk {chunk} ot {ot}",
+                                p.is_some()
+                            );
                         }
                     }
                 }
@@ -368,20 +461,50 @@ mod tests {
         for rep in 0..reps {
             let t = Instant::now();
             for ot in 0..nt {
-                pack_fp16_strip_ref(&mut old[ot * sb..(ot + 1) * sb], std::hint::black_box(&q8), o, k, kc, None, 0, ot);
+                pack_fp16_strip_ref(
+                    &mut old[ot * sb..(ot + 1) * sb],
+                    std::hint::black_box(&q8),
+                    o,
+                    k,
+                    kc,
+                    None,
+                    0,
+                    ot,
+                );
             }
             let t_old = t.elapsed().as_secs_f64();
             let t = Instant::now();
             for ot in 0..nt {
-                pack_fp16_strip(&mut new[ot * sb..(ot + 1) * sb], std::hint::black_box(&q8), o, k, kc, None, 0, ot);
+                pack_fp16_strip(
+                    &mut new[ot * sb..(ot + 1) * sb],
+                    std::hint::black_box(&q8),
+                    o,
+                    k,
+                    kc,
+                    None,
+                    0,
+                    ot,
+                );
             }
             let t_new = t.elapsed().as_secs_f64();
             let t = Instant::now();
             for ot in 0..nt {
-                tiles::pack_w8_strip(&mut w8[ot * wb..(ot + 1) * wb], std::hint::black_box(&q8), o, k, kc, None, 0, ot);
+                tiles::pack_w8_strip(
+                    &mut w8[ot * wb..(ot + 1) * wb],
+                    std::hint::black_box(&q8),
+                    o,
+                    k,
+                    kc,
+                    None,
+                    0,
+                    ot,
+                );
             }
             let t_w8 = t.elapsed().as_secs_f64();
-            assert!(old == new, "bench: new fp16 output differs from the reference");
+            assert!(
+                old == new,
+                "bench: new fp16 output differs from the reference"
+            );
             let (rate_old, rate_new, rate_w8) = (mb_out / t_old, mb_out / t_new, mb_src / t_w8);
             println!("rep {rep}: fp16 old {rate_old:.0} MB/s, fp16 new {rate_new:.0} MB/s, w8 {rate_w8:.0} MB/s");
             sum_old += rate_old;
@@ -412,7 +535,17 @@ mod tests {
                 .map(|c| {
                     let mut b = vec![0u8; nt * sb];
                     for i in 0..nt {
-                        pack_strip(fmt, &mut b[i * sb..(i + 1) * sb], &q8, o, k, kc, Some(&perm), c, ot0 + i);
+                        pack_strip(
+                            fmt,
+                            &mut b[i * sb..(i + 1) * sb],
+                            &q8,
+                            o,
+                            k,
+                            kc,
+                            Some(&perm),
+                            c,
+                            ot0 + i,
+                        );
                     }
                     b
                 })
@@ -424,7 +557,11 @@ mod tests {
                     unsafe { weight_row(fmt, blob.as_ptr(), kc, ot0, n, &mut out) };
                     for (kl, &w) in out.iter().enumerate() {
                         let want = ref_weight(&q8, k, Some(&perm), fmt, n, c * kc + kl);
-                        assert_eq!(w.to_bits(), want.to_bits(), "{fmt:?} row {n} chunk {c} kl {kl}");
+                        assert_eq!(
+                            w.to_bits(),
+                            want.to_bits(),
+                            "{fmt:?} row {n} chunk {c} kl {kl}"
+                        );
                     }
                 }
             }
@@ -436,7 +573,15 @@ mod tests {
     }
 
     /// One GEMM per K chunk through the emulator: X (activation tiles), the weight blobs of `fmt`, Y column-major.
-    fn emu_gemm(fmt: WFmt, q8: &[u8], x_rows: &[Vec<f32>], t: usize, k: usize, o: usize, kc: usize) -> Vec<f32> {
+    fn emu_gemm(
+        fmt: WFmt,
+        q8: &[u8],
+        x_rows: &[Vec<f32>],
+        t: usize,
+        k: usize,
+        o: usize,
+        kc: usize,
+    ) -> Vec<f32> {
         let mut e = Emu::new(8 << 20, 1);
         let lay = tiles::ActLayout::new(t, k, kc);
         let xb = e.alloc(0, round_up(lay.bytes())).expect("x buffer");
@@ -444,7 +589,12 @@ mod tests {
             unsafe { tiles::write_act_row(xb.ptr as *mut u16, &lay, m, 0, row) };
         }
         let nchunks = k / kc;
-        let ol = tiles::OutLayout { t_pad: lay.t_pad, o, nchunks, ycol: true };
+        let ol = tiles::OutLayout {
+            t_pad: lay.t_pad,
+            o,
+            nchunks,
+            ycol: true,
+        };
         let yb = e.alloc(0, round_up(ol.bytes())).expect("y buffer");
         let sb = fmt.strip_bytes(kc);
         let wbytes = nchunks * (o / 32) * sb;
@@ -453,7 +603,17 @@ mod tests {
             let base = c * (o / 32) * sb;
             let blob = unsafe { std::slice::from_raw_parts_mut(wb.ptr.add(base), (o / 32) * sb) };
             for ot in 0..o / 32 {
-                pack_strip(fmt, &mut blob[ot * sb..(ot + 1) * sb], q8, o, k, kc, None, c, ot);
+                pack_strip(
+                    fmt,
+                    &mut blob[ot * sb..(ot + 1) * sb],
+                    q8,
+                    o,
+                    k,
+                    kc,
+                    None,
+                    c,
+                    ot,
+                );
             }
             let a = GemmArgs {
                 x_slot: xb.slot,
@@ -472,7 +632,9 @@ mod tests {
         }
         let mut y = vec![0f32; t * o];
         for m in 0..t {
-            unsafe { tiles::read_out_row(yb.ptr as *const u16, &ol, m, 0, &mut y[m * o..(m + 1) * o]) };
+            unsafe {
+                tiles::read_out_row(yb.ptr as *const u16, &ol, m, 0, &mut y[m * o..(m + 1) * o])
+            };
         }
         y
     }

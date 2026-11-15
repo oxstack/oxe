@@ -30,7 +30,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
-use super::{exp_fast, int8_conv, winograd, Attn, Conv, DecodeTimes, Norm, ResBlock, VaeDecoder, GC, GN_EPS, I8_CHUNK, PATCH};
+use super::{
+    exp_fast, int8_conv, winograd, Attn, Conv, DecodeTimes, Norm, ResBlock, VaeDecoder, GC, GN_EPS,
+    I8_CHUNK, PATCH,
+};
 
 /// Channel-last feature map; `d` may be longer than `c*h*w` (pooled buffer).
 pub(super) struct F {
@@ -61,7 +64,10 @@ impl<T: Clone + Default> Pool<T> {
         let mut free = self.0.lock().unwrap();
         let mut best: Option<usize> = None;
         for (i, v) in free.iter().enumerate() {
-            if v.len() >= n && v.len() <= 4 * n.max(1) && best.is_none_or(|b| v.len() < free[b].len()) {
+            if v.len() >= n
+                && v.len() <= 4 * n.max(1)
+                && best.is_none_or(|b| v.len() < free[b].len())
+            {
                 best = Some(i);
             }
         }
@@ -159,7 +165,17 @@ impl Drop for PendingJob<'_> {
 
 impl Workers {
     pub fn new(threads: usize) -> Workers {
-        let sh = Arc::new(Shared { st: Mutex::new(State { gen: 0, job: None, running: 0, quit: false, panicked: false }), work: Condvar::new(), done: Condvar::new() });
+        let sh = Arc::new(Shared {
+            st: Mutex::new(State {
+                gen: 0,
+                job: None,
+                running: 0,
+                quit: false,
+                panicked: false,
+            }),
+            work: Condvar::new(),
+            done: Condvar::new(),
+        });
         let handles = (1..threads.max(1))
             .map(|_| {
                 let sh = sh.clone();
@@ -184,7 +200,11 @@ impl Workers {
                 })
             })
             .collect();
-        Workers { sh, handles, run_lock: Mutex::new(()) }
+        Workers {
+            sh,
+            handles,
+            run_lock: Mutex::new(()),
+        }
     }
 
     /// Runs `f(i)` for `i in 0..n`, tasks taken from a shared counter by the workers and the
@@ -199,8 +219,14 @@ impl Workers {
         let _serial = self.run_lock.lock().unwrap_or_else(|e| e.into_inner());
         let next = AtomicUsize::new(0);
         // SAFETY (lifetime erasure): the job is withdrawn below before `f` and `next` go out of scope.
-        let f_static: *const (dyn Fn(usize) + Sync) = unsafe { std::mem::transmute::<&(dyn Fn(usize) + Sync), &'static (dyn Fn(usize) + Sync)>(f) };
-        let job = Job { f: f_static, n, next: &next };
+        let f_static: *const (dyn Fn(usize) + Sync) = unsafe {
+            std::mem::transmute::<&(dyn Fn(usize) + Sync), &'static (dyn Fn(usize) + Sync)>(f)
+        };
+        let job = Job {
+            f: f_static,
+            n,
+            next: &next,
+        };
         {
             let mut st = self.sh.st.lock().unwrap_or_else(|e| e.into_inner());
             assert!(!st.panicked, "a decode worker panicked");
@@ -237,7 +263,14 @@ enum Kind {
     Quant = 3,
     Attn = 4,
 }
-const KIND_NAMES: [&str; 6] = ["conv f32", "conv int8", "groupnorm+silu", "norm+quantise (int8)", "attention core", "other"];
+const KIND_NAMES: [&str; 6] = [
+    "conv f32",
+    "conv int8",
+    "groupnorm+silu",
+    "norm+quantise (int8)",
+    "attention core",
+    "other",
+];
 
 pub(super) struct Ctx {
     pub pool: Pool<f32>,
@@ -252,7 +285,15 @@ pub(super) struct Ctx {
 
 impl Ctx {
     pub fn new(threads: usize, groups: usize, int8: bool, wino: bool) -> Ctx {
-        Ctx { wino: wino && !int8, pool: Pool::new(), pool8: Pool::new(), par: Workers::new(threads), groups, int8, prof: RefCell::new([0.0; 6]) }
+        Ctx {
+            wino: wino && !int8,
+            pool: Pool::new(),
+            pool8: Pool::new(),
+            par: Workers::new(threads),
+            groups,
+            int8,
+            prof: RefCell::new([0.0; 6]),
+        }
     }
     fn add(&self, k: Kind, t0: Instant) {
         self.prof.borrow_mut()[k as usize] += t0.elapsed().as_secs_f64();
@@ -292,18 +333,48 @@ struct Seg {
 #[inline(never)]
 unsafe fn tile(acc: *mut f32, stride: usize, segs: &[Seg], bias: *const f32) {
     use core::arch::aarch64::*;
-    let (o0, o1, o2, o3) = (acc, acc.add(stride), acc.add(2 * stride), acc.add(3 * stride));
+    let (o0, o1, o2, o3) = (
+        acc,
+        acc.add(stride),
+        acc.add(2 * stride),
+        acc.add(3 * stride),
+    );
     let (mut a00, mut a01, mut a02, mut a03);
     let (mut a10, mut a11, mut a12, mut a13);
     let (mut a20, mut a21, mut a22, mut a23);
     let (mut a30, mut a31, mut a32, mut a33);
     if bias.is_null() {
-        (a00, a01, a02, a03) = (vld1q_f32(o0), vld1q_f32(o0.add(4)), vld1q_f32(o0.add(8)), vld1q_f32(o0.add(12)));
-        (a10, a11, a12, a13) = (vld1q_f32(o1), vld1q_f32(o1.add(4)), vld1q_f32(o1.add(8)), vld1q_f32(o1.add(12)));
-        (a20, a21, a22, a23) = (vld1q_f32(o2), vld1q_f32(o2.add(4)), vld1q_f32(o2.add(8)), vld1q_f32(o2.add(12)));
-        (a30, a31, a32, a33) = (vld1q_f32(o3), vld1q_f32(o3.add(4)), vld1q_f32(o3.add(8)), vld1q_f32(o3.add(12)));
+        (a00, a01, a02, a03) = (
+            vld1q_f32(o0),
+            vld1q_f32(o0.add(4)),
+            vld1q_f32(o0.add(8)),
+            vld1q_f32(o0.add(12)),
+        );
+        (a10, a11, a12, a13) = (
+            vld1q_f32(o1),
+            vld1q_f32(o1.add(4)),
+            vld1q_f32(o1.add(8)),
+            vld1q_f32(o1.add(12)),
+        );
+        (a20, a21, a22, a23) = (
+            vld1q_f32(o2),
+            vld1q_f32(o2.add(4)),
+            vld1q_f32(o2.add(8)),
+            vld1q_f32(o2.add(12)),
+        );
+        (a30, a31, a32, a33) = (
+            vld1q_f32(o3),
+            vld1q_f32(o3.add(4)),
+            vld1q_f32(o3.add(8)),
+            vld1q_f32(o3.add(12)),
+        );
     } else {
-        (a00, a01, a02, a03) = (vld1q_f32(bias), vld1q_f32(bias.add(4)), vld1q_f32(bias.add(8)), vld1q_f32(bias.add(12)));
+        (a00, a01, a02, a03) = (
+            vld1q_f32(bias),
+            vld1q_f32(bias.add(4)),
+            vld1q_f32(bias.add(8)),
+            vld1q_f32(bias.add(12)),
+        );
         (a10, a11, a12, a13) = (a00, a01, a02, a03);
         (a20, a21, a22, a23) = (a00, a01, a02, a03);
         (a30, a31, a32, a33) = (a00, a01, a02, a03);
@@ -316,7 +387,12 @@ unsafe fn tile(acc: *mut f32, stride: usize, segs: &[Seg], bias: *const f32) {
         let mut ci = 0;
         macro_rules! lane {
             ($l:literal, $v0:ident, $v1:ident, $v2:ident, $v3:ident) => {
-                let (w0, w1, w2, w3) = (vld1q_f32(w), vld1q_f32(w.add(4)), vld1q_f32(w.add(8)), vld1q_f32(w.add(12)));
+                let (w0, w1, w2, w3) = (
+                    vld1q_f32(w),
+                    vld1q_f32(w.add(4)),
+                    vld1q_f32(w.add(8)),
+                    vld1q_f32(w.add(12)),
+                );
                 w = w.add(GC);
                 a00 = vfmaq_laneq_f32::<$l>(a00, w0, $v0);
                 a01 = vfmaq_laneq_f32::<$l>(a01, w1, $v0);
@@ -337,7 +413,12 @@ unsafe fn tile(acc: *mut f32, stride: usize, segs: &[Seg], bias: *const f32) {
             };
         }
         while ci < c4 {
-            let (v0, v1, v2, v3) = (vld1q_f32(x0.add(ci)), vld1q_f32(x1.add(ci)), vld1q_f32(x2.add(ci)), vld1q_f32(x3.add(ci)));
+            let (v0, v1, v2, v3) = (
+                vld1q_f32(x0.add(ci)),
+                vld1q_f32(x1.add(ci)),
+                vld1q_f32(x2.add(ci)),
+                vld1q_f32(x3.add(ci)),
+            );
             lane!(0, v0, v1, v2, v3);
             lane!(1, v0, v1, v2, v3);
             lane!(2, v0, v1, v2, v3);
@@ -345,7 +426,12 @@ unsafe fn tile(acc: *mut f32, stride: usize, segs: &[Seg], bias: *const f32) {
             ci += 4;
         }
         while ci < cin {
-            let (v0, v1, v2, v3) = (vld1q_dup_f32(x0.add(ci)), vld1q_dup_f32(x1.add(ci)), vld1q_dup_f32(x2.add(ci)), vld1q_dup_f32(x3.add(ci)));
+            let (v0, v1, v2, v3) = (
+                vld1q_dup_f32(x0.add(ci)),
+                vld1q_dup_f32(x1.add(ci)),
+                vld1q_dup_f32(x2.add(ci)),
+                vld1q_dup_f32(x3.add(ci)),
+            );
             lane!(0, v0, v1, v2, v3);
             ci += 1;
         }
@@ -374,7 +460,11 @@ unsafe fn tile(acc: *mut f32, stride: usize, segs: &[Seg], bias: *const f32) {
     let mut a = [0f32; TP * GC];
     for p in 0..TP {
         for j in 0..GC {
-            a[p * GC + j] = if bias.is_null() { *acc.add(p * stride + j) } else { *bias.add(j) };
+            a[p * GC + j] = if bias.is_null() {
+                *acc.add(p * stride + j)
+            } else {
+                *bias.add(j)
+            };
         }
     }
     for sg in segs {
@@ -484,7 +574,8 @@ impl Conv {
                 for co in 0..cout {
                     for tap in 0..4 {
                         for ci in 0..cin {
-                            p[(((ph * nb + co / GC) * 4 + tap) * cin + ci) * GC + co % GC] = f[((ph * cout + co) * 4 + tap) * cin + ci];
+                            p[(((ph * nb + co / GC) * 4 + tap) * cin + ci) * GC + co % GC] =
+                                f[((ph * cout + co) * 4 + tap) * cin + ci];
                         }
                     }
                 }
@@ -499,7 +590,16 @@ impl Conv {
             let (cin, cout) = (self.cin, self.cout);
             let f = self.folded_up();
             let kk = 4 * cin;
-            (0..4).map(|ph| int8_gemm::Packed::from_f32(&f[ph * cout * kk..(ph + 1) * cout * kk], cout, kk, I8_CHUNK)).collect()
+            (0..4)
+                .map(|ph| {
+                    int8_gemm::Packed::from_f32(
+                        &f[ph * cout * kk..(ph + 1) * cout * kk],
+                        cout,
+                        kk,
+                        I8_CHUNK,
+                    )
+                })
+                .collect()
         })
     }
 }
@@ -548,13 +648,19 @@ impl Gemm<'_> {
         let per_sweep = (SWEEP_W_BYTES / (cin.min(KC) * GC * 4)).clamp(1, MAX_SEGS);
         let mut tmp = vec![0f32; per_sweep * TP * cin.min(KC)];
         let tmp_base = tmp.as_mut_ptr();
-        let mut segs = [Seg { x: std::ptr::null(), w: std::ptr::null(), n: 0, xs: 0 }; MAX_SEGS];
+        let mut segs = [Seg {
+            x: std::ptr::null(),
+            w: std::ptr::null(),
+            n: 0,
+            xs: 0,
+        }; MAX_SEGS];
         // (tap, first channel, channels) of the row's segments
         let mut list: Vec<(usize, usize, usize)> = Vec::with_capacity(ntaps * nchunks);
         for cb in cb0..cb1 {
             let ncb = GC.min(cout - cb * GC);
             for (pi, p) in self.phases.iter().enumerate() {
-                let wph = &self.wp[(pi * nb + cb) * ntaps * cin * GC..(pi * nb + cb + 1) * ntaps * cin * GC];
+                let wph = &self.wp
+                    [(pi * nb + cb) * ntaps * cin * GC..(pi * nb + cb + 1) * ntaps * cin * GC];
                 for i in i0..i1 {
                     let oy = s * i + p.a;
                     list.clear();
@@ -575,7 +681,10 @@ impl Gemm<'_> {
                                 let sy = (i as isize + dy) as usize;
                                 let sx = j0 as isize + dx;
                                 let (xp, xs) = if sx >= 0 && sx as usize + TP <= w {
-                                    (self.xd[(sy * w + sx as usize) * xpitch + c0..].as_ptr(), xpitch)
+                                    (
+                                        self.xd[(sy * w + sx as usize) * xpitch + c0..].as_ptr(),
+                                        xpitch,
+                                    )
                                 } else {
                                     // border or partial tile: a patch of TP pixels, zero where outside
                                     // Each segment owns one disjoint scratch region until tile().
@@ -585,30 +694,54 @@ impl Gemm<'_> {
                                         let xx = sx + q as isize;
                                         let d = &mut dst[q * n..(q + 1) * n];
                                         if xx >= 0 && (xx as usize) < w {
-                                            d.copy_from_slice(&self.xd[(sy * w + xx as usize) * xpitch + c0..][..n]);
+                                            d.copy_from_slice(
+                                                &self.xd[(sy * w + xx as usize) * xpitch + c0..]
+                                                    [..n],
+                                            );
                                         } else {
                                             d.fill(0.0);
                                         }
                                     }
                                     (ptr.cast_const(), n)
                                 };
-                                segs[kq] = Seg { x: xp, w: wph[(t * cin + c0) * GC..].as_ptr(), n, xs };
+                                segs[kq] = Seg {
+                                    x: xp,
+                                    w: wph[(t * cin + c0) * GC..].as_ptr(),
+                                    n,
+                                    xs,
+                                };
                             }
-                            let bp = if first { self.bias[cb * GC..].as_ptr() } else { std::ptr::null() };
+                            let bp = if first {
+                                self.bias[cb * GC..].as_ptr()
+                            } else {
+                                std::ptr::null()
+                            };
                             let o = self.out.0.add((oy * ow + s * j0 + p.b) * opitch + cb * GC);
                             let direct = ncb == GC && npx == TP;
                             let mut acc = [0f32; TP * GC];
                             let acc_base = acc.as_mut_ptr();
-                            let (ap, astride) = if direct { (o, s * opitch) } else { (acc_base, GC) };
+                            let (ap, astride) = if direct {
+                                (o, s * opitch)
+                            } else {
+                                (acc_base, GC)
+                            };
                             if !direct && !first {
                                 for q in 0..npx {
-                                    std::ptr::copy_nonoverlapping(o.add(q * s * opitch), acc_base.add(q * GC), ncb);
+                                    std::ptr::copy_nonoverlapping(
+                                        o.add(q * s * opitch),
+                                        acc_base.add(q * GC),
+                                        ncb,
+                                    );
                                 }
                             }
                             tile(ap, astride, &segs[..sweep.len()], bp);
                             if !direct {
                                 for q in 0..npx {
-                                    std::ptr::copy_nonoverlapping(acc_base.add(q * GC), o.add(q * s * opitch), ncb);
+                                    std::ptr::copy_nonoverlapping(
+                                        acc_base.add(q * GC),
+                                        o.add(q * s * opitch),
+                                        ncb,
+                                    );
                                 }
                             }
                         }
@@ -644,7 +777,20 @@ pub(super) fn conv_f32(conv: &Conv, x: &F, up: bool, residual: Option<&F>, cx: &
         assert_eq!((r.c, r.h, r.w), (cout, oh, ow), "residual shape");
     }
     let mut out = cx.pool.take(oh * ow * cout);
-    let g = Gemm { xd: x.data(), h, w, cin: conv.cin, cout, xpitch: conv.cin, opitch: cout, wp: if up { conv.packed_up() } else { conv.packed() }, bias: &bias, phases: &ph, s, out: SendPtr(out.as_mut_ptr()) };
+    let g = Gemm {
+        xd: x.data(),
+        h,
+        w,
+        cin: conv.cin,
+        cout,
+        xpitch: conv.cin,
+        opitch: cout,
+        wp: if up { conv.packed_up() } else { conv.packed() },
+        bias: &bias,
+        phases: &ph,
+        s,
+        out: SendPtr(out.as_mut_ptr()),
+    };
     let band = if up { BAND / 2 } else { BAND };
     cx.par.run(h.div_ceil(band), &|bi: usize| {
         let g = &g;
@@ -662,7 +808,12 @@ pub(super) fn conv_f32(conv: &Conv, x: &F, up: bool, residual: Option<&F>, cx: &
         }
     });
     cx.add(Kind::ConvF32, t0);
-    F { c: cout, h: oh, w: ow, d: out }
+    F {
+        c: cout,
+        h: oh,
+        w: ow,
+        d: out,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -677,7 +828,13 @@ const WINO_TT: usize = 32;
 /// Shapes the Winograd form takes: 3x3, even height and width, channel counts that are multiples
 /// of 4 and large enough for the transforms to be noise next to the products.
 fn wino_ok(conv: &Conv, h: usize, w: usize) -> bool {
-    conv.k == 3 && h % 2 == 0 && w % 2 == 0 && conv.cin % 4 == 0 && conv.cout % 4 == 0 && conv.cin >= 32 && cfg!(target_arch = "aarch64")
+    conv.k == 3
+        && h % 2 == 0
+        && w % 2 == 0
+        && conv.cin % 4 == 0
+        && conv.cout % 4 == 0
+        && conv.cin >= 32
+        && cfg!(target_arch = "aarch64")
 }
 
 impl Conv {
@@ -685,7 +842,12 @@ impl Conv {
     /// order per transform position: `[pos][cout block][cin][GC]`, `pos = 4i + j`.
     fn packed_wino(&self) -> &[f32] {
         self.wwin.get_or_init(|| {
-            const G: [[f64; 3]; 4] = [[1.0, 0.0, 0.0], [0.5, 0.5, 0.5], [0.5, -0.5, 0.5], [0.0, 0.0, 1.0]];
+            const G: [[f64; 3]; 4] = [
+                [1.0, 0.0, 0.0],
+                [0.5, 0.5, 0.5],
+                [0.5, -0.5, 0.5],
+                [0.0, 0.0, 1.0],
+            ];
             let (cin, cout) = (self.cin, self.cout);
             let nb = cout.div_ceil(GC);
             let mut p = vec![0f32; 16 * nb * cin * GC];
@@ -723,7 +885,12 @@ unsafe fn wino_in(px: &[*const f32; 16], cin: usize, v: *mut f32, pstride: usize
     for ci in (0..cin).step_by(4) {
         let mut t = [[vdupq_n_f32(0.0); 4]; 4];
         for c in 0..4 {
-            let (d0, d1, d2, d3) = (vld1q_f32(px[c].add(ci)), vld1q_f32(px[4 + c].add(ci)), vld1q_f32(px[8 + c].add(ci)), vld1q_f32(px[12 + c].add(ci)));
+            let (d0, d1, d2, d3) = (
+                vld1q_f32(px[c].add(ci)),
+                vld1q_f32(px[4 + c].add(ci)),
+                vld1q_f32(px[8 + c].add(ci)),
+                vld1q_f32(px[12 + c].add(ci)),
+            );
             t[0][c] = vsubq_f32(d0, d2);
             t[1][c] = vaddq_f32(d1, d2);
             t[2][c] = vsubq_f32(d2, d1);
@@ -745,12 +912,24 @@ unsafe fn wino_in(px: &[*const f32; 16], cin: usize, v: *mut f32, pstride: usize
 /// # Safety
 /// `m + p*pstride`, `bias`, every `o[..]` (and `res[..]`) valid for `cout` floats (`cout % 4 == 0`).
 #[cfg(target_arch = "aarch64")]
-unsafe fn wino_out(m: *const f32, pstride: usize, cout: usize, bias: *const f32, o: &[*mut f32; 4], res: Option<&[*const f32; 4]>) {
+unsafe fn wino_out(
+    m: *const f32,
+    pstride: usize,
+    cout: usize,
+    bias: *const f32,
+    o: &[*mut f32; 4],
+    res: Option<&[*const f32; 4]>,
+) {
     use core::arch::aarch64::*;
     for co in (0..cout).step_by(4) {
         let mut s = [[vdupq_n_f32(0.0); 4]; 2];
         for j in 0..4 {
-            let (m0, m1, m2, m3) = (vld1q_f32(m.add(j * pstride + co)), vld1q_f32(m.add((4 + j) * pstride + co)), vld1q_f32(m.add((8 + j) * pstride + co)), vld1q_f32(m.add((12 + j) * pstride + co)));
+            let (m0, m1, m2, m3) = (
+                vld1q_f32(m.add(j * pstride + co)),
+                vld1q_f32(m.add((4 + j) * pstride + co)),
+                vld1q_f32(m.add((8 + j) * pstride + co)),
+                vld1q_f32(m.add((12 + j) * pstride + co)),
+            );
             s[0][j] = vaddq_f32(vaddq_f32(m0, m1), m2);
             s[1][j] = vsubq_f32(vsubq_f32(m1, m2), m3);
         }
@@ -773,7 +952,14 @@ unsafe fn wino_in(_: &[*const f32; 16], _: usize, _: *mut f32, _: usize) {
     unreachable!("wino_ok is false off aarch64")
 }
 #[cfg(not(target_arch = "aarch64"))]
-unsafe fn wino_out(_: *const f32, _: usize, _: usize, _: *const f32, _: &[*mut f32; 4], _: Option<&[*const f32; 4]>) {
+unsafe fn wino_out(
+    _: *const f32,
+    _: usize,
+    _: usize,
+    _: *const f32,
+    _: &[*mut f32; 4],
+    _: Option<&[*const f32; 4]>,
+) {
     unreachable!("wino_ok is false off aarch64")
 }
 
@@ -869,12 +1055,29 @@ impl Wino<'_> {
         for k in 0..n {
             let (ty, tx) = ((t0 + k) / tw, (t0 + k) % tw);
             let pix = |r: usize, c: usize| ((2 * ty + r) * w + 2 * tx + c) * cout;
-            let o = [self.out.0.add(pix(0, 0)), self.out.0.add(pix(0, 1)), self.out.0.add(pix(1, 0)), self.out.0.add(pix(1, 1))];
+            let o = [
+                self.out.0.add(pix(0, 0)),
+                self.out.0.add(pix(0, 1)),
+                self.out.0.add(pix(1, 0)),
+                self.out.0.add(pix(1, 1)),
+            ];
             let res = self.residual.map(|r| {
                 let rd = r.data().as_ptr();
-                [rd.add(pix(0, 0)), rd.add(pix(0, 1)), rd.add(pix(1, 0)), rd.add(pix(1, 1))]
+                [
+                    rd.add(pix(0, 0)),
+                    rd.add(pix(0, 1)),
+                    rd.add(pix(1, 0)),
+                    rd.add(pix(1, 1)),
+                ]
             });
-            wino_out(m.add((slot0 + k) * cout), self.mp, cout, self.bias.as_ptr(), &o, res.as_ref());
+            wino_out(
+                m.add((slot0 + k) * cout),
+                self.mp,
+                cout,
+                self.bias.as_ptr(),
+                &o,
+                res.as_ref(),
+            );
         }
     }
 }
@@ -903,11 +1106,19 @@ fn conv_wino(conv: &Conv, x: &F, residual: Option<&F>, cx: &Ctx) -> F {
     let u_bytes = 16 * cin * cout * 4;
     let local = u_bytes <= WINO_LOCAL_U_BYTES;
     // tiles per block: local = V and M about 1 MB each; shared = a GEMM task of about 4 M products
-    let tb = if local { ((1 << 20) / (16 * 4 * cin.max(cout))).clamp(8, 1024) & !3 } else { ((WINO_TASK_MACS / (cin * cout)).div_ceil(64) * 64).clamp(64, 1024) };
+    let tb = if local {
+        ((1 << 20) / (16 * 4 * cin.max(cout))).clamp(8, 1024) & !3
+    } else {
+        ((WINO_TASK_MACS / (cin * cout)).div_ceil(64) * 64).clamp(64, 1024)
+    };
     let mut out = cx.pool.take(h * w * cout);
     let zero_px = vec![0f32; cin];
     let zero_bias = vec![0f32; nb * GC];
-    let one = [Phase { a: 0, b: 0, taps: vec![(0, 0)] }];
+    let one = [Phase {
+        a: 0,
+        b: 0,
+        taps: vec![(0, 0)],
+    }];
     let wn = Wino {
         xd: x.data(),
         h,
@@ -965,24 +1176,50 @@ fn conv_wino(conv: &Conv, x: &F, residual: Option<&F>, cx: &Ctx) -> F {
                 let vptr = vptr;
                 let (tl0, nn) = (ti * WINO_TT, WINO_TT.min(n - ti * WINO_TT));
                 debug_assert!(tb % WINO_TT == 0);
-                unsafe { wn.transform_in(t_base + tl0, nn, vptr.0.add((tl0 / tb) * 16 * wn.vp), tl0 % tb) };
+                unsafe {
+                    wn.transform_in(
+                        t_base + tl0,
+                        nn,
+                        vptr.0.add((tl0 / tb) * 16 * wn.vp),
+                        tl0 % tb,
+                    )
+                };
             });
             cx.par.run(16 * nblk, &|ti: usize| {
                 let (vptr, mptr) = (vptr, mptr);
                 let (pos, b) = (ti / nblk, ti % nblk);
-                unsafe { wn.gemm(pos, tb.min(n - b * tb), vptr.0.add(b * 16 * wn.vp), mptr.0.add(b * 16 * wn.mp)) };
+                unsafe {
+                    wn.gemm(
+                        pos,
+                        tb.min(n - b * tb),
+                        vptr.0.add(b * 16 * wn.vp),
+                        mptr.0.add(b * 16 * wn.mp),
+                    )
+                };
             });
             cx.par.run(ntt, &|ti: usize| {
                 let mptr = mptr;
                 let (tl0, nn) = (ti * WINO_TT, WINO_TT.min(n - ti * WINO_TT));
-                unsafe { wn.transform_out(t_base + tl0, nn, mptr.0.add((tl0 / tb) * 16 * wn.mp), tl0 % tb) };
+                unsafe {
+                    wn.transform_out(
+                        t_base + tl0,
+                        nn,
+                        mptr.0.add((tl0 / tb) * 16 * wn.mp),
+                        tl0 % tb,
+                    )
+                };
             });
         }
         cx.pool.give(v);
         cx.pool.give(m);
     }
     cx.add(Kind::ConvF32, t0);
-    F { c: cout, h, w, d: out }
+    F {
+        c: cout,
+        h,
+        w,
+        d: out,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -999,7 +1236,11 @@ const ATT_SCORE_BYTES: usize = 2 << 20;
 /// on the thread count, so neither does the result.
 fn attention_gemm(q: &[f32], k: &[f32], v: &[f32], l: usize, c: usize, cx: &Ctx) -> Vec<f32> {
     let scale = 1.0 / (c as f32).sqrt();
-    let one = [Phase { a: 0, b: 0, taps: vec![(0, 0)] }];
+    let one = [Phase {
+        a: 0,
+        b: 0,
+        taps: vec![(0, 0)],
+    }];
     // K as GEMM weights: output channel = key, input = channel: [key block][c][GC]
     let nbk = l.div_ceil(GC);
     let mut kp = vec![0f32; nbk * c * GC];
@@ -1028,12 +1269,38 @@ fn attention_gemm(q: &[f32], k: &[f32], v: &[f32], l: usize, c: usize, cx: &Ctx)
         let mut sc = vec![0f32; n * l];
         // SAFETY: `sc` is private to this task; output rows q0 .. q0+n belong to this task.
         unsafe {
-            let g1 = Gemm { xd: &q[q0 * c..(q0 + n) * c], h: 1, w: n, cin: c, cout: l, xpitch: c, opitch: l, wp: &kp, bias: &zero_k, phases: &one, s: 1, out: SendPtr(sc.as_mut_ptr()) };
+            let g1 = Gemm {
+                xd: &q[q0 * c..(q0 + n) * c],
+                h: 1,
+                w: n,
+                cin: c,
+                cout: l,
+                xpitch: c,
+                opitch: l,
+                wp: &kp,
+                bias: &zero_k,
+                phases: &one,
+                s: 1,
+                out: SendPtr(sc.as_mut_ptr()),
+            };
             g1.band(0, 1, 0, nbk);
             for row in sc.chunks_exact_mut(l) {
                 softmax_row(row, scale);
             }
-            let g2 = Gemm { xd: &sc, h: 1, w: n, cin: l, cout: c, xpitch: l, opitch: c, wp: &vp, bias: &zero_c, phases: &one, s: 1, out: SendPtr(op.0.add(q0 * c)) };
+            let g2 = Gemm {
+                xd: &sc,
+                h: 1,
+                w: n,
+                cin: l,
+                cout: c,
+                xpitch: l,
+                opitch: c,
+                wp: &vp,
+                bias: &zero_c,
+                phases: &one,
+                s: 1,
+                out: SendPtr(op.0.add(q0 * c)),
+            };
             g2.band(0, 1, 0, nbc);
         }
     });
@@ -1048,7 +1315,11 @@ fn softmax_row(row: &mut [f32], scale: f32) {
         *x *= scale;
         m = m.max(*x);
     }
-    let n4 = if cfg!(target_arch = "aarch64") { row.len() & !3 } else { 0 };
+    let n4 = if cfg!(target_arch = "aarch64") {
+        row.len() & !3
+    } else {
+        0
+    };
     #[cfg(not(target_arch = "aarch64"))]
     let mut sum = 0f32;
     #[cfg(target_arch = "aarch64")]
@@ -1061,7 +1332,8 @@ fn softmax_row(row: &mut [f32], scale: f32) {
             vst1q_f32(row.as_mut_ptr().add(i), e);
             acc = vaddq_f32(acc, e);
         }
-        ((vgetq_lane_f32::<0>(acc) + vgetq_lane_f32::<1>(acc)) + vgetq_lane_f32::<2>(acc)) + vgetq_lane_f32::<3>(acc)
+        ((vgetq_lane_f32::<0>(acc) + vgetq_lane_f32::<1>(acc)) + vgetq_lane_f32::<2>(acc))
+            + vgetq_lane_f32::<3>(acc)
     };
     for x in row[n4..].iter_mut() {
         *x = exp_fast(*x - m);
@@ -1090,7 +1362,10 @@ struct GnCoef {
 fn gn_coef(x: &F, norm: &Norm, cx: &Ctx) -> GnCoef {
     let (c, h, w) = (x.c, x.h, x.w);
     let groups = cx.groups;
-    assert!(groups > 0 && c % groups == 0, "group_norm: {c} channels, {groups} groups");
+    assert!(
+        groups > 0 && c % groups == 0,
+        "group_norm: {c} channels, {groups} groups"
+    );
     let cg = c / groups;
     let xd = x.data();
     let mut part = vec![0f64; h * 2 * c];
@@ -1098,7 +1373,8 @@ fn gn_coef(x: &F, norm: &Norm, cx: &Ctx) -> GnCoef {
     cx.par.run(h, &|y: usize| {
         let pp = pp;
         // SAFETY: row y's 2*c partial sums belong to this task.
-        let (s, q) = unsafe { std::slice::from_raw_parts_mut(pp.0.add(y * 2 * c), 2 * c) }.split_at_mut(c);
+        let (s, q) =
+            unsafe { std::slice::from_raw_parts_mut(pp.0.add(y * 2 * c), 2 * c) }.split_at_mut(c);
         for px in xd[y * w * c..(y + 1) * w * c].chunks_exact(c) {
             for ci in 0..c {
                 let v = px[ci] as f64;
@@ -1108,7 +1384,11 @@ fn gn_coef(x: &F, norm: &Norm, cx: &Ctx) -> GnCoef {
         }
     });
     let n = (cg * h * w) as f64;
-    let mut co = GnCoef { mean: vec![0.0; c], a: vec![0.0; c], b: norm.b.clone() };
+    let mut co = GnCoef {
+        mean: vec![0.0; c],
+        a: vec![0.0; c],
+        b: norm.b.clone(),
+    };
     for g in 0..groups {
         let (mut s, mut q) = (0f64, 0f64);
         for y in 0..h {
@@ -1145,8 +1425,18 @@ unsafe fn gn_apply(src: *const f32, dst: *mut f32, n: usize, c: usize, co: &GnCo
             let mut ci = 0;
             while ci < c4 {
                 let v = vld1q_f32(s.add(ci));
-                let y = vaddq_f32(vmulq_f32(vsubq_f32(v, vld1q_f32(co.mean.as_ptr().add(ci))), vld1q_f32(co.a.as_ptr().add(ci))), vld1q_f32(co.b.as_ptr().add(ci)));
-                let o = if silu { vdivq_f32(y, vaddq_f32(vdupq_n_f32(1.0), exp_fast_v(vnegq_f32(y)))) } else { y };
+                let y = vaddq_f32(
+                    vmulq_f32(
+                        vsubq_f32(v, vld1q_f32(co.mean.as_ptr().add(ci))),
+                        vld1q_f32(co.a.as_ptr().add(ci)),
+                    ),
+                    vld1q_f32(co.b.as_ptr().add(ci)),
+                );
+                let o = if silu {
+                    vdivq_f32(y, vaddq_f32(vdupq_n_f32(1.0), exp_fast_v(vnegq_f32(y))))
+                } else {
+                    y
+                };
                 vst1q_f32(d.add(ci), o);
                 ci += 4;
             }
@@ -1167,13 +1457,22 @@ unsafe fn exp_fast_v(x: core::arch::aarch64::float32x4_t) -> core::arch::aarch64
     use core::arch::aarch64::*;
     let x = vminq_f32(vmaxq_f32(x, vdupq_n_f32(-87.0)), vdupq_n_f32(87.0));
     let n = vrndaq_f32(vmulq_f32(x, vdupq_n_f32(std::f32::consts::LOG2_E)));
-    let r = vaddq_f32(vsubq_f32(x, vmulq_f32(n, vdupq_n_f32(0.693_359_4))), vmulq_f32(n, vdupq_n_f32(2.121_944_4e-4)));
-    let mut p = vaddq_f32(vmulq_f32(vdupq_n_f32(1.987_569_1e-4), r), vdupq_n_f32(1.398_2e-3));
+    let r = vaddq_f32(
+        vsubq_f32(x, vmulq_f32(n, vdupq_n_f32(0.693_359_4))),
+        vmulq_f32(n, vdupq_n_f32(2.121_944_4e-4)),
+    );
+    let mut p = vaddq_f32(
+        vmulq_f32(vdupq_n_f32(1.987_569_1e-4), r),
+        vdupq_n_f32(1.398_2e-3),
+    );
     p = vaddq_f32(vmulq_f32(p, r), vdupq_n_f32(8.333_452e-3));
     p = vaddq_f32(vmulq_f32(p, r), vdupq_n_f32(4.166_579_6e-2));
     p = vaddq_f32(vmulq_f32(p, r), vdupq_n_f32(1.666_666_5e-1));
     p = vaddq_f32(vmulq_f32(p, r), vdupq_n_f32(0.5));
-    let y = vaddq_f32(vaddq_f32(vmulq_f32(vmulq_f32(p, r), r), r), vdupq_n_f32(1.0));
+    let y = vaddq_f32(
+        vaddq_f32(vmulq_f32(vmulq_f32(p, r), r), r),
+        vdupq_n_f32(1.0),
+    );
     let e = vshlq_n_s32::<23>(vaddq_s32(vcvtq_s32_f32(n), vdupq_n_s32(127)));
     vmulq_f32(y, vreinterpretq_f32_s32(e))
 }
@@ -1189,7 +1488,16 @@ fn group_norm(x: &F, norm: &Norm, silu: bool, cx: &Ctx) -> F {
     cx.par.run(h, &|y: usize| {
         let op = op;
         // SAFETY: row y of the output belongs to this task; src and dst are different buffers.
-        unsafe { gn_apply(xd.as_ptr().add(y * w * c), op.0.add(y * w * c), w * c, c, &co, silu) }
+        unsafe {
+            gn_apply(
+                xd.as_ptr().add(y * w * c),
+                op.0.add(y * w * c),
+                w * c,
+                c,
+                &co,
+                silu,
+            )
+        }
     });
     cx.add(Kind::Norm, t0);
     F { c, h, w, d: out }
@@ -1204,7 +1512,16 @@ fn group_norm_inplace(x: &mut F, norm: &Norm, silu: bool, cx: &Ctx) {
     cx.par.run(h, &|y: usize| {
         let op = op;
         // SAFETY: row y belongs to this task; in place (src == dst).
-        unsafe { gn_apply(op.0.add(y * w * c), op.0.add(y * w * c), w * c, c, &co, silu) }
+        unsafe {
+            gn_apply(
+                op.0.add(y * w * c),
+                op.0.add(y * w * c),
+                w * c,
+                c,
+                &co,
+                silu,
+            )
+        }
     });
     cx.add(Kind::Norm, t0);
 }
@@ -1232,7 +1549,13 @@ impl QF {
     /// out-of-row edge slots included.
     fn new(c: usize, h: usize, w: usize, cx: &Ctx) -> QF {
         assert!(c % I8_CHUNK == 0 && w % 8 == 0);
-        QF { c, h, w, codes: cx.pool8.take(h * 3 * w * c), scales: cx.pool.take(h * 3 * (w / 8) * (c / I8_CHUNK) * 8) }
+        QF {
+            c,
+            h,
+            w,
+            codes: cx.pool8.take(h * 3 * w * c),
+            scales: cx.pool.take(h * 3 * (w / 8) * (c / I8_CHUNK) * 8),
+        }
     }
     fn release(self, cx: &Ctx) {
         cx.pool8.give(self.codes);
@@ -1253,7 +1576,15 @@ impl QF {
 ///
 /// # Safety
 /// `src` valid for `npx*c` floats; `codes`/`scales` point at the row's region, owned by the caller.
-unsafe fn quantize_px(src: *const f32, x0: usize, npx: usize, w: usize, c: usize, codes: *mut u8, scales: *mut f32) {
+unsafe fn quantize_px(
+    src: *const f32,
+    x0: usize,
+    npx: usize,
+    w: usize,
+    c: usize,
+    codes: *mut u8,
+    scales: *mut f32,
+) {
     let nch = c / I8_CHUNK;
     let shift_bytes = w * c;
     let shift_scales = (w / 8) * nch * 8;
@@ -1273,16 +1604,27 @@ unsafe fn quantize_px(src: *const f32, x0: usize, npx: usize, w: usize, c: usize
             };
             #[cfg(not(target_arch = "aarch64"))]
             let amax = (0..I8_CHUNK).fold(0f32, |m, i| m.max((*v.add(i)).abs()));
-            let s = if amax > 0.0 && amax.is_finite() { amax / 127.0 } else { 0.0 };
+            let s = if amax > 0.0 && amax.is_finite() {
+                amax / 127.0
+            } else {
+                0.0
+            };
             let inv = if s > 0.0 { 1.0 / s } else { 0.0 };
             #[cfg(target_arch = "aarch64")]
             {
                 use core::arch::aarch64::*;
                 let (vi, lo, hi) = (vdupq_n_f32(inv), vdupq_n_f32(-127.0), vdupq_n_f32(127.0));
                 for (st, qv) in q.iter_mut().enumerate() {
-                    let a = vminq_f32(vmaxq_f32(vrndaq_f32(vmulq_f32(vld1q_f32(v.add(st * 8)), vi)), lo), hi);
-                    let b = vminq_f32(vmaxq_f32(vrndaq_f32(vmulq_f32(vld1q_f32(v.add(st * 8 + 4)), vi)), lo), hi);
-                    let n16 = vcombine_s16(vqmovn_s32(vcvtq_s32_f32(a)), vqmovn_s32(vcvtq_s32_f32(b)));
+                    let a = vminq_f32(
+                        vmaxq_f32(vrndaq_f32(vmulq_f32(vld1q_f32(v.add(st * 8)), vi)), lo),
+                        hi,
+                    );
+                    let b = vminq_f32(
+                        vmaxq_f32(vrndaq_f32(vmulq_f32(vld1q_f32(v.add(st * 8 + 4)), vi)), lo),
+                        hi,
+                    );
+                    let n16 =
+                        vcombine_s16(vqmovn_s32(vcvtq_s32_f32(a)), vqmovn_s32(vcvtq_s32_f32(b)));
                     *qv = vget_lane_u64::<0>(vreinterpret_u64_s8(vqmovn_s16(n16)));
                 }
             }
@@ -1338,7 +1680,10 @@ fn quantize(x: &F, norm: Option<&Norm>, cx: &Ctx) -> QF {
     let co = norm.map(|n| gn_coef(x, n, cx));
     let mut q = QF::new(c, h, w, cx);
     let (rb, rs) = (q.row_code_bytes(), q.row_scales());
-    let (cp, sp) = (SendPtr(q.codes.as_mut_ptr()), SendPtr(q.scales.as_mut_ptr()));
+    let (cp, sp) = (
+        SendPtr(q.codes.as_mut_ptr()),
+        SendPtr(q.scales.as_mut_ptr()),
+    );
     let xd = x.data();
     cx.par.run(h, &|y: usize| {
         let (cp, sp) = (cp, sp);
@@ -1367,7 +1712,12 @@ fn quantize(x: &F, norm: Option<&Norm>, cx: &Ctx) -> QF {
 /// Shapes the int8 path takes: 3x3, input channels a multiple of 64, output channels a multiple
 /// of 8, width a multiple of 8.
 fn i8_ok(conv: &Conv, w: usize) -> bool {
-    conv.k == 3 && conv.cin >= I8_CHUNK && conv.cin % I8_CHUNK == 0 && conv.cout % 8 == 0 && w % 8 == 0 && cfg!(target_arch = "aarch64")
+    conv.k == 3
+        && conv.cin >= I8_CHUNK
+        && conv.cin % I8_CHUNK == 0
+        && conv.cout % 8 == 0
+        && w % 8 == 0
+        && cfg!(target_arch = "aarch64")
 }
 
 /// Weight bytes per cache block of the int8 convolution (row groups x taps): L2 share.
@@ -1388,7 +1738,11 @@ fn conv_i8(conv: &Conv, q: &QF, up: bool, residual: Option<&F>, cx: &Ctx) -> F {
     let (oh, ow) = (s * h, s * w);
     let ph = phases(conv.k, up);
     let ntaps = ph[0].taps.len();
-    let wq: &[Packed] = if up { conv.packed_i8_up() } else { std::slice::from_ref(conv.packed_i8()) };
+    let wq: &[Packed] = if up {
+        conv.packed_i8_up()
+    } else {
+        std::slice::from_ref(conv.packed_i8())
+    };
     let nch = cin / I8_CHUNK;
     let row_groups = cout / G;
     let gb = ntaps * cin * G; // bytes of one weight row group
@@ -1424,11 +1778,16 @@ fn conv_i8(conv: &Conv, q: &QF, up: bool, residual: Option<&F>, cx: &Ctx) -> F {
                                 // output tile (pixel stride s*cout) lies in output row oy, owned by this task.
                                 unsafe {
                                     raw::i8g_tile8x8(
-                                        q.codes.as_ptr().add(sy * rb + sft * shift_bytes + g * 8 * cin) as *const i8,
+                                        q.codes
+                                            .as_ptr()
+                                            .add(sy * rb + sft * shift_bytes + g * 8 * cin)
+                                            as *const i8,
                                         wd.add(r * gb + t * cin * G),
                                         I8_CHUNK / 8,
                                         nch,
-                                        q.scales.as_ptr().add(sy * rs + sft * shift_scales + g * nch * 8),
+                                        q.scales
+                                            .as_ptr()
+                                            .add(sy * rs + sft * shift_scales + g * nch * 8),
                                         ws.add((r * ntaps + t) * nch * G),
                                         optr.0.add((oy * ow + s * 8 * g + p.b) * cout + r * G),
                                         (s * cout) as isize,
@@ -1447,21 +1806,30 @@ fn conv_i8(conv: &Conv, q: &QF, up: bool, residual: Option<&F>, cx: &Ctx) -> F {
         // bias (+ residual) on the finished output rows of this source row
         for oy in s * i..s * (i + 1) {
             // SAFETY: output rows s*i .. s*(i+1) belong to this task and are complete.
-            let o = unsafe { std::slice::from_raw_parts_mut(optr.0.add(oy * ow * cout), ow * cout) };
+            let o =
+                unsafe { std::slice::from_raw_parts_mut(optr.0.add(oy * ow * cout), ow * cout) };
             for px in o.chunks_exact_mut(cout) {
                 for (d, b) in px.iter_mut().zip(bias) {
                     *d += *b;
                 }
             }
             if let Some(r) = residual {
-                for (d, v) in o.iter_mut().zip(&r.data()[oy * ow * cout..(oy + 1) * ow * cout]) {
+                for (d, v) in o
+                    .iter_mut()
+                    .zip(&r.data()[oy * ow * cout..(oy + 1) * ow * cout])
+                {
                     *d += *v;
                 }
             }
         }
     });
     cx.add(Kind::ConvI8, t0);
-    F { c: cout, h: oh, w: ow, d: out }
+    F {
+        c: cout,
+        h: oh,
+        w: ow,
+        d: out,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1469,7 +1837,14 @@ fn conv_i8(conv: &Conv, q: &QF, up: bool, residual: Option<&F>, cx: &Ctx) -> F {
 // ---------------------------------------------------------------------------------------------
 
 /// `conv(silu(groupnorm(x)))` (+ residual). `owned` = the input may be overwritten (norm in place).
-fn norm_conv(x: &mut F, owned: bool, norm: &Norm, conv: &Conv, residual: Option<&F>, cx: &Ctx) -> F {
+fn norm_conv(
+    x: &mut F,
+    owned: bool,
+    norm: &Norm,
+    conv: &Conv,
+    residual: Option<&F>,
+    cx: &Ctx,
+) -> F {
     if cx.int8 && i8_ok(conv, x.w) {
         let q = quantize(x, Some(norm), cx);
         let o = conv_i8(conv, &q, false, residual, cx);
@@ -1538,7 +1913,14 @@ fn upsample_conv(conv: &Conv, x: F, cx: &Ctx) -> F {
 
 impl VaeDecoder {
     /// The channel-last decode (inputs already validated by `decode_timed`).
-    pub(super) fn decode_nhwc(&self, z: &[f32], channels: usize, h: usize, w: usize, threads: usize) -> (Vec<f32>, DecodeTimes) {
+    pub(super) fn decode_nhwc(
+        &self,
+        z: &[f32],
+        channels: usize,
+        h: usize,
+        w: usize,
+        threads: usize,
+    ) -> (Vec<f32>, DecodeTimes) {
         let mut tm = DecodeTimes::default();
         let t_all = Instant::now();
         let cx = Ctx::new(threads, self.groups, int8_conv(), winograd());
@@ -1559,7 +1941,12 @@ impl VaeDecoder {
                 }
             }
         }
-        let x = F { c: base_c, h: hh, w: ww, d };
+        let x = F {
+            c: base_c,
+            h: hh,
+            w: ww,
+            d,
+        };
         let x = conv_f32(&self.post_quant, &x, false, None, &cx);
         tm.push("unpatchify+post_quant", t0);
         let t0 = Instant::now();
@@ -1602,7 +1989,11 @@ impl VaeDecoder {
         let prof = cx.prof.borrow();
         let known: f64 = prof.iter().sum();
         for (name, secs) in KIND_NAMES.iter().zip(prof.iter()) {
-            let secs = if *name == "other" { tm.total - known } else { *secs };
+            let secs = if *name == "other" {
+                tm.total - known
+            } else {
+                *secs
+            };
             tm.kinds.push((name.to_string(), secs));
         }
         (out, tm)
@@ -1634,7 +2025,9 @@ pub(super) mod testing {
         assert!(result.is_err());
         assert!(finished.load(Ordering::Relaxed));
         let count = AtomicUsize::new(0);
-        pool.run(2, &|_| { count.fetch_add(1, Ordering::Relaxed); });
+        pool.run(2, &|_| {
+            count.fetch_add(1, Ordering::Relaxed);
+        });
         assert_eq!(count.load(Ordering::Relaxed), 2);
     }
 
@@ -1646,7 +2039,12 @@ pub(super) mod testing {
                 d[i * c + ch] = x.d[ch * hw + i];
             }
         }
-        F { c, h: x.h, w: x.w, d }
+        F {
+            c,
+            h: x.h,
+            w: x.w,
+            d,
+        }
     }
 
     pub fn to_planes(x: &F) -> Feat {
@@ -1657,7 +2055,12 @@ pub(super) mod testing {
                 d[ch * hw + i] = x.d[i * c + ch];
             }
         }
-        Feat { c, h: x.h, w: x.w, d }
+        Feat {
+            c,
+            h: x.h,
+            w: x.w,
+            d,
+        }
     }
 
     pub fn conv(conv: &Conv, x: &F, up: bool, residual: Option<&F>, threads: usize) -> F {
@@ -1677,7 +2080,14 @@ pub(super) mod testing {
         super::wino_ok(c, h, w)
     }
 
-    pub fn attention(q: &[f32], k: &[f32], v: &[f32], l: usize, c: usize, threads: usize) -> Vec<f32> {
+    pub fn attention(
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        l: usize,
+        c: usize,
+        threads: usize,
+    ) -> Vec<f32> {
         attention_gemm(q, k, v, l, c, &Ctx::new(threads, 1, false, false))
     }
 
@@ -1686,7 +2096,8 @@ pub(super) mod testing {
         let cx = Ctx::new(threads, 1, true, false);
         // stale pool buffers: every slot the convolution reads must have been written by `quantize`
         cx.pool8.give(vec![0xa5u8; 3 * x.n()]);
-        cx.pool.give(vec![7.0f32; 3 * (x.w / 8) * x.h * (x.c / I8_CHUNK) * 8]);
+        cx.pool
+            .give(vec![7.0f32; 3 * (x.w / 8) * x.h * (x.c / I8_CHUNK) * 8]);
         let q = quantize(x, None, &cx);
         conv_i8(conv, &q, up, residual, &cx)
     }
@@ -1695,10 +2106,22 @@ pub(super) mod testing {
         i8_ok(c, w)
     }
 
-    pub fn norm_silu(x: &F, norm: &Norm, groups: usize, silu: bool, inplace: bool, threads: usize) -> F {
+    pub fn norm_silu(
+        x: &F,
+        norm: &Norm,
+        groups: usize,
+        silu: bool,
+        inplace: bool,
+        threads: usize,
+    ) -> F {
         let cx = Ctx::new(threads, groups, false, false);
         if inplace {
-            let mut y = F { c: x.c, h: x.h, w: x.w, d: x.data().to_vec() };
+            let mut y = F {
+                c: x.c,
+                h: x.h,
+                w: x.w,
+                d: x.data().to_vec(),
+            };
             group_norm_inplace(&mut y, norm, silu, &cx);
             y
         } else {

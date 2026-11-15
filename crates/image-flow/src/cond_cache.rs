@@ -104,13 +104,22 @@ pub fn put(root: &Path, k: &KeyInputs, c: &Conditioning) -> Result<PathBuf, Stri
         return Err(format!("txt: {} values, want {nt} x {n}", c.txt.len()));
     }
     if c.pe.len() != (nt + ni) * c.pe_half * 4 {
-        return Err(format!("pe: {} values, want {} x {} x 4", c.pe.len(), nt + ni, c.pe_half));
+        return Err(format!(
+            "pe: {} values, want {} x {} x 4",
+            c.pe.len(),
+            nt + ni,
+            c.pe_half
+        ));
     }
     if c.grid.0 * c.grid.1 != ni {
         return Err(format!("grid {:?} does not hold {ni} image tokens", c.grid));
     }
     if c.sigmas.len() != k.steps {
-        return Err(format!("sigmas: {} values, want {} (one per step)", c.sigmas.len(), k.steps));
+        return Err(format!(
+            "sigmas: {} values, want {} (one per step)",
+            c.sigmas.len(),
+            k.steps
+        ));
     }
     let key = cache_key(k);
     let dir = root.join(&key);
@@ -143,7 +152,10 @@ pub fn put(root: &Path, k: &KeyInputs, c: &Conditioning) -> Result<PathBuf, Stri
 /// Store the conditioning of a sd.cpp hand-over for these inputs. The grid comes from width and height.
 pub fn put_from_handoff(root: &Path, k: &KeyInputs, h: &Handoff) -> Result<PathBuf, String> {
     if h.steps != k.steps {
-        return Err(format!("hand-over has {} steps, key says {}", h.steps, k.steps));
+        return Err(format!(
+            "hand-over has {} steps, key says {}",
+            h.steps, k.steps
+        ));
     }
     let grid = grid_for(k.width, k.height)?;
     let c = Conditioning {
@@ -164,18 +176,34 @@ pub fn put_from_handoff(root: &Path, k: &KeyInputs, h: &Handoff) -> Result<PathB
 /// The text context and RoPE table do not change over steps; the sigmas of `k.steps` steps come from
 /// the ported FLUX.2 schedule and must agree with every dumped sigma within 1e-5, which also checks
 /// that the hand-over was made with the same image size.
-pub fn put_from_partial_handoff(root: &Path, k: &KeyInputs, h: &Handoff) -> Result<PathBuf, String> {
+pub fn put_from_partial_handoff(
+    root: &Path,
+    k: &KeyInputs,
+    h: &Handoff,
+) -> Result<PathBuf, String> {
     if h.steps == 0 || h.steps > k.steps {
-        return Err(format!("hand-over has {} model calls, the key wants {} steps", h.steps, k.steps));
+        return Err(format!(
+            "hand-over has {} model calls, the key wants {} steps",
+            h.steps, k.steps
+        ));
     }
     let grid = grid_for(k.width, k.height)?;
     if grid.0 * grid.1 != h.n_img {
-        return Err(format!("hand-over has {} image tokens, {}x{} needs {}", h.n_img, k.width, k.height, grid.0 * grid.1));
+        return Err(format!(
+            "hand-over has {} image tokens, {}x{} needs {}",
+            h.n_img,
+            k.width,
+            k.height,
+            grid.0 * grid.1
+        ));
     }
     let full = crate::schedule::flux2_sigmas(k.steps as u32, h.n_img);
     for (i, &s) in h.sigmas.iter().enumerate() {
         if (s - full[i]).abs() > 1e-5 {
-            return Err(format!("dumped sigma {i} = {s} differs from the computed {} (other steps or size?)", full[i]));
+            return Err(format!(
+                "dumped sigma {i} = {s} differs from the computed {} (other steps or size?)",
+                full[i]
+            ));
         }
     }
     let c = Conditioning {
@@ -202,7 +230,8 @@ pub fn get(root: &Path, k: &KeyInputs) -> Result<Option<Conditioning>, String> {
     let meta_path = dir.join("meta.json");
     let text = std::fs::read_to_string(&meta_path)
         .map_err(|e| format!("{}: incomplete cache entry ({e})", meta_path.display()))?;
-    let meta: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", meta_path.display()))?;
+    let meta: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", meta_path.display()))?;
     let bad = |what: &str| format!("{}: {what}", meta_path.display());
     let uint = |name: &str| -> Result<usize, String> {
         meta.get(name)
@@ -219,16 +248,30 @@ pub fn get(root: &Path, k: &KeyInputs) -> Result<Option<Conditioning>, String> {
     if meta.get("prompt_sha256").and_then(|v| v.as_str()) != Some(prompt_sha(k.prompt).as_str()) {
         return Err(bad("prompt hash does not match"));
     }
-    let enc = meta.get("encoder").and_then(|v| v.as_str()).unwrap_or(LEGACY_ENCODER);
+    let enc = meta
+        .get("encoder")
+        .and_then(|v| v.as_str())
+        .unwrap_or(LEGACY_ENCODER);
     if enc != k.encoder.unwrap_or(LEGACY_ENCODER) {
         return Err(bad("encoder provenance does not match the key"));
     }
     if uint("steps")? != k.steps || uint("width")? != k.width || uint("height")? != k.height {
         return Err(bad("steps or size do not match the key"));
     }
-    let (nt, ni, ctx, pe_half) = (uint("n_txt")?, uint("n_img")?, uint("ctx_dim")?, uint("pe_half")?);
-    let grid_v = meta.get("grid").and_then(|v| v.as_array()).ok_or_else(|| bad("missing 'grid'"))?;
-    let grid = match (grid_v.first().and_then(|v| v.as_u64()), grid_v.get(1).and_then(|v| v.as_u64())) {
+    let (nt, ni, ctx, pe_half) = (
+        uint("n_txt")?,
+        uint("n_img")?,
+        uint("ctx_dim")?,
+        uint("pe_half")?,
+    );
+    let grid_v = meta
+        .get("grid")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| bad("missing 'grid'"))?;
+    let grid = match (
+        grid_v.first().and_then(|v| v.as_u64()),
+        grid_v.get(1).and_then(|v| v.as_u64()),
+    ) {
         (Some(h), Some(w)) => (h as usize, w as usize),
         _ => return Err(bad("grid must be [h, w]")),
     };
@@ -242,7 +285,16 @@ pub fn get(root: &Path, k: &KeyInputs) -> Result<Option<Conditioning>, String> {
     let txt = read_f32(&dir.join("txt.f32"), nt * ctx)?;
     let pe = read_f32(&dir.join("pe.f32"), (nt + ni) * pe_half * 4)?;
     let sigmas = read_f32(&dir.join("sigmas.f32"), k.steps)?;
-    Ok(Some(Conditioning { n_txt: nt, n_img: ni, grid, ctx_dim: ctx, pe_half, txt, pe, sigmas }))
+    Ok(Some(Conditioning {
+        n_txt: nt,
+        n_img: ni,
+        grid,
+        ctx_dim: ctx,
+        pe_half,
+        txt,
+        pe,
+        sigmas,
+    }))
 }
 
 fn write_f32(path: &Path, v: &[f32]) -> Result<(), String> {
@@ -253,9 +305,17 @@ fn write_f32(path: &Path, v: &[f32]) -> Result<(), String> {
 fn read_f32(path: &Path, count: usize) -> Result<Vec<f32>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if bytes.len() != count * 4 {
-        return Err(format!("{}: {} bytes, want {} ({count} f32)", path.display(), bytes.len(), count * 4));
+        return Err(format!(
+            "{}: {} bytes, want {} ({count} f32)",
+            path.display(),
+            bytes.len(),
+            count * 4
+        ));
     }
-    Ok(bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
 }
 
 #[cfg(test)]
@@ -275,22 +335,36 @@ mod tests {
             buf.extend_from_slice(&v.to_le_bytes());
         }
         assert_eq!(cache_key(&legacy), hex(&sha256(&buf)));
-        let native = KeyInputs { encoder: Some("qwen3-te/1;cpu-ggml;te.gguf;9"), ..inputs(b"a cat", "dit.gguf", 7, 32, 48, 4) };
-        let other = KeyInputs { encoder: Some("qwen3-te/1;npu-fp16;te.gguf;9"), ..inputs(b"a cat", "dit.gguf", 7, 32, 48, 4) };
+        let native = KeyInputs {
+            encoder: Some("qwen3-te/1;cpu-ggml;te.gguf;9"),
+            ..inputs(b"a cat", "dit.gguf", 7, 32, 48, 4)
+        };
+        let other = KeyInputs {
+            encoder: Some("qwen3-te/1;npu-fp16;te.gguf;9"),
+            ..inputs(b"a cat", "dit.gguf", 7, 32, 48, 4)
+        };
         assert_ne!(cache_key(&legacy), cache_key(&native));
         assert_ne!(cache_key(&native), cache_key(&other));
         let mut a = sample();
         put(&root, &legacy, &a).unwrap();
         a.txt.iter_mut().for_each(|v| *v += 1.0);
         put(&root, &native, &a).unwrap();
-        assert_eq!(get(&root, &legacy).unwrap().unwrap(), sample(), "native write left the legacy entry alone");
+        assert_eq!(
+            get(&root, &legacy).unwrap().unwrap(),
+            sample(),
+            "native write left the legacy entry alone"
+        );
         assert_eq!(get(&root, &native).unwrap().unwrap(), a);
         assert!(get(&root, &other).unwrap().is_none());
         // a legacy-keyed entry whose meta claims another encoder is refused, never used
         let dir = root.join(cache_key(&legacy));
-        let m = std::fs::read_to_string(dir.join("meta.json")).unwrap().replace(LEGACY_ENCODER, "qwen3-te/1;cpu-ggml;te.gguf;9");
+        let m = std::fs::read_to_string(dir.join("meta.json"))
+            .unwrap()
+            .replace(LEGACY_ENCODER, "qwen3-te/1;cpu-ggml;te.gguf;9");
         std::fs::write(dir.join("meta.json"), m).unwrap();
-        assert!(get(&root, &legacy).unwrap_err().contains("encoder provenance"));
+        assert!(get(&root, &legacy)
+            .unwrap_err()
+            .contains("encoder provenance"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -301,8 +375,23 @@ mod tests {
         d
     }
 
-    fn inputs<'a>(prompt: &'a [u8], name: &'a str, size: u64, w: usize, h: usize, steps: usize) -> KeyInputs<'a> {
-        KeyInputs { prompt, model_name: name, model_size: size, width: w, height: h, steps, encoder: None }
+    fn inputs<'a>(
+        prompt: &'a [u8],
+        name: &'a str,
+        size: u64,
+        w: usize,
+        h: usize,
+        steps: usize,
+    ) -> KeyInputs<'a> {
+        KeyInputs {
+            prompt,
+            model_name: name,
+            model_size: size,
+            width: w,
+            height: h,
+            steps,
+            encoder: None,
+        }
     }
 
     /// 32 x 48 px image: grid (3, 2), 6 image tokens; 3 text tokens of width 4; pe_half 2.
@@ -323,13 +412,34 @@ mod tests {
     fn key_depends_on_every_input_and_is_stable() {
         let base = cache_key(&inputs(b"a cat", "klein.gguf", 100, 32, 48, 4));
         assert_eq!(base.len(), 64);
-        assert_eq!(base, cache_key(&inputs(b"a cat", "klein.gguf", 100, 32, 48, 4)));
-        assert_ne!(base, cache_key(&inputs(b"a dog", "klein.gguf", 100, 32, 48, 4)));
-        assert_ne!(base, cache_key(&inputs(b"a cat", "other.gguf", 100, 32, 48, 4)));
-        assert_ne!(base, cache_key(&inputs(b"a cat", "klein.gguf", 101, 32, 48, 4)));
-        assert_ne!(base, cache_key(&inputs(b"a cat", "klein.gguf", 100, 48, 32, 4)));
-        assert_ne!(base, cache_key(&inputs(b"a cat", "klein.gguf", 100, 32, 48, 5)));
-        assert_ne!(base, cache_key(&inputs(b"a cat", "klein.gguf", 100, 32, 64, 4)));
+        assert_eq!(
+            base,
+            cache_key(&inputs(b"a cat", "klein.gguf", 100, 32, 48, 4))
+        );
+        assert_ne!(
+            base,
+            cache_key(&inputs(b"a dog", "klein.gguf", 100, 32, 48, 4))
+        );
+        assert_ne!(
+            base,
+            cache_key(&inputs(b"a cat", "other.gguf", 100, 32, 48, 4))
+        );
+        assert_ne!(
+            base,
+            cache_key(&inputs(b"a cat", "klein.gguf", 101, 32, 48, 4))
+        );
+        assert_ne!(
+            base,
+            cache_key(&inputs(b"a cat", "klein.gguf", 100, 48, 32, 4))
+        );
+        assert_ne!(
+            base,
+            cache_key(&inputs(b"a cat", "klein.gguf", 100, 32, 48, 5))
+        );
+        assert_ne!(
+            base,
+            cache_key(&inputs(b"a cat", "klein.gguf", 100, 32, 64, 4))
+        );
     }
 
     #[test]
@@ -347,7 +457,10 @@ mod tests {
         assert_eq!(bits(&got.sigmas), bits(&c.sigmas));
         // the prompt text is not on disk
         let meta = std::fs::read_to_string(dir.join("meta.json")).unwrap();
-        assert!(!meta.contains("red fox"), "prompt text leaked into meta.json");
+        assert!(
+            !meta.contains("red fox"),
+            "prompt text leaked into meta.json"
+        );
         assert!(meta.contains(&prompt_sha(b"a red fox")));
         std::fs::remove_dir_all(&root).ok();
     }
@@ -377,7 +490,10 @@ mod tests {
 
         // missing meta.json: incomplete entry
         std::fs::remove_file(dir.join("meta.json")).unwrap();
-        assert!(get(&root, &k).err().expect("incomplete").contains("incomplete"));
+        assert!(get(&root, &k)
+            .err()
+            .expect("incomplete")
+            .contains("incomplete"));
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -387,8 +503,15 @@ mod tests {
         let k = inputs(b"p", "m.gguf", 9, 32, 48, 4);
         let dir = put(&root, &k, &sample()).unwrap();
         let text = std::fs::read_to_string(dir.join("meta.json")).unwrap();
-        std::fs::write(dir.join("meta.json"), text.replace("\"steps\": 4", "\"steps\": 7")).unwrap();
-        assert!(get(&root, &k).err().expect("steps mismatch").contains("steps"));
+        std::fs::write(
+            dir.join("meta.json"),
+            text.replace("\"steps\": 4", "\"steps\": 7"),
+        )
+        .unwrap();
+        assert!(get(&root, &k)
+            .err()
+            .expect("steps mismatch")
+            .contains("steps"));
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -490,9 +613,17 @@ mod tests {
         let root = tmp("partial-bad");
         let k = inputs(b"part", "m.gguf", 9, 32, 48, 4);
         // 8 tokens do not fit a 32x48 image (3x2 grid)
-        assert!(put_from_partial_handoff(&root, &k, &partial_handoff(8, 1.0)).unwrap_err().contains("image tokens"));
+        assert!(
+            put_from_partial_handoff(&root, &k, &partial_handoff(8, 1.0))
+                .unwrap_err()
+                .contains("image tokens")
+        );
         // a first sigma that is not the schedule's
-        assert!(put_from_partial_handoff(&root, &k, &partial_handoff(6, 0.9)).unwrap_err().contains("sigma"));
+        assert!(
+            put_from_partial_handoff(&root, &k, &partial_handoff(6, 0.9))
+                .unwrap_err()
+                .contains("sigma")
+        );
         // more calls than steps
         let mut h = partial_handoff(6, 1.0);
         h.steps = 5;

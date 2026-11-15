@@ -24,7 +24,11 @@ fn main() {
     let csrc = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("csrc");
 
     let base = |b: &mut cc::Build| {
-        b.opt_level(3).define("NDEBUG", None).define("_GNU_SOURCE", None).define("_XOPEN_SOURCE", "600").warnings(false);
+        b.opt_level(3)
+            .define("NDEBUG", None)
+            .define("_GNU_SOURCE", None)
+            .define("_XOPEN_SOURCE", "600")
+            .warnings(false);
         // cc adds its own -march/-mcpu for some targets only when asked; be explicit about none
         b.flag_if_supported("-fno-fast-math");
     };
@@ -32,7 +36,12 @@ fn main() {
     // ggml-cpu C items
     let mut c1 = cc::Build::new();
     base(&mut c1);
-    c1.include(&vendor).include(&generated).flag(CPU_ARCH).file(generated.join("quants_subset.c")).flag("-std=gnu11").compile("oxe_ggml_c");
+    c1.include(&vendor)
+        .include(&generated)
+        .flag(CPU_ARCH)
+        .file(generated.join("quants_subset.c"))
+        .flag("-std=gnu11")
+        .compile("oxe_ggml_c");
 
     // ggml-cpu C++: repack kernels + interleavers (shim includes repack_subset.cpp)
     let mut cpp = cc::Build::new();
@@ -68,9 +77,16 @@ fn main() {
     // (the kernels-sys lib test failed to link in CI otherwise). Link order only; same objects.
     let mut c0 = cc::Build::new();
     base(&mut c0);
-    c0.include(&vendor).include(&generated).file(generated.join("quants_base.c")).flag("-std=gnu11").compile("oxe_ggml_base");
+    c0.include(&vendor)
+        .include(&generated)
+        .file(generated.join("quants_base.c"))
+        .flag("-std=gnu11")
+        .compile("oxe_ggml_base");
 
-    println!("cargo:rerun-if-changed={}", root.join("npu/oxn/common").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("npu/oxn/common").display()
+    );
     println!("cargo:rerun-if-changed={}", vendor.display());
     println!("cargo:rerun-if-changed={}", csrc.display());
     println!("cargo:rustc-env=OXE_KERNEL_CFLAGS=ggml-cpu: -O3 -DNDEBUG {CPU_ARCH}; ggml-base: -O3 -DNDEBUG");

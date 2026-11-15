@@ -22,7 +22,11 @@ fn frequencies(dim: usize, theta: f32) -> Vec<f32> {
     let step = (end - start) / (half as f32 - 1.0);
     (0..half)
         .map(|i| {
-            let scale = if half == 1 { start } else { start + i as f32 * step };
+            let scale = if half == 1 {
+                start
+            } else {
+                start + i as f32 * step
+            };
             1.0f32 / theta.powf(scale)
         })
         .collect()
@@ -38,7 +42,10 @@ pub fn flux2_pe(n_txt: usize, grid: (usize, usize)) -> Vec<f32> {
     let (h, w) = grid;
     let n = n_txt + h * w;
     let ph = pe_half();
-    let omegas: Vec<Vec<f32>> = FLUX2_AXES.iter().map(|&d| frequencies(d, FLUX2_THETA)).collect();
+    let omegas: Vec<Vec<f32>> = FLUX2_AXES
+        .iter()
+        .map(|&d| frequencies(d, FLUX2_THETA))
+        .collect();
     let mut out = vec![0f32; n * ph * 4];
     for t in 0..n {
         let ids: [f32; 4] = if t < n_txt {
@@ -73,13 +80,22 @@ mod tests {
         // text token 0 and image token (0, 0): every angle is 0 -> [1, -0, 0, 1]
         for t in [0usize, 3] {
             for j in 0..64 {
-                assert_eq!(&pe[(t * 64 + j) * 4..(t * 64 + j) * 4 + 4], &[1.0, -0.0, 0.0, 1.0]);
+                assert_eq!(
+                    &pe[(t * 64 + j) * 4..(t * 64 + j) * 4 + 4],
+                    &[1.0, -0.0, 0.0, 1.0]
+                );
             }
         }
         // text token 2: only axis 3 (blocks 48..64) rotates, with omega_0 = 1 -> angle 2
         let b = (2 * 64 + 48) * 4;
-        assert_eq!(&pe[b..b + 4], &[2f32.cos(), -(2f32.sin()), 2f32.sin(), 2f32.cos()]);
-        assert_eq!(&pe[(2 * 64 + 16) * 4..(2 * 64 + 16) * 4 + 4], &[1.0, -0.0, 0.0, 1.0]);
+        assert_eq!(
+            &pe[b..b + 4],
+            &[2f32.cos(), -(2f32.sin()), 2f32.sin(), 2f32.cos()]
+        );
+        assert_eq!(
+            &pe[(2 * 64 + 16) * 4..(2 * 64 + 16) * 4 + 4],
+            &[1.0, -0.0, 0.0, 1.0]
+        );
         // image token (1, 0) = t 5: axis 1 (blocks 16..32) rotates by row 1
         let b = (5 * 64 + 16) * 4;
         assert_eq!(pe[b], 1f32.cos());
@@ -99,9 +115,18 @@ mod tests {
             assert_eq!(side * side, h.n_img, "{d}: square grids only in this check");
             let pe = flux2_pe(h.n_txt, (side, side));
             assert_eq!((h.pe_half, pe.len()), (64, h.pe.len()), "{d}");
-            let max = pe.iter().zip(&h.pe).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            let max = pe
+                .iter()
+                .zip(&h.pe)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
             let exact = pe.iter().zip(&h.pe).filter(|(a, b)| a == b).count();
-            eprintln!("{d}: n_txt {} n_img {} max_abs {max:e} exact {exact}/{}", h.n_txt, h.n_img, pe.len());
+            eprintln!(
+                "{d}: n_txt {} n_img {} max_abs {max:e} exact {exact}/{}",
+                h.n_txt,
+                h.n_img,
+                pe.len()
+            );
             assert!(max <= 1e-6, "{d}: max abs {max}");
         }
     }

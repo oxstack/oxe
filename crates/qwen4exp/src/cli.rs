@@ -17,7 +17,9 @@ impl Args {
         let mut m = HashMap::new();
         let mut i = 0;
         while i < v.len() {
-            let k = v[i].strip_prefix("--").unwrap_or_else(|| die(&format!("unexpected {}", v[i])));
+            let k = v[i]
+                .strip_prefix("--")
+                .unwrap_or_else(|| die(&format!("unexpected {}", v[i])));
             if i + 1 < v.len() && !v[i + 1].starts_with("--") {
                 m.insert(k.to_string(), v[i + 1].clone());
                 i += 2;
@@ -33,7 +35,9 @@ impl Args {
     }
     pub fn n<T: std::str::FromStr>(&self, k: &str, d: T) -> T {
         match self.0.get(k) {
-            Some(v) => v.parse().unwrap_or_else(|_| die(&format!("--{k} {v}: bad value"))),
+            Some(v) => v
+                .parse()
+                .unwrap_or_else(|_| die(&format!("--{k} {v}: bad value"))),
             None => d,
         }
     }
@@ -62,7 +66,9 @@ pub fn read_tokens(p: &Path) -> Vec<Vec<i32>> {
             n *= i64::from_le_bytes(b[i + 8 + 8 * k..i + 16 + 8 * k].try_into().unwrap());
         }
         let n = n as usize;
-        let v = (0..n).map(|j| i32::from_le_bytes(b[i + 40 + 4 * j..i + 44 + 4 * j].try_into().unwrap())).collect();
+        let v = (0..n)
+            .map(|j| i32::from_le_bytes(b[i + 40 + 4 * j..i + 44 + 4 * j].try_into().unwrap()))
+            .collect();
         out.push(v);
         i += 40 + 4 * n;
     }
@@ -80,13 +86,20 @@ pub fn want_ok(want: &[i32], i: usize, next: i32) -> bool {
 
 pub fn status_kib(key: &str) -> Option<u64> {
     let s = std::fs::read_to_string("/proc/self/status").ok()?;
-    s.lines().find(|l| l.starts_with(key))?.split_whitespace().nth(1)?.parse().ok()
+    s.lines()
+        .find(|l| l.starts_with(key))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 
 pub fn cgroup_file(name: &str) -> Option<String> {
     let cg = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     let path = cg.lines().find_map(|l| l.strip_prefix("0::"))?;
-    std::fs::read_to_string(format!("/sys/fs/cgroup{}/{name}", path.trim())).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(format!("/sys/fs/cgroup{}/{name}", path.trim()))
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 /// KL(p_ref || p) of two logit vectors (softmax in f64), plus whether the argmaxes agree.
@@ -120,5 +133,10 @@ pub fn kld(ref_logits: &[f32], logits: &[f32]) -> (f64, bool) {
 /// AnonHugePages of this process in KiB (/proc/self/smaps_rollup), for the FD-5 huge-page coverage check.
 pub fn anon_huge_kib() -> Option<u64> {
     let t = std::fs::read_to_string("/proc/self/smaps_rollup").ok()?;
-    t.lines().find(|l| l.starts_with("AnonHugePages:"))?.split_whitespace().nth(1)?.parse().ok()
+    t.lines()
+        .find(|l| l.starts_with("AnonHugePages:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }

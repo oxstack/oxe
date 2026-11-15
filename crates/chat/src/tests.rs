@@ -10,7 +10,8 @@ use std::path::PathBuf;
 mod coerce;
 
 fn models_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/ai-stack/models/llm")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".local/share/ai-stack/models/llm")
 }
 
 struct Ctx {
@@ -25,8 +26,16 @@ fn load(gguf: &str) -> Option<Ctx> {
         return None;
     }
     let tok = tokenizer::Tokenizer::from_gguf(&p).unwrap();
-    let bos = tok.bos.and_then(|t| tok.token_text(t)).unwrap_or("").to_string();
-    let eos = tok.eos.and_then(|t| tok.token_text(t)).unwrap_or("").to_string();
+    let bos = tok
+        .bos
+        .and_then(|t| tok.token_text(t))
+        .unwrap_or("")
+        .to_string();
+    let eos = tok
+        .eos
+        .and_then(|t| tok.token_text(t))
+        .unwrap_or("")
+        .to_string();
     let tmpl = ChatTemplate::new(tok.chat_template.as_deref().unwrap(), &bos, &eos).unwrap();
     Some(Ctx { tok, tmpl })
 }
@@ -55,7 +64,13 @@ fn parser_cfg(c: &Ctx, inp: &ChatInputs) -> ParserConfig {
 }
 
 /// llama.cpp fixtures where a tool call is streamed and then fails to parse (see run_fixtures).
-const DIVERGE_FROM_LLAMA: &[&str] = &["parse:optional_first", "parse:missing_required", "parse:truncated_mid_value", "parse:int_with_spaces", "parse:int_invalid"];
+const DIVERGE_FROM_LLAMA: &[&str] = &[
+    "parse:optional_first",
+    "parse:missing_required",
+    "parse:truncated_mid_value",
+    "parse:int_with_spaces",
+    "parse:int_invalid",
+];
 
 /// The client's view of a stream: content and reasoning concatenated, tool calls assembled by
 /// index (name, arguments; ids ignored), from a list of per-step delta arrays.
@@ -70,7 +85,12 @@ fn assemble(steps: &[Json]) -> Json {
             if let Some(c) = d.get("reasoning_content").and_then(Json::as_str) {
                 reasoning += c;
             }
-            for tc in d.get("tool_calls").and_then(Json::as_array).into_iter().flatten() {
+            for tc in d
+                .get("tool_calls")
+                .and_then(Json::as_array)
+                .into_iter()
+                .flatten()
+            {
                 let i = tc["index"].as_u64().unwrap() as usize;
                 while calls.len() <= i {
                     calls.push(Default::default());
@@ -89,7 +109,14 @@ fn assemble(steps: &[Json]) -> Json {
 
 /// A step's deltas without tool-call deltas (those are held back until a call is complete).
 fn non_tool(st: &Json) -> Json {
-    Json::Array(st.as_array().into_iter().flatten().filter(|d| d.get("tool_calls").is_none()).cloned().collect())
+    Json::Array(
+        st.as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| d.get("tool_calls").is_none())
+            .cloned()
+            .collect(),
+    )
 }
 
 fn run_fixtures(gguf: &str, fixture: &str) {
@@ -123,13 +150,22 @@ fn run_fixtures(gguf: &str, fixture: &str) {
             continue;
         }
         if applied.prompt != exp["prompt"].as_str().unwrap() {
-            fails.push(format!("{name}: PROMPT\n--- want\n{}\n--- got\n{}", exp["prompt"].as_str().unwrap(), applied.prompt));
+            fails.push(format!(
+                "{name}: PROMPT\n--- want\n{}\n--- got\n{}",
+                exp["prompt"].as_str().unwrap(),
+                applied.prompt
+            ));
             continue;
         }
         if applied.generation_prompt != exp["generation_prompt"].as_str().unwrap() {
-            fails.push(format!("{name}: generation_prompt {:?} vs {:?}", applied.generation_prompt, exp["generation_prompt"]));
+            fails.push(format!(
+                "{name}: generation_prompt {:?} vs {:?}",
+                applied.generation_prompt, exp["generation_prompt"]
+            ));
         }
-        let Some(output) = fx.get("output").and_then(Json::as_str) else { continue };
+        let Some(output) = fx.get("output").and_then(Json::as_str) else {
+            continue;
+        };
         // stream it token by token like the oracle did
         let mut n_id = 0;
         let mut s = Session::new(
@@ -144,7 +180,11 @@ fn run_fixtures(gguf: &str, fixture: &str) {
         let toks = c.tok.encode(output, false, true);
         let steps = exp["steps"].as_array().unwrap();
         if steps.len() != toks.len() {
-            fails.push(format!("{name}: token count {} vs {}", toks.len(), steps.len()));
+            fails.push(format!(
+                "{name}: token count {} vs {}",
+                toks.len(),
+                steps.len()
+            ));
             continue;
         }
         let mut bad = None;
@@ -160,7 +200,11 @@ fn run_fixtures(gguf: &str, fixture: &str) {
             // content and reasoning deltas: step by step as llama-server; tool-call deltas: only
             // once the call is complete (see Session::feed), compared after assembly below
             if non_tool(&Json::Array(got.clone())) != non_tool(&steps[i]) {
-                bad = Some(format!("{name}: step {i} (piece {piece:?})\n  want {}\n  got  {}", steps[i], Json::Array(got)));
+                bad = Some(format!(
+                    "{name}: step {i} (piece {piece:?})\n  want {}\n  got  {}",
+                    steps[i],
+                    Json::Array(got)
+                ));
                 break;
             }
             got_steps.push(Json::Array(got));
@@ -192,11 +236,19 @@ fn run_fixtures(gguf: &str, fixture: &str) {
                 diverged += 1;
                 continue;
             }
-            fails.push(format!("{name}: assembled stream\n  want {}\n  got  {}", assemble(&want_steps), assemble(&got_steps)));
+            fails.push(format!(
+                "{name}: assembled stream\n  want {}\n  got  {}",
+                assemble(&want_steps),
+                assemble(&got_steps)
+            ));
             continue;
         }
         if s.msg().to_json() != exp["final"] {
-            fails.push(format!("{name}: final msg\n  want {}\n  got  {}", exp["final"], s.msg().to_json()));
+            fails.push(format!(
+                "{name}: final msg\n  want {}\n  got  {}",
+                exp["final"],
+                s.msg().to_json()
+            ));
         }
     }
     for f in &fails {
@@ -261,17 +313,33 @@ fn flash_template_renders_tools_and_tool_loop() {
     let (_, _, a) = flash_render(&flash_tool_body(false));
     let p = &a.prompt;
     assert!(p.starts_with("<|im_start|>system\n# Tools"), "{p}");
-    assert!(p.contains(r#""name": "read""#), "tool JSON in the system block: {p}");
-    assert!(p.contains("<tool_call>\n<function=read>\n<parameter=path>\n"), "{p}");
+    assert!(
+        p.contains(r#""name": "read""#),
+        "tool JSON in the system block: {p}"
+    );
+    assert!(
+        p.contains("<tool_call>\n<function=read>\n<parameter=path>\n"),
+        "{p}"
+    );
     assert!(p.contains("<|im_start|>user\n<tool_response>\n"), "{p}");
-    assert!(p.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"), "{p}");
-    assert_eq!(a.generation_prompt, "<|im_start|>assistant\n<think>\n\n</think>\n\n");
+    assert!(
+        p.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+        "{p}"
+    );
+    assert_eq!(
+        a.generation_prompt,
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    );
 
     // thinking enabled (the default): the generation prompt opens a think block
     let mut body = flash_tool_body(true);
     body.as_object_mut().unwrap().remove("chat_template_kwargs");
     let (_, _, a) = flash_render(&body);
-    assert!(a.prompt.ends_with("<|im_start|>assistant\n<think>\n"), "{}", a.prompt);
+    assert!(
+        a.prompt.ends_with("<|im_start|>assistant\n<think>\n"),
+        "{}",
+        a.prompt
+    );
 }
 
 #[test]
@@ -288,15 +356,26 @@ fn flash_tool_call_parses() {
     };
     // a tool call as the model writes it after the (empty) think block
     let out = "<tool_call>\n<function=read>\n<parameter=path>\nsrc/main.rs\n</parameter>\n</function>\n</tool_call>";
-    let mut s = Session::new(cfg.clone(), a.generation_prompt.clone(), Box::new(|| "call0".to_string()));
+    let mut s = Session::new(
+        cfg.clone(),
+        a.generation_prompt.clone(),
+        Box::new(|| "call0".to_string()),
+    );
     s.feed(out, true).unwrap();
     let m = s.msg();
     assert_eq!(m.tool_calls.len(), 1, "{m:?}");
     assert_eq!(m.tool_calls[0].name, "read");
-    assert_eq!(serde_json::from_str::<Json>(&m.tool_calls[0].arguments).unwrap(), json!({"path": "src/main.rs"}));
+    assert_eq!(
+        serde_json::from_str::<Json>(&m.tool_calls[0].arguments).unwrap(),
+        json!({"path": "src/main.rs"})
+    );
 
     // plain text: content, no tool calls
-    let mut s = Session::new(cfg, a.generation_prompt.clone(), Box::new(|| "call0".to_string()));
+    let mut s = Session::new(
+        cfg,
+        a.generation_prompt.clone(),
+        Box::new(|| "call0".to_string()),
+    );
     s.feed("Hello there.", true).unwrap();
     assert_eq!(s.msg().content, "Hello there.");
     assert!(s.msg().tool_calls.is_empty());
@@ -308,7 +387,12 @@ fn flash_tool_call_parses() {
 /// Feed `output` in `chunks` (char counts, cycled) to an incremental and a reference
 /// (full re-parse) session; every step's diffs (or error), the final diffs and the final
 /// message must be identical.
-fn diff_sessions(cfg: &ParserConfig, gen_prompt: &str, output: &str, chunks: &[usize]) -> (usize, usize) {
+fn diff_sessions(
+    cfg: &ParserConfig,
+    gen_prompt: &str,
+    output: &str,
+    chunks: &[usize],
+) -> (usize, usize) {
     let mk = |inc: bool| {
         let mut n = 0;
         let mut s = Session::new(
@@ -337,7 +421,11 @@ fn diff_sessions(cfg: &ParserConfig, gen_prompt: &str, output: &str, chunks: &[u
         let (da, db) = (dj(a.feed(&piece, false)), dj(b.feed(&piece, false)));
         assert_eq!(da, db, "step at char {i} ({piece:?}) of {output:?}");
     }
-    assert_eq!(dj(a.feed("", true)), dj(b.feed("", true)), "final diffs of {output:?}");
+    assert_eq!(
+        dj(a.feed("", true)),
+        dj(b.feed("", true)),
+        "final diffs of {output:?}"
+    );
     assert_eq!(a.msg(), b.msg());
     (a.n_incremental, a.n_full)
 }
@@ -387,7 +475,11 @@ const SYNTH_OUTPUTS: &[&str] = &[
 fn incremental_session_equals_full_reparse_synthetic() {
     let (mut n, mut inc, mut full) = (0, 0, 0);
     for supports_thinking in [true, false] {
-        for (tools, choice) in [(synth_tools(), ToolChoice::Auto), (Vec::new(), ToolChoice::Auto), (synth_tools(), ToolChoice::None)] {
+        for (tools, choice) in [
+            (synth_tools(), ToolChoice::Auto),
+            (Vec::new(), ToolChoice::Auto),
+            (synth_tools(), ToolChoice::None),
+        ] {
             for parallel in [true, false] {
                 for rf in [ReasoningFormat::Auto, ReasoningFormat::None] {
                     for format in [Format::Qwen3Coder, Format::ContentOnly] {
@@ -400,7 +492,11 @@ fn incremental_session_equals_full_reparse_synthetic() {
                             supports_thinking,
                             lenient: false,
                         };
-                        for gp in ["<|im_start|>assistant\n", "<|im_start|>assistant\n<think>\n", "<|im_start|>assistant\n<think>\n\n</think>\n\n"] {
+                        for gp in [
+                            "<|im_start|>assistant\n",
+                            "<|im_start|>assistant\n<think>\n",
+                            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+                        ] {
                             for out in SYNTH_OUTPUTS {
                                 for ch in chunkings() {
                                     let (i, f) = diff_sessions(&cfg, gp, out, &ch);
@@ -428,11 +524,22 @@ fn incremental_fixtures(gguf: &str, fixture: &str) {
     let (mut n, mut inc, mut full) = (0, 0, 0);
     for line in data.lines() {
         let fx: Json = serde_json::from_str(line).unwrap();
-        let Some(output) = fx.get("output").and_then(Json::as_str) else { continue };
-        let Ok(inp) = chat_inputs(&fx["body"], &opts(&fx["kwargs"]), &c.tmpl) else { continue };
-        let Ok(applied) = apply(&c.tmpl, &inp) else { continue };
+        let Some(output) = fx.get("output").and_then(Json::as_str) else {
+            continue;
+        };
+        let Ok(inp) = chat_inputs(&fx["body"], &opts(&fx["kwargs"]), &c.tmpl) else {
+            continue;
+        };
+        let Ok(applied) = apply(&c.tmpl, &inp) else {
+            continue;
+        };
         for ch in chunkings() {
-            let (i, f) = diff_sessions(&parser_cfg(&c, &inp), &applied.generation_prompt, output, &ch);
+            let (i, f) = diff_sessions(
+                &parser_cfg(&c, &inp),
+                &applied.generation_prompt,
+                output,
+                &ch,
+            );
             inc += i;
             full += f;
             n += 1;
@@ -480,23 +587,35 @@ fn cfg_with(tools: Vec<Tool>, lenient: bool) -> ParserConfig {
 /// Stream `output` char by char; never an error; returns (assembled stream incl. final, final msg).
 fn stream_all(cfg: &ParserConfig, gp: &str, output: &str) -> (Json, ChatMsg) {
     let mut n = 0;
-    let mut s = Session::new(cfg.clone(), gp.to_string(), Box::new(move || {
-        n += 1;
-        format!("id{n}")
-    }));
+    let mut s = Session::new(
+        cfg.clone(),
+        gp.to_string(),
+        Box::new(move || {
+            n += 1;
+            format!("id{n}")
+        }),
+    );
     let mut steps = Vec::new();
     let mut buf = [0u8; 4];
     for c in output.chars() {
-        let d = s.feed(c.encode_utf8(&mut buf), false).unwrap_or_else(|e| panic!("stream error {e:?} on {output:?}"));
+        let d = s
+            .feed(c.encode_utf8(&mut buf), false)
+            .unwrap_or_else(|e| panic!("stream error {e:?} on {output:?}"));
         steps.push(Json::Array(d.iter().map(|d| d.to_delta_json()).collect()));
     }
-    let d = s.feed("", true).unwrap_or_else(|e| panic!("final error {e:?} on {output:?}"));
+    let d = s
+        .feed("", true)
+        .unwrap_or_else(|e| panic!("final error {e:?} on {output:?}"));
     steps.push(Json::Array(d.iter().map(|d| d.to_delta_json()).collect()));
     (assemble(&steps), s.msg().clone())
 }
 
 fn msg_view(m: &ChatMsg) -> Json {
-    let calls: Vec<(String, String)> = m.tool_calls.iter().map(|c| (c.name.clone(), c.arguments.clone())).collect();
+    let calls: Vec<(String, String)> = m
+        .tool_calls
+        .iter()
+        .map(|c| (c.name.clone(), c.arguments.clone()))
+        .collect();
     json!({"content": m.content, "reasoning": m.reasoning_content, "tool_calls": calls})
 }
 
@@ -520,14 +639,24 @@ fn shrinking_tool_call_never_fails_the_stream() {
             shrank = true;
         }
     }
-    assert!(seen_call && shrank, "the shrinking-call case is not reproduced");
+    assert!(
+        seen_call && shrank,
+        "the shrinking-call case is not reproduced"
+    );
     // what 649ac806 / 1b1f0ad (and llama-server) did with it: diff the full parses -> error
-    let at = |i: usize| parser::parse_full(&strict, &format!("{gp}{}", &out[..i]), true).unwrap().0;
+    let at = |i: usize| {
+        parser::parse_full(&strict, &format!("{gp}{}", &out[..i]), true)
+            .unwrap()
+            .0
+    };
     let with_call = out.find("<parameter=model>").unwrap();
     let without = with_call + "<parameter=model>\n".len() + 1;
     let (a, b) = (at(with_call), at(without));
     assert_eq!((a.tool_calls.len(), b.tool_calls.len()), (1, 0));
-    assert_eq!(compute_diffs(&a, &b).unwrap_err().0, "Invalid diff: now finding less tool calls!");
+    assert_eq!(
+        compute_diffs(&a, &b).unwrap_err().0,
+        "Invalid diff: now finding less tool calls!"
+    );
     // strict (llama.cpp grammar): no stream error; the call is dropped, the stream equals the final
     let (asm, fin) = stream_all(&strict, gp, out);
     assert!(fin.tool_calls.is_empty());
@@ -535,8 +664,14 @@ fn shrinking_tool_call_never_fails_the_stream() {
     // lenient (the server): the call is parsed with its arguments in the model's order
     let (asm, fin) = stream_all(&cfg_with(vec![subagent_tool()], true), gp, out);
     assert_eq!(fin.tool_calls.len(), 1);
-    assert_eq!(fin.tool_calls[0].arguments, r#"{"agent":"explore","description":"Review CLI error handling","model":"local","prompt":"Check the CLI."}"#);
-    assert_eq!(fin.content, "The valid model ID is `x`. Let me retry the subagent with it.");
+    assert_eq!(
+        fin.tool_calls[0].arguments,
+        r#"{"agent":"explore","description":"Review CLI error handling","model":"local","prompt":"Check the CLI."}"#
+    );
+    assert_eq!(
+        fin.content,
+        "The valid model ID is `x`. Let me retry the subagent with it."
+    );
     assert_eq!(asm, msg_view(&fin));
 }
 
@@ -550,15 +685,29 @@ fn lenient_repair_and_text_fallback() {
     let close = full.find("</function>").unwrap();
     for cut in close..=full.len() {
         let (asm, fin) = stream_all(&cfg, gp, &full[..cut]);
-        assert_eq!(fin.tool_calls.len(), 1, "cut {cut}: {:?}", &full[cut.saturating_sub(12)..cut]);
-        assert_eq!(fin.tool_calls[0].arguments, r#"{"agent":"a","description":"b","prompt":"c"}"#);
+        assert_eq!(
+            fin.tool_calls.len(),
+            1,
+            "cut {cut}: {:?}",
+            &full[cut.saturating_sub(12)..cut]
+        );
+        assert_eq!(
+            fin.tool_calls[0].arguments,
+            r#"{"agent":"a","description":"b","prompt":"c"}"#
+        );
         assert_eq!(asm, msg_view(&fin));
     }
     // cut inside a value: ambiguous -> the call's text is returned as content, nothing is lost
     let cut = full.find("\nc\n").unwrap() + 2;
     let (asm, fin) = stream_all(&cfg, gp, &full[..cut]);
     assert!(fin.tool_calls.is_empty());
-    assert!(fin.content.starts_with("Go.") && fin.content.contains("<tool_call>") && fin.content.ends_with("c"), "{:?}", fin.content);
+    assert!(
+        fin.content.starts_with("Go.")
+            && fin.content.contains("<tool_call>")
+            && fin.content.ends_with("c"),
+        "{:?}",
+        fin.content
+    );
     assert_eq!(asm, msg_view(&fin));
     // an unknown function: text
     let bad = "Hm.\n<tool_call>\n<function=nosuch>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>";
@@ -572,28 +721,50 @@ fn lenient_repair_and_text_fallback() {
 /// truncated stream's final message (content and reasoning are string prefixes, the streamed
 /// tool calls equal the final's first calls). Returns the number of cuts checked.
 fn fuzz_truncations(cfg: &ParserConfig, gp: &str, output: &str) -> usize {
-    let cuts: Vec<usize> = output.char_indices().map(|(i, _)| i).chain([output.len()]).collect();
+    let cuts: Vec<usize> = output
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain([output.len()])
+        .collect();
     let stride = (cuts.len() / 1500).max(1);
     let mut n = 0;
     let mut s = Session::new(cfg.clone(), gp.to_string(), Box::new(|| "id".into()));
     let mut steps = Vec::new();
     let mut at = 0;
     for (ci, &cut) in cuts.iter().enumerate() {
-        let d = s.feed(&output[at..cut], false).unwrap_or_else(|e| panic!("stream error {e:?} at {cut} of {output:?}"));
+        let d = s
+            .feed(&output[at..cut], false)
+            .unwrap_or_else(|e| panic!("stream error {e:?} at {cut} of {output:?}"));
         at = cut;
         steps.push(Json::Array(d.iter().map(|d| d.to_delta_json()).collect()));
         if ci % stride != 0 && cut != output.len() {
             continue;
         }
         let mut f = Session::new(cfg.clone(), gp.to_string(), Box::new(|| "id".into()));
-        f.feed(&output[..cut], false).unwrap_or_else(|e| panic!("prefix error {e:?} at {cut}"));
-        f.feed("", true).unwrap_or_else(|e| panic!("final error {e:?} at {cut}"));
+        f.feed(&output[..cut], false)
+            .unwrap_or_else(|e| panic!("prefix error {e:?} at {cut}"));
+        f.feed("", true)
+            .unwrap_or_else(|e| panic!("final error {e:?} at {cut}"));
         let fin = msg_view(f.msg());
         let got = assemble(&steps);
-        let pre = |k: &str| fin[k].as_str().unwrap().starts_with(got[k].as_str().unwrap());
-        assert!(pre("content") && pre("reasoning"), "cut {cut}: streamed {got} is not a prefix of final {fin}");
-        let (gc, fc) = (got["tool_calls"].as_array().unwrap(), fin["tool_calls"].as_array().unwrap());
-        assert!(gc.len() <= fc.len() && gc.iter().zip(fc).all(|(a, b)| a == b), "cut {cut}: streamed calls {gc:?} vs final {fc:?}");
+        let pre = |k: &str| {
+            fin[k]
+                .as_str()
+                .unwrap()
+                .starts_with(got[k].as_str().unwrap())
+        };
+        assert!(
+            pre("content") && pre("reasoning"),
+            "cut {cut}: streamed {got} is not a prefix of final {fin}"
+        );
+        let (gc, fc) = (
+            got["tool_calls"].as_array().unwrap(),
+            fin["tool_calls"].as_array().unwrap(),
+        );
+        assert!(
+            gc.len() <= fc.len() && gc.iter().zip(fc).all(|(a, b)| a == b),
+            "cut {cut}: streamed calls {gc:?} vs final {fc:?}"
+        );
         n += 1;
     }
     n
@@ -605,7 +776,11 @@ fn fuzz_truncations_synthetic() {
     for lenient in [false, true] {
         for tools in [synth_tools(), vec![subagent_tool()], Vec::new()] {
             let cfg = cfg_with(tools, lenient);
-            for gp in ["<|im_start|>assistant\n", "<|im_start|>assistant\n<think>\n\n</think>\n\n", "<|im_start|>assistant\n<think>\n"] {
+            for gp in [
+                "<|im_start|>assistant\n",
+                "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+                "<|im_start|>assistant\n<think>\n",
+            ] {
                 for out in SYNTH_OUTPUTS {
                     n += fuzz_truncations(&cfg, gp, out);
                 }
@@ -621,9 +796,15 @@ fn fuzz_fixtures(gguf: &str, fixture: &str) {
     let mut n = 0;
     for line in std::fs::read_to_string(path).unwrap().lines() {
         let fx: Json = serde_json::from_str(line).unwrap();
-        let Some(output) = fx.get("output").and_then(Json::as_str) else { continue };
-        let Ok(inp) = chat_inputs(&fx["body"], &opts(&fx["kwargs"]), &c.tmpl) else { continue };
-        let Ok(applied) = apply(&c.tmpl, &inp) else { continue };
+        let Some(output) = fx.get("output").and_then(Json::as_str) else {
+            continue;
+        };
+        let Ok(inp) = chat_inputs(&fx["body"], &opts(&fx["kwargs"]), &c.tmpl) else {
+            continue;
+        };
+        let Ok(applied) = apply(&c.tmpl, &inp) else {
+            continue;
+        };
         for lenient in [false, true] {
             let mut cfg = parser_cfg(&c, &inp);
             cfg.lenient = lenient;
@@ -649,7 +830,10 @@ fn fuzz_truncations_recording() {
         eprintln!("skip: OXE_FUZZ_RECORDING not set");
         return;
     };
-    for gguf in ["Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf", "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf"] {
+    for gguf in [
+        "Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf",
+        "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf",
+    ] {
         let Some(c) = load(gguf) else { continue };
         let (mut turns, mut n) = (0, 0);
         for line in std::fs::read_to_string(&rec).unwrap().lines() {
@@ -660,16 +844,31 @@ fn fuzz_truncations_recording() {
             let r = &t["response"];
             let mut out = r["content"].as_str().unwrap_or("").to_string();
             for tc in r["tool_calls"].as_array().into_iter().flatten() {
-                let args: Json = serde_json::from_str(tc["arguments"].as_str().unwrap_or("{}")).unwrap_or(json!({}));
-                out += &format!("\n\n<tool_call>\n<function={}>\n", tc["name"].as_str().unwrap_or(""));
+                let args: Json = serde_json::from_str(tc["arguments"].as_str().unwrap_or("{}"))
+                    .unwrap_or(json!({}));
+                out += &format!(
+                    "\n\n<tool_call>\n<function={}>\n",
+                    tc["name"].as_str().unwrap_or("")
+                );
                 for (k, v) in args.as_object().into_iter().flatten() {
-                    let v = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+                    let v = v
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| v.to_string());
                     out += &format!("<parameter={k}>\n{v}\n</parameter>\n");
                 }
                 out += "</function>\n</tool_call>";
             }
-            let Ok(inp) = chat_inputs(&t["body"], &opts(&t["body"]["chat_template_kwargs"]), &c.tmpl) else { continue };
-            let Ok(applied) = apply(&c.tmpl, &inp) else { continue };
+            let Ok(inp) = chat_inputs(
+                &t["body"],
+                &opts(&t["body"]["chat_template_kwargs"]),
+                &c.tmpl,
+            ) else {
+                continue;
+            };
+            let Ok(applied) = apply(&c.tmpl, &inp) else {
+                continue;
+            };
             let mut cfg = parser_cfg(&c, &inp);
             cfg.lenient = true;
             n += fuzz_truncations(&cfg, &applied.generation_prompt, &out);
@@ -684,14 +883,22 @@ fn fuzz_truncations_recording() {
 /// passed on as a user message (both were HTTP 400).
 #[test]
 fn request_tool_choice_object_and_late_system() {
-    let Some(c) = load("Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf") else { return };
+    let Some(c) = load("Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf") else {
+        return;
+    };
     let tools = json!([{"type":"function","function":{"name":"a","parameters":{"type":"object","properties":{}}}},
                        {"type":"function","function":{"name":"b","parameters":{"type":"object","properties":{}}}}]);
     let body = json!({"messages":[{"role":"system","content":"S"},{"role":"user","content":"U"},{"role":"system","content":"late"}],
         "tools": tools, "tool_choice": {"type":"function","function":{"name":"b"}}});
     let inp = chat_inputs(&body, &opts(&json!({})), &c.tmpl).unwrap();
     assert_eq!(inp.tool_choice, ToolChoice::Required);
-    assert_eq!(inp.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["b"]);
+    assert_eq!(
+        inp.tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["b"]
+    );
     assert_eq!(inp.messages[2]["role"], "user");
     assert!(apply(&c.tmpl, &inp).unwrap().prompt.contains("late"));
     let bad = json!({"messages":[{"role":"user","content":"U"}], "tools": tools, "tool_choice": {"type":"function","function":{"name":"zz"}}});
@@ -728,12 +935,19 @@ fn g0prime_python_bool_parameter_is_a_tool_call() {
         // streaming char by char: never an error, same final call
         let (_, sm) = stream_all(&cfg, gp, &g0prime_text(b));
         assert_eq!(sm.tool_calls.len(), 1, "stream {b}");
-        assert_eq!(sm.tool_calls[0].arguments, m.tool_calls[0].arguments, "stream {b}");
+        assert_eq!(
+            sm.tool_calls[0].arguments, m.tool_calls[0].arguments,
+            "stream {b}"
+        );
     }
     // strict (llama.cpp parity) mode is unchanged: still rejected
     let strict = cfg_with(vec![agent_edit_tool()], false);
     let m = parser::parse(&strict, gp, &g0prime_text("False"), true).unwrap();
-    assert!(m.tool_calls.is_empty() || m.tool_calls[0].arguments.ends_with('{') || !m.tool_calls[0].arguments.contains("replaceAll\":false"));
+    assert!(
+        m.tool_calls.is_empty()
+            || m.tool_calls[0].arguments.ends_with('{')
+            || !m.tool_calls[0].arguments.contains("replaceAll\":false")
+    );
 }
 
 // ------------------------------------------------------------------ H6 prefix preload (no user turn)
@@ -765,22 +979,46 @@ fn preload_body(extra: &[(&str, Json)]) -> Json {
 #[test]
 fn prefill_without_a_user_turn_renders_the_stable_prefix() {
     let tmpl = ChatTemplate::new(&raising_template(), "", "<|im_end|>").unwrap();
-    let pre = preload_body(&[("max_tokens", json!(0)), ("add_generation_prompt", json!(false))]);
+    let pre = preload_body(&[
+        ("max_tokens", json!(0)),
+        ("add_generation_prompt", json!(false)),
+    ]);
     let inp = chat_inputs(&pre, &ServerChatOptions::default(), &tmpl).unwrap();
     // the template itself refuses the conversation (what the engine answered with HTTP 400)
-    let err = tmpl.render_ctx(&json!({"messages": inp.messages, "add_generation_prompt": false})).unwrap_err();
-    assert!(format!("{err:#}").contains("No user query found in messages"), "{err:#}");
+    let err = tmpl
+        .render_ctx(&json!({"messages": inp.messages, "add_generation_prompt": false}))
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("No user query found in messages"),
+        "{err:#}"
+    );
     let prefix = apply(&tmpl, &inp).expect("the preload renders").prompt;
-    assert!(prefix.ends_with("<|im_end|>\n") && prefix.contains("# Tools") && !prefix.contains("placeholder"), "{prefix}");
+    assert!(
+        prefix.ends_with("<|im_end|>\n")
+            && prefix.contains("# Tools")
+            && !prefix.contains("placeholder"),
+        "{prefix}"
+    );
     for user in ["hi", "<|im_start|>user tricky"] {
         let mut real = pre.clone();
         real.as_object_mut().unwrap().remove("max_tokens");
-        real.as_object_mut().unwrap().remove("add_generation_prompt");
-        real["messages"].as_array_mut().unwrap().push(json!({"role": "user", "content": user}));
+        real.as_object_mut()
+            .unwrap()
+            .remove("add_generation_prompt");
+        real["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"role": "user", "content": user}));
         let ri = chat_inputs(&real, &ServerChatOptions::default(), &tmpl).unwrap();
         let full = apply(&tmpl, &ri).unwrap().prompt;
-        assert!(full.starts_with(&prefix), "C3: the preload is a byte prefix of the first request");
-        assert!(full[prefix.len()..].starts_with("<|im_start|>user\n"), "cut exactly at the user turn");
+        assert!(
+            full.starts_with(&prefix),
+            "C3: the preload is a byte prefix of the first request"
+        );
+        assert!(
+            full[prefix.len()..].starts_with("<|im_start|>user\n"),
+            "cut exactly at the user turn"
+        );
     }
 }
 
@@ -789,9 +1027,19 @@ fn prefill_without_a_user_turn_renders_the_stable_prefix() {
 #[test]
 fn a_generating_request_without_a_user_turn_still_fails() {
     let tmpl = ChatTemplate::new(&raising_template(), "", "<|im_end|>").unwrap();
-    for extra in [vec![], vec![("max_tokens", json!(5))], vec![("max_tokens", json!(0)), ("add_generation_prompt", json!(true))]] {
+    for extra in [
+        vec![],
+        vec![("max_tokens", json!(5))],
+        vec![
+            ("max_tokens", json!(0)),
+            ("add_generation_prompt", json!(true)),
+        ],
+    ] {
         let inp = chat_inputs(&preload_body(&extra), &ServerChatOptions::default(), &tmpl).unwrap();
         let err = apply(&tmpl, &inp).expect_err("no user query");
-        assert!(format!("{err:#}").contains("No user query found in messages"), "{extra:?}: {err:#}");
+        assert!(
+            format!("{err:#}").contains("No user query found in messages"),
+            "{extra:?}: {err:#}"
+        );
     }
 }

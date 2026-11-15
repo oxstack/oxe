@@ -75,7 +75,12 @@ pub fn philox_randn(seed: u64, n: usize) -> Vec<f32> {
         for round in 0..10 {
             let v1 = c[0] as u64 * PHILOX_M[0] as u64;
             let v2 = c[2] as u64 * PHILOX_M[1] as u64;
-            c = [(v2 >> 32) as u32 ^ c[1] ^ k0, v2 as u32, (v1 >> 32) as u32 ^ c[3] ^ k1, v1 as u32];
+            c = [
+                (v2 >> 32) as u32 ^ c[1] ^ k0,
+                v2 as u32,
+                (v1 >> 32) as u32 ^ c[3] ^ k1,
+                v1 as u32,
+            ];
             if round < 9 {
                 k0 = k0.wrapping_add(PHILOX_W[0]);
                 k1 = k1.wrapping_add(PHILOX_W[1]);
@@ -100,7 +105,8 @@ pub fn philox_randn(seed: u64, n: usize) -> Vec<f32> {
 /// flow schedule's first sigma 1.0 this is exactly the DiT's input at step 0 (`dump.flux.img` call 0).
 pub fn sdcpp_initial_tokens(seed: u64, gh: usize, gw: usize, channels: usize) -> Vec<f32> {
     let nchw = philox_randn(seed, channels * gh * gw);
-    crate::latent::nchw_to_tokens(&nchw, channels, gh, gw).expect("sizes are consistent by construction")
+    crate::latent::nchw_to_tokens(&nchw, channels, gh, gw)
+        .expect("sizes are consistent by construction")
 }
 
 #[cfg(test)]
@@ -123,7 +129,10 @@ mod tests {
         let a = initial_tokens(7, 16, 8);
         let b = initial_tokens(7, 16, 8);
         let c = initial_tokens(8, 16, 8);
-        assert_eq!(a.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), b.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
+        assert_eq!(
+            a.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            b.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+        );
         assert_ne!(a, c);
         assert_eq!(a.len(), 16 * 8);
     }
@@ -141,19 +150,34 @@ mod tests {
     /// (data files only, no model). Skips quietly elsewhere. Override the root with OXI_NOISE_DUMPS.
     #[test]
     fn sdcpp_noise_matches_sdcli_dumps_bitwise() {
-        let root = std::env::var("OXI_NOISE_DUMPS").map(std::path::PathBuf::from).unwrap_or_else(|_| {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                .join(".local/share/ai-stack/pictures/imageflow-20261110")
-        });
+        let root = std::env::var("OXI_NOISE_DUMPS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                    .join(".local/share/ai-stack/pictures/imageflow-20261110")
+            });
         let mut checked = 0;
         for seed in [42u64, 43, 44] {
             let f = root.join(format!("s{seed}/dump.flux.img.call0.f32.128x1024x1x1.bin"));
-            let Ok(bytes) = std::fs::read(&f) else { continue };
-            let want: Vec<u32> = bytes.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
-            let got: Vec<u32> = sdcpp_initial_tokens(seed, 32, 32, 128).iter().map(|x| x.to_bits()).collect();
+            let Ok(bytes) = std::fs::read(&f) else {
+                continue;
+            };
+            let want: Vec<u32> = bytes
+                .chunks_exact(4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            let got: Vec<u32> = sdcpp_initial_tokens(seed, 32, 32, 128)
+                .iter()
+                .map(|x| x.to_bits())
+                .collect();
             assert_eq!(got.len(), want.len());
             let same = got.iter().zip(&want).filter(|(a, b)| a == b).count();
-            assert_eq!(same, want.len(), "seed {seed}: {same}/{} values bit-identical", want.len());
+            assert_eq!(
+                same,
+                want.len(),
+                "seed {seed}: {same}/{} values bit-identical",
+                want.len()
+            );
             checked += 1;
         }
         eprintln!("sdcpp noise: {checked} seed dumps checked bitwise");
@@ -162,7 +186,13 @@ mod tests {
     #[test]
     fn philox_is_deterministic_seed_dependent_and_normal() {
         let a = philox_randn(42, 4096);
-        assert_eq!(a.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), philox_randn(42, 4096).iter().map(|x| x.to_bits()).collect::<Vec<_>>());
+        assert_eq!(
+            a.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            philox_randn(42, 4096)
+                .iter()
+                .map(|x| x.to_bits())
+                .collect::<Vec<_>>()
+        );
         assert_ne!(a, philox_randn(43, 4096));
         // element i depends only on (seed, i): a prefix of a longer draw is the shorter draw
         assert_eq!(&philox_randn(42, 8192)[..4096], &a[..]);
@@ -170,7 +200,10 @@ mod tests {
         let v = philox_randn(7, n);
         let mean = v.iter().map(|&x| x as f64).sum::<f64>() / n as f64;
         let var = v.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / n as f64;
-        assert!(mean.abs() < 0.02 && (var - 1.0).abs() < 0.02, "mean {mean} var {var}");
+        assert!(
+            mean.abs() < 0.02 && (var - 1.0).abs() < 0.02,
+            "mean {mean} var {var}"
+        );
         assert!(v.iter().all(|x| x.is_finite()));
     }
 
@@ -182,7 +215,10 @@ mod tests {
         for row in 0..gh {
             for col in 0..gw {
                 for ch in 0..c {
-                    assert_eq!(tok[(row * gw + col) * c + ch].to_bits(), flat[ch * gh * gw + row * gw + col].to_bits());
+                    assert_eq!(
+                        tok[(row * gw + col) * c + ch].to_bits(),
+                        flat[ch * gh * gw + row * gw + col].to_bits()
+                    );
                 }
             }
         }

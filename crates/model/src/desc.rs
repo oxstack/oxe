@@ -53,26 +53,41 @@ impl ModelDesc {
     }
     /// f32 recurrent state per recurrent layer: conv state + delta-rule S (bytes).
     pub fn recurrent_state_bytes_per_layer(&self) -> usize {
-        4 * ((self.ssm_conv_kernel - 1) * self.ssm_conv_channels() + self.ssm_d_state * self.ssm_d_inner)
+        4 * ((self.ssm_conv_kernel - 1) * self.ssm_conv_channels()
+            + self.ssm_d_state * self.ssm_d_inner)
     }
     /// f16 K+V bytes per cached position per attention layer.
     pub fn kv_bytes_per_pos_per_layer(&self) -> usize {
         2 * 2 * self.n_head_kv * self.head_dim
     }
     pub fn n_recurrent(&self) -> usize {
-        self.layers.iter().filter(|k| **k == LayerKind::Recurrent).count()
+        self.layers
+            .iter()
+            .filter(|k| **k == LayerKind::Recurrent)
+            .count()
     }
     pub fn n_attention(&self) -> usize {
-        self.layers.iter().filter(|k| **k == LayerKind::Attention).count()
+        self.layers
+            .iter()
+            .filter(|k| **k == LayerKind::Attention)
+            .count()
     }
 
     pub fn from_header(h: &Header) -> Result<ModelDesc, String> {
-        let arch = h.architecture().ok_or("no general.architecture")?.to_string();
+        let arch = h
+            .architecture()
+            .ok_or("no general.architecture")?
+            .to_string();
         if arch != "qwen35moe" {
-            return Err(format!("architecture {arch} is not supported (qwen35moe only)"));
+            return Err(format!(
+                "architecture {arch} is not supported (qwen35moe only)"
+            ));
         }
         let u = |k: &str| -> Result<usize, String> {
-            h.get(&format!("{arch}.{k}")).and_then(|v| v.as_u64()).map(|v| v as usize).ok_or(format!("missing {arch}.{k}"))
+            h.get(&format!("{arch}.{k}"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .ok_or(format!("missing {arch}.{k}"))
         };
         let block_count = u("block_count")?;
         let nextn = u("nextn_predict_layers").unwrap_or(0);
@@ -90,12 +105,22 @@ impl ModelDesc {
             let kind = match (rec, att) {
                 (true, false) => LayerKind::Recurrent,
                 (false, true) => LayerKind::Attention,
-                _ => return Err(format!("layer {il}: cannot classify (ssm_a {rec}, attn_q {att})")),
+                _ => {
+                    return Err(format!(
+                        "layer {il}: cannot classify (ssm_a {rec}, attn_q {att})"
+                    ))
+                }
             };
             // llama.cpp qwen35moe: recurrent iff (il + 1) % interval != 0
-            let expect = if (il + 1) % interval != 0 { LayerKind::Recurrent } else { LayerKind::Attention };
+            let expect = if (il + 1) % interval != 0 {
+                LayerKind::Recurrent
+            } else {
+                LayerKind::Attention
+            };
             if kind != expect {
-                return Err(format!("layer {il}: tensors say {kind:?}, full_attention_interval says {expect:?}"));
+                return Err(format!(
+                    "layer {il}: tensors say {kind:?}, full_attention_interval says {expect:?}"
+                ));
             }
             layers.push(kind);
         }
@@ -117,7 +142,10 @@ impl ModelDesc {
             ssm_d_inner: u("ssm.inner_size")?,
             rms_eps: eps,
             n_rot: u("rope.dimension_count")?,
-            rope_freq_base: h.get(&format!("{arch}.rope.freq_base")).and_then(|v| v.as_f64()).ok_or("missing rope.freq_base")? as f32,
+            rope_freq_base: h
+                .get(&format!("{arch}.rope.freq_base"))
+                .and_then(|v| v.as_f64())
+                .ok_or("missing rope.freq_base")? as f32,
             rope_sections: {
                 let mut s = [0i32; 4];
                 match h.get(&format!("{arch}.rope.dimension_sections")) {
@@ -126,7 +154,9 @@ impl ModelDesc {
                             s[i] = v.as_f64().ok_or("bad rope section")? as i32;
                         }
                     }
-                    _ => return Err("missing rope.dimension_sections (qwen35moe uses IMRoPE)".into()),
+                    _ => {
+                        return Err("missing rope.dimension_sections (qwen35moe uses IMRoPE)".into())
+                    }
                 }
                 s
             },
@@ -140,7 +170,11 @@ impl ModelDesc {
 
     /// Shape cross-checks between metadata and tensors (what the plan relies on).
     fn check(&self, h: &Header) -> Result<(), String> {
-        let shape = |n: &str| h.tensor(n).map(|t| t.shape.clone()).ok_or(format!("missing tensor {n}"));
+        let shape = |n: &str| {
+            h.tensor(n)
+                .map(|t| t.shape.clone())
+                .ok_or(format!("missing tensor {n}"))
+        };
         let e = self.n_embd as u64;
         for (il, kind) in self.layers.iter().enumerate() {
             let p = |s: &str| format!("blk.{il}.{s}");
@@ -154,12 +188,18 @@ impl ModelDesc {
                     }
                 }
                 LayerKind::Attention => {
-                    if shape(&p("attn_q.weight"))? != vec![e, (2 * self.n_head * self.head_dim) as u64] {
-                        return Err(format!("layer {il}: attn_q shape (expected q + gate per head)"));
+                    if shape(&p("attn_q.weight"))?
+                        != vec![e, (2 * self.n_head * self.head_dim) as u64]
+                    {
+                        return Err(format!(
+                            "layer {il}: attn_q shape (expected q + gate per head)"
+                        ));
                     }
                 }
             }
-            if shape(&p("ffn_gate_exps.weight"))? != vec![e, self.ff_exp as u64, self.n_expert as u64] {
+            if shape(&p("ffn_gate_exps.weight"))?
+                != vec![e, self.ff_exp as u64, self.n_expert as u64]
+            {
                 return Err(format!("layer {il}: ffn_gate_exps shape"));
             }
         }
@@ -175,10 +215,15 @@ impl ModelDesc {
             return Err("head counts do not divide".into());
         }
         if self.ff_exp % kernels_sys::QK_K != 0 || self.ff_shexp % kernels_sys::QK_K != 0 {
-            return Err("expert FFN width must be a multiple of 256 (one activation block per MoE unit)".into());
+            return Err(
+                "expert FFN width must be a multiple of 256 (one activation block per MoE unit)"
+                    .into(),
+            );
         }
         if self.ssm_d_state != self.ssm_head_v_dim() {
-            return Err("delta-net head_k_dim != head_v_dim (the fused GDN op requires S_k == S_v)".into());
+            return Err(
+                "delta-net head_k_dim != head_v_dim (the fused GDN op requires S_k == S_v)".into(),
+            );
         }
         if self.n_rot > self.head_dim || self.n_rot % 2 != 0 {
             return Err("bad rope.dimension_count".into());
@@ -202,7 +247,11 @@ pub enum Role {
 
 pub fn role(t: &TensorInfo, desc: &ModelDesc) -> Role {
     if let Some(rest) = t.name.strip_prefix("blk.") {
-        let il: usize = rest.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let il: usize = rest
+            .split('.')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         if il >= desc.n_layer || t.name.contains(".nextn.") {
             return Role::Mtp;
         }

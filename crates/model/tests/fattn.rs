@@ -65,13 +65,27 @@ fn fused_random_matches_f64_and_old_path() {
         for &n in &CTX {
             for nl in [1usize, 2] {
                 let pos0 = n - 1;
-                let c = Case::new(n_ctx_for(pos0, nl), nl, pos0, Kind::Random, qs, 0x5eed ^ (n as u64) ^ ((nl as u64) << 40), &[]);
+                let c = Case::new(
+                    n_ctx_for(pos0, nl),
+                    nl,
+                    pos0,
+                    Kind::Random,
+                    qs,
+                    0x5eed ^ (n as u64) ^ ((nl as u64) << 40),
+                    &[],
+                );
                 let r = ref_f64(&c);
                 let old = old_out(&c, 8);
                 let f1 = fused_out(&c, 1, 256);
-                assert!(f1.iter().all(|v| v.is_finite()), "n {n} nl {nl}: non-finite output");
+                assert!(
+                    f1.iter().all(|v| v.is_finite()),
+                    "n {n} nl {nl}: non-finite output"
+                );
                 for &nth in &THREADS[1..] {
-                    assert!(same_bits(&fused_out(&c, nth, 256), &f1), "n {n} nl {nl} qs {qs}: {nth} threads differ from 1");
+                    assert!(
+                        same_bits(&fused_out(&c, nth, 256), &f1),
+                        "n {n} nl {nl} qs {qs}: {nth} threads differ from 1"
+                    );
                 }
                 let (ef, af) = rel_err(&f1, &r);
                 let (eo, ao) = rel_err(&old, &r);
@@ -79,8 +93,14 @@ fn fused_random_matches_f64_and_old_path() {
                 println!("qs {qs:>4} n {n:>5} lanes {nl}: rel L2 vs f64 fused {ef:.2e} (abs {af:.1e}) old {eo:.2e} (abs {ao:.1e}); fused vs old {efo:.2e}");
                 // peakier softmax (qs 16: logits ~ +-5) -> f16 score / weight rounding dominates both kernels
                 let tol = 3e-3 * (qs as f64 / 4.0).max(1.0);
-                assert!(ef <= tol, "n {n} nl {nl} qs {qs}: fused error {ef:.3e} vs f64 (bound {tol:.1e})");
-                assert!(ef <= eo * 1.25 + 3e-4, "n {n} nl {nl} qs {qs}: fused error {ef:.3e} worse than old {eo:.3e}");
+                assert!(
+                    ef <= tol,
+                    "n {n} nl {nl} qs {qs}: fused error {ef:.3e} vs f64 (bound {tol:.1e})"
+                );
+                assert!(
+                    ef <= eo * 1.25 + 3e-4,
+                    "n {n} nl {nl} qs {qs}: fused error {ef:.3e} worse than old {eo:.3e}"
+                );
             }
         }
     }
@@ -103,7 +123,10 @@ fn fused_onehot_exact_counts() {
                 for &nth in &THREADS {
                     let f = fused_out(&c, nth, ch);
                     for (i, (&x, &y)) in f.iter().zip(&r).enumerate() {
-                        assert!((x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12, "n {n} nl {nl} ch {ch} nth {nth}: out[{i}] = {x} want {y}");
+                        assert!(
+                            (x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12,
+                            "n {n} nl {nl} ch {ch} nth {nth}: out[{i}] = {x} want {y}"
+                        );
                     }
                 }
             }
@@ -130,11 +153,17 @@ fn fused_spikes_masking_and_large_logits() {
             let r = ref_f64(&c);
             let old = old_out(&c, 4);
             let (eo, _) = rel_err(&old, &r);
-            assert!(eo < 5e-3, "n {n} nl {nl}: old path error {eo:.3e} on spikes");
+            assert!(
+                eo < 5e-3,
+                "n {n} nl {nl}: old path error {eo:.3e} on spikes"
+            );
             for &nth in &THREADS {
                 let f = fused_out(&c, nth, 256);
                 for (i, (&x, &y)) in f.iter().zip(&r).enumerate() {
-                    assert!((x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12, "n {n} nl {nl} nth {nth}: out[{i}] = {x} want {y}");
+                    assert!(
+                        (x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12,
+                        "n {n} nl {nl} nth {nth}: out[{i}] = {x} want {y}"
+                    );
                 }
             }
         }
@@ -158,7 +187,8 @@ fn fused_lane_results_are_batch_invariant() {
             for h in 0..NKV {
                 for i in 0..ln {
                     let row = two.k_local[i][h * HD..(h + 1) * HD].to_vec();
-                    one.k[(h * n_ctx + pos0 + i) * HD..(h * n_ctx + pos0 + i + 1) * HD].copy_from_slice(&row);
+                    one.k[(h * n_ctx + pos0 + i) * HD..(h * n_ctx + pos0 + i + 1) * HD]
+                        .copy_from_slice(&row);
                 }
             }
             one.k_local = vec![two.k_local[ln].clone()];
@@ -176,7 +206,10 @@ fn fused_lane_results_are_batch_invariant() {
             }
             let f1 = fused_out(&one, 4, 256);
             let lane = &f2[ln * NHEAD * HD..(ln + 1) * NHEAD * HD];
-            assert!(same_bits(lane, &f1), "n {n}: lane {ln} of the 2-lane run differs from a 1-lane run");
+            assert!(
+                same_bits(lane, &f1),
+                "n {n}: lane {ln} of the 2-lane run differs from a 1-lane run"
+            );
         }
     }
 }

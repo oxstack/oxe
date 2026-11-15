@@ -39,5 +39,9 @@ pub struct StageTimes {
 pub trait SingleBlockBackend {
     fn name(&self) -> &'static str;
     /// Run the block. `want_intermediates` fills `attn`, `mlp`, `z` of the output (slower).
-    fn forward(&mut self, input: &BlockInput, want_intermediates: bool) -> (BlockOutput, StageTimes);
+    fn forward(
+        &mut self,
+        input: &BlockInput,
+        want_intermediates: bool,
+    ) -> (BlockOutput, StageTimes);
 }

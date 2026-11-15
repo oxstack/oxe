@@ -16,7 +16,11 @@ const CRC_TABLE: [u32; 256] = {
         let mut c = i as u32;
         let mut k = 0;
         while k < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             k += 1;
         }
         t[i] = c;
@@ -64,7 +68,11 @@ pub fn encode_png(rgb: &Rgb) -> Result<Vec<u8>, String> {
         return Err("png: image too large".into());
     }
     if rgb.data.len() != w * h * 3 {
-        return Err(format!("png: data length {} != {}", rgb.data.len(), w * h * 3));
+        return Err(format!(
+            "png: data length {} != {}",
+            rgb.data.len(),
+            w * h * 3
+        ));
     }
     let stride = w * 3;
     let mut raw = Vec::with_capacity(h * (stride + 1));
@@ -135,7 +143,8 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgb, String> {
         if pos + 8 > bytes.len() {
             return Err("png: truncated chunk header".into());
         }
-        let len = u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]]) as usize;
+        let len = u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
+            as usize;
         let kind = &bytes[pos + 4..pos + 8];
         let data_start = pos + 8;
         let data_end = data_start
@@ -152,7 +161,10 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgb, String> {
             bytes[data_end + 3],
         ]);
         if crc32(&bytes[pos + 4..data_end]) != stored_crc {
-            return Err(format!("png: CRC mismatch in {} chunk", String::from_utf8_lossy(kind)));
+            return Err(format!(
+                "png: CRC mismatch in {} chunk",
+                String::from_utf8_lossy(kind)
+            ));
         }
         match kind {
             b"IHDR" => {
@@ -161,14 +173,17 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgb, String> {
                 }
                 let w = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
                 let h = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize;
-                let (depth, ctype, comp, filt, ilace) = (data[8], data[9], data[10], data[11], data[12]);
+                let (depth, ctype, comp, filt, ilace) =
+                    (data[8], data[9], data[10], data[11], data[12]);
                 if depth != 8 {
                     return Err(format!("png: bit depth {depth} not supported (8 only)"));
                 }
                 let bpp = match ctype {
                     2 => 3,
                     6 => 4,
-                    other => return Err(format!("png: colour type {other} not supported (2 or 6)")),
+                    other => {
+                        return Err(format!("png: colour type {other} not supported (2 or 6)"))
+                    }
                 };
                 if comp != 0 || filt != 0 || ilace != 0 {
                     return Err("png: unsupported compression/filter/interlace method".into());
@@ -202,7 +217,11 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgb, String> {
     let raw = zlib_decompress(&idat)?;
     let stride = w * bpp;
     if raw.len() < h * (stride + 1) {
-        return Err(format!("png: image data too short ({} < {})", raw.len(), h * (stride + 1)));
+        return Err(format!(
+            "png: image data too short ({} < {})",
+            raw.len(),
+            h * (stride + 1)
+        ));
     }
     let mut data = vec![0u8; w * h * 3];
     let mut prev = vec![0u8; stride];
@@ -262,7 +281,11 @@ fn unfilter_row(ftype: u8, cur: &mut [u8], prev: &[u8], bpp: usize) -> Result<()
         }
         4 => {
             for i in 0..cur.len() {
-                let (a, c) = if i >= bpp { (cur[i - bpp], prev[i - bpp]) } else { (0, 0) };
+                let (a, c) = if i >= bpp {
+                    (cur[i - bpp], prev[i - bpp])
+                } else {
+                    (0, 0)
+                };
                 cur[i] = cur[i].wrapping_add(paeth(a, prev[i], c));
             }
         }
@@ -300,7 +323,12 @@ pub fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
     inflate(&mut br, &mut out)?;
     // The bit reader never reads past the byte holding the last used bit.
     if br.pos + 4 <= data.len() {
-        let stored = u32::from_be_bytes([data[br.pos], data[br.pos + 1], data[br.pos + 2], data[br.pos + 3]]);
+        let stored = u32::from_be_bytes([
+            data[br.pos],
+            data[br.pos + 1],
+            data[br.pos + 2],
+            data[br.pos + 3],
+        ]);
         if stored != adler32(&out) {
             return Err("zlib: Adler-32 mismatch".into());
         }
@@ -405,17 +433,23 @@ impl Huffman {
 }
 
 const LEN_BASE: [u16; 29] = [
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258,
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
 ];
-const LEN_EXTRA: [u8; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+const LEN_EXTRA: [u8; 29] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+];
 const DIST_BASE: [u16; 30] = [
-    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,
-    8193, 12289, 16385, 24577,
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 const DIST_EXTRA: [u8; 30] = [
-    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
 ];
-const CLEN_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+const CLEN_ORDER: [usize; 19] = [
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+];
 
 fn inflate(br: &mut Bits, out: &mut Vec<u8>) -> Result<(), String> {
     loop {
@@ -499,7 +533,12 @@ fn inflate(br: &mut Bits, out: &mut Vec<u8>) -> Result<(), String> {
     }
 }
 
-fn inflate_codes(br: &mut Bits, out: &mut Vec<u8>, lit: &Huffman, dist: &Huffman) -> Result<(), String> {
+fn inflate_codes(
+    br: &mut Bits,
+    out: &mut Vec<u8>,
+    lit: &Huffman,
+    dist: &Huffman,
+) -> Result<(), String> {
     loop {
         let sym = lit.decode(br)? as usize;
         if sym < 256 {
@@ -542,10 +581,15 @@ mod tests {
 
     #[test]
     fn zlib_stored_round_trip_multi_block() {
-        let data: Vec<u8> = (0..150_000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        let data: Vec<u8> = (0..150_000u32)
+            .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+            .collect();
         let z = zlib_stored(&data);
         assert_eq!(zlib_decompress(&z).unwrap(), data);
-        assert_eq!(zlib_decompress(&zlib_stored(&[])).unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            zlib_decompress(&zlib_stored(&[])).unwrap(),
+            Vec::<u8>::new()
+        );
     }
 
     #[test]

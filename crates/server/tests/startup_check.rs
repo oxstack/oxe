@@ -14,7 +14,10 @@ fn scratch_home(tag: &str) -> std::path::PathBuf {
 
 fn cmd(tag: &str, env: &[(&str, &str)], args: &[&str]) -> Command {
     let mut c = Command::new(BIN);
-    c.env_clear().env("HOME", scratch_home(tag)).env("PATH", "/usr/bin:/bin").args(args);
+    c.env_clear()
+        .env("HOME", scratch_home(tag))
+        .env("PATH", "/usr/bin:/bin")
+        .args(args);
     for (k, v) in env {
         c.env(k, v);
     }
@@ -35,8 +38,16 @@ fn closed_pipe() -> Stdio {
 #[test]
 fn help_into_a_closed_pipe_exits_zero() {
     for flag in ["--help", "-h"] {
-        let s = cmd("help-epipe", &[], &[flag]).stdout(closed_pipe()).stderr(Stdio::null()).status().unwrap();
-        assert_eq!(s.code(), Some(0), "{flag} | (closed) must exit 0, got {s:?}");
+        let s = cmd("help-epipe", &[], &[flag])
+            .stdout(closed_pipe())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(
+            s.code(),
+            Some(0),
+            "{flag} | (closed) must exit 0, got {s:?}"
+        );
     }
 }
 
@@ -51,15 +62,36 @@ fn help_prints_the_usage_and_the_capability_marker() {
 
 #[test]
 fn help_anywhere_wins_over_a_bad_value_and_a_bad_env() {
-    let o = cmd("help-any", &[("OXE_PF_TILES", "nonsense")], &["--port", "x", "--help"]).output().unwrap();
+    let o = cmd(
+        "help-any",
+        &[("OXE_PF_TILES", "nonsense")],
+        &["--port", "x", "--help"],
+    )
+    .output()
+    .unwrap();
     assert_eq!(o.status.code(), Some(0));
 }
 
 #[test]
 fn check_args_clean_env_prints_effective_config() {
-    let o = cmd("ca-clean", &[("OXE_PF_TILES", "13"), ("OXE_VL", "15"), ("OXE_KV_VPAD", "32")], &["--check-args", "--engine", "stub", "--port", "8099"]).output().unwrap();
+    let o = cmd(
+        "ca-clean",
+        &[
+            ("OXE_PF_TILES", "13"),
+            ("OXE_VL", "15"),
+            ("OXE_KV_VPAD", "32"),
+        ],
+        &["--check-args", "--engine", "stub", "--port", "8099"],
+    )
+    .output()
+    .unwrap();
     let t = String::from_utf8_lossy(&o.stdout);
-    assert_eq!(o.status.code(), Some(0), "{t}\n{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{t}\n{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     let j: serde_json::Value = serde_json::from_str(&t).unwrap();
     assert_eq!(j["ok"], true);
     assert_eq!(j["env"]["OXE_PF_TILES"]["effective"], 13);
@@ -69,15 +101,28 @@ fn check_args_clean_env_prints_effective_config() {
 
 #[test]
 fn check_args_into_a_closed_pipe_exits_zero() {
-    let s = cmd("ca-epipe", &[], &["--check-args"]).stdout(closed_pipe()).stderr(Stdio::null()).status().unwrap();
+    let s = cmd("ca-epipe", &[], &["--check-args"])
+        .stdout(closed_pipe())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
     assert_eq!(s.code(), Some(0), "{s:?}");
 }
 
 #[test]
 fn check_args_lists_flags_not_in_the_usage() {
-    let o = cmd("ca-flags", &[], &["--check-args", "--flash-cache-gibb", "16", "--port", "-1"]).output().unwrap();
+    let o = cmd(
+        "ca-flags",
+        &[],
+        &["--check-args", "--flash-cache-gibb", "16", "--port", "-1"],
+    )
+    .output()
+    .unwrap();
     let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(j["flags_not_in_usage"], serde_json::json!(["--flash-cache-gibb"]));
+    assert_eq!(
+        j["flags_not_in_usage"],
+        serde_json::json!(["--flash-cache-gibb"])
+    );
 }
 
 #[test]
@@ -94,11 +139,22 @@ fn malformed_env_is_refused_at_start_and_by_check_args() {
     ];
     for (k, v, why) in bad {
         // a normal start: refused before the model path is even looked at (exit 2, one line naming the variable)
-        let o = cmd("bad-start", &[(k, v)], &["--model", "/nonexistent/model.gguf"]).output().unwrap();
+        let o = cmd(
+            "bad-start",
+            &[(k, v)],
+            &["--model", "/nonexistent/model.gguf"],
+        )
+        .output()
+        .unwrap();
         let e = String::from_utf8_lossy(&o.stderr);
         assert_eq!(o.status.code(), Some(2), "{k}={v}: {e}");
-        assert!(e.contains(k) && e.contains(why) && e.contains("refusing to start"), "{k}={v}: {e}");
-        let o = cmd("bad-ca", &[(k, v)], &["--check-args"]).output().unwrap();
+        assert!(
+            e.contains(k) && e.contains(why) && e.contains("refusing to start"),
+            "{k}={v}: {e}"
+        );
+        let o = cmd("bad-ca", &[(k, v)], &["--check-args"])
+            .output()
+            .unwrap();
         assert_eq!(o.status.code(), Some(2), "{k}={v} --check-args");
         let j: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
         assert_eq!(j["ok"], false);
@@ -107,22 +163,41 @@ fn malformed_env_is_refused_at_start_and_by_check_args() {
 
 #[test]
 fn unknown_names_and_inherited_kv_type_only_warn() {
-    let o = cmd("warn", &[("OXE_PF_TILESS", "13"), ("OXE_KV_TYPE", "kv8")], &["--check-args"]).output().unwrap();
+    let o = cmd(
+        "warn",
+        &[("OXE_PF_TILESS", "13"), ("OXE_KV_TYPE", "kv8")],
+        &["--check-args"],
+    )
+    .output()
+    .unwrap();
     assert_eq!(o.status.code(), Some(0));
     let e = String::from_utf8_lossy(&o.stderr);
-    assert!(e.contains("unknown environment variable OXE_PF_TILESS"), "{e}");
+    assert!(
+        e.contains("unknown environment variable OXE_PF_TILESS"),
+        "{e}"
+    );
     assert!(e.contains("OXE_KV_TYPE=kv8 is inherited"), "{e}");
 }
 
 #[test]
 fn cpu_feature_check_names_what_is_missing() {
     assert!(missing_cpu_features(&|_| true).is_empty());
-    assert_eq!(missing_cpu_features(&|f| f != "i8mm" && f != "bf16"), vec!["i8mm", "bf16"]);
+    assert_eq!(
+        missing_cpu_features(&|f| f != "i8mm" && f != "bf16"),
+        vec!["i8mm", "bf16"]
+    );
     let m = cpu_message(&["i8mm"]);
-    assert!(m.contains("lacks i8mm") && m.contains("illegal instruction"), "{m}");
+    assert!(
+        m.contains("lacks i8mm") && m.contains("illegal instruction"),
+        "{m}"
+    );
     // the CI helper (Apple M2) and the Snapdragon have all four
     #[cfg(target_arch = "aarch64")]
-    assert!(missing_cpu_features(&cpu_has).is_empty(), "{:?}", missing_cpu_features(&cpu_has));
+    assert!(
+        missing_cpu_features(&cpu_has).is_empty(),
+        "{:?}",
+        missing_cpu_features(&cpu_has)
+    );
 }
 
 #[test]
@@ -132,7 +207,9 @@ fn env_check_empty_values() {
     assert!(check_env(&env("OXE_PF_TILES", "")).errors.is_empty());
     assert!(check_env(&env("OXE_ATTN", "")).errors.is_empty());
     // a 0/1 switch must say which (its reader takes empty as ON)
-    assert!(!check_env(&env("OXE_PF_GROUP_UNALIGNED", "")).errors.is_empty());
+    assert!(!check_env(&env("OXE_PF_GROUP_UNALIGNED", ""))
+        .errors
+        .is_empty());
 }
 
 #[test]

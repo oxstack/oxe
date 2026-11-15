@@ -36,7 +36,10 @@ const F16_NAN: u16 = 0x7e00;
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) as u32
     }
     /// uniform in [-1, 1]
@@ -126,7 +129,14 @@ impl Case {
                 q = vec![qv; NCOL * HD];
             }
         }
-        Case { n_ctx, pos0, k, vt, v_stride, q16: f16s(&q) }
+        Case {
+            n_ctx,
+            pos0,
+            k,
+            vt,
+            v_stride,
+            q16: f16s(&q),
+        }
     }
 
     fn last(&self) -> usize {
@@ -222,12 +232,45 @@ fn tiled(c: &Case) -> Vec<f32> {
         let q = c.q16[t0 * GROUP * HD..].as_ptr();
         // SAFETY: buffers sized for the case; K rows < rows finite, V^T finite up to n_ctx >= nkv.
         unsafe {
-            ffi::oxe_dot_f16_tile(HD as i32, c.k.as_ptr(), HD as i64, rows as i32, q, HD as i64, nc as i32, akq.as_mut_ptr(), 1, acs as i64, std::ptr::null());
+            ffi::oxe_dot_f16_tile(
+                HD as i32,
+                c.k.as_ptr(),
+                HD as i64,
+                rows as i32,
+                q,
+                HD as i64,
+                nc as i32,
+                akq.as_mut_ptr(),
+                1,
+                acs as i64,
+                std::ptr::null(),
+            );
             for col in 0..nc {
                 let pos = pos0 + col / GROUP;
-                ffi::oxe_attn_softmax_row_f16(akq.as_ptr().add(col * acs), pos as i32, nkv as i32, scale, wp.as_mut_ptr(), dp.as_mut_ptr(), ap16.as_mut_ptr().add(col * acs), n32 as i32);
+                ffi::oxe_attn_softmax_row_f16(
+                    akq.as_ptr().add(col * acs),
+                    pos as i32,
+                    nkv as i32,
+                    scale,
+                    wp.as_mut_ptr(),
+                    dp.as_mut_ptr(),
+                    ap16.as_mut_ptr().add(col * acs),
+                    n32 as i32,
+                );
             }
-            ffi::oxe_dot_f16_tile(n32 as i32, c.vt.as_ptr(), c.v_stride as i64, HD as i32, ap16.as_ptr(), acs as i64, nc as i32, aot.as_mut_ptr(), nc as i64, 1, nf.as_ptr());
+            ffi::oxe_dot_f16_tile(
+                n32 as i32,
+                c.vt.as_ptr(),
+                c.v_stride as i64,
+                HD as i32,
+                ap16.as_ptr(),
+                acs as i64,
+                nc as i32,
+                aot.as_mut_ptr(),
+                nc as i64,
+                1,
+                nf.as_ptr(),
+            );
         }
         for col in 0..nc {
             for d in 0..HD {
@@ -247,10 +290,18 @@ fn ref_f64(c: &Case) -> Vec<f64> {
     let mut s = vec![0f64; rows];
     for col in 0..NCOL {
         let n = c.pos0 + col / GROUP + 1;
-        let q: Vec<f64> = c.q16[col * HD..(col + 1) * HD].iter().map(|&h| h2f(h)).collect();
+        let q: Vec<f64> = c.q16[col * HD..(col + 1) * HD]
+            .iter()
+            .map(|&h| h2f(h))
+            .collect();
         let mut m = f64::NEG_INFINITY;
         for p in 0..n {
-            s[p] = k[p * HD..(p + 1) * HD].iter().zip(&q).map(|(a, b)| a * b).sum::<f64>() * scale;
+            s[p] = k[p * HD..(p + 1) * HD]
+                .iter()
+                .zip(&q)
+                .map(|(a, b)| a * b)
+                .sum::<f64>()
+                * scale;
             m = m.max(s[p]);
         }
         let mut sum = 0f64;
@@ -271,7 +322,11 @@ fn rel_err(x: &[f32], r: &[f64]) -> f64 {
     x.chunks(HD)
         .zip(r.chunks(HD))
         .map(|(xs, rs)| {
-            let e2: f64 = xs.iter().zip(rs).map(|(&a, &b)| (a as f64 - b) * (a as f64 - b)).sum();
+            let e2: f64 = xs
+                .iter()
+                .zip(rs)
+                .map(|(&a, &b)| (a as f64 - b) * (a as f64 - b))
+                .sum();
             let r2: f64 = rs.iter().map(|b| b * b).sum();
             (e2 / r2.max(1e-300)).sqrt()
         })
@@ -292,13 +347,18 @@ fn gp(fold_qk: usize, fold_pv: usize, ch: usize, mk: PgMk) -> GParams {
 
 /// Every fold pair (QK, PV) at the default chunk.
 fn folds() -> Vec<GParams> {
-    [(32usize, 32usize), (16, 16), (16, 32), (32, 16)].iter().map(|&(a, b)| gp(a, b, 128, PgMk::Ld1r)).collect()
+    [(32usize, 32usize), (16, 16), (16, 32), (32, 16)]
+        .iter()
+        .map(|&(a, b)| gp(a, b, 128, PgMk::Ld1r))
+        .collect()
 }
 
 /// kv_len of the case's columns = pos0 + 1 .. pos0 + 16: 1 (pos0 0), the 8-row panels, the 16 / 32
 /// folds, the 32 / 64 / 128 / 256 chunks, 4096 and ~8K, each boundary +-1 for the first and the
 /// last column of the unit.
-const POS0S: [usize; 22] = [0, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 111, 112, 113, 127, 128, 129, 239, 240, 241, 4080, 8176];
+const POS0S: [usize; 22] = [
+    0, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 111, 112, 113, 127, 128, 129, 239, 240, 241, 4080, 8176,
+];
 
 /// Random data at every boundary (and deep, a chunk boundary inside the unit): pfg inside the f16
 /// class envelope of tiled and fa2 on the same case, for every fold pair and both micro-kernels;
@@ -314,21 +374,44 @@ fn pfg_random_envelope_vs_f64_tiled_fa2_all_boundaries() {
             if pos0 > 10_000 && qs == 1.0 {
                 continue;
             }
-            let c = Case::new(pos0, Kind::Random(qs), 0x9f6 ^ (pos0 as u64) << 4 ^ ((qs as u64) << 40));
+            let c = Case::new(
+                pos0,
+                Kind::Random(qs),
+                0x9f6 ^ (pos0 as u64) << 4 ^ ((qs as u64) << 40),
+            );
             let r = ref_f64(&c);
             let (t, f) = (tiled(&c), fa2(&c));
-            assert!(finite(&t) && finite(&f), "pos0 {pos0}: tiled / fa2 non-finite");
+            assert!(
+                finite(&t) && finite(&f),
+                "pos0 {pos0}: tiled / fa2 non-finite"
+            );
             let (et, ef) = (rel_err(&t, &r), rel_err(&f, &r));
             for g in folds() {
                 let x = pfg(&c, TT, g);
-                assert!(finite(&x), "pos0 {pos0} qs {qs} {g:?}: NON-FINITE pfg output");
-                let xe = pfg(&c, TT, GParams { mk: PgMk::Elem, ..g });
-                assert!(same_bits(&x, &xe), "pos0 {pos0} qs {qs} {g:?}: LD1R and by-element differ");
+                assert!(
+                    finite(&x),
+                    "pos0 {pos0} qs {qs} {g:?}: NON-FINITE pfg output"
+                );
+                let xe = pfg(
+                    &c,
+                    TT,
+                    GParams {
+                        mk: PgMk::Elem,
+                        ..g
+                    },
+                );
+                assert!(
+                    same_bits(&x, &xe),
+                    "pos0 {pos0} qs {qs} {g:?}: LD1R and by-element differ"
+                );
                 let ex = rel_err(&x, &r);
                 let ratio = ex / et.max(ef).max(1e-7);
                 let l = format!("pfg {} kv_len {:>5}..{:<5} qs {qs:>4}: rel L2 vs f64 pfg {ex:.2e} tiled {et:.2e} fa2 {ef:.2e} (x{ratio:.2})", g.tag(), pos0 + 1, pos0 + TT);
                 println!("{l}");
-                assert!(ex <= 2.5 * et.max(ef) + 2e-3, "pfg outside the f16 class envelope: {l}");
+                assert!(
+                    ex <= 2.5 * et.max(ef) + 2e-3,
+                    "pfg outside the f16 class envelope: {l}"
+                );
                 let tol = 3e-3 * (qs as f64 / 4.0).max(1.0) * 2.0;
                 assert!(ex <= tol, "pfg vs f64 above {tol:.1e}: {l}");
                 if g == GParams::default() && ratio > worst.0 {
@@ -337,7 +420,10 @@ fn pfg_random_envelope_vs_f64_tiled_fa2_all_boundaries() {
             }
         }
     }
-    println!("pfg default worst error ratio vs max(tiled, fa2): {:.2} ({})", worst.0, worst.1);
+    println!(
+        "pfg default worst error ratio vs max(tiled, fa2): {:.2} ({})",
+        worst.0, worst.1
+    );
 }
 
 /// Uniform attention over one-hot V and +128 logit spikes (exact fixtures): every fold pair,
@@ -345,7 +431,13 @@ fn pfg_random_envelope_vs_f64_tiled_fa2_all_boundaries() {
 #[test]
 fn pfg_exact_fixtures_all_params() {
     let mut gps: Vec<GParams> = Vec::new();
-    for (fq, fp, ch) in [(32usize, 32usize, 32usize), (32, 32, 128), (16, 16, 96), (16, 32, 256), (32, 16, 64)] {
+    for (fq, fp, ch) in [
+        (32usize, 32usize, 32usize),
+        (32, 32, 128),
+        (16, 16, 96),
+        (16, 32, 256),
+        (32, 16, 64),
+    ] {
         for mk in [PgMk::Ld1r, PgMk::Elem] {
             gps.push(gp(fq, fp, ch, mk));
         }
@@ -356,16 +448,25 @@ fn pfg_exact_fixtures_all_params() {
             for &per in pers {
                 let f = pfg(c, per, g);
                 for (i, (&x, &y)) in f.iter().zip(&r).enumerate() {
-                    assert!((x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12, "{what} pos0 {} {g:?} per {per}: out[{i}] = {x} want {y}", c.pos0);
+                    assert!(
+                        (x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12,
+                        "{what} pos0 {} {g:?} per {per}: out[{i}] = {x} want {y}",
+                        c.pos0
+                    );
                 }
             }
         }
     };
-    for &pos0 in &[0usize, 1, 7, 8, 9, 25, 31, 32, 33, 95, 96, 120, 127, 128, 129, 250, 255, 256, 509, 8_184, 40_000] {
+    for &pos0 in &[
+        0usize, 1, 7, 8, 9, 25, 31, 32, 33, 95, 96, 120, 127, 128, 129, 250, 255, 256, 509, 8_184,
+        40_000,
+    ] {
         check(&Case::new(pos0, Kind::Uniform, 3), "uniform", &[TT, 8, 1]);
     }
     for &pos0 in &[0usize, 120, 250, 8_188, 40_000] {
-        let mut sp = vec![0usize, 7, 8, 31, 32, 95, 96, 127, 128, 255, 256, 257, 8_191, 8_192, 39_999];
+        let mut sp = vec![
+            0usize, 7, 8, 31, 32, 95, 96, 127, 128, 255, 256, 257, 8_191, 8_192, 39_999,
+        ];
         sp.extend([pos0 + 3, pos0 + 9, pos0 + TT - 1]);
         sp.retain(|&p| p < pos0 + TT);
         for inside in [false, true] {
@@ -386,7 +487,10 @@ fn pfg_unit_split_is_bitwise_invariant() {
             let a = pfg(&c, TT, g);
             assert!(finite(&a));
             for per in [8usize, 4, 2, 1] {
-                assert!(same_bits(&pfg(&c, per, g), &a), "pos0 {pos0} {g:?}: units of {per} tokens differ from units of {TT}");
+                assert!(
+                    same_bits(&pfg(&c, per, g), &a),
+                    "pos0 {pos0} {g:?}: units of {per} tokens differ from units of {TT}"
+                );
             }
         }
     }
@@ -405,14 +509,24 @@ fn pfg_unit_split_is_bitwise_invariant() {
     };
     let g = GParams::default();
     let mut scr = Scratch::new_pfg(HD, GROUP);
-    let t = Tile { ncol: 2 * NCOL, ..c32.tile(0, NCOL) };
+    let t = Tile {
+        ncol: 2 * NCOL,
+        ..c32.tile(0, NCOL)
+    };
     // SAFETY: K rows up to pos0 + 31 and 256 query columns are set; V^T finite up to n_ctx.
     unsafe { t.run_g(&mut scr, g, None) };
     let a = pfg(&c32, TT, g);
     for col in 0..NCOL {
-        assert!(same_bits(scr.out(col), &a[col * HD..(col + 1) * HD]), "column {col}: 256-column unit differs from the 128-column unit");
+        assert!(
+            same_bits(scr.out(col), &a[col * HD..(col + 1) * HD]),
+            "column {col}: 256-column unit differs from the 128-column unit"
+        );
     }
-    assert!(finite(&(NCOL..2 * NCOL).flat_map(|col| scr.out(col).to_vec()).collect::<Vec<_>>()));
+    assert!(finite(
+        &(NCOL..2 * NCOL)
+            .flat_map(|col| scr.out(col).to_vec())
+            .collect::<Vec<_>>()
+    ));
 }
 
 /// GQA reuse: every column equals the same query run alone (a 1-column unit, group 1: its own
@@ -432,7 +546,12 @@ fn pfg_gqa_shared_pass_equals_single_column_runs() {
             t.q16 = c.q16[col * HD..].as_ptr();
             // SAFETY: one column of the case (rows up to its own position).
             unsafe { t.run_g(&mut scr, g, None) };
-            assert!(same_bits(scr.out(0), &all[col * HD..(col + 1) * HD]), "pos0 {pos0}: column {col} (head {} of token {}) differs alone", col % GROUP, col / GROUP);
+            assert!(
+                same_bits(scr.out(0), &all[col * HD..(col + 1) * HD]),
+                "pos0 {pos0}: column {col} (head {} of token {}) differs alone",
+                col % GROUP,
+                col / GROUP
+            );
         }
     }
 }
@@ -445,10 +564,18 @@ fn pfg_reads_nothing_beyond_the_last_position() {
     for &pos0 in &[0usize, 9, 17, 113, 127, 241, 4080] {
         let c = Case::new(pos0, Kind::Random(4.0), 0xbad ^ pos0 as u64);
         let p = c.poisoned();
-        for g in [gp(32, 32, 32, PgMk::Ld1r), gp(32, 32, 128, PgMk::Elem), gp(16, 16, 256, PgMk::Ld1r), gp(16, 32, 96, PgMk::Elem)] {
+        for g in [
+            gp(32, 32, 32, PgMk::Ld1r),
+            gp(32, 32, 128, PgMk::Elem),
+            gp(16, 16, 256, PgMk::Ld1r),
+            gp(16, 32, 96, PgMk::Elem),
+        ] {
             for per in [TT, 1] {
                 let (a, b) = (pfg(&c, per, g), pfg(&p, per, g));
-                assert!(finite(&b), "pos0 {pos0} {g:?} per {per}: a read beyond the last position");
+                assert!(
+                    finite(&b),
+                    "pos0 {pos0} {g:?} per {per}: a read beyond the last position"
+                );
                 assert!(same_bits(&a, &b), "pos0 {pos0} {g:?} per {per}: the cache beyond the last position changed the result");
             }
         }
@@ -467,12 +594,20 @@ fn pfg_envelope_outliers_and_large_logits() {
     let g = GParams::default();
     let g16 = GParams { fold_qk: 32, ..g };
     let (mut sum, mut sum16, mut cnt) = (0f64, 0f64, 0usize);
-    let blocks: [(&str, Vec<usize>); 3] = [("block8x2", (24..32).chain(56..64).collect()), ("block32", (0..32).collect()), ("scatter16", (0..16).map(|i| i * 16 + 3).collect())];
+    let blocks: [(&str, Vec<usize>); 3] = [
+        ("block8x2", (24..32).chain(56..64).collect()),
+        ("block32", (0..32).collect()),
+        ("scatter16", (0..16).map(|i| i * 16 + 3).collect()),
+    ];
     let mut worst = 0f64;
     for (bname, dims) in &blocks {
         for &mag in &[4.0f32, 8.0, 16.0, 32.0] {
             for &pos0 in &[0usize, 15, 16, 17, 127, 128, 4089] {
-                let mut c = Case::new(pos0, Kind::Random(4.0), 0xa771 ^ (pos0 as u64) << 8 ^ mag as u64);
+                let mut c = Case::new(
+                    pos0,
+                    Kind::Random(4.0),
+                    0xa771 ^ (pos0 as u64) << 8 ^ mag as u64,
+                );
                 let mut r = Lcg(0x07 ^ pos0 as u64);
                 let mut bump = || f16s(&[mag * (1.0 + 0.1 * r.f())])[0];
                 for p in 0..=c.last() {
@@ -487,16 +622,30 @@ fn pfg_envelope_outliers_and_large_logits() {
                 }
                 let rf = ref_f64(&c);
                 let (t, f, x, x16) = (tiled(&c), fa2(&c), pfg(&c, TT, g), pfg(&c, TT, g16));
-                assert!(finite(&t) && finite(&f), "{bname} mag {mag} pos0 {pos0}: tiled / fa2 non-finite");
-                assert!(finite(&x) && finite(&x16), "{bname} mag {mag} pos0 {pos0}: pfg NON-FINITE where tiled and fa2 are finite");
-                let (et, ef, ex, e16) = (rel_err(&t, &rf), rel_err(&f, &rf), rel_err(&x, &rf), rel_err(&x16, &rf));
+                assert!(
+                    finite(&t) && finite(&f),
+                    "{bname} mag {mag} pos0 {pos0}: tiled / fa2 non-finite"
+                );
+                assert!(
+                    finite(&x) && finite(&x16),
+                    "{bname} mag {mag} pos0 {pos0}: pfg NON-FINITE where tiled and fa2 are finite"
+                );
+                let (et, ef, ex, e16) = (
+                    rel_err(&t, &rf),
+                    rel_err(&f, &rf),
+                    rel_err(&x, &rf),
+                    rel_err(&x16, &rf),
+                );
                 let base = et.max(ef).max(1e-7);
                 let ratio = ex / base;
                 worst = worst.max(ratio);
                 (sum, sum16, cnt) = (sum + ratio, sum16 + e16 / base, cnt + 1);
                 let l = format!("pfg-envelope {bname:<9} mag {mag:>4} kv_len {:>5}..: tiled {et:.2e} fa2 {ef:.2e} pfg {ex:.2e} (x{ratio:.2}) pfg-q32 {e16:.2e} (x{:.2})", pos0 + 1, e16 / base);
                 println!("{l}");
-                assert!(ex <= 2.5 * et.max(ef) + 2.5e-2, "pfg beyond the bug bound: {l}");
+                assert!(
+                    ex <= 2.5 * et.max(ef) + 2.5e-2,
+                    "pfg beyond the bug bound: {l}"
+                );
             }
         }
     }
@@ -515,13 +664,22 @@ fn pfg_envelope_outliers_and_large_logits() {
             }
             let rf = ref_f64(&c);
             let (et, ex) = (rel_err(&tiled(&c), &rf), rel_err(&pfg(&c, TT, g), &rf));
-            println!("pfg-envelope spike {spike:>4} kv_len {:>5}..: tiled {et:.2e} pfg {ex:.2e}", pos0 + 1);
-            assert!(ex.is_finite() && ex <= 4.0 * et + 2e-3, "spike {spike} pos0 {pos0}: tiled {et:.2e} pfg {ex:.2e}");
+            println!(
+                "pfg-envelope spike {spike:>4} kv_len {:>5}..: tiled {et:.2e} pfg {ex:.2e}",
+                pos0 + 1
+            );
+            assert!(
+                ex.is_finite() && ex <= 4.0 * et + 2e-3,
+                "spike {spike} pos0 {pos0}: tiled {et:.2e} pfg {ex:.2e}"
+            );
         }
     }
     let (mean, mean16) = (sum / cnt as f64, sum16 / cnt as f64);
     println!("pfg-envelope outliers: default worst x{worst:.2} mean x{mean:.2}; fold-32 QK mean x{mean16:.2} ({cnt} cases)");
-    assert!(mean <= 2.0, "pfg outlier error outside the f16-class envelope on average: x{mean:.2}");
+    assert!(
+        mean <= 2.0,
+        "pfg outlier error outside the f16-class envelope on average: x{mean:.2}"
+    );
 }
 
 /// The C entry point refuses what it cannot do (and writes nothing): head dim not a multiple of
@@ -533,30 +691,216 @@ fn pfg_refuses_bad_arguments() {
     let n = ffi_bytes(HD, NCOL, 128);
     let mut scr = vec![0u8; n as usize];
     let mut out = vec![7f32; NCOL * HD];
-    let call = |hd: i32, ncol: i32, n_ctx: i32, ch: i32, fq: i32, fp: i32, mk: i32, bytes: i64, scr: &mut [u8], out: &mut [f32]| -> i32 {
+    let call = |hd: i32,
+                ncol: i32,
+                n_ctx: i32,
+                ch: i32,
+                fq: i32,
+                fp: i32,
+                mk: i32,
+                bytes: i64,
+                scr: &mut [u8],
+                out: &mut [f32]|
+     -> i32 {
         // SAFETY: the case's buffers; the C side validates before touching anything.
         unsafe {
-            ffi::oxe_pfg_unit(hd, ncol, GROUP as i32, c.pos0 as i32, 0.0625, c.k.as_ptr(), c.vt.as_ptr(), c.v_stride as i64, n_ctx, c.q16.as_ptr(), ch, fq, fp, mk, scr.as_mut_ptr(), bytes, out.as_mut_ptr(), std::ptr::null_mut())
+            ffi::oxe_pfg_unit(
+                hd,
+                ncol,
+                GROUP as i32,
+                c.pos0 as i32,
+                0.0625,
+                c.k.as_ptr(),
+                c.vt.as_ptr(),
+                c.v_stride as i64,
+                n_ctx,
+                c.q16.as_ptr(),
+                ch,
+                fq,
+                fp,
+                mk,
+                scr.as_mut_ptr(),
+                bytes,
+                out.as_mut_ptr(),
+                std::ptr::null_mut(),
+            )
         }
     };
     let nc = c.n_ctx as i32;
-    assert_eq!(call(HD as i32, NCOL as i32, nc, 128, 32, 32, 0, n, &mut scr[..], &mut out[..]), 0);
+    assert_eq!(
+        call(
+            HD as i32,
+            NCOL as i32,
+            nc,
+            128,
+            32,
+            32,
+            0,
+            n,
+            &mut scr[..],
+            &mut out[..]
+        ),
+        0
+    );
     out.fill(7.0);
     for (what, rc) in [
-        ("hd 200", call(200, NCOL as i32, nc, 128, 32, 32, 0, n, &mut scr[..], &mut out[..])),
-        ("ncol 257", call(HD as i32, 257, nc, 128, 32, 32, 0, n, &mut scr[..], &mut out[..])),
-        ("ncol 0", call(HD as i32, 0, nc, 128, 32, 32, 0, n, &mut scr[..], &mut out[..])),
-        ("ch 48", call(HD as i32, NCOL as i32, nc, 48, 32, 32, 0, n, &mut scr[..], &mut out[..])),
-        ("ch 512", call(HD as i32, NCOL as i32, nc, 512, 32, 32, 0, n, &mut scr[..], &mut out[..])),
-        ("fold 8", call(HD as i32, NCOL as i32, nc, 128, 8, 32, 0, n, &mut scr[..], &mut out[..])),
-        ("fold pv 64", call(HD as i32, NCOL as i32, nc, 128, 32, 64, 0, n, &mut scr[..], &mut out[..])),
-        ("mk 2", call(HD as i32, NCOL as i32, nc, 128, 32, 32, 2, n, &mut scr[..], &mut out[..])),
-        ("last >= n_ctx", call(HD as i32, NCOL as i32, (c.pos0 + 8) as i32 / 32 * 32, 128, 32, 32, 0, n, &mut scr[..], &mut out[..])),
-        ("short scratch", call(HD as i32, NCOL as i32, nc, 128, 32, 32, 0, n - 64, &mut scr[..], &mut out[..])),
+        (
+            "hd 200",
+            call(
+                200,
+                NCOL as i32,
+                nc,
+                128,
+                32,
+                32,
+                0,
+                n,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
+        (
+            "ncol 257",
+            call(
+                HD as i32,
+                257,
+                nc,
+                128,
+                32,
+                32,
+                0,
+                n,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
+        (
+            "ncol 0",
+            call(
+                HD as i32,
+                0,
+                nc,
+                128,
+                32,
+                32,
+                0,
+                n,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
+        (
+            "ch 48",
+            call(
+                HD as i32,
+                NCOL as i32,
+                nc,
+                48,
+                32,
+                32,
+                0,
+                n,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
+        (
+            "ch 512",
+            call(
+                HD as i32,
+                NCOL as i32,
+                nc,
+                512,
+                32,
+                32,
+                0,
+                n,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
+        (
+            "fold 8",
+            call(
+                HD as i32,
+                NCOL as i32,
+                nc,
+                128,
+                8,
+                32,
+                0,
+                n,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
+        (
+            "fold pv 64",
+            call(
+                HD as i32,
+                NCOL as i32,
+                nc,
+                128,
+                32,
+                64,
+                0,
+                n,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
+        (
+            "mk 2",
+            call(
+                HD as i32,
+                NCOL as i32,
+                nc,
+                128,
+                32,
+                32,
+                2,
+                n,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
+        (
+            "last >= n_ctx",
+            call(
+                HD as i32,
+                NCOL as i32,
+                (c.pos0 + 8) as i32 / 32 * 32,
+                128,
+                32,
+                32,
+                0,
+                n,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
+        (
+            "short scratch",
+            call(
+                HD as i32,
+                NCOL as i32,
+                nc,
+                128,
+                32,
+                32,
+                0,
+                n - 64,
+                &mut scr[..],
+                &mut out[..],
+            ),
+        ),
     ] {
         assert_eq!(rc, -1, "{what} accepted");
     }
-    assert!(out.iter().all(|&x| x == 7.0), "a refused call wrote its output");
+    assert!(
+        out.iter().all(|&x| x == 7.0),
+        "a refused call wrote its output"
+    );
 }
 
 fn ffi_bytes(hd: usize, ncol: usize, ch: usize) -> i64 {

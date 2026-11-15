@@ -81,7 +81,13 @@ fn run<const G: usize>(
     debug_assert_eq!(heads, kv_heads * G);
     let scale = 1.0 / (hd as f32).sqrt();
     let (qd, kd) = (heads * hd, kv_heads * hd);
-    assert!(q.len() >= n * qd && k.len() >= n * kd && v.len() >= n * kd && out.len() >= n * qd && mask.len() >= n);
+    assert!(
+        q.len() >= n * qd
+            && k.len() >= n * kd
+            && v.len() >= n * kd
+            && out.len() >= n * qd
+            && mask.len() >= n
+    );
     // the visible keys (mask) in ascending order, shared by every query: query i uses the prefix <= i
     let keys: Vec<usize> = (0..n).filter(|&j| mask[j]).collect();
     let op = SendPtr(out.as_mut_ptr());
@@ -94,7 +100,8 @@ fn run<const G: usize>(
         for it in items {
             let (kh, i) = (it / n, it % n);
             let h0 = kh * G;
-            let qi: [&[f32]; G] = std::array::from_fn(|g| &q[i * qd + (h0 + g) * hd..i * qd + (h0 + g + 1) * hd]);
+            let qi: [&[f32]; G] =
+                std::array::from_fn(|g| &q[i * qd + (h0 + g) * hd..i * qd + (h0 + g + 1) * hd]);
             let vis = &keys[..keys.partition_point(|&j| j <= i)];
             let mut mx = [f32::NEG_INFINITY; G];
             for &j in vis {
@@ -135,7 +142,13 @@ fn run<const G: usize>(
             }
             for g in 0..G {
                 // SAFETY: (query i, head h0 + g) is written by this item only.
-                unsafe { std::ptr::copy_nonoverlapping(acc[g * hd..].as_ptr(), op.0.add(i * qd + (h0 + g) * hd), hd) };
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        acc[g * hd..].as_ptr(),
+                        op.0.add(i * qd + (h0 + g) * hd),
+                        hd,
+                    )
+                };
             }
         }
     });

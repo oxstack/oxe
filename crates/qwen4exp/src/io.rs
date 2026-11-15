@@ -151,7 +151,11 @@ pub struct IoQueue {
 impl IoQueue {
     pub fn new() -> IoQueue {
         IoQueue {
-            q: Mutex::new((0..MAX_WORKERS).map(|_| [VecDeque::new(), VecDeque::new(), VecDeque::new()]).collect()),
+            q: Mutex::new(
+                (0..MAX_WORKERS)
+                    .map(|_| [VecDeque::new(), VecDeque::new(), VecDeque::new()])
+                    .collect(),
+            ),
             w: Default::default(),
             trace_on: AtomicBool::new(false),
             stamps: Mutex::new(Vec::new()),
@@ -172,13 +176,17 @@ impl IoQueue {
         self.workers.store(t.workers(), SeqCst);
         self.split.store(t.split.max(1), SeqCst);
         self.split_min.store(t.split_min.max(4096), SeqCst);
-        self.split_align.store(t.split_align.max(4096).next_multiple_of(4096), SeqCst);
+        self.split_align
+            .store(t.split_align.max(4096).next_multiple_of(4096), SeqCst);
         self.split_prefetch.store(t.split_prefetch, SeqCst);
     }
 
     /// The parts of a read of `len` bytes: (offset in the read, bytes) with boundaries on `align`.
     fn stripe(len: u32, parts: u32, align: u32) -> impl Iterator<Item = (u32, u32)> {
-        let per = len.div_ceil(parts.max(1)).next_multiple_of(align).max(align);
+        let per = len
+            .div_ceil(parts.max(1))
+            .next_multiple_of(align)
+            .max(align);
         (0..len.div_ceil(per)).map(move |i| (i * per, per.min(len - i * per)))
     }
 
@@ -186,12 +194,26 @@ impl IoQueue {
         let n = self.workers.load(Relaxed).max(1);
         let mut parts = 1u32;
         if n > 1 && (r.class == ReqClass::Demand || self.split_prefetch.load(Relaxed)) {
-            parts = (r.len / self.split_min.load(Relaxed)).clamp(1, self.split.load(Relaxed).min(n as u32));
+            parts = (r.len / self.split_min.load(Relaxed))
+                .clamp(1, self.split.load(Relaxed).min(n as u32));
         }
         let align = self.split_align.load(Relaxed);
         let np = Self::stripe(r.len, parts, align).count() as u32;
-        let push_ns = if self.trace_on.load(Relaxed) { now_ns().max(1) } else { 0 };
-        let join = Arc::new(Join { state: r.state, left: AtomicU32::new(np), failed: AtomicBool::new(false), t0: Instant::now(), push_ns, submit_ns: AtomicU64::new(0), len: r.len, class: r.class });
+        let push_ns = if self.trace_on.load(Relaxed) {
+            now_ns().max(1)
+        } else {
+            0
+        };
+        let join = Arc::new(Join {
+            state: r.state,
+            left: AtomicU32::new(np),
+            failed: AtomicBool::new(false),
+            t0: Instant::now(),
+            push_ns,
+            submit_ns: AtomicU64::new(0),
+            len: r.len,
+            class: r.class,
+        });
         let start = self.rr.fetch_add(1, Relaxed);
         {
             let mut g = self.q.lock().unwrap();
@@ -351,10 +373,20 @@ impl IoTuning {
 
     pub fn parse(s: &str) -> Result<IoTuning, String> {
         let mut t = IoTuning::default();
-        let list = |v: &str| v.split(',').filter(|x| !x.is_empty()).map(|x| x.parse::<usize>().map_err(|e| format!("{x}: {e}"))).collect::<Result<Vec<_>, _>>();
+        let list = |v: &str| {
+            v.split(',')
+                .filter(|x| !x.is_empty())
+                .map(|x| x.parse::<usize>().map_err(|e| format!("{x}: {e}")))
+                .collect::<Result<Vec<_>, _>>()
+        };
         let num = |v: &str| v.parse::<u32>().map_err(|e| format!("{v}: {e}"));
-        for kv in s.split(|c: char| c == ';' || c.is_whitespace()).filter(|x| !x.is_empty()) {
-            let (k, v) = kv.split_once('=').ok_or_else(|| format!("io option {kv}: want key=value"))?;
+        for kv in s
+            .split(|c: char| c == ';' || c.is_whitespace())
+            .filter(|x| !x.is_empty())
+        {
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or_else(|| format!("io option {kv}: want key=value"))?;
             match k {
                 "cpus" => t.cpus = list(v)?,
                 "split" => t.split = num(v)?,
@@ -442,7 +474,10 @@ pub fn spawn_tuned(q: Arc<IoQueue>, cfg: IoConfig, t: IoTuning) -> std::thread::
             let others: Vec<_> = (1..t.workers())
                 .map(|wi| {
                     let (q, cfg, t) = (q.clone(), cfg.clone(), t.clone());
-                    std::thread::Builder::new().name(format!("oxf-io{wi}")).spawn(move || worker(&q, wi, &cfg, &t)).unwrap()
+                    std::thread::Builder::new()
+                        .name(format!("oxf-io{wi}"))
+                        .spawn(move || worker(&q, wi, &cfg, &t))
+                        .unwrap()
                 })
                 .collect();
             worker(&q, 0, &cfg, &t);
@@ -454,7 +489,11 @@ pub fn spawn_tuned(q: Arc<IoQueue>, cfg: IoConfig, t: IoTuning) -> std::thread::
 }
 
 fn worker(q: &IoQueue, wi: usize, cfg: &IoConfig, t: &IoTuning) {
-    let cpu = if t.cpus.is_empty() { cfg.cpu } else { Some(t.cpus[wi]) };
+    let cpu = if t.cpus.is_empty() {
+        cfg.cpu
+    } else {
+        Some(t.cpus[wi])
+    };
     // usize::MAX = leave this worker unpinned (tests)
     if let Some(c) = cpu.filter(|&c| c != usize::MAX) {
         if let Err(e) = sched::pin_current_thread(c) {
@@ -470,11 +509,18 @@ struct Flight {
 
 fn io_loop(q: &IoQueue, wi: usize, cfg: &IoConfig, t: &IoTuning) {
     let entries = 64.max(cfg.qd.next_power_of_two());
-    let opts = RingOpts { sqpoll: t.sqpoll, sqpoll_cpu: t.sqpoll_cpus.get(wi).map(|&c| c as u32), sqpoll_idle_ms: 2000, defer_taskrun: t.defer_taskrun };
+    let opts = RingOpts {
+        sqpoll: t.sqpoll,
+        sqpoll_cpu: t.sqpoll_cpus.get(wi).map(|&c| c as u32),
+        sqpoll_idle_ms: 2000,
+        defer_taskrun: t.defer_taskrun,
+    };
     let mut ring = match Ring::with_opts(entries, opts) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("oxf-io{wi}: io_uring_setup with {opts:?} failed ({e}); using the plain ring");
+            eprintln!(
+                "oxf-io{wi}: io_uring_setup with {opts:?} failed ({e}); using the plain ring"
+            );
             Ring::new(entries).expect("io_uring_setup")
         }
     };
@@ -512,7 +558,9 @@ fn io_loop(q: &IoQueue, wi: usize, cfg: &IoConfig, t: &IoTuning) {
                 let qs = &mut g[wi];
                 for class in 0..3 {
                     while room > 0 && !(class == 2 && pf_inflight >= cfg.prefetch_qd) {
-                        let Some(part) = qs[class].pop_front() else { break };
+                        let Some(part) = qs[class].pop_front() else {
+                            break;
+                        };
                         if part.class == ReqClass::Prefetch {
                             pf_inflight += 1;
                         }
@@ -539,7 +587,10 @@ fn io_loop(q: &IoQueue, wi: usize, cfg: &IoConfig, t: &IoTuning) {
             }
             let part = batch.pop_front().unwrap();
             if part.join.push_ns != 0 {
-                let _ = part.join.submit_ns.compare_exchange(0, now_ns(), AcqRel, Relaxed);
+                let _ = part
+                    .join
+                    .submit_ns
+                    .compare_exchange(0, now_ns(), AcqRel, Relaxed);
             }
             flights[id] = Some(Flight { part });
             queued = true;
@@ -563,7 +614,10 @@ fn io_loop(q: &IoQueue, wi: usize, cfg: &IoConfig, t: &IoTuning) {
                 c.failed.fetch_add(1, Relaxed);
                 let mut e = q.error.lock().unwrap();
                 if e.is_none() {
-                    *e = Some(format!("expert/N-gram read failed twice: res {} (wanted {} bytes) at offset {}", cq.res, f.len, f.off));
+                    *e = Some(format!(
+                        "expert/N-gram read failed twice: res {} (wanted {} bytes) at offset {}",
+                        cq.res, f.len, f.off
+                    ));
                 }
                 f.join.failed.store(true, Release);
             }
@@ -582,7 +636,12 @@ fn io_loop(q: &IoQueue, wi: usize, cfg: &IoConfig, t: &IoTuning) {
                 let ns = j.t0.elapsed().as_nanos() as u64;
                 if j.push_ns != 0 && q.trace_on.load(Relaxed) {
                     let done = now_ns();
-                    q.stamps.lock().unwrap().push(ReadStamp { class: j.class as u8, push_ns: j.push_ns, submit_ns: j.submit_ns.load(Acquire).max(j.push_ns), done_ns: done });
+                    q.stamps.lock().unwrap().push(ReadStamp {
+                        class: j.class as u8,
+                        push_ns: j.push_ns,
+                        submit_ns: j.submit_ns.load(Acquire).max(j.push_ns),
+                        done_ns: done,
+                    });
                 }
                 c.completed[k].fetch_add(1, Relaxed);
                 c.bytes[k].fetch_add(j.len as u64, Relaxed);
@@ -599,12 +658,14 @@ fn io_loop(q: &IoQueue, wi: usize, cfg: &IoConfig, t: &IoTuning) {
             cap_changed = true;
         }
         if queued || n > 0 {
-            c.busy_ns.fetch_add(busy0.elapsed().as_nanos() as u64, Relaxed);
+            c.busy_ns
+                .fetch_add(busy0.elapsed().as_nanos() as u64, Relaxed);
         }
         if ring.inflight == 0 && batch.is_empty() && backlog {
             cap_changed = true; // nothing in flight can free capacity later: look at the queue again
         }
-        let idle_now = ring.inflight == 0 && batch.is_empty() && !backlog && me.pushed.load(SeqCst) == seen;
+        let idle_now =
+            ring.inflight == 0 && batch.is_empty() && !backlog && me.pushed.load(SeqCst) == seen;
         if q.stop.load(Acquire) && idle_now {
             return;
         }
@@ -619,7 +680,11 @@ fn io_loop(q: &IoQueue, wi: usize, cfg: &IoConfig, t: &IoTuning) {
                 me.sleeping.store(true, SeqCst);
                 if me.pushed.load(SeqCst) == seen && !q.stop.load(SeqCst) {
                     c.parks.fetch_add(1, Relaxed);
-                    drop(me.cv.wait_timeout(g, std::time::Duration::from_millis(100)).unwrap());
+                    drop(
+                        me.cv
+                            .wait_timeout(g, std::time::Duration::from_millis(100))
+                            .unwrap(),
+                    );
                 } else {
                     drop(g);
                 }
@@ -651,7 +716,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oxf-io-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("f.bin");
-        let data: Vec<u8> = (0..bytes).map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[3]).collect();
+        let data: Vec<u8> = (0..bytes)
+            .map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[3])
+            .collect();
         std::fs::File::create(&p).unwrap().write_all(&data).unwrap();
         p
     }
@@ -673,18 +740,39 @@ mod tests {
         let p = scratch("short", 64 << 10);
         let Ok(fd) = open_direct(&p) else { return };
         let q = Arc::new(IoQueue::new());
-        let h = spawn(q.clone(), IoConfig { qd: 8, prefetch_qd: 4, cpu: None });
+        let h = spawn(
+            q.clone(),
+            IoConfig {
+                qd: 8,
+                prefetch_qd: 4,
+                cpu: None,
+            },
+        );
         let arena = Arena::new(1 << 20, false).unwrap();
         let st = AtomicU8::new(PENDING);
         // 1 MiB from a 64 KiB file: short read
-        q.push(Req { class: ReqClass::Demand, fd, buf: arena.ptr, len: 1 << 20, off: 0, state: &st });
+        q.push(Req {
+            class: ReqClass::Demand,
+            fd,
+            buf: arena.ptr,
+            len: 1 << 20,
+            off: 0,
+            state: &st,
+        });
         assert!(wait_state(&st, FAILED, 5000), "slot not FAILED");
         assert_eq!(q.counters.retried.load(Relaxed), 1);
         assert_eq!(q.counters.failed.load(Relaxed), 1);
         assert!(q.take_error().unwrap().contains("failed twice"));
         // the thread still serves good reads afterwards
         let ok = AtomicU8::new(PENDING);
-        q.push(Req { class: ReqClass::Demand, fd, buf: arena.ptr, len: 64 << 10, off: 0, state: &ok });
+        q.push(Req {
+            class: ReqClass::Demand,
+            fd,
+            buf: arena.ptr,
+            len: 64 << 10,
+            off: 0,
+            state: &ok,
+        });
         assert!(wait_state(&ok, READY, 5000), "good read after a failure");
         q.stop();
         h.join().unwrap();
@@ -699,18 +787,47 @@ mod tests {
         let Ok(fd) = open_direct(&p) else { return };
         for workers in [1usize, 3] {
             let q = Arc::new(IoQueue::new());
-            let t = IoTuning { cpus: vec![usize::MAX; workers], split: workers as u32, ..IoTuning::default() };
-            let h = spawn_tuned(q.clone(), IoConfig { qd: 8, prefetch_qd: 4, cpu: None }, t);
+            let t = IoTuning {
+                cpus: vec![usize::MAX; workers],
+                split: workers as u32,
+                ..IoTuning::default()
+            };
+            let h = spawn_tuned(
+                q.clone(),
+                IoConfig {
+                    qd: 8,
+                    prefetch_qd: 4,
+                    cpu: None,
+                },
+                t,
+            );
             let arena = Arena::new(4 << 20, false).unwrap();
             let a = AtomicU8::new(PENDING);
-            q.push(Req { class: ReqClass::Demand, fd, buf: arena.ptr, len: 1 << 20, off: 0, state: &a });
+            q.push(Req {
+                class: ReqClass::Demand,
+                fd,
+                buf: arena.ptr,
+                len: 1 << 20,
+                off: 0,
+                state: &a,
+            });
             assert!(wait_state(&a, READY, 5000));
-            assert!(q.take_stamps().is_empty(), "stamps recorded while tracing is off");
+            assert!(
+                q.take_stamps().is_empty(),
+                "stamps recorded while tracing is off"
+            );
             q.set_trace(true);
             let sts: Vec<AtomicU8> = (0..3).map(|_| AtomicU8::new(PENDING)).collect();
             for (i, st) in sts.iter().enumerate() {
                 let buf = unsafe { arena.ptr.add(i << 20) };
-                q.push(Req { class: ReqClass::Demand, fd, buf, len: 1 << 20, off: (i as u64) << 20, state: st });
+                q.push(Req {
+                    class: ReqClass::Demand,
+                    fd,
+                    buf,
+                    len: 1 << 20,
+                    off: (i as u64) << 20,
+                    state: st,
+                });
             }
             for st in &sts {
                 assert!(wait_state(st, READY, 5000));
@@ -718,7 +835,10 @@ mod tests {
             let v = q.take_stamps();
             assert_eq!(v.len(), 3, "{workers} workers");
             for s in &v {
-                assert!(s.push_ns <= s.submit_ns && s.submit_ns <= s.done_ns, "{s:?}");
+                assert!(
+                    s.push_ns <= s.submit_ns && s.submit_ns <= s.done_ns,
+                    "{s:?}"
+                );
                 assert_eq!(s.class, ReqClass::Demand as u8);
             }
             q.stop();
@@ -733,10 +853,20 @@ mod tests {
         let p = scratch("park", 64 << 10);
         let Ok(fd) = open_direct(&p) else { return };
         let q = Arc::new(IoQueue::new());
-        let h = spawn(q.clone(), IoConfig { qd: 8, prefetch_qd: 4, cpu: None });
+        let h = spawn(
+            q.clone(),
+            IoConfig {
+                qd: 8,
+                prefetch_qd: 4,
+                cpu: None,
+            },
+        );
         std::thread::sleep(std::time::Duration::from_millis(350));
         let parks = q.counters.parks.load(Relaxed);
-        assert!((1..=10).contains(&parks), "parks in 350 ms idle: {parks} (100 ms timeout => ~3)");
+        assert!(
+            (1..=10).contains(&parks),
+            "parks in 350 ms idle: {parks} (100 ms timeout => ~3)"
+        );
         let arena = Arena::new(64 << 10, false).unwrap();
         // a push must wake the parked thread at once (a missed wake would wait for the 100 ms timeout); the median of
         // three idle -> push trials keeps this robust on a loaded machine (one sample at nice 19 / load 9 took > 50 ms)
@@ -745,27 +875,54 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(150)); // parked again
             let st = AtomicU8::new(PENDING);
             let t = Instant::now();
-            q.push(Req { class: ReqClass::Demand, fd, buf: arena.ptr, len: 64 << 10, off: 0, state: &st });
+            q.push(Req {
+                class: ReqClass::Demand,
+                fd,
+                buf: arena.ptr,
+                len: 64 << 10,
+                off: 0,
+                state: &st,
+            });
             assert!(wait_state(&st, READY, 2000));
             ms.push(t.elapsed().as_secs_f64() * 1e3);
         }
         ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert!(ms[1] < 80.0, "median wake + read {:.1} ms (samples {ms:?})", ms[1]);
+        assert!(
+            ms[1] < 80.0,
+            "median wake + read {:.1} ms (samples {ms:?})",
+            ms[1]
+        );
         q.stop();
         h.join().unwrap();
         unsafe { libc_close(fd) };
     }
 
     fn pattern(off: usize, len: usize) -> Vec<u8> {
-        (off..off + len).map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[3]).collect()
+        (off..off + len)
+            .map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[3])
+            .collect()
     }
 
     #[test]
     fn tuning_text_form() {
         assert_eq!(IoTuning::parse("").unwrap(), IoTuning::default());
-        let t = IoTuning::parse("cpus=8,9,10;split=3;min=131072 align=65536;promote=1;spins=5").unwrap();
-        assert_eq!((t.cpus.clone(), t.split, t.split_min, t.split_align, t.idle_spins), (vec![8, 9, 10], 3, 131072, 65536, 5));
-        assert_eq!(IoTuning::parse("promote=0").unwrap(), IoTuning::default(), "promotion cannot be switched off");
+        let t = IoTuning::parse("cpus=8,9,10;split=3;min=131072 align=65536;promote=1;spins=5")
+            .unwrap();
+        assert_eq!(
+            (
+                t.cpus.clone(),
+                t.split,
+                t.split_min,
+                t.split_align,
+                t.idle_spins
+            ),
+            (vec![8, 9, 10], 3, 131072, 65536, 5)
+        );
+        assert_eq!(
+            IoTuning::parse("promote=0").unwrap(),
+            IoTuning::default(),
+            "promotion cannot be switched off"
+        );
         assert_eq!(t.workers(), 3);
         assert!(IoTuning::parse("cpus=1,2,3,4,5").is_err());
         assert!(IoTuning::parse("align=1000").is_err());
@@ -775,13 +932,23 @@ mod tests {
 
     #[test]
     fn stripes_cover_the_read_exactly() {
-        for &(len, parts, align) in &[(1974272u32, 4u32, 4096u32), (2179072, 3, 65536), (2662400, 4, 262144), (1511424, 2, 4096), (4096, 4, 4096), (8192, 3, 4096)] {
+        for &(len, parts, align) in &[
+            (1974272u32, 4u32, 4096u32),
+            (2179072, 3, 65536),
+            (2662400, 4, 262144),
+            (1511424, 2, 4096),
+            (4096, 4, 4096),
+            (8192, 3, 4096),
+        ] {
             let v: Vec<(u32, u32)> = IoQueue::stripe(len, parts, align).collect();
             assert!(v.len() as u32 <= parts && !v.is_empty());
             let mut at = 0;
             for &(o, l) in &v {
                 assert_eq!(o, at);
-                assert!(l > 0 && o % align == 0 && l % 4096 == 0, "{len} {parts} {align}: {v:?}");
+                assert!(
+                    l > 0 && o % align == 0 && l % 4096 == 0,
+                    "{len} {parts} {align}: {v:?}"
+                );
                 at += l;
             }
             assert_eq!(at, len, "{len} {parts} {align}: {v:?}");
@@ -794,22 +961,52 @@ mod tests {
     fn striped_read_is_byte_identical() {
         let p = scratch("stripe", 8 << 20);
         let Ok(fd) = open_direct(&p) else { return };
-        for tuning in ["cpus=0,0,0;split=3;min=65536", "cpus=0,0,0,0;split=4;align=262144", "cpus=0,0;split=1", "cpus=0,0,0;split=3;sqpoll=;ffile=1", "cpus=0,0;split=2;defer=1"] {
+        for tuning in [
+            "cpus=0,0,0;split=3;min=65536",
+            "cpus=0,0,0,0;split=4;align=262144",
+            "cpus=0,0;split=1",
+            "cpus=0,0,0;split=3;sqpoll=;ffile=1",
+            "cpus=0,0;split=2;defer=1",
+        ] {
             let q = Arc::new(IoQueue::new());
             let mut t = IoTuning::parse(tuning).unwrap();
             t.cpus = vec![usize::MAX; t.cpus.len()]; // unpinned workers in the test
-            let h = spawn_tuned_unpinned(q.clone(), IoConfig { qd: 8, prefetch_qd: 4, cpu: None }, t);
+            let h = spawn_tuned_unpinned(
+                q.clone(),
+                IoConfig {
+                    qd: 8,
+                    prefetch_qd: 4,
+                    cpu: None,
+                },
+                t,
+            );
             let arena = Arena::new(4 << 20, false).unwrap();
             let mut done = 0;
             for &len in &[1974272usize, 2179072, 1511424, 2662400, 4096] {
                 let off = 4096 * 37;
                 let st = AtomicU8::new(PENDING);
                 unsafe { std::ptr::write_bytes(arena.ptr, 0xEE, len + 4096) };
-                q.push(Req { class: ReqClass::Demand, fd, buf: arena.ptr, len: len as u32, off: off as u64, state: &st });
-                assert!(wait_state(&st, READY, 5000), "{tuning}: read of {len} not READY");
+                q.push(Req {
+                    class: ReqClass::Demand,
+                    fd,
+                    buf: arena.ptr,
+                    len: len as u32,
+                    off: off as u64,
+                    state: &st,
+                });
+                assert!(
+                    wait_state(&st, READY, 5000),
+                    "{tuning}: read of {len} not READY"
+                );
                 let got = unsafe { std::slice::from_raw_parts(arena.ptr, len + 4096) };
-                assert!(got[..len] == pattern(off, len)[..], "{tuning}: bytes differ for len {len}");
-                assert!(got[len..].iter().all(|&b| b == 0xEE), "{tuning}: wrote past the read");
+                assert!(
+                    got[..len] == pattern(off, len)[..],
+                    "{tuning}: bytes differ for len {len}"
+                );
+                assert!(
+                    got[len..].iter().all(|&b| b == 0xEE),
+                    "{tuning}: wrote past the read"
+                );
                 done += 1;
                 assert_eq!(q.counters.completed[0].load(Relaxed), done);
             }
@@ -827,12 +1024,31 @@ mod tests {
         let p = scratch("stripeshort", 1 << 20);
         let Ok(fd) = open_direct(&p) else { return };
         let q = Arc::new(IoQueue::new());
-        let t = IoTuning { cpus: vec![usize::MAX; 4], split: 4, ..IoTuning::default() };
-        let h = spawn_tuned_unpinned(q.clone(), IoConfig { qd: 8, prefetch_qd: 4, cpu: None }, t);
+        let t = IoTuning {
+            cpus: vec![usize::MAX; 4],
+            split: 4,
+            ..IoTuning::default()
+        };
+        let h = spawn_tuned_unpinned(
+            q.clone(),
+            IoConfig {
+                qd: 8,
+                prefetch_qd: 4,
+                cpu: None,
+            },
+            t,
+        );
         let arena = Arena::new(2 << 20, false).unwrap();
         let st = AtomicU8::new(PENDING);
         // 2 MiB from a 1 MiB file: parts 0-1 succeed, parts 2-3 read 0 bytes
-        q.push(Req { class: ReqClass::Demand, fd, buf: arena.ptr, len: 2 << 20, off: 0, state: &st });
+        q.push(Req {
+            class: ReqClass::Demand,
+            fd,
+            buf: arena.ptr,
+            len: 2 << 20,
+            off: 0,
+            state: &st,
+        });
         assert!(wait_state(&st, FAILED, 5000), "slot not FAILED");
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert_eq!(st.load(Acquire), FAILED);
@@ -852,24 +1068,58 @@ mod tests {
         let Ok(fd) = open_direct(&p) else { return };
         let q0 = IoQueue::new();
         let dummy = AtomicU8::new(PENDING);
-        assert_eq!(q0.promote(&dummy), Promote::InFlight, "nothing queued for this slot");
+        assert_eq!(
+            q0.promote(&dummy),
+            Promote::InFlight,
+            "nothing queued for this slot"
+        );
         let q = Arc::new(IoQueue::new());
-        let t = IoTuning { cpus: vec![usize::MAX; 2], split: 2, ..IoTuning::default() };
+        let t = IoTuning {
+            cpus: vec![usize::MAX; 2],
+            split: 2,
+            ..IoTuning::default()
+        };
         const N: usize = 200;
         let arena = Arena::new(N << 20, false).unwrap();
         let st: Vec<AtomicU8> = (0..N).map(|_| AtomicU8::new(PENDING)).collect();
         // queue the backlog BEFORE the workers start (push only needs the configured queue), one prefetch in flight at a time
         q.configure(&t);
         for i in 0..N {
-            q.push(Req { class: ReqClass::Prefetch, fd, buf: unsafe { arena.ptr.add(i << 20) }, len: 1 << 20, off: ((i % 4) << 20) as u64, state: &st[i] });
+            q.push(Req {
+                class: ReqClass::Prefetch,
+                fd,
+                buf: unsafe { arena.ptr.add(i << 20) },
+                len: 1 << 20,
+                off: ((i % 4) << 20) as u64,
+                state: &st[i],
+            });
         }
         assert_eq!(q.promote(&st[N - 1]), Promote::Moved);
-        assert_eq!(q.promote(&st[N - 1]), Promote::InFlight, "already in the demand class: nothing left to move");
-        let h = spawn_tuned_unpinned(q.clone(), IoConfig { qd: 8, prefetch_qd: 1, cpu: None }, t);
+        assert_eq!(
+            q.promote(&st[N - 1]),
+            Promote::InFlight,
+            "already in the demand class: nothing left to move"
+        );
+        let h = spawn_tuned_unpinned(
+            q.clone(),
+            IoConfig {
+                qd: 8,
+                prefetch_qd: 1,
+                cpu: None,
+            },
+            t,
+        );
         assert!(wait_state(&st[N - 1], READY, 10000));
         let before = q.counters.completed[2].load(Relaxed);
-        assert!(before < (N / 2) as u64, "the promoted read finished after {before} of {N} queued prefetches");
-        assert_eq!(q.counters.promoted.load(Relaxed), 1, "an unsplit prefetch is one part");
+        assert!(
+            before < (N / 2) as u64,
+            "the promoted read finished after {before} of {N} queued prefetches"
+        );
+        assert_eq!(
+            q.counters.promoted.load(Relaxed),
+            1,
+            "an unsplit prefetch is one part"
+        );
         let got = unsafe { std::slice::from_raw_parts(arena.ptr.add((N - 1) << 20), 1 << 20) };
         assert!(got == &pattern(((N - 1) % 4) << 20, 1 << 20)[..]);
         for s in &st {
@@ -882,7 +1132,11 @@ mod tests {
     }
 
     /// as `spawn_tuned`, with cpu ids of usize::MAX meaning "do not pin" (tests run on whatever cores are free)
-    fn spawn_tuned_unpinned(q: Arc<IoQueue>, cfg: IoConfig, t: IoTuning) -> std::thread::JoinHandle<()> {
+    fn spawn_tuned_unpinned(
+        q: Arc<IoQueue>,
+        cfg: IoConfig,
+        t: IoTuning,
+    ) -> std::thread::JoinHandle<()> {
         spawn_tuned(q, cfg, t)
     }
 

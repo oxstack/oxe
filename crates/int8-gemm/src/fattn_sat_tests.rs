@@ -5,7 +5,19 @@ use super::*;
 #[test]
 fn to_f16_saturates_finite_overflow() {
     // vector body (4 at a time) and the scalar tail (n % 4 != 0) both covered
-    let xs = [65504.0f32, 65519.0, 65520.0, 1e9, -65520.0, -1e30, f32::MAX, -f32::MAX, 70000.0, -70000.0, 1.5];
+    let xs = [
+        65504.0f32,
+        65519.0,
+        65520.0,
+        1e9,
+        -65520.0,
+        -1e30,
+        f32::MAX,
+        -f32::MAX,
+        70000.0,
+        -70000.0,
+        1.5,
+    ];
     let mut got = vec![0u16; xs.len()];
     to_f16(&xs, &mut got, 1);
     for (i, &x) in xs.iter().enumerate() {
@@ -18,7 +30,15 @@ fn to_f16_saturates_finite_overflow() {
 
 #[test]
 fn to_f16_keeps_nan_and_inf() {
-    let xs = [f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1.0, f32::NAN, f32::INFINITY, -f32::NAN];
+    let xs = [
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        1.0,
+        f32::NAN,
+        f32::INFINITY,
+        -f32::NAN,
+    ];
     let mut got = vec![0u16; xs.len()];
     to_f16(&xs, &mut got, 1);
     assert_eq!(got[0], 0x7c00);

@@ -81,7 +81,13 @@ fn pass_bytes(n: usize, n_past: usize, fused_attn: bool) -> u64 {
 /// Largest pass size (a multiple of `base`, at least `base`, at most `cap`) whose estimated extra
 /// memory fits `budget_bytes`. If even `base` does not fit, returns `base`; the caller's existing
 /// admission handles that case.
-pub fn max_pass_tokens(base: usize, cap: usize, n_past: usize, budget_bytes: u64, fused_attn: bool) -> usize {
+pub fn max_pass_tokens(
+    base: usize,
+    cap: usize,
+    n_past: usize,
+    budget_bytes: u64,
+    fused_attn: bool,
+) -> usize {
     let base = if base == 0 { 1 } else { base };
     if cap < base {
         return base;
@@ -155,7 +161,9 @@ pub fn parse_cache_pref(v: &str) -> Result<Option<f64>, String> {
     }
     match v.parse::<f64>() {
         Ok(g) if AUTO_CACHE_GIB.contains(&g) => Ok(Some(g)),
-        _ => Err(format!("--flash-cache-pref {v:?}: auto or one of 20, 18, 16, 14")),
+        _ => Err(format!(
+            "--flash-cache-pref {v:?}: auto or one of 20, 18, 16, 14"
+        )),
     }
 }
 
@@ -190,7 +198,12 @@ impl AdmitInputs {
 
     /// GiB of MemAvailable a load with `cache_gib` needs.
     pub fn need_gib(&self, cache_gib: f64) -> f64 {
-        cache_gib + self.dense_base_gib + self.kv_extra_gib() + self.anon_peak_gib + self.harness_gib + self.floor_gib
+        cache_gib
+            + self.dense_base_gib
+            + self.kv_extra_gib()
+            + self.anon_peak_gib
+            + self.harness_gib
+            + self.floor_gib
     }
 }
 
@@ -250,8 +263,15 @@ pub const SWAP_TOLERANT_TIERS_GIB: [f64; 2] = [20.0, 18.0];
 pub const DESKTOP_FLOOR_GIB: f64 = 3.0;
 
 /// MemTotal - (cache + dense/base + KV extra + model growth) - desktop floor, GiB (negative = refuse this tier).
-pub fn swap_tolerant_budget_gib(inp: &AdmitInputs, mem_total_gib: f64, cache_gib: f64, desktop_floor_gib: f64) -> f64 {
-    mem_total_gib - (cache_gib + inp.dense_base_gib + inp.kv_extra_gib() + inp.anon_peak_gib) - desktop_floor_gib
+pub fn swap_tolerant_budget_gib(
+    inp: &AdmitInputs,
+    mem_total_gib: f64,
+    cache_gib: f64,
+    desktop_floor_gib: f64,
+) -> f64 {
+    mem_total_gib
+        - (cache_gib + inp.dense_base_gib + inp.kv_extra_gib() + inp.anon_peak_gib)
+        - desktop_floor_gib
 }
 
 /// S2 (REVIEW-v0.1.1): the MemTotal rule assumes idle desktop pages can go to swap; without swap the OOM killer
@@ -262,14 +282,17 @@ pub const SWAP_MARGIN_GIB: f64 = 1.0;
 /// growth + the 1 GiB host floor; no harness allowance) minus MemAvailable, >= 0. Mirrors the lab's
 /// `flash_cache_pref.swap_needed_bytes`.
 pub fn swap_needed_gib(inp: &AdmitInputs, cache_gib: f64) -> f64 {
-    let working_set = cache_gib + inp.dense_base_gib + inp.kv_extra_gib() + inp.anon_peak_gib + inp.floor_gib;
+    let working_set =
+        cache_gib + inp.dense_base_gib + inp.kv_extra_gib() + inp.anon_peak_gib + inp.floor_gib;
     (working_set - inp.mem_available_gib).max(0.0)
 }
 
 /// SwapFree covers what must leave RAM plus [`SWAP_MARGIN_GIB`]; no or unknown swap (<= 0, NaN) never does.
 /// Mirrors the lab's `flash_cache_pref.swap_covers`.
 pub fn swap_covers(inp: &AdmitInputs, swap_free_gib: f64, cache_gib: f64) -> bool {
-    swap_free_gib.is_finite() && swap_free_gib > 0.0 && swap_free_gib >= swap_needed_gib(inp, cache_gib) + SWAP_MARGIN_GIB
+    swap_free_gib.is_finite()
+        && swap_free_gib > 0.0
+        && swap_free_gib >= swap_needed_gib(inp, cache_gib) + SWAP_MARGIN_GIB
 }
 
 /// The decision with the opt-in swap-tolerant rule: an explicit preference of 20 (or 18) takes the largest
@@ -315,14 +338,22 @@ pub fn swap_free_bytes() -> Option<u64> {
 fn meminfo_bytes(key: &str) -> Option<u64> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;
     let rest = text.lines().find_map(|l| l.strip_prefix(key))?;
-    rest.trim().split_whitespace().next()?.parse::<u64>().ok()?.checked_mul(1024)
+    rest.trim()
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1024)
 }
 
 /// `/proc/pressure/memory` -> (some avg10, full avg10) in percent.
 pub fn parse_psi(text: &str) -> Option<(f64, f64)> {
     let field = |kind: &str| -> Option<f64> {
         let line = text.lines().find(|l| l.starts_with(kind))?;
-        line.split_whitespace().find_map(|kv| kv.strip_prefix("avg10="))?.parse().ok()
+        line.split_whitespace()
+            .find_map(|kv| kv.strip_prefix("avg10="))?
+            .parse()
+            .ok()
     };
     Some((field("some")?, field("full")?))
 }
@@ -389,7 +420,12 @@ impl CacheDecision {
         let tiers: Vec<String> = AUTO_CACHE_GIB
             .iter()
             .zip(self.needs_gib.iter())
-            .map(|(c, n)| format!("{c:.0}: need {n:.2} margin {:+.2}", inp.mem_available_gib - n))
+            .map(|(c, n)| {
+                format!(
+                    "{c:.0}: need {n:.2} margin {:+.2}",
+                    inp.mem_available_gib - n
+                )
+            })
             .collect();
         let pref = match self.pref_gib {
             Some(p) => format!("pref {p:.0}"),
@@ -431,7 +467,13 @@ impl CacheDecision {
     }
 
     pub fn status_json(&self) -> String {
-        let num = |x: f64| if x.is_finite() { format!("{x:.4}") } else { "null".into() };
+        let num = |x: f64| {
+            if x.is_finite() {
+                format!("{x:.4}")
+            } else {
+                "null".into()
+            }
+        };
         let opt = |x: Option<f64>| x.map_or("null".to_string(), |v| format!("{v:.0}"));
         let needs: Vec<String> = self.needs_gib.iter().map(|&n| num(n)).collect();
         let tiers: Vec<String> = AUTO_CACHE_GIB.iter().map(|&c| format!("{c:.0}")).collect();
@@ -457,14 +499,23 @@ impl CacheDecision {
 /// run (its compute buffers stay allocated, so only the part above it is new memory). Only even passes of >= 512
 /// tokens are split, into two even halves, repeatedly: QC-FP8 showed 2 x 256 and 1 x 512 give the same state, and
 /// odd passes keep their kernel class (F-W4I-2), so the split stays lossless class. Returns the new plan.
-pub fn admit_passes(plan: &[usize], n_past0: usize, budget_bytes: u64, high_water: u64, fused_attn: bool) -> Vec<usize> {
+pub fn admit_passes(
+    plan: &[usize],
+    n_past0: usize,
+    budget_bytes: u64,
+    high_water: u64,
+    fused_attn: bool,
+) -> Vec<usize> {
     let mut out = Vec::with_capacity(plan.len());
     let mut n_past = n_past0;
     let mut hw = high_water;
     for &p in plan {
         let mut piece = p;
         // judged at the deepest piece (the largest partial tensor of the split)
-        while piece % 4 == 0 && piece >= 512 && pass_bytes(piece, n_past + p - piece, fused_attn).saturating_sub(hw) > budget_bytes {
+        while piece % 4 == 0
+            && piece >= 512
+            && pass_bytes(piece, n_past + p - piece, fused_attn).saturating_sub(hw) > budget_bytes
+        {
             piece /= 2;
         }
         // `piece` divides `p` (p / piece is a power of two)
@@ -528,16 +579,27 @@ mod tests {
         for &base in [256usize, 2048, 4096].iter() {
             for &max_pass in [0usize, base].iter() {
                 for n in (0usize..=9000).step_by(37) {
-                    assert_eq!(plan_ubatches(n, base, max_pass), chunks_plan(n, base),
-                        "base {} max_pass {} n {}", base, max_pass, n);
+                    assert_eq!(
+                        plan_ubatches(n, base, max_pass),
+                        chunks_plan(n, base),
+                        "base {} max_pass {} n {}",
+                        base,
+                        max_pass,
+                        n
+                    );
                 }
             }
         }
         // Odd base: exactly chunks(base) even with a large max_pass.
         for &base in [1usize, 255, 2047].iter() {
             for n in (0usize..=9000).step_by(37) {
-                assert_eq!(plan_ubatches(n, base, 8192), chunks_plan(n, base),
-                    "odd base {} n {}", base, n);
+                assert_eq!(
+                    plan_ubatches(n, base, 8192),
+                    chunks_plan(n, base),
+                    "odd base {} n {}",
+                    base,
+                    n
+                );
             }
         }
     }
@@ -556,15 +618,34 @@ mod tests {
                     let plan = plan_ubatches(n, base, max_pass);
                     let last = plan.len().saturating_sub(1);
                     for (i, &e) in plan.iter().enumerate() {
-                        assert!(e > 0, "zero entry, base {} max_pass {} n {}", base, max_pass, n);
-                        assert!(e <= cap, "entry {} over cap {}, base {} max_pass {} n {}",
-                            e, cap, base, max_pass, n);
+                        assert!(
+                            e > 0,
+                            "zero entry, base {} max_pass {} n {}",
+                            base,
+                            max_pass,
+                            n
+                        );
+                        assert!(
+                            e <= cap,
+                            "entry {} over cap {}, base {} max_pass {} n {}",
+                            e,
+                            cap,
+                            base,
+                            max_pass,
+                            n
+                        );
                         // Every entry except a final tail is a multiple of base, or a multiple of
                         // base plus an even tail of at least 256 tokens.
                         if i < last {
                             let r = e % base;
-                            assert!(r == 0 || (r % 2 == 0 && r >= 256),
-                                "bad interior entry {} base {} max_pass {} n {}", e, base, max_pass, n);
+                            assert!(
+                                r == 0 || (r % 2 == 0 && r >= 256),
+                                "bad interior entry {} base {} max_pass {} n {}",
+                                e,
+                                base,
+                                max_pass,
+                                n
+                            );
                         }
                     }
                 }
@@ -690,7 +771,12 @@ mod tests {
     fn admit_need_matches_receipts() {
         let i = inp(31.0, 16384);
         // cache + 4.825 + 0 + 3.50 + 0.80 + 1.0 (F118 table: 24.125 / 26.125 / 28.125)
-        for (c, n) in [(20.0, 30.125), (18.0, 28.125), (16.0, 26.125), (14.0, 24.125)] {
+        for (c, n) in [
+            (20.0, 30.125),
+            (18.0, 28.125),
+            (16.0, 26.125),
+            (14.0, 24.125),
+        ] {
             assert!((i.need_gib(c) - n).abs() < 1e-9, "{c}: {}", i.need_gib(c));
         }
         assert!((ADMIT_HARNESS_GIB - 0.80).abs() < 1e-12);
@@ -710,7 +796,10 @@ mod tests {
         let d = cache_auto(&inp(30.12, 16384));
         assert_eq!(d.cache_gib, Some(18.0));
         assert!((d.margin_gib - 1.995).abs() < 1e-9);
-        assert_eq!(cache_auto(&inp(inp(0.0, 16384).need_gib(18.0), 16384)).cache_gib, Some(18.0));
+        assert_eq!(
+            cache_auto(&inp(inp(0.0, 16384).need_gib(18.0), 16384)).cache_gib,
+            Some(18.0)
+        );
     }
 
     #[test]
@@ -731,7 +820,11 @@ mod tests {
         let i = inp(25.6, 16384);
         let d = cache_auto(&i);
         assert!((d.needs_gib[3] - 24.125).abs() < 1e-9 && (d.margin_gib - 1.475).abs() < 1e-9);
-        assert!(d.log_line(&i).contains("cache 14 GiB (margin +1.4"), "{}", d.log_line(&i));
+        assert!(
+            d.log_line(&i).contains("cache 14 GiB (margin +1.4"),
+            "{}",
+            d.log_line(&i)
+        );
     }
 
     #[test]
@@ -741,7 +834,10 @@ mod tests {
         assert_eq!((d.cache_gib, d.reason), (None, CacheReason::Refuse));
         assert!(d.margin_gib < 0.0 && (d.margin_gib + 0.005).abs() < 1e-9);
         assert!(d.log_line(&i).contains("-> refuse"));
-        assert!(d.status_json().contains("\"refuse\":true") && d.status_json().contains("\"cache_gib\":null"));
+        assert!(
+            d.status_json().contains("\"refuse\":true")
+                && d.status_json().contains("\"cache_gib\":null")
+        );
         // unreadable MemAvailable (NaN) refuses
         assert_eq!(cache_auto(&inp(f64::NAN, 16384)).cache_gib, None);
     }
@@ -751,12 +847,22 @@ mod tests {
         // a smaller preference is honoured even when a larger tier fits
         for p in AUTO_CACHE_GIB {
             let d = cache_select(&inp(30.2, 16384), Some(p));
-            assert_eq!((d.cache_gib, d.reason), (Some(p), CacheReason::Preferred), "{p}");
+            assert_eq!(
+                (d.cache_gib, d.reason),
+                (Some(p), CacheReason::Preferred),
+                "{p}"
+            );
         }
         let i = inp(26.2, 16384);
         let d = cache_select(&i, Some(16.0));
-        assert_eq!((d.cache_gib, d.reason), (Some(16.0), CacheReason::Preferred));
-        assert!(d.status_json().contains("\"reason\":\"preferred\"") && d.status_json().contains("\"pref_gib\":16"));
+        assert_eq!(
+            (d.cache_gib, d.reason),
+            (Some(16.0), CacheReason::Preferred)
+        );
+        assert!(
+            d.status_json().contains("\"reason\":\"preferred\"")
+                && d.status_json().contains("\"pref_gib\":16")
+        );
     }
 
     #[test]
@@ -764,18 +870,42 @@ mod tests {
         // pref 20 on the measured desktop: 20 / 18 / 16 do not fit, 14 does -> 14 with a visible note, never refuse
         let i = inp(25.6, 16384);
         let d = cache_select(&i, Some(20.0));
-        assert_eq!((d.cache_gib, d.reason), (Some(14.0), CacheReason::PreferredDoesNotFit));
+        assert_eq!(
+            (d.cache_gib, d.reason),
+            (Some(14.0), CacheReason::PreferredDoesNotFit)
+        );
         let line = d.log_line(&i);
-        assert!(line.contains("NOTE: preferred 20 GiB does not fit (margin -4.5") && line.contains("cache 14 GiB instead"), "{line}");
-        assert!(d.status_json().contains("\"reason\":\"preferred-does-not-fit\""));
+        assert!(
+            line.contains("NOTE: preferred 20 GiB does not fit (margin -4.5")
+                && line.contains("cache 14 GiB instead"),
+            "{line}"
+        );
+        assert!(d
+            .status_json()
+            .contains("\"reason\":\"preferred-does-not-fit\""));
         // pref 20 with 18 fitting -> 18; pref 18 with 16 fitting -> 16
-        assert_eq!(cache_select(&inp(29.0, 16384), Some(20.0)).cache_gib, Some(18.0));
-        assert_eq!(cache_select(&inp(27.0, 16384), Some(18.0)).cache_gib, Some(16.0));
+        assert_eq!(
+            cache_select(&inp(29.0, 16384), Some(20.0)).cache_gib,
+            Some(18.0)
+        );
+        assert_eq!(
+            cache_select(&inp(27.0, 16384), Some(18.0)).cache_gib,
+            Some(16.0)
+        );
         // pref 16 when only 14 fits -> 14 (not refuse)
-        assert_eq!(cache_select(&inp(24.2, 16384), Some(16.0)).cache_gib, Some(14.0));
+        assert_eq!(
+            cache_select(&inp(24.2, 16384), Some(16.0)).cache_gib,
+            Some(14.0)
+        );
         // a preference never makes it refuse while 14 fits, and refuses like auto below 14
-        assert_eq!(cache_select(&inp(inp(0.0, 16384).need_gib(14.0), 16384), Some(20.0)).cache_gib, Some(14.0));
-        assert_eq!(cache_select(&inp(24.0, 16384), Some(14.0)).reason, CacheReason::Refuse);
+        assert_eq!(
+            cache_select(&inp(inp(0.0, 16384).need_gib(14.0), 16384), Some(20.0)).cache_gib,
+            Some(14.0)
+        );
+        assert_eq!(
+            cache_select(&inp(24.0, 16384), Some(14.0)).reason,
+            CacheReason::Refuse
+        );
     }
 
     #[test]
@@ -796,7 +926,7 @@ mod tests {
         assert!((i.kv_extra_gib() - kv).abs() < 1e-12 && kv > 0.4 && kv < 0.5);
         assert_eq!(cache_auto(&inp(28.5, 16384)).cache_gib, Some(18.0));
         assert_eq!(cache_auto(&i).cache_gib, Some(16.0)); // 28.125 + 0.47 > 28.5
-        // the old full-RSS term as an override
+                                                          // the old full-RSS term as an override
         let o = AdmitInputs::measured(28.5, 16384, Some(1.40));
         assert_eq!(cache_auto(&o).cache_gib, Some(16.0));
     }
@@ -811,14 +941,24 @@ mod tests {
             let need = inp(31.0, 16384).need_gib(c);
             let after_load = need - c - ADMIT_DENSE_BASE_GIB;
             let budget = ((after_load - ADMIT_HARNESS_GIB - ADMIT_FLOOR_GIB) * GIB_F) as u64;
-            assert!(budget.abs_diff((ADMIT_ANON_PEAK_GIB * GIB_F) as u64) < 4096, "{c}");
+            assert!(
+                budget.abs_diff((ADMIT_ANON_PEAK_GIB * GIB_F) as u64) < 4096,
+                "{c}"
+            );
             let first = admit_passes(&[4096], 0, budget, 0, false);
-            assert!(first.iter().all(|&p| p >= 2048) && first.iter().sum::<usize>() == 4096, "{c}: {first:?}");
+            assert!(
+                first.iter().all(|&p| p >= 2048) && first.iter().sum::<usize>() == 4096,
+                "{c}: {first:?}"
+            );
             let deep = admit_passes(&[4096], 12288, budget, 0, false);
-            assert!(deep.len() >= 2 && deep.iter().sum::<usize>() == 4096, "{c}: {deep:?}");
+            assert!(
+                deep.len() >= 2 && deep.iter().sum::<usize>() == 4096,
+                "{c}: {deep:?}"
+            );
         }
         // F122's desktop at 14: 25.6 free -> 6.775 after load -> 4.975 budget: the first 4,096 pass runs unsplit
-        let budget = (((25.6 - 14.0 - ADMIT_DENSE_BASE_GIB) - ADMIT_HARNESS_GIB - ADMIT_FLOOR_GIB) * GIB_F) as u64;
+        let budget = (((25.6 - 14.0 - ADMIT_DENSE_BASE_GIB) - ADMIT_HARNESS_GIB - ADMIT_FLOOR_GIB)
+            * GIB_F) as u64;
         assert_eq!(admit_passes(&[4096], 0, budget, 0, false), vec![4096]);
     }
 
@@ -859,7 +999,10 @@ mod tests {
         let b = 4 * GIB;
         assert_eq!(admit_passes(&[4096], 0, b, 0, false), vec![4096]);
         let deep = admit_passes(&[4096], 12288, b, 0, false);
-        assert!(deep.len() >= 2 && deep.iter().sum::<usize>() == 4096, "{deep:?}");
+        assert!(
+            deep.len() >= 2 && deep.iter().sum::<usize>() == 4096,
+            "{deep:?}"
+        );
         // the fused node (attn-tile 2) has no partial tensor: no split
         assert_eq!(admit_passes(&[4096], 12288, b, 0, true), vec![4096]);
     }
@@ -880,20 +1023,31 @@ mod tests {
     fn pref_20_swap_tolerant_admits_20_when_budget_nonnegative() {
         // MemAvailable 25.5 (the 1st rule would give 14) but MemTotal admits 20 with a 2 GiB desktop floor
         let (d, seen) = cache_select_swap_tolerant(&inp(25.5, 16384), Some(20.0), MT, 2.0, 16.0);
-        assert_eq!((d.cache_gib, d.reason), (Some(20.0), CacheReason::PreferredSwapTolerant));
+        assert_eq!(
+            (d.cache_gib, d.reason),
+            (Some(20.0), CacheReason::PreferredSwapTolerant)
+        );
         assert!((d.margin_gib - 0.395).abs() < 1e-9 && seen.len() == 1);
-        assert!(d.status_json().contains("\"reason\":\"preferred-swap-tolerant\""));
+        assert!(d
+            .status_json()
+            .contains("\"reason\":\"preferred-swap-tolerant\""));
     }
 
     #[test]
     fn pref_20_falls_to_18_then_memavailable_rule() {
         // 3 GiB floor: 20 budget -0.605 -> 18 (+1.395)
         let (d, seen) = cache_select_swap_tolerant(&inp(25.5, 16384), Some(20.0), MT, 3.0, 16.0);
-        assert_eq!((d.cache_gib, d.reason), (Some(18.0), CacheReason::PreferredSwapTolerant));
+        assert_eq!(
+            (d.cache_gib, d.reason),
+            (Some(18.0), CacheReason::PreferredSwapTolerant)
+        );
         assert_eq!(seen.len(), 2);
         // 5 GiB floor: 20 and 18 negative -> MemAvailable rule (25.5 -> 14, NOTE)
         let (d, _) = cache_select_swap_tolerant(&inp(25.5, 16384), Some(20.0), MT, 5.0, 16.0);
-        assert_eq!((d.cache_gib, d.reason), (Some(14.0), CacheReason::PreferredDoesNotFit));
+        assert_eq!(
+            (d.cache_gib, d.reason),
+            (Some(14.0), CacheReason::PreferredDoesNotFit)
+        );
         // and refuse only when the MemAvailable rule refuses too
         let (d, _) = cache_select_swap_tolerant(&inp(24.0, 16384), Some(20.0), MT, 5.0, 16.0);
         assert_eq!(d.reason, CacheReason::Refuse);
@@ -916,11 +1070,19 @@ mod tests {
         assert!(!swap_covers(&i, 18.3, 20.0) && swap_covers(&i, 18.325, 20.0));
         // short of 20 but enough for 18 (15.325 + 1) -> 18
         let (d, _) = cache_select_swap_tolerant(&i, Some(20.0), 32.0, 0.0, 16.5);
-        assert_eq!((d.cache_gib, d.reason), (Some(18.0), CacheReason::PreferredSwapTolerant));
+        assert_eq!(
+            (d.cache_gib, d.reason),
+            (Some(18.0), CacheReason::PreferredSwapTolerant)
+        );
         let (d, _) = cache_select_swap_tolerant(&i, Some(20.0), 32.0, 0.0, 18.5);
-        assert_eq!((d.cache_gib, d.reason), (Some(20.0), CacheReason::PreferredSwapTolerant));
+        assert_eq!(
+            (d.cache_gib, d.reason),
+            (Some(20.0), CacheReason::PreferredSwapTolerant)
+        );
         // nothing has to leave RAM: the margin alone is enough
-        assert!(swap_covers(&inp(40.0, 16384), 1.0, 20.0) && !swap_covers(&inp(40.0, 16384), 0.5, 20.0));
+        assert!(
+            swap_covers(&inp(40.0, 16384), 1.0, 20.0) && !swap_covers(&inp(40.0, 16384), 0.5, 20.0)
+        );
     }
 
     #[test]
@@ -946,12 +1108,18 @@ mod tests {
         assert_eq!(psi_pass_cap(12.5, 2.5, 10.0, 2.0), Some(256));
         assert_eq!(psi_pass_cap(5.0, 0.0, 10.0, 2.0), None);
         assert_eq!(psi_pass_cap(99.0, 99.0, 0.0, 0.0), None); // off
-        assert!(memory_psi().is_some(), "PSI should be readable on this kernel");
+        assert!(
+            memory_psi().is_some(),
+            "PSI should be readable on this kernel"
+        );
     }
 
     #[test]
     fn cap_passes_keeps_tokens_parity_and_floor() {
-        assert_eq!(cap_passes(&[4096, 1404], 1024), [vec![1024; 4], vec![702, 702]].concat());
+        assert_eq!(
+            cap_passes(&[4096, 1404], 1024),
+            [vec![1024; 4], vec![702, 702]].concat()
+        );
         assert_eq!(cap_passes(&[4096], 256), vec![256; 16]);
         assert_eq!(cap_passes(&[4096, 1403], 256).last(), Some(&1403));
         assert_eq!(cap_passes(&[300, 17], 256), vec![300, 17]);

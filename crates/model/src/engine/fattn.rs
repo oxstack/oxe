@@ -39,7 +39,12 @@ pub fn chunk_from(req: usize) -> usize {
 
 /// `OXE_ATTN_FUSED_CH` (default [`FUSED_CH_DEFAULT`]).
 pub fn chunk_from_env() -> usize {
-    chunk_from(std::env::var("OXE_ATTN_FUSED_CH").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(FUSED_CH_DEFAULT))
+    chunk_from(
+        std::env::var("OXE_ATTN_FUSED_CH")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(FUSED_CH_DEFAULT),
+    )
 }
 
 /// Partial-output floats for `n_ctx` positions (a multiple of 256) and up to `lanes` lanes.
@@ -135,7 +140,13 @@ impl Fa {
     ///
     /// # Safety
     /// As [`Self::chunks`].
-    pub unsafe fn chunks_stats(&self, tid: usize, nth: usize, scr: &mut FaScratch, stats: Option<&[AtomicU64; 3]>) {
+    pub unsafe fn chunks_stats(
+        &self,
+        tid: usize,
+        nth: usize,
+        scr: &mut FaScratch,
+        stats: Option<&[AtomicU64; 3]>,
+    ) {
         let (hd, group, nl, pos0) = (self.hd, self.group, self.nl, self.pos0);
         let ncol = self.ncol();
         let last = self.last();

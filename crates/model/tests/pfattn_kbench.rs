@@ -487,8 +487,18 @@ impl PgLayer {
             }
             v
         };
-        let q16 = f16s(&(0..PG_BLOCK * GROUP * HD).map(|_| r.f() * 4.0).collect::<Vec<_>>());
-        PgLayer { n_ctx, v_stride, k: fill(NKV * n_ctx * HD, 1), vt: fill(NKV * HD * v_stride, 2), q16 }
+        let q16 = f16s(
+            &(0..PG_BLOCK * GROUP * HD)
+                .map(|_| r.f() * 4.0)
+                .collect::<Vec<_>>(),
+        );
+        PgLayer {
+            n_ctx,
+            v_stride,
+            k: fill(NKV * n_ctx * HD, 1),
+            vt: fill(NKV * HD * v_stride, 2),
+            q16,
+        }
     }
 
     /// Unit of `nt` tokens at token offset `t` of the block at (kvh, pos0).
@@ -521,7 +531,9 @@ impl PgLayer {
                         thr.ph[0] += t0.elapsed().as_secs_f64();
                     }
                 }
-                PgKern::Pfg(g) => t.run_g(&mut thr.pg, g, if prof { Some(&mut thr.tk) } else { None }),
+                PgKern::Pfg(g) => {
+                    t.run_g(&mut thr.pg, g, if prof { Some(&mut thr.tk) } else { None })
+                }
             }
         }
     }
@@ -537,14 +549,47 @@ impl PgLayer {
             let nkv = padded_n_kv(t.last(), self.n_ctx);
             let nf = [nkv as i32; NCOL];
             let t0 = Instant::now();
-            ffi::oxe_dot_f16_tile(HD as i32, t.k, HD as i64, rows as i32, t.q16, HD as i64, ncol as i32, thr.akq.as_mut_ptr(), 1, cs as i64, std::ptr::null());
+            ffi::oxe_dot_f16_tile(
+                HD as i32,
+                t.k,
+                HD as i64,
+                rows as i32,
+                t.q16,
+                HD as i64,
+                ncol as i32,
+                thr.akq.as_mut_ptr(),
+                1,
+                cs as i64,
+                std::ptr::null(),
+            );
             let t1 = Instant::now();
             for col in 0..ncol {
                 let pos = t.pos0 + col / GROUP;
-                ffi::oxe_attn_softmax_row_f16(thr.akq.as_ptr().add(col * cs), pos as i32, nkv as i32, t.scale, thr.wp.as_mut_ptr(), thr.dp.as_mut_ptr(), thr.ap16.as_mut_ptr().add(col * cs), n32 as i32);
+                ffi::oxe_attn_softmax_row_f16(
+                    thr.akq.as_ptr().add(col * cs),
+                    pos as i32,
+                    nkv as i32,
+                    t.scale,
+                    thr.wp.as_mut_ptr(),
+                    thr.dp.as_mut_ptr(),
+                    thr.ap16.as_mut_ptr().add(col * cs),
+                    n32 as i32,
+                );
             }
             let t2 = Instant::now();
-            ffi::oxe_dot_f16_tile(n32 as i32, t.vt, t.v_stride as i64, HD as i32, thr.ap16.as_ptr(), cs as i64, ncol as i32, thr.aot.as_mut_ptr(), ncol as i64, 1, nf.as_ptr());
+            ffi::oxe_dot_f16_tile(
+                n32 as i32,
+                t.vt,
+                t.v_stride as i64,
+                HD as i32,
+                thr.ap16.as_ptr(),
+                cs as i64,
+                ncol as i32,
+                thr.aot.as_mut_ptr(),
+                ncol as i64,
+                1,
+                nf.as_ptr(),
+            );
             if prof {
                 let t3 = Instant::now();
                 thr.ph[0] += (t1 - t0).as_secs_f64();
@@ -557,7 +602,9 @@ impl PgLayer {
     /// Output [col][hd] of the last unit run on `thr` (`ncol` columns).
     fn out(&self, k: PgKern, thr: &PgThr, ncol: usize) -> Vec<f32> {
         match k {
-            PgKern::Tiled => (0..ncol * HD).map(|i| thr.aot[(i % HD) * ncol + i / HD]).collect(),
+            PgKern::Tiled => (0..ncol * HD)
+                .map(|i| thr.aot[(i % HD) * ncol + i / HD])
+                .collect(),
             PgKern::Fa2 => thr.fb.acc[..ncol * HD].to_vec(),
             PgKern::Fa2x(_) => (0..ncol).flat_map(|c| thr.fa.out(c).to_vec()).collect(),
             PgKern::Pfg(_) => (0..ncol).flat_map(|c| thr.pg.out(c).to_vec()).collect(),
@@ -583,13 +630,39 @@ unsafe fn fa2_unit(t: &Tile, b: &mut Fa2Buf, ph: &mut [f64; 5], prof: bool) {
             let len = e - s0;
             let kr = rows.min(e) - s0;
             let t0 = Instant::now();
-            ffi::oxe_dot_f16_tile(hd as i32, t.k.add(s0 * hd), hd as i64, kr as i32, t.q16, hd as i64, ncol as i32, b.s.as_mut_ptr(), 1, PFA_CH as i64, std::ptr::null());
+            ffi::oxe_dot_f16_tile(
+                hd as i32,
+                t.k.add(s0 * hd),
+                hd as i64,
+                kr as i32,
+                t.q16,
+                hd as i64,
+                ncol as i32,
+                b.s.as_mut_ptr(),
+                1,
+                PFA_CH as i64,
+                std::ptr::null(),
+            );
             let t1 = Instant::now();
             for (c, v) in b.nv[..ncol].iter_mut().enumerate() {
                 *v = (t.pos0 + c / group + 1).saturating_sub(s0).min(len) as i32;
             }
             let len_full = (s0 + PFA_CH).min(t.n_ctx) - s0;
-            ffi::oxe_attn_fchunk_f16(b.s.as_mut_ptr(), PFA_CH as i64, ncol as i32, b.nv.as_ptr(), len as i32, len_full as i32, t.scale, t.vt.add(s0), t.v_stride as i64, hd as i32, b.p.as_mut_ptr(), b.part.as_mut_ptr(), b.ml.as_mut_ptr());
+            ffi::oxe_attn_fchunk_f16(
+                b.s.as_mut_ptr(),
+                PFA_CH as i64,
+                ncol as i32,
+                b.nv.as_ptr(),
+                len as i32,
+                len_full as i32,
+                t.scale,
+                t.vt.add(s0),
+                t.v_stride as i64,
+                hd as i32,
+                b.p.as_mut_ptr(),
+                b.part.as_mut_ptr(),
+                b.ml.as_mut_ptr(),
+            );
             let t2 = Instant::now();
             for c in 0..ncol {
                 let (mc, lc) = (b.ml[c], b.ml[ncol + c]);
@@ -606,7 +679,11 @@ unsafe fn fa2_unit(t: &Tile, b: &mut Fa2Buf, ph: &mut [f64; 5], prof: bool) {
                         *x += y * w;
                     }
                 } else {
-                    let a = if mo == f32::NEG_INFINITY { 0.0 } else { (mo - mc).exp() };
+                    let a = if mo == f32::NEG_INFINITY {
+                        0.0
+                    } else {
+                        (mo - mc).exp()
+                    };
                     b.l[c] = b.l[c] * a + lc;
                     for (x, &y) in o.iter_mut().zip(pc) {
                         *x = *x * a + y;
@@ -660,7 +737,10 @@ fn kbench_pfg_phases() {
     let on = |k: &str| std::env::var(k).map(|v| v.trim() != "0").unwrap_or(true);
     let (old_on, x_on) = (on("OXE_PFBENCH_OLD"), on("OXE_PFBENCH_FA2X"));
     let gps = pg_params_from_env();
-    assert!(!gps.is_empty(), "OXE_PFBENCH_G: no valid fq:fp:ch:tb:mk entry");
+    assert!(
+        !gps.is_empty(),
+        "OXE_PFBENCH_G: no valid fq:fp:ch:tb:mk entry"
+    );
     let mut kerns = Vec::new();
     if old_on {
         kerns.push(PgKern::Tiled);
@@ -670,10 +750,18 @@ fn kbench_pfg_phases() {
         kerns.push(PgKern::Fa2x(XParams::default()));
     }
     kerns.extend(gps.iter().map(|&g| PgKern::Pfg(g)));
-    let n_ctx = (depths.iter().max().unwrap() + appends.iter().max().unwrap()).div_ceil(256) * 256 + 256;
-    let cpus = std::env::var("OXE_PFBENCH_CPUS").ok().map(|s| sched::parse_cpu_list(&s).expect("OXE_PFBENCH_CPUS")).unwrap_or_else(|| cpus(nth));
+    let n_ctx =
+        (depths.iter().max().unwrap() + appends.iter().max().unwrap()).div_ceil(256) * 256 + 256;
+    let cpus = std::env::var("OXE_PFBENCH_CPUS")
+        .ok()
+        .map(|s| sched::parse_cpu_list(&s).expect("OXE_PFBENCH_CPUS"))
+        .unwrap_or_else(|| cpus(nth));
     let cpus = cpus[..nth.min(cpus.len())].to_vec();
-    assert_eq!(cpus.len(), nth, "OXE_PFBENCH_CPUS has fewer cpus than threads");
+    assert_eq!(
+        cpus.len(),
+        nth,
+        "OXE_PFBENCH_CPUS has fewer cpus than threads"
+    );
     let hz = pfg_tick_hz() as f64;
     println!("PFG kbench: head_dim {HD}, {NKV} KV heads x {GROUP}, blocks of {PG_BLOCK} tokens x {nblk}, n_ctx {n_ctx}, threads {nth} on {cpus:?}, reps {reps}, roof {ROOF_TFMA} TFMA/s, tick {hz} Hz");
     let layer = PgLayer::new(n_ctx);

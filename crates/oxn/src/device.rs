@@ -49,7 +49,21 @@ const GEMM_NARGS: usize = 13;
 const ERR_LEN: usize = 512;
 
 extern "C" {
-    fn oxn_native_reference_sample(w:*const u8,nw:usize,x:*const u16,nx:usize,kind:u32,t:u32,k:u32,o:u32,experts:u32,e:u32,m:u32,n:u32,out:*mut f64)->c_int;
+    fn oxn_native_reference_sample(
+        w: *const u8,
+        nw: usize,
+        x: *const u16,
+        nx: usize,
+        kind: u32,
+        t: u32,
+        k: u32,
+        o: u32,
+        experts: u32,
+        e: u32,
+        m: u32,
+        n: u32,
+        out: *mut f64,
+    ) -> c_int;
     fn oxn_host_open(
         out: *mut *mut Opaque,
         n_sessions: c_int,
@@ -145,10 +159,41 @@ extern "C" {
 }
 
 /// Pure host sample oracle; no DSP interaction. Bounds are checked again in C.
-pub fn native_reference_sample(w:&[u8],x:&[u16],kind:u32,t:u32,k:u32,o:u32,experts:u32,e:u32,m:u32,n:u32)->Result<f64,String>{
-    let mut value=0.;
-    let rc=unsafe{oxn_native_reference_sample(w.as_ptr(),w.len(),x.as_ptr(),x.len(),kind,t,k,o,experts,e,m,n,&mut value)};
-    if rc!=0||!value.is_finite(){Err("invalid native host reference sample".into())}else{Ok(value)}
+pub fn native_reference_sample(
+    w: &[u8],
+    x: &[u16],
+    kind: u32,
+    t: u32,
+    k: u32,
+    o: u32,
+    experts: u32,
+    e: u32,
+    m: u32,
+    n: u32,
+) -> Result<f64, String> {
+    let mut value = 0.;
+    let rc = unsafe {
+        oxn_native_reference_sample(
+            w.as_ptr(),
+            w.len(),
+            x.as_ptr(),
+            x.len(),
+            kind,
+            t,
+            k,
+            o,
+            experts,
+            e,
+            m,
+            n,
+            &mut value,
+        )
+    };
+    if rc != 0 || !value.is_finite() {
+        Err("invalid native host reference sample".into())
+    } else {
+        Ok(value)
+    }
 }
 
 #[cfg(test)]
@@ -156,14 +201,32 @@ mod native_reference_tests {
     use super::*;
     #[test]
     fn host_oracle_bounds_and_zero_weights_without_device() {
-        let x=vec![0x3c00u16;32*512];
-        for (kind,bytes) in [(3,880*4*2),(4,1152*4*2)] {
-            let w=vec![0u8;bytes];
-            assert_eq!(native_reference_sample(&w,&x,kind,32,512,32,1,0,31,31).unwrap(),0.);
-            assert!(native_reference_sample(&w[..bytes-1],&x,kind,32,512,32,1,0,31,31).is_err());
-            assert!(native_reference_sample(&w,&x[..x.len()-1],kind,32,512,32,1,0,31,31).is_err());
-            assert!(native_reference_sample(&w,&x,kind,32,512,32,1,1,31,31).is_err());
-            assert!(native_reference_sample(&w,&x,kind,32,u32::MAX,32,1,0,31,31).is_err());
+        let x = vec![0x3c00u16; 32 * 512];
+        for (kind, bytes) in [(3, 880 * 4 * 2), (4, 1152 * 4 * 2)] {
+            let w = vec![0u8; bytes];
+            assert_eq!(
+                native_reference_sample(&w, &x, kind, 32, 512, 32, 1, 0, 31, 31).unwrap(),
+                0.
+            );
+            assert!(
+                native_reference_sample(&w[..bytes - 1], &x, kind, 32, 512, 32, 1, 0, 31, 31)
+                    .is_err()
+            );
+            assert!(native_reference_sample(
+                &w,
+                &x[..x.len() - 1],
+                kind,
+                32,
+                512,
+                32,
+                1,
+                0,
+                31,
+                31
+            )
+            .is_err());
+            assert!(native_reference_sample(&w, &x, kind, 32, 512, 32, 1, 1, 31, 31).is_err());
+            assert!(native_reference_sample(&w, &x, kind, 32, u32::MAX, 32, 1, 0, 31, 31).is_err());
         }
     }
 }
@@ -342,16 +405,68 @@ impl Device {
 
     /// Bounded native expert pricing batch, all experts in one projection RPC.
     /// Inputs and outputs are expert-major HMX tiles (Y column-major); no model hook.
-    pub fn native_batch(&mut self,x:Buf,w:Buf,y:Buf,t:u32,k:u32,o:u32,experts:u32,kind:u32)->Result<GemmStats,String>{
-        if self.failed(){return Err("device failed or closed".into());}
-        if x.session!=w.session||x.session!=y.session||x.session as usize>=self.sessions(){return Err("native batch session mismatch".into());}
-        if self.imports.is_readonly(y.session,y.slot){return Err("native output is read-only weight slot".into());}
-        let a=[x.slot,0,w.slot,0,y.slot,0,t,k,o,experts,kind,0,0,0];
-        let mut rsp=OxnRsp{status:0,op:0,v:[0;12],magic:0,pad:0};let mut wall=0.;let mut err=[0 as c_char;ERR_LEN];
-        let rc=unsafe{oxn_host_cmd(self.h,x.session as c_int,14,a.as_ptr(),14,&mut rsp,&mut wall,err.as_mut_ptr(),ERR_LEN)};
-        if rc!=0{return Err(format!("native batch: {}",err_text(&err.map(|v|v as u8))));}
-        let v=rsp.v;let q=|i:usize|v[i] as u64|((v[i+1] as u64)<<32);
-        Ok(GemmStats{wall_s:wall,dsp_us:v[4],pcycles:q(0),wait_pcycles:q(2),hmx_pcycles:q(9),deq_pcycles:v[11] as u64,steps:v[5],r:v[6],c:v[7]})
+    pub fn native_batch(
+        &mut self,
+        x: Buf,
+        w: Buf,
+        y: Buf,
+        t: u32,
+        k: u32,
+        o: u32,
+        experts: u32,
+        kind: u32,
+    ) -> Result<GemmStats, String> {
+        if self.failed() {
+            return Err("device failed or closed".into());
+        }
+        if x.session != w.session || x.session != y.session || x.session as usize >= self.sessions()
+        {
+            return Err("native batch session mismatch".into());
+        }
+        if self.imports.is_readonly(y.session, y.slot) {
+            return Err("native output is read-only weight slot".into());
+        }
+        let a = [
+            x.slot, 0, w.slot, 0, y.slot, 0, t, k, o, experts, kind, 0, 0, 0,
+        ];
+        let mut rsp = OxnRsp {
+            status: 0,
+            op: 0,
+            v: [0; 12],
+            magic: 0,
+            pad: 0,
+        };
+        let mut wall = 0.;
+        let mut err = [0 as c_char; ERR_LEN];
+        let rc = unsafe {
+            oxn_host_cmd(
+                self.h,
+                x.session as c_int,
+                14,
+                a.as_ptr(),
+                14,
+                &mut rsp,
+                &mut wall,
+                err.as_mut_ptr(),
+                ERR_LEN,
+            )
+        };
+        if rc != 0 {
+            return Err(format!("native batch: {}", err_text(&err.map(|v| v as u8))));
+        }
+        let v = rsp.v;
+        let q = |i: usize| v[i] as u64 | ((v[i + 1] as u64) << 32);
+        Ok(GemmStats {
+            wall_s: wall,
+            dsp_us: v[4],
+            pcycles: q(0),
+            wait_pcycles: q(2),
+            hmx_pcycles: q(9),
+            deq_pcycles: v[11] as u64,
+            steps: v[5],
+            r: v[6],
+            c: v[7],
+        })
     }
 
     /// Import sealed CPU weights without taking ownership of their allocation.

@@ -56,7 +56,14 @@ fn hook(q: &[f32], k: &[f32], v: &[f32], n: usize, hd: usize, scale: f32, out: &
         out[j] = o[j] as f32;
     }
     if CAPTURE.load(std::sync::atomic::Ordering::Relaxed) {
-        CAPS.lock().unwrap().push(Cap { q: q.to_vec(), k: k[..n * hd].to_vec(), v: v[..n * hd].to_vec(), n, hd, scale });
+        CAPS.lock().unwrap().push(Cap {
+            q: q.to_vec(),
+            k: k[..n * hd].to_vec(),
+            v: v[..n * hd].to_vec(),
+            n,
+            hd,
+            scale,
+        });
     }
 }
 
@@ -84,7 +91,13 @@ fn h2f(h: u16) -> f64 {
     let m = (h & 0x3ff) as f64;
     match e {
         0 => s * m * 2f64.powi(-24),
-        31 => if m == 0.0 { s * f64::INFINITY } else { f64::NAN },
+        31 => {
+            if m == 0.0 {
+                s * f64::INFINITY
+            } else {
+                f64::NAN
+            }
+        }
         _ => s * (1.0 + m / 1024.0) * 2f64.powi(e - 15),
     }
 }
@@ -120,7 +133,14 @@ struct Knobs {
 fn emu(c: &Cap, kb: &Knobs) -> Vec<f64> {
     let (n, hd) = (c.n, c.hd);
     let q16: Vec<f64> = f16v(&c.q).iter().map(|&h| h2f(h)).collect();
-    let s: Vec<f64> = (0..n).map(|p| ((0..hd).map(|j| q16[j] * c.k[p * hd + j] as f64).sum::<f64>() as f32 * c.scale) as f64).collect();
+    let s: Vec<f64> = (0..n)
+        .map(|p| {
+            ((0..hd)
+                .map(|j| q16[j] * c.k[p * hd + j] as f64)
+                .sum::<f64>() as f32
+                * c.scale) as f64
+        })
+        .collect();
     let w = |v: f64| if kb.w16 { r16(v) } else { v };
     let mut out = vec![0f64; hd];
     if !kb.fused {
@@ -139,7 +159,15 @@ fn emu(c: &Cap, kb: &Knobs) -> Vec<f64> {
         let m = s[s0..e].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let wv: Vec<f64> = s[s0..e].iter().map(|x| w((x - m).exp())).collect();
         let l: f64 = wv.iter().sum();
-        let pd: Vec<f64> = (0..hd).map(|j| dot_emu(&(s0..e).map(|q| c.v[q * hd + j] as f64).collect::<Vec<_>>(), &wv, !kb.acc16)).collect();
+        let pd: Vec<f64> = (0..hd)
+            .map(|j| {
+                dot_emu(
+                    &(s0..e).map(|q| c.v[q * hd + j] as f64).collect::<Vec<_>>(),
+                    &wv,
+                    !kb.acc16,
+                )
+            })
+            .collect();
         parts.push((m, l, pd));
     }
     let mx = parts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
@@ -175,9 +203,42 @@ fn tiled_kernel(c: &Cap, n_ctx: usize) -> Vec<f64> {
     let nf = [n_kv as i32];
     // SAFETY: buffers sized above.
     unsafe {
-        ffi::oxe_dot_f16_tile(hd as i32, k16.as_ptr(), hd as i64, n as i32, q16.as_ptr(), hd as i64, 1, kq.as_mut_ptr(), 1, 1, std::ptr::null());
-        ffi::oxe_attn_softmax_row_f16(kq.as_ptr(), pos as i32, n_kv as i32, c.scale, wp.as_mut_ptr(), dp.as_mut_ptr(), p16.as_mut_ptr(), n32 as i32);
-        ffi::oxe_dot_f16_tile(n32 as i32, vt.as_ptr(), stride as i64, hd as i32, p16.as_ptr(), n32 as i64, 1, out.as_mut_ptr(), 1, 1, nf.as_ptr());
+        ffi::oxe_dot_f16_tile(
+            hd as i32,
+            k16.as_ptr(),
+            hd as i64,
+            n as i32,
+            q16.as_ptr(),
+            hd as i64,
+            1,
+            kq.as_mut_ptr(),
+            1,
+            1,
+            std::ptr::null(),
+        );
+        ffi::oxe_attn_softmax_row_f16(
+            kq.as_ptr(),
+            pos as i32,
+            n_kv as i32,
+            c.scale,
+            wp.as_mut_ptr(),
+            dp.as_mut_ptr(),
+            p16.as_mut_ptr(),
+            n32 as i32,
+        );
+        ffi::oxe_dot_f16_tile(
+            n32 as i32,
+            vt.as_ptr(),
+            stride as i64,
+            hd as i32,
+            p16.as_ptr(),
+            n32 as i64,
+            1,
+            out.as_mut_ptr(),
+            1,
+            1,
+            nf.as_ptr(),
+        );
     }
     out.iter().map(|&x| x as f64).collect()
 }
@@ -208,13 +269,51 @@ fn fused_kernel(c: &Cap, n_ctx: usize, ch: usize) -> Vec<f64> {
             let e = (s0 + ch).min(n32);
             let len = e - s0;
             let nv = [(n - s0).min(len) as i32];
-            ffi::oxe_dot_f16_tile(hd as i32, k16.as_ptr().add(s0 * hd), hd as i64, nv[0], q16.as_ptr(), hd as i64, 1, s.as_mut_ptr(), 1, 1, std::ptr::null());
-            ffi::oxe_attn_fchunk_f16(s.as_mut_ptr(), ch as i64, 1, nv.as_ptr(), len as i32, ((s0 + ch).min(n_ctx) - s0) as i32, c.scale, vt.as_ptr().add(s0), stride as i64, hd as i32, p16.as_mut_ptr(), part.as_mut_ptr().add(it * hd), ml.as_mut_ptr().add(it * 2));
+            ffi::oxe_dot_f16_tile(
+                hd as i32,
+                k16.as_ptr().add(s0 * hd),
+                hd as i64,
+                nv[0],
+                q16.as_ptr(),
+                hd as i64,
+                1,
+                s.as_mut_ptr(),
+                1,
+                1,
+                std::ptr::null(),
+            );
+            ffi::oxe_attn_fchunk_f16(
+                s.as_mut_ptr(),
+                ch as i64,
+                1,
+                nv.as_ptr(),
+                len as i32,
+                ((s0 + ch).min(n_ctx) - s0) as i32,
+                c.scale,
+                vt.as_ptr().add(s0),
+                stride as i64,
+                hd as i32,
+                p16.as_mut_ptr(),
+                part.as_mut_ptr().add(it * hd),
+                ml.as_mut_ptr().add(it * 2),
+            );
         }
         let gate = vec![1f32; hd];
         let mut out = vec![0f32; hd];
         let mut w = vec![0f32; nch.div_ceil(4) * 4];
-        ffi::oxe_attn_fmerge_f32(nch as i32, part.as_ptr(), hd as i64, ml.as_ptr(), ml.as_ptr().add(1), 2, 0, hd as i32, gate.as_ptr(), out.as_mut_ptr(), w.as_mut_ptr());
+        ffi::oxe_attn_fmerge_f32(
+            nch as i32,
+            part.as_ptr(),
+            hd as i64,
+            ml.as_ptr(),
+            ml.as_ptr().add(1),
+            2,
+            0,
+            hd as i32,
+            gate.as_ptr(),
+            out.as_mut_ptr(),
+            w.as_mut_ptr(),
+        );
         out.iter().map(|&x| x as f64).collect()
     }
 }
@@ -237,14 +336,26 @@ fn mini_fused_precision_probe() {
     let plan = Plan::build(&g.header, &desc, 2, 512).unwrap();
     let ws = WeightStore::load(g, &plan, &opt).unwrap();
     let pool = sched::Pool::new(&test_cpus(2), Duration::from_micros(100)).unwrap();
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let prefix: Vec<u32> = (0..200u32).map(|i| (i * 13 + 7) % 64).collect();
     let cont: Vec<u32> = (0..250u32).map(|i| (i * 29 + 5) % 64).collect();
     let mut a = Engine::new(&plan, &ws, cfg.clone()).unwrap();
     a.prefill(&pool, &prefix, 64).unwrap();
     a.set_attn_legacy(false);
     a.set_attn_tiled_min_kv(0);
-    let rms = |x: &[f32], y: &[f32]| (x.iter().zip(y).map(|(&p, &q)| ((p - q) as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+    let rms = |x: &[f32], y: &[f32]| {
+        (x.iter()
+            .zip(y)
+            .map(|(&p, &q)| ((p - q) as f64).powi(2))
+            .sum::<f64>()
+            / x.len() as f64)
+            .sqrt()
+    };
     // arms: tiled, fused 256, fused 128, reference over the f16 query (a ~4e-7 attention change)
     let mut errs: [Vec<f64>; 4] = Default::default();
     let mut stats = Vec::new();
@@ -270,12 +381,19 @@ fn mini_fused_precision_probe() {
         // continue on the tiled step (the incumbent state), bit-identical to the tiled arm
         a.restore_recurrent(&s);
         a.step(&pool, t);
-        assert!(a.logits().iter().zip(&outs[0]).all(|(x, y)| x.to_bits() == y.to_bits()));
+        assert!(a
+            .logits()
+            .iter()
+            .zip(&outs[0])
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
         for k in 0..4 {
             errs[k].push(rms(&outs[k], &lr));
         }
     }
-    for (k, nm) in ["tiled", "fused256", "fused128", "ref(q16)"].iter().enumerate() {
+    for (k, nm) in ["tiled", "fused256", "fused128", "ref(q16)"]
+        .iter()
+        .enumerate()
+    {
         let mut e = errs[k].clone();
         e.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let n = e.len();
@@ -288,10 +406,28 @@ fn mini_fused_precision_probe() {
     // dominated by which arm happens to hit a jump. Compare the typical error instead.
     assert!(stats[3].2 < 1e-4, "control arm jumped: {:?}", stats[3]);
     for k in [1, 2] {
-        assert!(stats[k].0 <= stats[0].0 && stats[k].1 <= stats[0].1, "fused arm {k} worse than tiled: {:?} vs {:?}", stats[k], stats[0]);
+        assert!(
+            stats[k].0 <= stats[0].0 && stats[k].1 <= stats[0].1,
+            "fused arm {k} worse than tiled: {:?} vs {:?}",
+            stats[k],
+            stats[0]
+        );
     }
     let caps = std::mem::take(&mut *CAPS.lock().unwrap());
-    let names = ["tiled_kernel", "fused_kernel256", "fused_kernel128", "T emu", "T w-exact", "T acc32", "T exact", "F emu", "F w-exact", "F acc32", "F exact", "F emu ch128"];
+    let names = [
+        "tiled_kernel",
+        "fused_kernel256",
+        "fused_kernel128",
+        "T emu",
+        "T w-exact",
+        "T acc32",
+        "T exact",
+        "F emu",
+        "F w-exact",
+        "F acc32",
+        "F exact",
+        "F emu ch128",
+    ];
     let mut sum32 = vec![0f64; names.len()];
     let mut sum16 = vec![0f64; names.len()];
     let (mut spread, mut vabs, mut oabs) = (0f64, 0f64, 0f64);
@@ -299,7 +435,12 @@ fn mini_fused_precision_probe() {
         let r32 = ref64(&c.q, &c.k, &c.v, c.n, c.hd, c.scale);
         let q16: Vec<f32> = f16v(&c.q).iter().map(|&h| h2f(h) as f32).collect();
         let r16q = ref64(&q16, &c.k, &c.v, c.n, c.hd, c.scale);
-        let kb = |w16, acc16, fused, ch| Knobs { w16, acc16, fused, ch };
+        let kb = |w16, acc16, fused, ch| Knobs {
+            w16,
+            acc16,
+            fused,
+            ch,
+        };
         let outs = [
             tiled_kernel(c, 512),
             fused_kernel(c, 512, 256),
@@ -318,15 +459,33 @@ fn mini_fused_precision_probe() {
             sum32[i] += rel(o, &r32);
             sum16[i] += rel(o, &r16q);
         }
-        let s: Vec<f64> = (0..c.n).map(|p| (0..c.hd).map(|j| c.q[j] as f64 * c.k[p * c.hd + j] as f64).sum::<f64>() * c.scale as f64).collect();
-        spread += s.iter().cloned().fold(f64::MIN, f64::max) - s.iter().cloned().fold(f64::MAX, f64::min);
+        let s: Vec<f64> = (0..c.n)
+            .map(|p| {
+                (0..c.hd)
+                    .map(|j| c.q[j] as f64 * c.k[p * c.hd + j] as f64)
+                    .sum::<f64>()
+                    * c.scale as f64
+            })
+            .collect();
+        spread +=
+            s.iter().cloned().fold(f64::MIN, f64::max) - s.iter().cloned().fold(f64::MAX, f64::min);
         vabs += (c.v.iter().map(|&x| (x * x) as f64).sum::<f64>() / c.v.len() as f64).sqrt();
         oabs += (r32.iter().map(|x| x * x).sum::<f64>() / r32.len() as f64).sqrt();
     }
     let m = caps.len() as f64;
-    println!("{} captures: mean score spread {:.3e}, V rms {:.3e}, out rms {:.3e}", caps.len(), spread / m, vabs / m, oabs / m);
+    println!(
+        "{} captures: mean score spread {:.3e}, V rms {:.3e}, out rms {:.3e}",
+        caps.len(),
+        spread / m,
+        vabs / m,
+        oabs / m
+    );
     for (i, nm) in names.iter().enumerate() {
-        println!("  {nm:>16}: rel L2 vs ref(f32 q) {:.3e}  vs ref(f16 q) {:.3e}", sum32[i] / m, sum16[i] / m);
+        println!(
+            "  {nm:>16}: rel L2 vs ref(f32 q) {:.3e}  vs ref(f16 q) {:.3e}",
+            sum32[i] / m,
+            sum16[i] / m
+        );
     }
     let mean = |v: &[f64]| v[..].iter().sum::<f64>() / m;
     let (t, f256, f128) = (mean(&sum32[0..1]), mean(&sum32[1..2]), mean(&sum32[2..3]));
@@ -334,7 +493,11 @@ fn mini_fused_precision_probe() {
     // the error is the f16 V^T p accumulation (shared with ggml's FA-off path), not the f16
     // weights, the query rounding or the chunk merge
     for (emu_i, w_i, acc_i) in [(3, 4, 5), (7, 8, 9)] {
-        assert!(sum32[acc_i] < sum32[emu_i] / 3.0 && sum32[w_i] > sum32[emu_i] * 0.9, "step attribution changed: {:?}", &sum32[..]);
+        assert!(
+            sum32[acc_i] < sum32[emu_i] / 3.0 && sum32[w_i] > sum32[emu_i] * 0.9,
+            "step attribution changed: {:?}",
+            &sum32[..]
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }

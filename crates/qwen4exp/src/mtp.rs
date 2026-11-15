@@ -64,7 +64,13 @@ impl Default for MtpConfig {
     fn default() -> Self {
         // [E] costs: verify w tokens ~ 1 + 0.25 (w - 1) of a decode (shared dense pass, union of experts),
         // head step ~ 0.06 (one block + 32K-row output). Replace with Codex's timings.
-        MtpConfig { max_depth: 3, floor: 0.3, ewma: 0.05, verify_cost: vec![1.0, 1.25, 1.5, 1.75], draft_cost: 0.06 }
+        MtpConfig {
+            max_depth: 3,
+            floor: 0.3,
+            ewma: 0.05,
+            verify_cost: vec![1.0, 1.25, 1.5, 1.75],
+            draft_cost: 0.06,
+        }
     }
 }
 
@@ -118,7 +124,15 @@ pub fn accept(drafts: &[i32], rows: &[Vec<f32>]) -> (usize, i32) {
 impl MtpDriver {
     pub fn new(cfg: MtpConfig) -> MtpDriver {
         let n = cfg.max_depth;
-        MtpDriver { surv: vec![0.8; n], stats: MtpStats { pos_proposed: vec![0; n], pos_accepted: vec![0; n], ..Default::default() }, cfg }
+        MtpDriver {
+            surv: vec![0.8; n],
+            stats: MtpStats {
+                pos_proposed: vec![0; n],
+                pos_accepted: vec![0; n],
+                ..Default::default()
+            },
+            cfg,
+        }
     }
 
     /// Depth that maximises expected committed tokens per unit cost under the survival estimates.
@@ -143,7 +157,11 @@ impl MtpDriver {
     /// `e` is both the target and the head (they share one graph context in the engine).
     pub fn cycle<E: Target + Draft>(&mut self, e: &mut E, t: i32) -> Result<Vec<i32>, String> {
         let k = self.depth();
-        let props = if k > 0 { e.propose(t, k, self.cfg.floor)? } else { Vec::new() };
+        let props = if k > 0 {
+            e.propose(t, k, self.cfg.floor)?
+        } else {
+            Vec::new()
+        };
         let mut drafts: Vec<i32> = Vec::new();
         for &(tok, p) in &props {
             if p < self.cfg.floor {
@@ -157,7 +175,11 @@ impl MtpDriver {
         toks.extend_from_slice(&drafts);
         let rows = e.verify(&toks)?;
         if rows.logits.len() != toks.len() || rows.h.len() != toks.len() {
-            return Err(format!("verify returned {} rows for {} tokens", rows.logits.len(), toks.len()));
+            return Err(format!(
+                "verify returned {} rows for {} tokens",
+                rows.logits.len(),
+                toks.len()
+            ));
         }
         let (n_acc, bonus) = accept(&drafts, &rows.logits);
         e.commit(n_acc + 1)?;
@@ -209,7 +231,10 @@ mod tests {
                 logits.push(onehot(self.seq[self.pos + i + 1]));
             }
             self.pending = toks.len();
-            Ok(Rows { h: vec![vec![0.0]; toks.len()], logits })
+            Ok(Rows {
+                h: vec![vec![0.0]; toks.len()],
+                logits,
+            })
         }
         fn commit(&mut self, m: usize) -> Result<(), String> {
             assert!(m >= 1 && m <= self.pending);
@@ -231,11 +256,19 @@ mod tests {
             Ok(())
         }
         fn propose(&mut self, _t: i32, k: usize, _floor: f32) -> Result<Vec<(i32, f32)>, String> {
-            Ok((0..k).map(|i| {
-                let want = self.seq[self.pos + i + 1];
-                (if self.good.get(i).copied().unwrap_or(false) { want } else { (want + 1) % V as i32 }, self.prob)
-            })
-            .collect())
+            Ok((0..k)
+                .map(|i| {
+                    let want = self.seq[self.pos + i + 1];
+                    (
+                        if self.good.get(i).copied().unwrap_or(false) {
+                            want
+                        } else {
+                            (want + 1) % V as i32
+                        },
+                        self.prob,
+                    )
+                })
+                .collect())
         }
         fn rewind(&mut self) -> Result<(), String> {
             Ok(())
@@ -268,7 +301,20 @@ mod tests {
 
     fn run(good: Vec<bool>, prob: f32, cfg: MtpConfig) -> (Vec<i32>, Vec<i32>, MtpStats, usize) {
         let seq: Vec<i32> = (0..400).map(|i| ((i * 7 + 3) % V) as i32).collect();
-        let mut e = Both { tgt: SeqTarget { seq: seq.clone(), pos: 0, pending: 0, verifies: 0 }, head: PatHead { seq: seq.clone(), pos: 0, good, prob } };
+        let mut e = Both {
+            tgt: SeqTarget {
+                seq: seq.clone(),
+                pos: 0,
+                pending: 0,
+                verifies: 0,
+            },
+            head: PatHead {
+                seq: seq.clone(),
+                pos: 0,
+                good,
+                prob,
+            },
+        };
         let mut d = MtpDriver::new(cfg);
         let mut got = vec![seq[0]];
         while got.len() < 300 {
@@ -282,7 +328,12 @@ mod tests {
 
     #[test]
     fn output_equals_greedy_whatever_the_head_does() {
-        for good in [vec![true, true, true], vec![true, false, true], vec![false, false, false], vec![true, true, false]] {
+        for good in [
+            vec![true, true, true],
+            vec![true, false, true],
+            vec![false, false, false],
+            vec![true, true, false],
+        ] {
             let (got, want, st, _) = run(good.clone(), 0.9, MtpConfig::default());
             assert_eq!(got, want, "{good:?}");
             assert_eq!(st.committed, st.accepted + st.cycles);
@@ -314,14 +365,24 @@ mod tests {
     // ---- a stateful mini model (FLASH-MTP): every row depends on ALL tokens fed so far, so a draft that is not
     // rolled back exactly, or a commit of the wrong width, changes every later token ----
     fn mix(s: u64, t: i32) -> u64 {
-        let mut x = (s ^ (t as u64).wrapping_mul(0x9E3779B97F4A7C15)).wrapping_add(0xD1B54A32D192ED03);
+        let mut x =
+            (s ^ (t as u64).wrapping_mul(0x9E3779B97F4A7C15)).wrapping_add(0xD1B54A32D192ED03);
         x ^= x >> 29;
         x = x.wrapping_mul(0xBF58476D1CE4E5B9);
         x ^ (x >> 32)
     }
     fn mini_row(s: u64) -> Vec<f32> {
         // dense logits (not one-hot) with a unique maximum, derived from the state bits
-        (0..V).map(|i| ((mix(s, i as i32) >> 40) as f32) + if i as u64 == (s >> 9) % V as u64 { 3.0e7 } else { 0.0 }).collect()
+        (0..V)
+            .map(|i| {
+                ((mix(s, i as i32) >> 40) as f32)
+                    + if i as u64 == (s >> 9) % V as u64 {
+                        3.0e7
+                    } else {
+                        0.0
+                    }
+            })
+            .collect()
     }
     fn h_of(s: u64) -> Vec<f32> {
         vec![f32::from_bits(s as u32), f32::from_bits((s >> 32) as u32)]
@@ -384,7 +445,11 @@ mod tests {
             let mut out = Vec::new();
             for _ in 0..k {
                 let right = argmax(&mini_row(s));
-                let d = if self.n % self.wrong_every == self.wrong_every - 1 { (right + 1) % V as i32 } else { right };
+                let d = if self.n % self.wrong_every == self.wrong_every - 1 {
+                    (right + 1) % V as i32
+                } else {
+                    right
+                };
                 self.n += 1;
                 out.push((d, 0.9));
                 s = mix(s, d);
@@ -427,7 +492,11 @@ mod tests {
         for seed in [1u64, 0xFEED, 0x1234_5678_9ABC] {
             let t0 = (seed % V as u64) as i32;
             // plain
-            let mut p = MiniTarget { state: seed, snaps: Vec::new(), rollbacks: 0 };
+            let mut p = MiniTarget {
+                state: seed,
+                snaps: Vec::new(),
+                rollbacks: 0,
+            };
             let mut plain = vec![t0];
             let mut states = vec![seed];
             while plain.len() < N {
@@ -437,8 +506,23 @@ mod tests {
             }
             for depth in 1..=3usize {
                 for wrong_every in [2usize, 3, 7, 1_000_000] {
-                    let mut e = Mini { tgt: MiniTarget { state: seed, snaps: Vec::new(), rollbacks: 0 }, head: MiniHead { pending: seed, n: 0, wrong_every } };
-                    let cfg = MtpConfig { max_depth: depth, verify_cost: (0..=depth).map(|i| 1.0 + 0.25 * i as f32).collect(), ..MtpConfig::default() };
+                    let mut e = Mini {
+                        tgt: MiniTarget {
+                            state: seed,
+                            snaps: Vec::new(),
+                            rollbacks: 0,
+                        },
+                        head: MiniHead {
+                            pending: seed,
+                            n: 0,
+                            wrong_every,
+                        },
+                    };
+                    let cfg = MtpConfig {
+                        max_depth: depth,
+                        verify_cost: (0..=depth).map(|i| 1.0 + 0.25 * i as f32).collect(),
+                        ..MtpConfig::default()
+                    };
                     let mut d = MtpDriver::new(cfg);
                     let mut got = vec![t0];
                     while got.len() < N {
@@ -448,19 +532,37 @@ mod tests {
                         got.extend(c);
                         // the state after every cycle is the plain state at that position (evaluated = got.len() - 1)
                         if got.len() <= N {
-                            assert_eq!(e.tgt.state, states[got.len() - 1], "state after {} tokens (depth {depth})", got.len() - 1);
+                            assert_eq!(
+                                e.tgt.state,
+                                states[got.len() - 1],
+                                "state after {} tokens (depth {depth})",
+                                got.len() - 1
+                            );
                         }
                     }
                     got.truncate(N);
-                    assert_eq!(got, plain, "seed {seed:x} depth {depth} wrong_every {wrong_every}");
+                    assert_eq!(
+                        got, plain,
+                        "seed {seed:x} depth {depth} wrong_every {wrong_every}"
+                    );
                     let st = &d.stats;
                     assert_eq!(st.committed, st.accepted + st.cycles);
                     if wrong_every < 100 {
-                        assert!(e.tgt.rollbacks > 0, "no rollback exercised (depth {depth}, wrong_every {wrong_every})");
-                        assert!(st.accepted > 0, "no draft accepted (depth {depth}, wrong_every {wrong_every})");
+                        assert!(
+                            e.tgt.rollbacks > 0,
+                            "no rollback exercised (depth {depth}, wrong_every {wrong_every})"
+                        );
+                        assert!(
+                            st.accepted > 0,
+                            "no draft accepted (depth {depth}, wrong_every {wrong_every})"
+                        );
                     } else {
                         assert_eq!(e.tgt.rollbacks, 0);
-                        assert!(st.tokens_per_verify() > 1.0 + 0.9 * depth as f64, "{}", st.tokens_per_verify());
+                        assert!(
+                            st.tokens_per_verify() > 1.0 + 0.9 * depth as f64,
+                            "{}",
+                            st.tokens_per_verify()
+                        );
                     }
                 }
             }

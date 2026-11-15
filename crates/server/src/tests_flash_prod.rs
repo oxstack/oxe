@@ -18,7 +18,12 @@ const U: usize = 16;
 /// The Flash message layout: messages at 0, 400 (first user), 900 (last user, the query); the
 /// prompt has 1000 tokens, so its last token is at 999 (the single-token decode-step call).
 fn flash_params() -> GenParams {
-    GenParams { first_user: Some(400), query_start: true, msg_starts: vec![0, 400, 900], ..greedy() }
+    GenParams {
+        first_user: Some(400),
+        query_start: true,
+        msg_starts: vec![0, 400, 900],
+        ..greedy()
+    }
 }
 
 /// Cancel mid-prefill under msg_split with a small cancel ubatch, then a retry on the same worker.
@@ -39,19 +44,33 @@ fn flash_msg_split_cancel_resumes_on_schedule() {
     let mut reference = Worker::new(StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), 4);
     reference.ubatch = U;
     reference.msg_split = true;
-    let ref_tokens = reference.generate(&tok, &prompt, &gp, &mut |_| true).unwrap().tokens;
+    let ref_tokens = reference
+        .generate(&tok, &prompt, &gp, &mut |_| true)
+        .unwrap()
+        .tokens;
     let ref_calls = prefills(&reference.engine.calls, 0);
     // cancelled run
     let flag = Arc::new(AtomicBool::new(false));
-    let eng = CancelStub { inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), flag: flag.clone(), at: 3, calls: 0 };
+    let eng = CancelStub {
+        inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()),
+        flag: flag.clone(),
+        at: 3,
+        calls: 0,
+    };
     let mut w = Worker::new(eng, 4);
     w.ubatch = U;
     w.msg_split = true;
     let mut cgp = gp.clone();
     cgp.cancel = Some(flag.clone());
-    assert!(matches!(w.generate(&tok, &prompt, &cgp, &mut |_| true), Err(GenError::Cancelled)));
+    assert!(matches!(
+        w.generate(&tok, &prompt, &cgp, &mut |_| true),
+        Err(GenError::Cancelled)
+    ));
     let stop = 3 * U * CANCEL_UBATCHES;
-    assert_eq!(w.engine.inner.tokens, w.cache.tokens, "engine and cache agree after a cancel");
+    assert_eq!(
+        w.engine.inner.tokens, w.cache.tokens,
+        "engine and cache agree after a cancel"
+    );
     assert_eq!(w.cache.tokens.len(), stop, "stopped at the 3rd cut");
     assert_eq!(w.cache.tokens[..], prompt[..stop]);
     // retry: the live partial prefill is a prefix of the prompt, so it is resumed whole
@@ -81,16 +100,30 @@ fn flash_msg_split_cancel_cut_never_moves_a_chunk_boundary() {
     let mut w = Worker::new(StubEngine::new(4096, tok.n_vocab(), eos, script), 4);
     w.ubatch = U;
     w.msg_split = true;
-    w.generate(&tok, &prompt, &flash_params(), &mut |_| true).unwrap();
-    let calls: Vec<(usize, usize)> = prefills(&w.engine.calls, 0).into_iter().filter(|c| c.0 != 999).collect();
+    w.generate(&tok, &prompt, &flash_params(), &mut |_| true)
+        .unwrap();
+    let calls: Vec<(usize, usize)> = prefills(&w.engine.calls, 0)
+        .into_iter()
+        .filter(|c| c.0 != 999)
+        .collect();
     // every prompt token before the last one is prefilled once
     assert_eq!(calls.iter().map(|c| c.1).sum::<usize>(), 999);
     let step = U * CANCEL_UBATCHES;
     let segs = [(0usize, 400usize), (400, 900), (900, 999)];
     for &(start, n) in &calls {
-        let &(s, e) = segs.iter().find(|&&(s, e)| start >= s && start < e).expect("call outside every segment");
-        assert!(start + n <= e, "call ({start}, {n}) crosses the message start {e}");
-        assert_eq!((start - s) % step, 0, "call at {start} is off the cut grid of the segment at {s}");
+        let &(s, e) = segs
+            .iter()
+            .find(|&&(s, e)| start >= s && start < e)
+            .expect("call outside every segment");
+        assert!(
+            start + n <= e,
+            "call ({start}, {n}) crosses the message start {e}"
+        );
+        assert_eq!(
+            (start - s) % step,
+            0,
+            "call at {start} is off the cut grid of the segment at {s}"
+        );
     }
 }
 
@@ -106,7 +139,12 @@ fn flash_cancel_then_other_request_then_retry_msg_split() {
     let script = tok.encode("a reply of a few tokens", false, true);
     let prompt: Vec<u32> = (0..1000u32).map(|i| 100 + i % 5000).collect();
     let flag = Arc::new(AtomicBool::new(false));
-    let eng = CancelStub { inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), flag: flag.clone(), at: 5, calls: 0 };
+    let eng = CancelStub {
+        inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()),
+        flag: flag.clone(),
+        at: 5,
+        calls: 0,
+    };
     let mut w = Worker::new(eng, 8);
     w.ubatch = U;
     w.msg_split = true;
@@ -114,7 +152,10 @@ fn flash_cancel_then_other_request_then_retry_msg_split() {
     w.cache.park_min = 64;
     let mut gp = greedy();
     gp.cancel = Some(flag.clone());
-    assert!(matches!(w.generate(&tok, &prompt, &gp, &mut |_| true), Err(GenError::Cancelled)));
+    assert!(matches!(
+        w.generate(&tok, &prompt, &gp, &mut |_| true),
+        Err(GenError::Cancelled)
+    ));
     let partial = w.cache.tokens.len();
     assert!(partial >= 64, "partial prefill of {partial} tokens");
     // the user's next, unrelated short request
@@ -122,7 +163,11 @@ fn flash_cancel_then_other_request_then_retry_msg_split() {
     w.engine.at = usize::MAX;
     let short: Vec<u32> = (0..20u32).map(|i| 7000 + i).collect();
     w.generate(&tok, &short, &gp, &mut |_| true).unwrap();
-    assert_eq!(w.cache.parked_lengths(), vec![partial], "the partial session was parked");
+    assert_eq!(
+        w.cache.parked_lengths(),
+        vec![partial],
+        "the partial session was parked"
+    );
     // the retry resumes the partial prefill
     let r = w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
     assert_eq!(r.timings.cache_n, partial);
@@ -136,9 +181,32 @@ fn flash_cancel_then_other_request_then_retry_msg_split() {
 #[ignore = "needs the Ornith GGUF (tokenizer/template) in ~/.local/share/ai-stack/models/llm; run with --include-ignored where it exists"]
 fn ledger_writes_one_numeric_line_per_generation() {
     const ALLOWED: &[&str] = &[
-        "t", "n_prompt", "cache_n", "cache_src", "prompt_n", "prompt_ms", "predicted_n", "predicted_ms", "stop", "draft_n",
-        "draft_n_accepted", "parks", "unparks", "park_ms", "unpark_ms", "park_evictions", "checkpoints", "parked", "parked_mib", "resume_src", "resume_ms",
-        "queue_ms", "render_ms", "tokenize_ms", "restore_ms", "ckpt_ms",
+        "t",
+        "n_prompt",
+        "cache_n",
+        "cache_src",
+        "prompt_n",
+        "prompt_ms",
+        "predicted_n",
+        "predicted_ms",
+        "stop",
+        "draft_n",
+        "draft_n_accepted",
+        "parks",
+        "unparks",
+        "park_ms",
+        "unpark_ms",
+        "park_evictions",
+        "checkpoints",
+        "parked",
+        "parked_mib",
+        "resume_src",
+        "resume_ms",
+        "queue_ms",
+        "render_ms",
+        "tokenize_ms",
+        "restore_ms",
+        "ckpt_ms",
     ];
     let Some(m) = model() else { return };
     let tok = tokenizer::Tokenizer::from_gguf(m).unwrap();
@@ -146,22 +214,44 @@ fn ledger_writes_one_numeric_line_per_generation() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("ledger.jsonl");
     let mut w = stub_worker(&tok, 8);
-    w.ledger = Some(std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap());
+    w.ledger = Some(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap(),
+    );
     let p1: Vec<u32> = (100..140).collect();
-    w.generate(&tok, &p1, &flash_params_small(), &mut |_| true).unwrap();
+    w.generate(&tok, &p1, &flash_params_small(), &mut |_| true)
+        .unwrap();
     let mut p2 = p1[..19].to_vec();
     p2.extend(300..321);
-    let r2 = w.generate(&tok, &p2, &flash_params_small(), &mut |_| true).unwrap();
+    let r2 = w
+        .generate(&tok, &p2, &flash_params_small(), &mut |_| true)
+        .unwrap();
     assert!(r2.timings.cache_n > 0);
     drop(w);
     let text = std::fs::read_to_string(&path).unwrap();
-    let lines: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
     assert_eq!(lines.len(), 2, "{text}");
     for line in &lines {
         for k in line.as_object().unwrap().keys() {
-            assert!(ALLOWED.contains(&k.as_str()), "unexpected ledger key {k}: {line}");
+            assert!(
+                ALLOWED.contains(&k.as_str()),
+                "unexpected ledger key {k}: {line}"
+            );
         }
-        for k in ["n_prompt", "cache_n", "prompt_n", "prompt_ms", "predicted_n", "predicted_ms"] {
+        for k in [
+            "n_prompt",
+            "cache_n",
+            "prompt_n",
+            "prompt_ms",
+            "predicted_n",
+            "predicted_ms",
+        ] {
             assert!(line[k].is_number(), "{k} is not a number: {line}");
         }
         assert!(line["stop"].is_string(), "{line}");
@@ -173,7 +263,12 @@ fn ledger_writes_one_numeric_line_per_generation() {
 /// The message layout of `msg_split_resident_second_question` (anchor 17, query 30), for the ledger
 /// test: GenParams with the same hints on both requests.
 fn flash_params_small() -> GenParams {
-    GenParams { first_user: Some(17), query_start: true, msg_starts: vec![0, 17, 30], ..greedy() }
+    GenParams {
+        first_user: Some(17),
+        query_start: true,
+        msg_starts: vec![0, 17, 30],
+        ..greedy()
+    }
 }
 
 /// A cancelled generation returns before the ledger write (the line is written only at the end of
@@ -190,13 +285,27 @@ fn cancelled_generation_writes_no_ledger_line() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("ledger.jsonl");
     let flag = Arc::new(AtomicBool::new(false));
-    let eng = CancelStub { inner: StubEngine::new(4096, tok.n_vocab(), eos, script), flag: flag.clone(), at: 3, calls: 0 };
+    let eng = CancelStub {
+        inner: StubEngine::new(4096, tok.n_vocab(), eos, script),
+        flag: flag.clone(),
+        at: 3,
+        calls: 0,
+    };
     let mut w = Worker::new(eng, 4);
     w.ubatch = U;
-    w.ledger = Some(std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap());
+    w.ledger = Some(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap(),
+    );
     let mut gp = greedy();
     gp.cancel = Some(flag.clone());
-    assert!(matches!(w.generate(&tok, &prompt, &gp, &mut |_| true), Err(GenError::Cancelled)));
+    assert!(matches!(
+        w.generate(&tok, &prompt, &gp, &mut |_| true),
+        Err(GenError::Cancelled)
+    ));
     drop(w);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
     let _ = std::fs::remove_dir_all(&dir);
@@ -230,7 +339,9 @@ impl crate::engine::Engine for FailStub {
         self.calls += 1;
         if self.calls == self.at {
             self.inner.prefill(t)?;
-            return Err(crate::engine::EngineError("flash: expert read failed".into()));
+            return Err(crate::engine::EngineError(
+                "flash: expert read failed".into(),
+            ));
         }
         self.inner.prefill(t)
     }
@@ -238,7 +349,9 @@ impl crate::engine::Engine for FailStub {
         self.calls += 1;
         if self.calls == self.at {
             self.inner.decode(t)?;
-            return Err(crate::engine::EngineError("flash: expert read failed".into()));
+            return Err(crate::engine::EngineError(
+                "flash: expert read failed".into(),
+            ));
         }
         self.inner.decode(t)
     }
@@ -264,26 +377,50 @@ fn engine_error_mid_prefill_drops_the_state_and_the_retry_starts_clean() {
     let prompt: Vec<u32> = (0..1000u32).map(|i| 100 + i % 5000).collect();
     for msg_split in [true, false] {
         let gp = if msg_split { flash_params() } else { greedy() };
-        let mut reference = Worker::new(StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), 4);
+        let mut reference =
+            Worker::new(StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), 4);
         reference.ubatch = U;
         reference.msg_split = msg_split;
-        let ref_tokens = reference.generate(&tok, &prompt, &gp, &mut |_| true).unwrap().tokens;
+        let ref_tokens = reference
+            .generate(&tok, &prompt, &gp, &mut |_| true)
+            .unwrap()
+            .tokens;
         // the 3rd prefill call advances the engine to 96 tokens and fails; the cache knows 64
-        let eng = FailStub { inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), at: 3, calls: 0 };
+        let eng = FailStub {
+            inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()),
+            at: 3,
+            calls: 0,
+        };
         let mut w = Worker::new(eng, 4);
         w.ubatch = U;
         w.msg_split = msg_split;
-        assert!(matches!(w.generate(&tok, &prompt, &gp, &mut |_| true), Err(GenError::Engine(_))));
-        assert!(w.engine.inner.tokens.is_empty(), "engine reset after the error ({msg_split})");
-        assert!(w.cache.tokens.is_empty(), "cache reset after the error ({msg_split})");
+        assert!(matches!(
+            w.generate(&tok, &prompt, &gp, &mut |_| true),
+            Err(GenError::Engine(_))
+        ));
+        assert!(
+            w.engine.inner.tokens.is_empty(),
+            "engine reset after the error ({msg_split})"
+        );
+        assert!(
+            w.cache.tokens.is_empty(),
+            "cache reset after the error ({msg_split})"
+        );
         assert_eq!(crate::engine::Engine::n_past(&w.engine), 0);
         // retry: nothing is reused, the reply is the undisturbed one
         w.engine.at = usize::MAX;
         let mark = w.engine.inner.calls.len();
         let r = w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
-        assert_eq!(r.timings.cache_n, 0, "no continuation on the failed chunk ({msg_split})");
+        assert_eq!(
+            r.timings.cache_n, 0,
+            "no continuation on the failed chunk ({msg_split})"
+        );
         assert_eq!(r.tokens, ref_tokens);
-        assert_eq!(prefills(&w.engine.inner.calls, mark)[0].0, 0, "the retry prefills from position 0");
+        assert_eq!(
+            prefills(&w.engine.inner.calls, mark)[0].0,
+            0,
+            "the retry prefills from position 0"
+        );
     }
 }
 
@@ -301,17 +438,42 @@ fn engine_error_mid_decode_drops_the_state() {
     let mut reference = Worker::new(StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), 4);
     reference.ubatch = U;
     reference.msg_split = true;
-    let ref_tokens = reference.generate(&tok, &prompt, &gp, &mut |_| true).unwrap().tokens;
+    let ref_tokens = reference
+        .generate(&tok, &prompt, &gp, &mut |_| true)
+        .unwrap()
+        .tokens;
     // FailStub counts prefill and decode calls only
-    let n_calls = reference.engine.calls.iter().filter(|c| c.0 == "prefill" || c.0 == "decode").count();
-    assert_eq!(reference.engine.calls.iter().filter(|c| c.0 == "decode").count() >= 2, true, "at least two decode steps");
+    let n_calls = reference
+        .engine
+        .calls
+        .iter()
+        .filter(|c| c.0 == "prefill" || c.0 == "decode")
+        .count();
+    assert_eq!(
+        reference
+            .engine
+            .calls
+            .iter()
+            .filter(|c| c.0 == "decode")
+            .count()
+            >= 2,
+        true,
+        "at least two decode steps"
+    );
     assert!(ref_tokens.len() >= 3, "the script decodes a few tokens");
     // fail on the second-to-last engine call of the request: inside the decode loop
-    let eng = FailStub { inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()), at: n_calls - 1, calls: 0 };
+    let eng = FailStub {
+        inner: StubEngine::new(4096, tok.n_vocab(), eos, script.clone()),
+        at: n_calls - 1,
+        calls: 0,
+    };
     let mut w = Worker::new(eng, 4);
     w.ubatch = U;
     w.msg_split = true;
-    assert!(matches!(w.generate(&tok, &prompt, &gp, &mut |_| true), Err(GenError::Engine(_))));
+    assert!(matches!(
+        w.generate(&tok, &prompt, &gp, &mut |_| true),
+        Err(GenError::Engine(_))
+    ));
     assert!(w.engine.inner.tokens.is_empty() && w.cache.tokens.is_empty());
     w.engine.at = usize::MAX;
     let r = w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
@@ -321,5 +483,10 @@ fn engine_error_mid_decode_drops_the_state() {
 
 /// Messages at 0, 50 (first user) and 150 (the query) of a 200-token prompt.
 fn flash_params_short() -> GenParams {
-    GenParams { first_user: Some(50), query_start: true, msg_starts: vec![0, 50, 150], ..greedy() }
+    GenParams {
+        first_user: Some(50),
+        query_start: true,
+        msg_starts: vec![0, 50, 150],
+        ..greedy()
+    }
 }

@@ -43,21 +43,21 @@
 //!
 //! Common: --cpu-list 0-7 (default) | --threads N (cpus 0..N), --ctx 4096, --weights file|anon,
 //! --verify sample|full|none, --cache-dir D, --thp-collapse, --profile, --out FILE (bench JSON).
-#[cfg(feature="f32-reference")]
-#[path="../f32_proof.rs"]
-mod f32_proof;
-#[cfg(feature="f32-reference")]
-#[path="../fused_ref_cmd.rs"]
-mod fused_ref_cmd;
-#[cfg(feature="npu-device")]
-#[path="../expert_dma.rs"]
+#[cfg(feature = "npu-device")]
+#[path = "../expert_dma.rs"]
 mod expert_dma;
-#[cfg(feature="npu-device")]
-#[path="../expert_price.rs"]
+#[cfg(feature = "npu-device")]
+#[path = "../expert_price.rs"]
 mod expert_price;
+#[cfg(feature = "f32-reference")]
+#[path = "../f32_proof.rs"]
+mod f32_proof;
+#[cfg(feature = "f32-reference")]
+#[path = "../fused_ref_cmd.rs"]
+mod fused_ref_cmd;
 use model::engine::{tick_hz, Engine, EngineConfig, EngineOptions, StateDump};
-use model::mtp::{MtpDriver, MtpStats, MtpWeights};
 use model::load::{memory_report, open};
+use model::mtp::{MtpDriver, MtpStats, MtpWeights};
 use model::plan::PhaseKind;
 use model::weights::{Backing, LoadOptions, Verify};
 use sched::{parse_cpu_list, Pool};
@@ -69,7 +69,18 @@ use std::time::{Duration, Instant};
 
 /// Options that take no value (`--name`). Every boolean the commands read with `Args::flag` must be listed
 /// here (scanned by the test below), or the parser would swallow the next argument as its value (`bool_flags_cover_every_flag_read`).
-const BOOL_FLAGS: &[&str] = &["profile", "thp-collapse", "all", "logits", "batched-prompt", "mlock", "state-hash", "check-args", "dry-run", "plain-steps"];
+const BOOL_FLAGS: &[&str] = &[
+    "profile",
+    "thp-collapse",
+    "all",
+    "logits",
+    "batched-prompt",
+    "mlock",
+    "state-hash",
+    "check-args",
+    "dry-run",
+    "plain-steps",
+];
 
 struct Args {
     cmd: String,
@@ -92,12 +103,17 @@ impl Args {
         let mut i = 0;
         while i < rest.len() {
             let a = &rest[i];
-            let Some(k) = a.strip_prefix("--") else { die(&format!("unexpected argument {a}")) };
+            let Some(k) = a.strip_prefix("--") else {
+                die(&format!("unexpected argument {a}"))
+            };
             if BOOL_FLAGS.contains(&k) {
                 flags.push(k.to_string());
                 i += 1;
             } else {
-                let v = rest.get(i + 1).unwrap_or_else(|| die(&format!("--{k} needs a value"))).clone();
+                let v = rest
+                    .get(i + 1)
+                    .unwrap_or_else(|| die(&format!("--{k} needs a value")))
+                    .clone();
                 kv.insert(k.to_string(), v);
                 i += 2;
             }
@@ -110,18 +126,107 @@ impl Args {
     /// mistyped `--weights anon` would run file-backed). Keep KNOWN in step with new options.
     fn check_known(&self) -> ! {
         const KNOWN: &[&str] = &[
-            "layer", "shared-experts", "tensor", "npu-overlap", "npu-recurrent", "npu-recurrent-mask", "npu-audit", "teacher-ids", "split-last", "reference-mode", "f32-greedy", "npu-prefill", "npu-go-file", "arms", "secs", "sets", "rows", "work", "cache-dir", "cpu-list", "ctx", "depths", "draft", "draft-k", "draft-vocab", "drop", "dump-pos", "files-from", "gen",
-            "idle-spin-us", "json", "kv", "lanes", "load-threads", "model", "mtp-from", "n", "ours", "out", "pf-group", "pf-tiles", "pos",
-            "prefill", "prefix-len", "prefix-ids-file", "prompt-ids", "prompt-ids-file", "prompt-len", "state-file", "ref", "refs", "reps", "runs", "score", "spec-draft-n-max", "text-file",
-            "threads", "tokens", "trace-out", "ubatch", "verify", "warmup", "weights", "cmd",
-            "attn-out", "continuation-file", "ref-samples", "ref-ratio-max", "fused-chunk", "jump-threshold", "candidate", "control", "kld-factor", "top1-slack-pp",
+            "layer",
+            "shared-experts",
+            "tensor",
+            "npu-overlap",
+            "npu-recurrent",
+            "npu-recurrent-mask",
+            "npu-audit",
+            "teacher-ids",
+            "split-last",
+            "reference-mode",
+            "f32-greedy",
+            "npu-prefill",
+            "npu-go-file",
+            "arms",
+            "secs",
+            "sets",
+            "rows",
+            "work",
+            "cache-dir",
+            "cpu-list",
+            "ctx",
+            "depths",
+            "draft",
+            "draft-k",
+            "draft-vocab",
+            "drop",
+            "dump-pos",
+            "files-from",
+            "gen",
+            "idle-spin-us",
+            "json",
+            "kv",
+            "lanes",
+            "load-threads",
+            "model",
+            "mtp-from",
+            "n",
+            "ours",
+            "out",
+            "pf-group",
+            "pf-tiles",
+            "pos",
+            "prefill",
+            "prefix-len",
+            "prefix-ids-file",
+            "prompt-ids",
+            "prompt-ids-file",
+            "prompt-len",
+            "state-file",
+            "ref",
+            "refs",
+            "reps",
+            "runs",
+            "score",
+            "spec-draft-n-max",
+            "text-file",
+            "threads",
+            "tokens",
+            "trace-out",
+            "ubatch",
+            "verify",
+            "warmup",
+            "weights",
+            "cmd",
+            "attn-out",
+            "continuation-file",
+            "ref-samples",
+            "ref-ratio-max",
+            "fused-chunk",
+            "jump-threshold",
+            "candidate",
+            "control",
+            "kld-factor",
+            "top1-slack-pp",
         ];
-        let mut unknown: Vec<&String> = self.kv.keys().filter(|k| !KNOWN.contains(&k.as_str())).collect();
+        let mut unknown: Vec<&String> = self
+            .kv
+            .keys()
+            .filter(|k| !KNOWN.contains(&k.as_str()))
+            .collect();
         unknown.sort();
         // long values (prompt ids) are shown by length only
-        let kv: BTreeMap<&String, String> = self.kv.iter().map(|(k, v)| (k, if v.len() > 80 { format!("<{} bytes>", v.len()) } else { v.clone() })).collect();
+        let kv: BTreeMap<&String, String> = self
+            .kv
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    if v.len() > 80 {
+                        format!("<{} bytes>", v.len())
+                    } else {
+                        v.clone()
+                    },
+                )
+            })
+            .collect();
         let arms = self.kv.get("arms").map(|spec| parse_arms(spec)); // dies on a bad arm spec
-        println!("{}", json!({ "cmd": self.cmd, "options": kv, "flags": self.flags, "unknown_keys": unknown, "arms": arms }));
+        println!(
+            "{}",
+            json!({ "cmd": self.cmd, "options": kv, "flags": self.flags, "unknown_keys": unknown, "arms": arms })
+        );
         if !unknown.is_empty() {
             die("unknown options");
         }
@@ -131,7 +236,12 @@ impl Args {
         self.kv.get(k).map(|s| s.as_str())
     }
     fn num(&self, k: &str, d: usize) -> usize {
-        self.get(k).map(|v| v.parse().unwrap_or_else(|_| die(&format!("--{k}: not a number")))).unwrap_or(d)
+        self.get(k)
+            .map(|v| {
+                v.parse()
+                    .unwrap_or_else(|_| die(&format!("--{k}: not a number")))
+            })
+            .unwrap_or(d)
     }
     fn flag(&self, k: &str) -> bool {
         self.flags.iter().any(|f| f == k)
@@ -167,7 +277,10 @@ impl Args {
         }
     }
     fn model(&self) -> PathBuf {
-        PathBuf::from(self.get("model").unwrap_or_else(|| die("--model is required")))
+        PathBuf::from(
+            self.get("model")
+                .unwrap_or_else(|| die("--model is required")),
+        )
     }
 }
 
@@ -202,49 +315,76 @@ const COMMANDS: &[(&str, fn(&Args))] = &[
 
 // Feature-gated subcommands (text-encoder/NPU lane), wrapped so the N3 table stays complete.
 fn cmd_expert_price(_a: &Args) {
-    #[cfg(feature="npu-device")] if let Err(e)=expert_price::run(_a){die(&e);}
-    #[cfg(not(feature="npu-device"))] die("npu-device feature required");
+    #[cfg(feature = "npu-device")]
+    if let Err(e) = expert_price::run(_a) {
+        die(&e);
+    }
+    #[cfg(not(feature = "npu-device"))]
+    die("npu-device feature required");
 }
 fn cmd_expert_dma_check(_a: &Args) {
-    #[cfg(feature="npu-device")] if let Err(e)=expert_dma::run(_a){die(&e);}
-    #[cfg(not(feature="npu-device"))] die("npu-device feature required");
+    #[cfg(feature = "npu-device")]
+    if let Err(e) = expert_dma::run(_a) {
+        die(&e);
+    }
+    #[cfg(not(feature = "npu-device"))]
+    die("npu-device feature required");
 }
 fn cmd_f32_export(_a: &Args) {
-    #[cfg(feature="f32-reference")] f32_proof::export(_a);
-    #[cfg(not(feature="f32-reference"))] die("build with f32-reference feature");
+    #[cfg(feature = "f32-reference")]
+    f32_proof::export(_a);
+    #[cfg(not(feature = "f32-reference"))]
+    die("build with f32-reference feature");
 }
 fn cmd_f32_inspect_text(_a: &Args) {
-    #[cfg(feature="f32-reference")] f32_proof::inspect_text(_a);
-    #[cfg(not(feature="f32-reference"))] die("build with f32-reference feature");
+    #[cfg(feature = "f32-reference")]
+    f32_proof::inspect_text(_a);
+    #[cfg(not(feature = "f32-reference"))]
+    die("build with f32-reference feature");
 }
 fn cmd_f32_fixture_tokens(_a: &Args) {
-    #[cfg(feature="f32-reference")] f32_proof::fixture_tokens(_a);
-    #[cfg(not(feature="f32-reference"))] die("build with f32-reference feature");
+    #[cfg(feature = "f32-reference")]
+    f32_proof::fixture_tokens(_a);
+    #[cfg(not(feature = "f32-reference"))]
+    die("build with f32-reference feature");
 }
 fn cmd_f32_tensor_map(_a: &Args) {
-    #[cfg(feature="f32-reference")] f32_proof::tensor_map(_a);
-    #[cfg(not(feature="f32-reference"))] die("build with f32-reference feature");
+    #[cfg(feature = "f32-reference")]
+    f32_proof::tensor_map(_a);
+    #[cfg(not(feature = "f32-reference"))]
+    die("build with f32-reference feature");
 }
 fn cmd_f32_greedy_export(_a: &Args) {
-    #[cfg(feature="f32-reference")] f32_proof::greedy_export(_a);
-    #[cfg(not(feature="f32-reference"))] die("build with f32-reference feature");
+    #[cfg(feature = "f32-reference")]
+    f32_proof::greedy_export(_a);
+    #[cfg(not(feature = "f32-reference"))]
+    die("build with f32-reference feature");
 }
 fn cmd_fused_ref(_a: &Args) {
-    #[cfg(feature="f32-reference")] fused_ref_cmd::run(_a);
-    #[cfg(not(feature="f32-reference"))] die("build with f32-reference feature (bench only)");
+    #[cfg(feature = "f32-reference")]
+    fused_ref_cmd::run(_a);
+    #[cfg(not(feature = "f32-reference"))]
+    die("build with f32-reference feature (bench only)");
 }
 fn cmd_npu_greedy_check(_a: &Args) {
-    #[cfg(all(feature="f32-reference",feature="npu-prefill"))] f32_proof::greedy(_a);
-    #[cfg(not(all(feature="f32-reference",feature="npu-prefill")))] die("build with f32-reference,npu-prefill features");
+    #[cfg(all(feature = "f32-reference", feature = "npu-prefill"))]
+    f32_proof::greedy(_a);
+    #[cfg(not(all(feature = "f32-reference", feature = "npu-prefill")))]
+    die("build with f32-reference,npu-prefill features");
 }
 fn cmd_npu_f32_check(_a: &Args) {
-    #[cfg(all(feature="f32-reference",feature="npu-prefill"))] f32_proof::compare(_a);
-    #[cfg(not(all(feature="f32-reference",feature="npu-prefill")))] die("build with f32-reference,npu-prefill features");
+    #[cfg(all(feature = "f32-reference", feature = "npu-prefill"))]
+    f32_proof::compare(_a);
+    #[cfg(not(all(feature = "f32-reference", feature = "npu-prefill")))]
+    die("build with f32-reference,npu-prefill features");
 }
 
 fn usage_line() -> String {
     let names: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
-    format!("usage: oxe {} [options]  (see the source header or docs/lab-notes/M2.md)", names.join("|"))
+    format!(
+        "usage: oxe {} [options]  (see the source header or docs/lab-notes/M2.md)",
+        names.join("|")
+    )
 }
 
 fn usage() -> ! {
@@ -258,7 +398,10 @@ fn die(msg: &str) -> ! {
 }
 
 fn parse_ids(s: &str) -> Vec<u32> {
-    s.split(',').filter(|x| !x.trim().is_empty()).map(|x| x.trim().parse().unwrap_or_else(|_| die("bad token id"))).collect()
+    s.split(',')
+        .filter(|x| !x.trim().is_empty())
+        .map(|x| x.trim().parse().unwrap_or_else(|_| die("bad token id")))
+        .collect()
 }
 
 fn parse_range(s: &str) -> Vec<usize> {
@@ -273,12 +416,15 @@ fn parse_range(s: &str) -> Vec<usize> {
 }
 
 fn read_manifest(dir: &Path) -> serde_json::Value {
-    let s = std::fs::read_to_string(dir.join("manifest.json")).unwrap_or_else(|e| die(&format!("{}: {e}", dir.display())));
+    let s = std::fs::read_to_string(dir.join("manifest.json"))
+        .unwrap_or_else(|e| die(&format!("{}: {e}", dir.display())));
     serde_json::from_str(&s).unwrap_or_else(|e| die(&format!("manifest: {e}")))
 }
 
 fn ids_of(v: &serde_json::Value) -> Vec<u32> {
-    v.as_array().map(|a| a.iter().map(|x| x.as_u64().unwrap() as u32).collect()).unwrap_or_default()
+    v.as_array()
+        .map(|a| a.iter().map(|x| x.as_u64().unwrap() as u32).collect())
+        .unwrap_or_default()
 }
 
 /// Prompt tokens from --tokens or the oracle manifest of --ref.
@@ -298,7 +444,10 @@ type Tensors = Vec<(String, Vec<i64>, Vec<f32>)>;
 
 fn read_tensors(p: &Path) -> Tensors {
     let mut b = Vec::new();
-    std::fs::File::open(p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display()))).read_to_end(&mut b).unwrap();
+    std::fs::File::open(p)
+        .unwrap_or_else(|e| die(&format!("{}: {e}", p.display())))
+        .read_to_end(&mut b)
+        .unwrap();
     let mut out = Vec::new();
     let mut i = 0;
     let u32_at = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
@@ -310,13 +459,19 @@ fn read_tensors(p: &Path) -> Tensors {
         let ty = u32_at(&b, i);
         let nd = u32_at(&b, i + 4) as usize;
         i += 8;
-        let ne: Vec<i64> = (0..nd).map(|k| i64::from_le_bytes(b[i + 8 * k..i + 8 * k + 8].try_into().unwrap())).collect();
+        let ne: Vec<i64> = (0..nd)
+            .map(|k| i64::from_le_bytes(b[i + 8 * k..i + 8 * k + 8].try_into().unwrap()))
+            .collect();
         i += 8 * nd;
         let n: i64 = ne.iter().product();
         let mut v = Vec::with_capacity(n as usize);
         for k in 0..n as usize {
             let w = &b[i + 4 * k..i + 4 * k + 4];
-            v.push(if ty == 0 { f32::from_le_bytes(w.try_into().unwrap()) } else { i32::from_le_bytes(w.try_into().unwrap()) as f32 });
+            v.push(if ty == 0 {
+                f32::from_le_bytes(w.try_into().unwrap())
+            } else {
+                i32::from_le_bytes(w.try_into().unwrap()) as f32
+            });
         }
         i += 4 * n as usize;
         out.push((name, ne, v));
@@ -350,28 +505,47 @@ struct Setup {
 fn setup(a: &Args, n_ctx: usize) -> Setup {
     let cpus = a.cpus();
     let t0 = Instant::now();
-    let mut loaded = open(&a.model(), cpus.len(), n_ctx, &a.load_opts()).unwrap_or_else(|e| die(&e));
+    let mut loaded =
+        open(&a.model(), cpus.len(), n_ctx, &a.load_opts()).unwrap_or_else(|e| die(&e));
     if let Some(mode) = a.get("shared-experts") {
-        if mode != "dma" { die("--shared-experts only accepts dma; omit for normal file weights"); }
-        #[cfg(feature="npu-device")]
+        if mode != "dma" {
+            die("--shared-experts only accepts dma; omit for normal file weights");
+        }
+        #[cfg(feature = "npu-device")]
         {
-            let go=a.get("npu-go-file").unwrap_or_else(||die("shared expert relocation requires --npu-go-file guard handshake"));
-            println!("{}",json!({"event":"ready_before_device","pid":std::process::id(),"kind":"CPU allocation only, no DSP session"}));
+            let go = a.get("npu-go-file").unwrap_or_else(|| {
+                die("shared expert relocation requires --npu-go-file guard handshake")
+            });
+            println!(
+                "{}",
+                json!({"event":"ready_before_device","pid":std::process::id(),"kind":"CPU allocation only, no DSP session"})
+            );
             std::io::stdout().flush().unwrap();
-            let until=Instant::now()+Duration::from_secs(30);
+            let until = Instant::now() + Duration::from_secs(30);
             while !Path::new(go).is_file() {
-                if Instant::now()>until {die("shared expert guard handshake timed out; no DMA allocated");}
+                if Instant::now() > until {
+                    die("shared expert guard handshake timed out; no DMA allocated");
+                }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            let allocator=oxn::shared_memory::SharedAllocator::open(24<<30).unwrap_or_else(|e|die(&e));
-            let start=Instant::now();
-            let bytes=loaded.ws.relocate_experts(&loaded.plan,&allocator).unwrap_or_else(|e|die(&e));
-            let seconds=start.elapsed().as_secs_f64();loaded.ws.load_seconds+=seconds;
-            assert_eq!(bytes,allocator.owned_bytes());
-            println!("{}",json!({"event":"shared_experts_ready","owned_dma_bytes":bytes,"dsp_mapped_bytes":0,"tensors":loaded.plan.layers.len()*3,"copy_seconds":seconds,"cpu_layout_unchanged":true}));
+            let allocator =
+                oxn::shared_memory::SharedAllocator::open(24 << 30).unwrap_or_else(|e| die(&e));
+            let start = Instant::now();
+            let bytes = loaded
+                .ws
+                .relocate_experts(&loaded.plan, &allocator)
+                .unwrap_or_else(|e| die(&e));
+            let seconds = start.elapsed().as_secs_f64();
+            loaded.ws.load_seconds += seconds;
+            assert_eq!(bytes, allocator.owned_bytes());
+            println!(
+                "{}",
+                json!({"event":"shared_experts_ready","owned_dma_bytes":bytes,"dsp_mapped_bytes":0,"tensors":loaded.plan.layers.len()*3,"copy_seconds":seconds,"cpu_layout_unchanged":true})
+            );
             std::io::stdout().flush().unwrap();
         }
-        #[cfg(not(feature="npu-device"))] die("shared expert weights need npu-device feature");
+        #[cfg(not(feature = "npu-device"))]
+        die("shared expert weights need npu-device feature");
     }
     let info = &loaded.ws.info;
     eprintln!(
@@ -386,7 +560,11 @@ fn setup(a: &Args, n_ctx: usize) -> Setup {
         cpus.len(),
         cpus
     );
-    let pool = Pool::new(&cpus, Duration::from_micros(a.num("idle-spin-us", 200) as u64)).unwrap_or_else(|e| die(&format!("pool: {e}")));
+    let pool = Pool::new(
+        &cpus,
+        Duration::from_micros(a.num("idle-spin-us", 200) as u64),
+    )
+    .unwrap_or_else(|e| die(&format!("pool: {e}")));
     Setup { loaded, pool }
 }
 
@@ -407,23 +585,38 @@ fn kld(r: &[f32], o: &[f32]) -> f64 {
         m + v.iter().map(|&x| (x as f64 - m).exp()).sum::<f64>().ln()
     };
     let (lr, lo) = (lse(r), lse(o));
-    r.iter().zip(o).map(|(&a, &b)| {
-        let lp = a as f64 - lr;
-        let lq = b as f64 - lo;
-        lp.exp() * (lp - lq)
-    })
-    .sum::<f64>()
-    .max(0.0)
+    r.iter()
+        .zip(o)
+        .map(|(&a, &b)| {
+            let lp = a as f64 - lr;
+            let lq = b as f64 - lo;
+            lp.exp() * (lp - lq)
+        })
+        .sum::<f64>()
+        .max(0.0)
 }
 
 fn sha_ids(ids: &[u32]) -> String {
-    format!("{:016x}", model::weights::hash_bytes(&ids.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>()))
+    format!(
+        "{:016x}",
+        model::weights::hash_bytes(
+            &ids.iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect::<Vec<u8>>()
+        )
+    )
 }
 
 /// Token ids from a file: decimal ids separated by commas and / or whitespace.
 fn read_ids_file(path: &str) -> Vec<u32> {
     let t = std::fs::read_to_string(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
-    t.split(|c: char| c == ',' || c.is_whitespace()).filter(|x| !x.is_empty()).map(|x| x.parse().unwrap_or_else(|_| die(&format!("{path}: '{x}' is not a token id")))).collect()
+    t.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|x| !x.is_empty())
+        .map(|x| {
+            x.parse()
+                .unwrap_or_else(|_| die(&format!("{path}: '{x}' is not a token id")))
+        })
+        .collect()
 }
 
 /// The bench prompt: --prompt-ids-file, --prompt-ids, else `plen` fixed pseudo-random ids.
@@ -433,7 +626,9 @@ fn bench_prompt(a: &Args, plen: usize) -> Vec<u32> {
     }
     match a.get("prompt-ids") {
         Some(t) => parse_ids(t),
-        None => (0..plen as u32).map(|i| (i.wrapping_mul(2654435761) % 150_000) + 1000).collect(),
+        None => (0..plen as u32)
+            .map(|i| (i.wrapping_mul(2654435761) % 150_000) + 1000)
+            .collect(),
     }
 }
 
@@ -442,12 +637,22 @@ fn bench_prompt(a: &Args, plen: usize) -> Vec<u32> {
 const STATE_MAGIC: &[u8; 8] = b"OXEBST01";
 
 fn state_header(eng: &Engine, kind: &str, ids: &[u32]) -> String {
-    format!("{} kind={kind} n={} ids={}", eng.state_layout(), ids.len(), sha_ids(ids))
+    format!(
+        "{} kind={kind} n={} ids={}",
+        eng.state_layout(),
+        ids.len(),
+        sha_ids(ids)
+    )
 }
 
 /// Read a state file into `eng` when its header equals `header`; returns (first token, reader at
 /// the extra part). None (with a note) when absent or for another configuration.
-fn state_file_load(path: &str, eng: &Engine, header: &str, n_pos: usize) -> Option<(u32, std::io::BufReader<std::fs::File>)> {
+fn state_file_load(
+    path: &str,
+    eng: &Engine,
+    header: &str,
+    n_pos: usize,
+) -> Option<(u32, std::io::BufReader<std::fs::File>)> {
     let f = std::fs::File::open(path).ok()?;
     let mut r = std::io::BufReader::with_capacity(8 << 20, f);
     let mut m = [0u8; 8];
@@ -457,7 +662,10 @@ fn state_file_load(path: &str, eng: &Engine, header: &str, n_pos: usize) -> Opti
     let mut h = vec![0u8; u32::from_le_bytes(u) as usize];
     r.read_exact(&mut h).ok()?;
     if &m != STATE_MAGIC || h != header.as_bytes() {
-        eprintln!("state-file {path}: other configuration ({}); rebuilding", String::from_utf8_lossy(&h));
+        eprintln!(
+            "state-file {path}: other configuration ({}); rebuilding",
+            String::from_utf8_lossy(&h)
+        );
         return None;
     }
     r.read_exact(&mut u).ok()?;
@@ -469,7 +677,10 @@ fn state_file_load(path: &str, eng: &Engine, header: &str, n_pos: usize) -> Opti
         eprintln!("state-file {path}: read failed ({e}); rebuilding");
         return None;
     }
-    eprintln!("state-file {path}: {n_pos} positions read in {:.1} s", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "state-file {path}: {n_pos} positions read in {:.1} s",
+        t0.elapsed().as_secs_f64()
+    );
     Some((first, r))
 }
 
@@ -489,7 +700,11 @@ fn state_file_save(path: &str, eng: &Engine, header: &str, first: u32, extra: &[
         std::fs::rename(&tmp, path)
     })();
     match w {
-        Ok(()) => eprintln!("state-file {path}: {} positions written in {:.1} s", eng.pos(), t0.elapsed().as_secs_f64()),
+        Ok(()) => eprintln!(
+            "state-file {path}: {} positions written in {:.1} s",
+            eng.pos(),
+            t0.elapsed().as_secs_f64()
+        ),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
             eprintln!("state-file {path}: write failed: {e}");
@@ -503,7 +718,14 @@ const STATE_CHUNK: usize = 4096;
 
 /// MTP depth from --spec-draft-n-max / --draft (0 = off).
 fn mtp_depth(a: &Args) -> usize {
-    let d = a.get("spec-draft-n-max").or(a.get("draft")).map(|v| v.parse::<usize>().unwrap_or_else(|_| die("--spec-draft-n-max: not a number"))).unwrap_or(0);
+    let d = a
+        .get("spec-draft-n-max")
+        .or(a.get("draft"))
+        .map(|v| {
+            v.parse::<usize>()
+                .unwrap_or_else(|_| die("--spec-draft-n-max: not a number"))
+        })
+        .unwrap_or(0);
     if d > 3 {
         die("--spec-draft-n-max: 0..3");
     }
@@ -515,22 +737,38 @@ fn load_mtp(a: &Args, s: &Setup) -> MtpWeights {
     // --mtp-from GGUF: take the MTP block (blk.{n_layer}.*, nextn.*) from another GGUF of the same
     // architecture (WP-D5: Qwen3.6's head on Ornith's trunk). Output stays exact (verify is unchanged);
     // only acceptance can change.
-    let mtp_src = a.get("mtp-from").map(PathBuf::from).unwrap_or_else(|| a.model());
+    let mtp_src = a
+        .get("mtp-from")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| a.model());
     // W4-4 b: a sidecar head is hashed from its own bytes (OXE_MODEL_SHA256 names the model)
-    let head_opt = LoadOptions { sha_from_env: mtp_src == a.model(), ..a.load_opts() };
+    let head_opt = LoadOptions {
+        sha_from_env: mtp_src == a.model(),
+        ..a.load_opts()
+    };
     // F-VAE1: setup() built the pool, so this (worker-0) thread is pinned to one CPU; the head's scoped
     // copy / verify threads would inherit that mask. Load with the original mask (decode timing unchanged).
-    let mut m = s.pool.unpinned(|| MtpWeights::load(&mtp_src, &s.loaded.plan, &head_opt)).unwrap_or_else(|e| die(&format!("MTP head: {e}")));
+    let mut m = s
+        .pool
+        .unpinned(|| MtpWeights::load(&mtp_src, &s.loaded.plan, &head_opt))
+        .unwrap_or_else(|e| die(&format!("MTP head: {e}")));
     // --draft-vocab RANKING [--draft-k K]: restricted-vocabulary draft head (WP-D3b); without it,
     // a sidecar head's stored vocabulary (oxe.draft_vocab.ids) is used if present
     let rk = a.get("draft-vocab").map(PathBuf::from);
-    let k = a.get("draft-k").map(|v| v.parse::<usize>().unwrap_or_else(|_| die("--draft-k")));
+    let k = a
+        .get("draft-k")
+        .map(|v| v.parse::<usize>().unwrap_or_else(|_| die("--draft-k")));
     match m.apply_draft_vocab(&mtp_src, &a.model(), rk.as_deref(), k) {
         Ok(Some(rows)) => eprintln!("load: MTP draft head restricted to {rows} rows"),
         Ok(None) => {}
         Err(e) => die(&format!("draft vocabulary: {e}")),
     }
-    eprintln!("load: MTP head {:.2} GiB in {:.2} s ({})", m.bytes() as f64 / (1u64 << 30) as f64, t0.elapsed().as_secs_f64(), m.store.info.cache_path);
+    eprintln!(
+        "load: MTP head {:.2} GiB in {:.2} s ({})",
+        m.bytes() as f64 / (1u64 << 30) as f64,
+        t0.elapsed().as_secs_f64(),
+        m.store.info.cache_path
+    );
     m
 }
 
@@ -561,8 +799,17 @@ fn cmd_gen(a: &Args) {
     let p = prompt(a);
     let n = a.num("n", 64);
     let s = setup(a, a.num("ctx", 4096).max(p.len() + n + 1));
-    let eng = Engine::new(&s.loaded.plan, &s.loaded.ws, EngineConfig { n_ctx: a.num("ctx", 4096).max(p.len() + n + 1), logits: false, trace: false, profile: false })
-        .unwrap_or_else(|e| die(&e));
+    let eng = Engine::new(
+        &s.loaded.plan,
+        &s.loaded.ws,
+        EngineConfig {
+            n_ctx: a.num("ctx", 4096).max(p.len() + n + 1),
+            logits: false,
+            trace: false,
+            profile: false,
+        },
+    )
+    .unwrap_or_else(|e| die(&e));
     let t0 = Instant::now();
     let mut next = 0;
     for &t in &p {
@@ -586,8 +833,14 @@ fn cmd_gen(a: &Args) {
         td.as_secs_f64(),
         td.as_secs_f64() * 1000.0 / n.max(1) as f64
     );
-    let mem: serde_json::Map<String, serde_json::Value> = memory_report().into_iter().map(|(k, v)| (k, json!(v))).collect();
-    println!("{}", json!({ "prompt": p, "generated": out, "generated_hash": sha_ids(&out), "memory_kb": mem }));
+    let mem: serde_json::Map<String, serde_json::Value> = memory_report()
+        .into_iter()
+        .map(|(k, v)| (k, json!(v)))
+        .collect();
+    println!(
+        "{}",
+        json!({ "prompt": p, "generated": out, "generated_hash": sha_ids(&out), "memory_kb": mem })
+    );
 }
 
 fn cmd_trace(a: &Args) {
@@ -596,8 +849,17 @@ fn cmd_trace(a: &Args) {
     let out = PathBuf::from(a.get("out").unwrap_or_else(|| die("--out")));
     std::fs::create_dir_all(&out).unwrap();
     let s = setup(a, a.num("ctx", 4096));
-    let eng = Engine::new(&s.loaded.plan, &s.loaded.ws, EngineConfig { n_ctx: a.num("ctx", 4096), logits: true, trace: true, profile: false })
-        .unwrap_or_else(|e| die(&e));
+    let eng = Engine::new(
+        &s.loaded.plan,
+        &s.loaded.ws,
+        EngineConfig {
+            n_ctx: a.num("ctx", 4096),
+            logits: true,
+            trace: true,
+            profile: false,
+        },
+    )
+    .unwrap_or_else(|e| die(&e));
     let n_gen = a.num("gen", 0);
     let mut toks = p.clone();
     let mut gen = Vec::new();
@@ -622,7 +884,11 @@ fn cmd_trace(a: &Args) {
         i += 1;
     }
     let m = json!({ "tokens": p, "generated": gen, "dump_pos": pos, "engine": "oxe", "threads": s.pool.nthreads() });
-    std::fs::write(out.join("manifest.json"), serde_json::to_string_pretty(&m).unwrap()).unwrap();
+    std::fs::write(
+        out.join("manifest.json"),
+        serde_json::to_string_pretty(&m).unwrap(),
+    )
+    .unwrap();
     eprintln!("trace: {} positions, wrote {}", toks.len(), out.display());
 }
 
@@ -633,10 +899,17 @@ fn cmd_compare(a: &Args) {
     // decode dumps are pos<P>.tensors, batched-prefill dumps pos<P>.batch.tensors
     let tf = |d: &Path| {
         let p = d.join(format!("pos{pos}.tensors"));
-        if p.exists() { p } else { d.join(format!("pos{pos}.batch.tensors")) }
+        if p.exists() {
+            p
+        } else {
+            d.join(format!("pos{pos}.batch.tensors"))
+        }
     };
     let rt = read_tensors(&tf(&r));
-    let ot: HashMap<String, Vec<f32>> = read_tensors(&tf(&o)).into_iter().map(|(n, _, v)| (n, v)).collect();
+    let ot: HashMap<String, Vec<f32>> = read_tensors(&tf(&o))
+        .into_iter()
+        .map(|(n, _, v)| (n, v))
+        .collect();
     // oracle: the last tensor of each name wins (names are reused, e.g. Kcur raw then roped)
     let mut order: Vec<String> = Vec::new();
     let mut last: HashMap<String, Vec<f32>> = HashMap::new();
@@ -646,7 +919,10 @@ fn cmd_compare(a: &Args) {
         }
         last.insert(n, v);
     }
-    println!("{:<34} {:>8} {:>8} {:>12} {:>12} {:>10}", "tensor", "n", "exact%", "max_abs", "max_rel", "ref_max");
+    println!(
+        "{:<34} {:>8} {:>8} {:>12} {:>12} {:>10}",
+        "tensor", "n", "exact%", "max_abs", "max_rel", "ref_max"
+    );
     let mut n_cmp = 0;
     let mut n_exact = 0;
     let mut first_bad: Option<String> = None;
@@ -678,7 +954,10 @@ fn cmd_compare(a: &Args) {
             first_bad = Some(name.clone());
         }
         if a.flag("all") || exact != n || name.starts_with("result") || name.starts_with("l_out") {
-            println!("{name:<34} {n:>8} {:>7.2}% {ma:>12.3e} {rel:>12.3e} {rmax:>10.3e}", 100.0 * exact as f64 / n.max(1) as f64);
+            println!(
+                "{name:<34} {n:>8} {:>7.2}% {ma:>12.3e} {rel:>12.3e} {rmax:>10.3e}",
+                100.0 * exact as f64 / n.max(1) as f64
+            );
         }
     }
     let missing: Vec<&String> = order.iter().filter(|n| !ot.contains_key(*n)).collect();
@@ -704,12 +983,18 @@ fn cmd_verify(a: &Args) {
     let eng = Engine::new(
         &s.loaded.plan,
         &s.loaded.ws,
-        EngineConfig { n_ctx: a.num("ctx", 4096).max(n_eval + 1), logits: true, trace: false, profile: false },
+        EngineConfig {
+            n_ctx: a.num("ctx", 4096).max(n_eval + 1),
+            logits: true,
+            trace: false,
+            profile: false,
+        },
     )
     .unwrap_or_else(|e| die(&e));
     let mut rbuf = vec![0f32; n_vocab];
     let mut bytes = vec![0u8; 4 * n_vocab];
-    let (mut kl_sum, mut kl_max, mut top1, mut nk, mut exact_rows) = (0f64, 0f64, 0usize, 0usize, 0usize);
+    let (mut kl_sum, mut kl_max, mut top1, mut nk, mut exact_rows) =
+        (0f64, 0f64, 0usize, 0usize, 0usize);
     let mut first_div: Option<usize> = None;
     let mut ours_gen = Vec::new();
     let t0 = Instant::now();
@@ -793,7 +1078,9 @@ fn parse_llama_state(b: &[u8], n_att: usize, n_rec: usize) -> Result<StateDump, 
         r.take(12)?; // llama_kv_cell_ext (IMRoPE: has_cell_ext)
         r.take(4 * nseq)?;
         if pos != c {
-            return Err(format!("KV cell {c} holds position {pos} (expected a contiguous sequence)"));
+            return Err(format!(
+                "KV cell {c} holds position {pos} (expected a contiguous sequence)"
+            ));
         }
     }
     let v_trans = r.u32()?;
@@ -801,10 +1088,20 @@ fn parse_llama_state(b: &[u8], n_att: usize, n_rec: usize) -> Result<StateDump, 
     r.u32()?; // n_rot_k
     r.u32()?; // n_rot_v
     if v_trans != 1 || n_layer != n_att {
-        return Err(format!("KV header: v_trans {v_trans}, n_layer {n_layer} (expected 1, {n_att})"));
+        return Err(format!(
+            "KV header: v_trans {v_trans}, n_layer {n_layer} (expected 1, {n_att})"
+        ));
     }
-    let f16s = |x: &[u8]| x.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<u16>>();
-    let f32s = |x: &[u8]| x.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect::<Vec<f32>>();
+    let f16s = |x: &[u8]| {
+        x.chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect::<Vec<u16>>()
+    };
+    let f32s = |x: &[u8]| {
+        x.chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect::<Vec<f32>>()
+    };
     let mut k = Vec::new();
     for _ in 0..n_att {
         let ty = r.u32()?;
@@ -833,7 +1130,9 @@ fn parse_llama_state(b: &[u8], n_att: usize, n_rec: usize) -> Result<StateDump, 
     let s_trans = r.u32()?;
     let _n_layer_r = r.u32()?;
     if s_trans != 0 || rcells != 1 {
-        return Err(format!("recurrent header: s_trans {s_trans}, cells {rcells}"));
+        return Err(format!(
+            "recurrent header: s_trans {s_trans}, cells {rcells}"
+        ));
     }
     let mut conv = Vec::new();
     for _ in 0..n_rec {
@@ -854,14 +1153,29 @@ fn parse_llama_state(b: &[u8], n_att: usize, n_rec: usize) -> Result<StateDump, 
         ssm.push(f32s(r.take(row)?));
     }
     if r.i != b.len() {
-        return Err(format!("{} trailing bytes in the state file", b.len() - r.i));
+        return Err(format!(
+            "{} trailing bytes in the state file",
+            b.len() - r.i
+        ));
     }
-    Ok(StateDump { n_pos: cells, k, v, conv, ssm })
+    Ok(StateDump {
+        n_pos: cells,
+        k,
+        v,
+        conv,
+        ssm,
+    })
 }
 
 /// Bitwise comparison of two state dumps: (equal elements, total, first difference).
 fn cmp_state(r: &StateDump, o: &StateDump) -> serde_json::Value {
-    fn cmp<T: Copy + PartialEq>(name: &str, a: &[Vec<T>], b: &[Vec<T>], eq: impl Fn(T, T) -> bool, first: &mut Option<String>) -> (usize, usize) {
+    fn cmp<T: Copy + PartialEq>(
+        name: &str,
+        a: &[Vec<T>],
+        b: &[Vec<T>],
+        eq: impl Fn(T, T) -> bool,
+        first: &mut Option<String>,
+    ) -> (usize, usize) {
         let (mut same, mut tot) = (0, 0);
         for (l, (x, y)) in a.iter().zip(b).enumerate() {
             if x.len() != y.len() {
@@ -883,8 +1197,20 @@ fn cmp_state(r: &StateDump, o: &StateDump) -> serde_json::Value {
     let mut first = None;
     let k = cmp("k", &r.k, &o.k, |a, b| a == b, &mut first);
     let v = cmp("v", &r.v, &o.v, |a, b| a == b, &mut first);
-    let c = cmp("conv", &r.conv, &o.conv, |a: f32, b: f32| a.to_bits() == b.to_bits(), &mut first);
-    let s = cmp("ssm", &r.ssm, &o.ssm, |a: f32, b: f32| a.to_bits() == b.to_bits(), &mut first);
+    let c = cmp(
+        "conv",
+        &r.conv,
+        &o.conv,
+        |a: f32, b: f32| a.to_bits() == b.to_bits(),
+        &mut first,
+    );
+    let s = cmp(
+        "ssm",
+        &r.ssm,
+        &o.ssm,
+        |a: f32, b: f32| a.to_bits() == b.to_bits(),
+        &mut first,
+    );
     let all = r.n_pos == o.n_pos && k.0 == k.1 && v.0 == v.1 && c.0 == c.1 && s.0 == s.1;
     json!({
         "identical": all,
@@ -896,7 +1222,13 @@ fn cmp_state(r: &StateDump, o: &StateDump) -> serde_json::Value {
 
 fn read_logit_rows(p: &Path, n_vocab: usize) -> Vec<Vec<f32>> {
     let b = std::fs::read(p).unwrap_or_default();
-    b.chunks_exact(4 * n_vocab).map(|r| r.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()).collect()
+    b.chunks_exact(4 * n_vocab)
+        .map(|r| {
+            r.chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect()
+        })
+        .collect()
 }
 
 fn cmd_prefill_verify(a: &Args) {
@@ -913,24 +1245,47 @@ fn cmd_prefill_verify(a: &Args) {
     let rows = read_logit_rows(&r.join("logits.f32"), n_vocab);
     let s = setup(a, n_ctx);
     let trace_out = a.get("trace-out").map(PathBuf::from);
-    let eng = Engine::new(&s.loaded.plan, &s.loaded.ws, EngineConfig { n_ctx, logits: true, trace: trace_out.is_some(), profile: false })
-        .unwrap_or_else(|e| die(&e));
+    let eng = Engine::new(
+        &s.loaded.plan,
+        &s.loaded.ws,
+        EngineConfig {
+            n_ctx,
+            logits: true,
+            trace: trace_out.is_some(),
+            profile: false,
+        },
+    )
+    .unwrap_or_else(|e| die(&e));
     let t0 = Instant::now();
-    let first = eng.prefill(&s.pool, &prompt, ubatch).unwrap_or_else(|| die("empty prompt"));
+    let first = eng
+        .prefill(&s.pool, &prompt, ubatch)
+        .unwrap_or_else(|| die("empty prompt"));
     let secs = t0.elapsed().as_secs_f64();
     if let Some(dir) = &trace_out {
         std::fs::create_dir_all(dir).unwrap();
-        let tr: BTreeMap<String, Vec<f32>> = eng.trace.as_ref().unwrap().take().into_iter().collect();
-        write_tensors(&dir.join(format!("pos{}.batch.tensors", prompt.len() - 1)), &tr);
+        let tr: BTreeMap<String, Vec<f32>> =
+            eng.trace.as_ref().unwrap().take().into_iter().collect();
+        write_tensors(
+            &dir.join(format!("pos{}.batch.tensors", prompt.len() - 1)),
+            &tr,
+        );
         let mm = json!({ "tokens": prompt, "engine": "oxe-prefill", "ubatch": ubatch });
-        std::fs::write(dir.join("manifest.json"), serde_json::to_string_pretty(&mm).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(&mm).unwrap(),
+        )
+        .unwrap();
     }
     let row_cmp = |i: usize, ours: &[f32]| -> (bool, f64, bool) {
         let rr = &rows[i];
         let exact = rr.iter().zip(ours).all(|(x, y)| x.to_bits() == y.to_bits());
         (exact, kld(rr, ours), argmax(rr) == argmax(ours))
     };
-    let (pf_exact, pf_kld, pf_top1) = if rows.is_empty() { (false, f64::NAN, false) } else { row_cmp(0, eng.logits()) };
+    let (pf_exact, pf_kld, pf_top1) = if rows.is_empty() {
+        (false, f64::NAN, false)
+    } else {
+        row_cmp(0, eng.logits())
+    };
     // state right after the prefill
     let state = match m["state"].as_str().filter(|p| !p.is_empty()) {
         Some(p) => {
@@ -1006,14 +1361,24 @@ impl std::io::Write for Fnv {
 fn cmd_prefill_bench(a: &Args) {
     let list = |k: &str, d: usize| -> Vec<usize> {
         match a.get(k) {
-            Some(v) => v.split(',').map(|x| x.trim().parse().unwrap_or_else(|_| die(&format!("--{k}: not a number list")))).collect(),
+            Some(v) => v
+                .split(',')
+                .map(|x| {
+                    x.trim()
+                        .parse()
+                        .unwrap_or_else(|_| die(&format!("--{k}: not a number list")))
+                })
+                .collect(),
             None => vec![d],
         }
     };
     let plens = list("prompt-len", 512);
     // arms = every (kernel mask, ubatch group) pair: --pf-tiles m1,m2 x --pf-group g1,g2
     let groups = list("pf-group", model::engine::pf_group());
-    let masks: Vec<(u32, usize)> = list("pf-tiles", model::engine::pf_tiles() as usize).into_iter().flat_map(|m| groups.iter().map(move |&g| (m as u32, g))).collect();
+    let masks: Vec<(u32, usize)> = list("pf-tiles", model::engine::pf_tiles() as usize)
+        .into_iter()
+        .flat_map(|m| groups.iter().map(move |&g| (m as u32, g)))
+        .collect();
     let ubatch = a.num("ubatch", model::engine::UBATCH);
     let reps = a.num("reps", 3).max(1);
     let profile = a.flag("profile");
@@ -1028,9 +1393,38 @@ fn cmd_prefill_bench(a: &Args) {
     if a.flag("check-args") {
         // model-free: show how the command line was understood and stop (run this on every ticket
         // command before filing it; a flag missing from the parser's list eats the next argument)
-        let known = ["model", "cpu-list", "threads", "ctx", "ubatch", "reps", "prefix-len", "prefix-ids-file", "prompt-len", "pf-tiles", "pf-group", "tokens", "out", "weights", "cache-dir", "verify", "state-file", "npu-prefill", "npu-go-file", "npu-recurrent", "npu-recurrent-mask", "npu-overlap"];
-        let unknown: Vec<&String> = a.kv.keys().filter(|k| !known.contains(&k.as_str())).collect();
-        println!("{}", json!({ "prompt_len": plens, "arms_mask_group": masks, "ubatch": ubatch, "reps": reps, "prefix_len": prefix, "profile": profile, "state_hash": state_hash, "npu_prefill": a.get("npu-prefill"), "flags": a.flags, "unknown_keys": unknown }));
+        let known = [
+            "model",
+            "cpu-list",
+            "threads",
+            "ctx",
+            "ubatch",
+            "reps",
+            "prefix-len",
+            "prefix-ids-file",
+            "prompt-len",
+            "pf-tiles",
+            "pf-group",
+            "tokens",
+            "out",
+            "weights",
+            "cache-dir",
+            "verify",
+            "state-file",
+            "npu-prefill",
+            "npu-go-file",
+            "npu-recurrent",
+            "npu-recurrent-mask",
+            "npu-overlap",
+        ];
+        let unknown: Vec<&String> =
+            a.kv.keys()
+                .filter(|k| !known.contains(&k.as_str()))
+                .collect();
+        println!(
+            "{}",
+            json!({ "prompt_len": plens, "arms_mask_group": masks, "ubatch": ubatch, "reps": reps, "prefix_len": prefix, "profile": profile, "state_hash": state_hash, "npu_prefill": a.get("npu-prefill"), "flags": a.flags, "unknown_keys": unknown })
+        );
         if !unknown.is_empty() {
             die("unknown options");
         }
@@ -1039,25 +1433,43 @@ fn cmd_prefill_bench(a: &Args) {
     let pmax = *plens.iter().max().unwrap();
     let n_ctx = a.num("ctx", 4096).max(prefix + pmax + 1);
     let s = setup(a, n_ctx);
-    let mut eng = Engine::new(&s.loaded.plan, &s.loaded.ws, EngineConfig { n_ctx, logits: false, trace: false, profile }).unwrap_or_else(|e| die(&e));
-    maybe_npu_prefill(a,&mut eng);
+    let mut eng = Engine::new(
+        &s.loaded.plan,
+        &s.loaded.ws,
+        EngineConfig {
+            n_ctx,
+            logits: false,
+            trace: false,
+            profile,
+        },
+    )
+    .unwrap_or_else(|e| die(&e));
+    maybe_npu_prefill(a, &mut eng);
     let snap = if prefix > 0 {
         eng.reset();
         let pre: Vec<u32> = match a.get("prefix-ids-file") {
             Some(f) => {
                 let ids = read_ids_file(f);
                 if ids.len() < prefix {
-                    die(&format!("--prefix-ids-file has {} ids < --prefix-len {prefix}", ids.len()));
+                    die(&format!(
+                        "--prefix-ids-file has {} ids < --prefix-len {prefix}",
+                        ids.len()
+                    ));
                 }
                 ids[..prefix].to_vec()
             }
-            None => (0..prefix as u32).map(|i| (i.wrapping_mul(2246822519) % 150_000) + 1000).collect(),
+            None => (0..prefix as u32)
+                .map(|i| (i.wrapping_mul(2246822519) % 150_000) + 1000)
+                .collect(),
         };
         model::engine::set_pf_tiles(masks[0].0);
         model::engine::set_pf_group(masks[0].1);
         // --state-file (LONG-CTX): the prefix built once (chunked, untimed), read back by later runs
         let header = state_header(&eng, "prefill-bench-prefix", &pre);
-        let loaded = a.get("state-file").and_then(|f| state_file_load(f, &eng, &header, prefix)).is_some();
+        let loaded = a
+            .get("state-file")
+            .and_then(|f| state_file_load(f, &eng, &header, prefix))
+            .is_some();
         if !loaded {
             let t0 = Instant::now();
             if a.get("state-file").is_some() {
@@ -1067,7 +1479,10 @@ fn cmd_prefill_bench(a: &Args) {
             } else {
                 eng.prefill(&s.pool, &pre, ubatch).unwrap();
             }
-            eprintln!("prefix: {prefix} tokens in {:.3} s (untimed)", t0.elapsed().as_secs_f64());
+            eprintln!(
+                "prefix: {prefix} tokens in {:.3} s (untimed)",
+                t0.elapsed().as_secs_f64()
+            );
             if let Some(f) = a.get("state-file") {
                 state_file_save(f, &eng, &header, 0, &[]);
             }
@@ -1092,7 +1507,9 @@ fn cmd_prefill_bench(a: &Args) {
     for &plen in &plens {
         let prompt: Vec<u32> = match a.get("tokens") {
             Some(t) => parse_ids(t),
-            None => (0..plen as u32).map(|i| (i.wrapping_mul(2654435761) % 150_000) + 1000).collect(),
+            None => (0..plen as u32)
+                .map(|i| (i.wrapping_mul(2654435761) % 150_000) + 1000)
+                .collect(),
         };
         let run = |(mask, group): (u32, usize)| -> (f64, u32) {
             model::engine::set_pf_tiles(mask);
@@ -1108,7 +1525,14 @@ fn cmd_prefill_bench(a: &Args) {
             (t0.elapsed().as_secs_f64(), first)
         };
         let (dt, first0) = run(masks[0]);
-        eprintln!("prefill {} tokens on {prefix}, warm-up (mask {} group {}): {:.3} s = {:.1} tok/s", prompt.len(), masks[0].0, masks[0].1, dt, prompt.len() as f64 / dt);
+        eprintln!(
+            "prefill {} tokens on {prefix}, warm-up (mask {} group {}): {:.3} s = {:.1} tok/s",
+            prompt.len(),
+            masks[0].0,
+            masks[0].1,
+            dt,
+            prompt.len() as f64 / dt
+        );
         let nm = masks.len();
         let mut times: Vec<Vec<f64>> = vec![Vec::new(); nm];
         let mut hashes: Vec<Vec<String>> = vec![Vec::new(); nm];
@@ -1117,7 +1541,11 @@ fn cmd_prefill_bench(a: &Args) {
         // per arm: (work, wait) per phase and the sub accumulators, summed over its timed reps
         let mut prof: Vec<Option<model::engine::PfProfile>> = vec![None; nm];
         for rep in 0..reps {
-            let order: Vec<usize> = if rep % 2 == 0 { (0..nm).collect() } else { (0..nm).rev().collect() };
+            let order: Vec<usize> = if rep % 2 == 0 {
+                (0..nm).collect()
+            } else {
+                (0..nm).rev().collect()
+            };
             for mi in order {
                 if profile {
                     eng.reset_prefill_profile();
@@ -1136,7 +1564,9 @@ fn cmd_prefill_bench(a: &Args) {
                 }
                 eprintln!("prefill {} tokens on {prefix}, rep {rep}, mask {} group {}: {:.3} s = {:.1} tok/s", prompt.len(), masks[mi].0, masks[mi].1, dt, prompt.len() as f64 / dt);
                 if profile {
-                    let pr = eng.prefill_profile().unwrap_or_else(|| die("--profile: no profiled prefill ran"));
+                    let pr = eng
+                        .prefill_profile()
+                        .unwrap_or_else(|| die("--profile: no profiled prefill ran"));
                     match &mut prof[mi] {
                         None => prof[mi] = Some(pr),
                         Some(acc) => {
@@ -1161,7 +1591,8 @@ fn cmd_prefill_bench(a: &Args) {
             let mut pa = prefill_attention.clone();
             let ku = kunits[mi];
             // what really ran (last timed rep): a kernel label without units is never a measurement
-            pa["units_last_rep"] = json!({ "tiled": ku.tiled, "fa2": ku.fa2, "fa2x": ku.fa2x, "pfg": ku.pfg });
+            pa["units_last_rep"] =
+                json!({ "tiled": ku.tiled, "fa2": ku.fa2, "fa2x": ku.fa2x, "pfg": ku.pfg });
             let ran = match pf_path.kernel {
                 model::engine::PfKernel::Tiled => ku.fa2 + ku.fa2x + ku.pfg == 0,
                 model::engine::PfKernel::Fa2 => ku.fa2 > 0 && ku.fa2x + ku.pfg == 0,
@@ -1191,20 +1622,41 @@ fn cmd_prefill_bench(a: &Args) {
             if let Some(pr) = &prof[mi] {
                 // seconds are thread-seconds (summed over the threads); pct is of the phases' total
                 let total: f64 = pr.work_s.iter().zip(&pr.wait_s).map(|(w, t)| w + t).sum();
-                let pct = |w: f64, t: f64| if total > 0.0 { 100.0 * (w + t) / total } else { 0.0 };
+                let pct = |w: f64, t: f64| {
+                    if total > 0.0 {
+                        100.0 * (w + t) / total
+                    } else {
+                        0.0
+                    }
+                };
                 let phases: Vec<serde_json::Value> = (0..pr.names.len())
                     .filter(|&i| pr.work_s[i] + pr.wait_s[i] > 0.0)
                     .map(|i| json!({ "name": pr.names[i], "work_s": pr.work_s[i], "wait_s": pr.wait_s[i], "pct_of_thread_time": pct(pr.work_s[i], pr.wait_s[i]) }))
                     .collect();
-                let sub: serde_json::Map<String, serde_json::Value> = pr.sub_names.iter().zip(&pr.sub_s).map(|(n, s)| (n.to_string(), json!(s))).collect();
+                let sub: serde_json::Map<String, serde_json::Value> = pr
+                    .sub_names
+                    .iter()
+                    .zip(&pr.sub_s)
+                    .map(|(n, s)| (n.to_string(), json!(s)))
+                    .collect();
                 arm["profile"] = json!({ "threads": pr.threads, "timed_reps": raw.len(), "wall_s_total": wall, "phases": phases, "sub": sub });
                 let tot = |i: usize| pr.work_s[i] + pr.wait_s[i];
                 let mut order: Vec<usize> = (0..pr.names.len()).filter(|&i| tot(i) > 0.0).collect();
                 order.sort_by(|&x, &y| tot(y).partial_cmp(&tot(x)).unwrap());
                 eprintln!("profile: {} tokens on {prefix}, mask {} group {}: {} threads, {} timed reps, wall {:.3} s (thread-seconds below)", prompt.len(), masks[mi].0, masks[mi].1, pr.threads, raw.len(), wall);
-                eprintln!("  {:<26} {:>9} {:>9} {:>9} {:>7}", "phase", "work_s", "wait_s", "total_s", "pct");
+                eprintln!(
+                    "  {:<26} {:>9} {:>9} {:>9} {:>7}",
+                    "phase", "work_s", "wait_s", "total_s", "pct"
+                );
                 for i in order {
-                    eprintln!("  {:<26} {:>9.4} {:>9.4} {:>9.4} {:>6.2}%", pr.names[i], pr.work_s[i], pr.wait_s[i], tot(i), pct(pr.work_s[i], pr.wait_s[i]));
+                    eprintln!(
+                        "  {:<26} {:>9.4} {:>9.4} {:>9.4} {:>6.2}%",
+                        pr.names[i],
+                        pr.work_s[i],
+                        pr.wait_s[i],
+                        tot(i),
+                        pct(pr.work_s[i], pr.wait_s[i])
+                    );
                 }
                 for (n, s) in pr.sub_names.iter().zip(&pr.sub_s) {
                     eprintln!("  sub {:<22} {:>9.4}", n, s);
@@ -1213,7 +1665,10 @@ fn cmd_prefill_bench(a: &Args) {
             arms.push(arm);
         }
     }
-    let mem: serde_json::Map<String, serde_json::Value> = memory_report().into_iter().map(|(k, v)| (k, json!(v))).collect();
+    let mem: serde_json::Map<String, serde_json::Value> = memory_report()
+        .into_iter()
+        .map(|(k, v)| (k, json!(v)))
+        .collect();
     // the first arm's numbers stay at the top level (the pre-moe-prefill JSON shape)
     let mut res = arms[0].clone();
     res["attn"] = json!(if eng.attn_tiled() { "tiled" } else { "legacy" });
@@ -1222,8 +1677,13 @@ fn cmd_prefill_bench(a: &Args) {
     res["threads"] = json!(s.pool.nthreads());
     res["effective"] = json!(model::engine::effective_switches());
     res["attn_out"] = json!(eng.attn_out().name());
-    #[cfg(feature="npu-prefill")]
-    {res["npu_prefill"]=eng.npu_prefill_stats().map(npu_stats_json).unwrap_or(serde_json::Value::Null);}
+    #[cfg(feature = "npu-prefill")]
+    {
+        res["npu_prefill"] = eng
+            .npu_prefill_stats()
+            .map(npu_stats_json)
+            .unwrap_or(serde_json::Value::Null);
+    }
     res["cpus"] = json!(s.pool.cpus());
     res["first_token_identical_across_arms"] = json!(all_same);
     res["kv_vpad"] = json!(model::engine::kv_vpad());
@@ -1270,10 +1730,25 @@ fn cmd_verify_bench(a: &Args) {
     let s = setup(a, n_ctx);
     // --profile (OD-1): per-phase work / barrier-wait thread-ms and bytes per run, per lane count
     let profile = a.flag("profile");
-    let eng = Engine::with_options(&s.loaded.plan, &s.loaded.ws, EngineConfig { n_ctx, logits: false, trace: false, profile }, EngineOptions { verify_lanes: maxl, mtp: None, kv_type: None })
-        .unwrap_or_else(|e| die(&e));
+    let eng = Engine::with_options(
+        &s.loaded.plan,
+        &s.loaded.ws,
+        EngineConfig {
+            n_ctx,
+            logits: false,
+            trace: false,
+            profile,
+        },
+        EngineOptions {
+            verify_lanes: maxl,
+            mtp: None,
+            kv_type: None,
+        },
+    )
+    .unwrap_or_else(|e| die(&e));
     let mut next = if a.flag("batched-prompt") {
-        eng.prefill(&s.pool, &prompt, model::engine::UBATCH).unwrap()
+        eng.prefill(&s.pool, &prompt, model::engine::UBATCH)
+            .unwrap()
     } else {
         let mut x = 0;
         for &t in &prompt {
@@ -1308,14 +1783,22 @@ fn cmd_verify_bench(a: &Args) {
                 let toks = &g[at..at + n];
                 let t = Instant::now();
                 let out = eng.verify(&s.pool, toks);
-                ms.entry(n).or_default().push(t.elapsed().as_secs_f64() * 1000.0);
-                assert_eq!(&out[..n - 1], &g[at + 1..at + n], "verify disagrees with the plain greedy steps");
+                ms.entry(n)
+                    .or_default()
+                    .push(t.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(
+                    &out[..n - 1],
+                    &g[at + 1..at + n],
+                    "verify disagrees with the plain greedy steps"
+                );
                 eng.commit(n);
                 at += n;
             }
             if profile {
                 let pr = eng.profile_sum();
-                let acc = profs.entry(n).or_insert_with(|| vec![model::engine::Prof::default(); pr.len()]);
+                let acc = profs
+                    .entry(n)
+                    .or_insert_with(|| vec![model::engine::Prof::default(); pr.len()]);
                 for (a, p) in acc.iter_mut().zip(&pr) {
                     for i in 0..a.phase_work.len() {
                         a.phase_work[i] += p.phase_work[i];
@@ -1339,7 +1822,12 @@ fn cmd_verify_bench(a: &Args) {
     let base = ms.get(&1).map(med).unwrap_or(f64::NAN);
     let mut rows: Vec<serde_json::Value> = ms.iter().map(|(n, v)| json!({"lanes": n, "ms_median": med(v), "runs": v.len(), "cost_vs_plain": med(v) / base})).collect();
     for r in &rows {
-        eprintln!("verify-bench: {} lanes: {:.3} ms/run, {:.3}x one plain step", r["lanes"], r["ms_median"].as_f64().unwrap(), r["cost_vs_plain"].as_f64().unwrap());
+        eprintln!(
+            "verify-bench: {} lanes: {:.3} ms/run, {:.3}x one plain step",
+            r["lanes"],
+            r["ms_median"].as_f64().unwrap(),
+            r["cost_vs_plain"].as_f64().unwrap()
+        );
     }
     if profile {
         // profiled timings are not throughput (LEARNINGS T12b): the table sizes phases, the ms above are under the profiler
@@ -1366,32 +1854,75 @@ fn cmd_verify_bench(a: &Args) {
 /// the mean over threads (`work_ms`, `wait_ms`, the pre-OD-1 fields) and summed over threads
 /// (`work_thread_ms`, `wait_thread_ms`), bytes asked for per run and the rate over the phase's
 /// mean wall share. Prints a table to stderr headed by `label`.
-fn decode_profile(pr: &[model::engine::Prof], hz: f64, label: &str) -> (Vec<serde_json::Value>, serde_json::Value) {
+fn decode_profile(
+    pr: &[model::engine::Prof],
+    hz: f64,
+    label: &str,
+) -> (Vec<serde_json::Value>, serde_json::Value) {
     let nth = pr.len().max(1) as f64;
     let nt = pr.first().map(|p| p.tokens).unwrap_or(0).max(1) as f64;
     let ms = |t: u64| t as f64 / hz * 1000.0 / nt;
     let mut rows = Vec::new();
     let (mut tw, mut tt, mut tb) = (0.0, 0.0, 0.0);
     eprintln!("profile {label}: {} threads, {} runs (per run: thread-ms summed over threads; wall = per-thread mean)", pr.len(), nt);
-    eprintln!("  {:<14} {:<26} {:>9} {:>9} {:>7} {:>8} {:>10} {:>7}", "phase", "class", "work_tms", "wait_tms", "idle%", "wall_ms", "MB/run", "GB/s");
+    eprintln!(
+        "  {:<14} {:<26} {:>9} {:>9} {:>7} {:>8} {:>10} {:>7}",
+        "phase", "class", "work_tms", "wait_tms", "idle%", "wall_ms", "MB/run", "GB/s"
+    );
     for k in PhaseKind::ALL {
         let i = k.index();
         let work_t: f64 = pr.iter().map(|p| ms(p.phase_work[i])).sum();
         let wait_t: f64 = pr.iter().map(|p| ms(p.phase_wait[i])).sum();
         let bytes: f64 = pr.iter().map(|p| p.phase_bytes[i] as f64).sum::<f64>() / nt;
         let wall = (work_t + wait_t) / nth;
-        let gbs = if wall > 0.0 { bytes / (wall * 1e-3) / 1e9 } else { 0.0 };
-        let idle = if work_t + wait_t > 0.0 { 100.0 * wait_t / (work_t + wait_t) } else { 0.0 };
+        let gbs = if wall > 0.0 {
+            bytes / (wall * 1e-3) / 1e9
+        } else {
+            0.0
+        };
+        let idle = if work_t + wait_t > 0.0 {
+            100.0 * wait_t / (work_t + wait_t)
+        } else {
+            0.0
+        };
         tw += work_t;
         tt += wait_t;
         tb += bytes;
-        eprintln!("  {:<14} {:<26} {:>9.3} {:>9.3} {:>6.1}% {:>8.3} {:>10.2} {:>7.1}", k.name(), model::engine::phase_class(k), work_t, wait_t, idle, wall, bytes / 1e6, gbs);
+        eprintln!(
+            "  {:<14} {:<26} {:>9.3} {:>9.3} {:>6.1}% {:>8.3} {:>10.2} {:>7.1}",
+            k.name(),
+            model::engine::phase_class(k),
+            work_t,
+            wait_t,
+            idle,
+            wall,
+            bytes / 1e6,
+            gbs
+        );
         rows.push(json!({ "phase": k.name(), "class": model::engine::phase_class(k),
             "work_ms": work_t / nth, "wait_ms": wait_t / nth, "idle_pct": idle,
             "work_thread_ms": work_t, "wait_thread_ms": wait_t, "bytes_per_run": bytes, "gb_s": gbs }));
     }
     let wall = (tw + tt) / nth;
-    eprintln!("  {:<14} {:<26} {:>9.3} {:>9.3} {:>6.1}% {:>8.3} {:>10.2} {:>7.1}", "total", "", tw, tt, if tw + tt > 0.0 { 100.0 * tt / (tw + tt) } else { 0.0 }, wall, tb / 1e6, if wall > 0.0 { tb / (wall * 1e-3) / 1e9 } else { 0.0 });
+    eprintln!(
+        "  {:<14} {:<26} {:>9.3} {:>9.3} {:>6.1}% {:>8.3} {:>10.2} {:>7.1}",
+        "total",
+        "",
+        tw,
+        tt,
+        if tw + tt > 0.0 {
+            100.0 * tt / (tw + tt)
+        } else {
+            0.0
+        },
+        wall,
+        tb / 1e6,
+        if wall > 0.0 {
+            tb / (wall * 1e-3) / 1e9
+        } else {
+            0.0
+        }
+    );
     let mut sub = serde_json::Map::new();
     for (j, name) in model::engine::PROF_SUB_NAMES.iter().enumerate() {
         let v: f64 = pr.iter().map(|p| ms(p.sub_work[j])).sum();
@@ -1418,9 +1949,17 @@ fn decode_profile(pr: &[model::engine::Prof], hz: f64, label: &str) -> (Vec<serd
 fn cmd_kbench_mt(a: &Args) {
     use kernels_sys::{ActType, QType};
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-    let secs: f64 = a.get("secs").map(|v| v.parse().unwrap_or(1.0)).unwrap_or(1.0);
+    let secs: f64 = a
+        .get("secs")
+        .map(|v| v.parse().unwrap_or(1.0))
+        .unwrap_or(1.0);
     let rows_per_expert = a.num("rows", 16);
-    let sets: Vec<Vec<usize>> = a.get("sets").unwrap_or("0;0-3;0-7;0-11;0,4,8;0-1,4-5,8-9").split(';').map(|l| parse_cpu_list(l).unwrap_or_else(|e| die(&format!("--sets: {e}")))).collect();
+    let sets: Vec<Vec<usize>> = a
+        .get("sets")
+        .unwrap_or("0;0-3;0-7;0-11;0,4,8;0-1,4-5,8-9")
+        .split(';')
+        .map(|l| parse_cpu_list(l).unwrap_or_else(|e| die(&format!("--sets: {e}"))))
+        .collect();
     let only: Option<Vec<&str>> = a.get("work").map(|w| w.split(',').collect());
     let want = |w: &str| only.as_ref().map(|o| o.contains(&w)).unwrap_or(true);
     // synthetic row-major weight rows with sane f16 scales, repacked
@@ -1454,20 +1993,37 @@ fn cmd_kbench_mt(a: &Args) {
     };
     let k = 2048usize;
     let ntok = 256usize;
-    let x: Vec<f32> = (0..ntok * k).map(|i| ((i * 2654435761usize) % 2001) as f32 / 1000.0 - 1.0).collect();
+    let x: Vec<f32> = (0..ntok * k)
+        .map(|i| ((i * 2654435761usize) % 2001) as f32 / 1000.0 - 1.0)
+        .collect();
     // dense activations: 4-row interleaved groups; routed: per-row from_float
     let rbk = ActType::Q8K.bytes(k);
     let mut act4 = vec![0u8; ntok * rbk];
     let mut actr = vec![0u8; ntok * rbk];
     for g in (0..ntok).step_by(4) {
         // SAFETY: 4 rows of k floats in, one 4-row group out.
-        unsafe { kernels_sys::quantize_mat4_raw(ActType::Q8K, x[g * k..].as_ptr(), act4[g * rbk..].as_mut_ptr(), k) };
+        unsafe {
+            kernels_sys::quantize_mat4_raw(
+                ActType::Q8K,
+                x[g * k..].as_ptr(),
+                act4[g * rbk..].as_mut_ptr(),
+                k,
+            )
+        };
     }
     for r in 0..ntok {
-        kernels_sys::quantize_act(ActType::Q8K, &x[r * k..(r + 1) * k], &mut actr[r * rbk..(r + 1) * rbk]);
+        kernels_sys::quantize_act(
+            ActType::Q8K,
+            &x[r * k..(r + 1) * k],
+            &mut actr[r * rbk..(r + 1) * rbk],
+        );
     }
     let (dq, drows, nmat) = (QType::Q4K, 8192usize, 8usize);
-    let dense_w: Vec<Vec<u8>> = if want("dense") { (0..nmat).map(|_| synth(dq, drows, k)).collect() } else { Vec::new() };
+    let dense_w: Vec<Vec<u8>> = if want("dense") {
+        (0..nmat).map(|_| synth(dq, drows, k)).collect()
+    } else {
+        Vec::new()
+    };
     let (eq, erows, ne) = (QType::Q3K, 512usize, 256usize);
     let ebytes = eq.row_bytes(k) * erows;
     let experts: Vec<u8> = if want("routed") || want("routed-cl") {
@@ -1488,11 +2044,15 @@ fn cmd_kbench_mt(a: &Args) {
     let mut dense_out = vec![0f32; ntok * drows];
     let mut routed_out = vec![0f32; ne.max(1) * rows_per_expert * erows];
     let mut results = Vec::new();
-    println!("{:<10} {:<22} {:>3} {:>10} {:>10} {:>8}", "work", "cpus", "thr", "GMAC/s", "per thr", "vs 1");
+    println!(
+        "{:<10} {:<22} {:>3} {:>10} {:>10} {:>8}",
+        "work", "cpus", "thr", "GMAC/s", "per thr", "vs 1"
+    );
     let mut base: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
     for cpus in &sets {
         let nt = cpus.len();
-        let pool = Pool::new(cpus, Duration::from_micros(200)).unwrap_or_else(|e| die(&format!("pool: {e}")));
+        let pool = Pool::new(cpus, Duration::from_micros(200))
+            .unwrap_or_else(|e| die(&format!("pool: {e}")));
         for work in ["l1", "dense", "routed", "routed-cl"] {
             if !want(work) {
                 continue;
@@ -1520,7 +2080,18 @@ fn cmd_kbench_mt(a: &Args) {
                             let mut out = vec![0f32; 64 * 8];
                             for _ in 0..200 {
                                 // SAFETY: 8 rows of l1_w, 64 tokens (16 groups) of act4, private out.
-                                unsafe { kernels_sys::gemm_tile_raw(dq, k, out.as_mut_ptr(), 8, l1_w.as_ptr(), act4.as_ptr(), 64, 8) };
+                                unsafe {
+                                    kernels_sys::gemm_tile_raw(
+                                        dq,
+                                        k,
+                                        out.as_mut_ptr(),
+                                        8,
+                                        l1_w.as_ptr(),
+                                        act4.as_ptr(),
+                                        64,
+                                        8,
+                                    )
+                                };
                                 done.fetch_add(1, Relaxed);
                             }
                         }
@@ -1532,23 +2103,57 @@ fn cmd_kbench_mt(a: &Args) {
                                     break;
                                 }
                                 // SAFETY: the unit owns output columns u*64..u*64+64 of every token row.
-                                unsafe { kernels_sys::gemm_tile_raw(dq, k, dout.0.add(u * 64), drows, w.as_ptr().add(dq.group_offset(u * 64, k)), act4.as_ptr(), ntok, 64) };
+                                unsafe {
+                                    kernels_sys::gemm_tile_raw(
+                                        dq,
+                                        k,
+                                        dout.0.add(u * 64),
+                                        drows,
+                                        w.as_ptr().add(dq.group_offset(u * 64, k)),
+                                        act4.as_ptr(),
+                                        ntok,
+                                        64,
+                                    )
+                                };
                                 done.fetch_add(1, Relaxed);
                             }
                         }
                         "routed" => {
-                            let mut xq = vec![0u32; rows_per_expert.div_ceil(2) * (k / 256) * kernels_sys::PF_XBLK_BYTES / 4];
+                            let mut xq = vec![
+                                0u32;
+                                rows_per_expert.div_ceil(2)
+                                    * (k / 256)
+                                    * kernels_sys::PF_XBLK_BYTES
+                                    / 4
+                            ];
                             loop {
                                 let e = ctr.fetch_add(1, Relaxed);
                                 if e >= ne {
                                     break;
                                 }
-                                let rp: Vec<*const u8> = (0..rows_per_expert).map(|j| actr[((e * 7 + j * 13) % ntok) * rbk..].as_ptr()).collect();
+                                let rp: Vec<*const u8> = (0..rows_per_expert)
+                                    .map(|j| actr[((e * 7 + j * 13) % ntok) * rbk..].as_ptr())
+                                    .collect();
                                 // SAFETY: the unit owns the rows_per_expert output rows of expert e.
-                                let orow: Vec<*mut f32> = (0..rows_per_expert).map(|j| unsafe { rout.0.add((e * rows_per_expert + j) * erows) }).collect();
+                                let orow: Vec<*mut f32> = (0..rows_per_expert)
+                                    .map(|j| unsafe {
+                                        rout.0.add((e * rows_per_expert + j) * erows)
+                                    })
+                                    .collect();
                                 unsafe {
-                                    kernels_sys::mmid_tile_pack_raw(&rp, k, xq.as_mut_ptr() as *mut u8);
-                                    kernels_sys::mmid_tile_raw(eq, k, &orow, experts.as_ptr().add(e * ebytes), xq.as_ptr() as *const u8, erows);
+                                    kernels_sys::mmid_tile_pack_raw(
+                                        &rp,
+                                        k,
+                                        xq.as_mut_ptr() as *mut u8,
+                                    );
+                                    kernels_sys::mmid_tile_raw(
+                                        eq,
+                                        k,
+                                        &orow,
+                                        experts.as_ptr().add(e * ebytes),
+                                        xq.as_ptr() as *const u8,
+                                        erows,
+                                    );
                                 }
                                 done.fetch_add(1, Relaxed);
                             }
@@ -1560,18 +2165,43 @@ fn cmd_kbench_mt(a: &Args) {
                             let cl = ctx.tid / 4;
                             let in_cl = ((cl + 1) * 4).min(nt) - cl * 4;
                             let me = ctx.tid % 4;
-                            let mut xq = vec![0u32; rows_per_expert.div_ceil(2) * (k / 256) * kernels_sys::PF_XBLK_BYTES / 4];
+                            let mut xq = vec![
+                                0u32;
+                                rows_per_expert.div_ceil(2)
+                                    * (k / 256)
+                                    * kernels_sys::PF_XBLK_BYTES
+                                    / 4
+                            ];
                             // static split: expert e belongs to cluster e % ncl; rows slice by worker
                             for e in (cl..ne).step_by(ncl) {
-                                let rp: Vec<*const u8> = (0..rows_per_expert).map(|j| actr[((e * 7 + j * 13) % ntok) * rbk..].as_ptr()).collect();
+                                let rp: Vec<*const u8> = (0..rows_per_expert)
+                                    .map(|j| actr[((e * 7 + j * 13) % ntok) * rbk..].as_ptr())
+                                    .collect();
                                 let r0 = (erows / 64 * me / in_cl) * 64;
                                 let r1 = (erows / 64 * (me + 1) / in_cl) * 64;
                                 if r1 > r0 {
                                     // SAFETY: worker `me` owns output columns r0..r1 of the expert's rows.
-                                    let orow: Vec<*mut f32> = (0..rows_per_expert).map(|j| unsafe { rout.0.add((e * rows_per_expert + j) * erows + r0) }).collect();
+                                    let orow: Vec<*mut f32> = (0..rows_per_expert)
+                                        .map(|j| unsafe {
+                                            rout.0.add((e * rows_per_expert + j) * erows + r0)
+                                        })
+                                        .collect();
                                     unsafe {
-                                        kernels_sys::mmid_tile_pack_raw(&rp, k, xq.as_mut_ptr() as *mut u8);
-                                        kernels_sys::mmid_tile_raw(eq, k, &orow, experts.as_ptr().add(e * ebytes + eq.group_offset(r0, k)), xq.as_ptr() as *const u8, r1 - r0);
+                                        kernels_sys::mmid_tile_pack_raw(
+                                            &rp,
+                                            k,
+                                            xq.as_mut_ptr() as *mut u8,
+                                        );
+                                        kernels_sys::mmid_tile_raw(
+                                            eq,
+                                            k,
+                                            &orow,
+                                            experts
+                                                .as_ptr()
+                                                .add(e * ebytes + eq.group_offset(r0, k)),
+                                            xq.as_ptr() as *const u8,
+                                            r1 - r0,
+                                        );
                                     }
                                 }
                                 if me == 0 {
@@ -1586,33 +2216,63 @@ fn cmd_kbench_mt(a: &Args) {
             let dt = t0.elapsed().as_secs_f64();
             let gmac = done.load(Relaxed) as f64 * mac_per_unit / dt / 1e9;
             let b = *base.entry(work).or_insert(gmac / nt as f64);
-            let cl = cpus.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",");
-            println!("{:<10} {:<22} {:>3} {:>10.1} {:>10.1} {:>8.2}", work, cl, nt, gmac, gmac / nt as f64, gmac / nt as f64 / b);
+            let cl = cpus
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            println!(
+                "{:<10} {:<22} {:>3} {:>10.1} {:>10.1} {:>8.2}",
+                work,
+                cl,
+                nt,
+                gmac,
+                gmac / nt as f64,
+                gmac / nt as f64 / b
+            );
             results.push(json!({ "work": work, "cpus": cpus, "threads": nt, "gmac_s": gmac, "gmac_s_per_thread": gmac / nt as f64, "passes": reps, "seconds": dt }));
         }
     }
     if let Some(p) = a.get("out") {
-        std::fs::write(p, serde_json::to_string_pretty(&json!({ "rows_per_expert": rows_per_expert, "results": results })).unwrap()).unwrap();
+        std::fs::write(
+            p,
+            serde_json::to_string_pretty(
+                &json!({ "rows_per_expert": rows_per_expert, "results": results }),
+            )
+            .unwrap(),
+        )
+        .unwrap();
     }
 }
 
 /// Engine construction-time switches an arm of `bench --arms` may set. OXE_VL (F96 b): the lane-GEMV mask is read
 /// by `Engine::new` (`dec_vl`), so VL arms share one process and one prefill instead of re-prefilling per process.
-const ARM_KEYS: [&str; 6] = ["OXE_DEC_ATTN_PAD", "OXE_DEC_FUSED_DN", "OXE_KV_TYPE", "OXE_KV8_FUSED", "OXE_ATTN_STATS", "OXE_VL"];
+const ARM_KEYS: [&str; 6] = [
+    "OXE_DEC_ATTN_PAD",
+    "OXE_DEC_FUSED_DN",
+    "OXE_KV_TYPE",
+    "OXE_KV8_FUSED",
+    "OXE_ATTN_STATS",
+    "OXE_VL",
+];
 
 /// `name[:KEY=V[,KEY=V..]]|name2..` -> arms (dies on an unknown switch or a malformed entry).
 fn parse_arms(spec: &str) -> Vec<(String, Vec<(String, String)>)> {
-    spec
-        .split('|')
+    spec.split('|')
         .map(|arm| {
             let (name, envs) = arm.split_once(':').unwrap_or((arm, ""));
             let envs: Vec<(String, String)> = envs
                 .split(',')
                 .filter(|e| !e.is_empty())
                 .map(|e| {
-                    let (k, v) = e.split_once('=').unwrap_or_else(|| die(&format!("--arms: '{e}' is not KEY=VALUE")));
+                    let (k, v) = e
+                        .split_once('=')
+                        .unwrap_or_else(|| die(&format!("--arms: '{e}' is not KEY=VALUE")));
                     if !ARM_KEYS.contains(&k) {
-                        die(&format!("--arms: unknown switch {k} (known: {})", ARM_KEYS.join(", ")));
+                        die(&format!(
+                            "--arms: unknown switch {k} (known: {})",
+                            ARM_KEYS.join(", ")
+                        ));
                     }
                     (k.to_string(), v.to_string())
                 })
@@ -1660,7 +2320,17 @@ fn cmd_bench_arms(a: &Args, spec: &str) {
         for (k, v) in envs {
             std::env::set_var(k, v);
         }
-        let eng = Engine::new(plan, &s.loaded.ws, EngineConfig { n_ctx, logits: false, trace: false, profile }).unwrap_or_else(|e| die(&format!("arm {name}: {e}")));
+        let eng = Engine::new(
+            plan,
+            &s.loaded.ws,
+            EngineConfig {
+                n_ctx,
+                logits: false,
+                trace: false,
+                profile,
+            },
+        )
+        .unwrap_or_else(|e| die(&format!("arm {name}: {e}")));
         engines.push(eng);
     }
     for k in KEYS {
@@ -1672,11 +2342,14 @@ fn cmd_bench_arms(a: &Args, spec: &str) {
         let kv = eng.kv_type().name();
         match states.iter().find(|st| st.0 == kv) {
             Some(st) => {
-                eng.read_state(&mut &st.1[..], prompt.len()).unwrap_or_else(|e| die(&format!("arm {}: read_state: {e}", arms[i].0)));
+                eng.read_state(&mut &st.1[..], prompt.len())
+                    .unwrap_or_else(|e| die(&format!("arm {}: read_state: {e}", arms[i].0)));
             }
             None => {
                 let t0 = Instant::now();
-                let first = eng.prefill(&s.pool, &prompt, model::engine::UBATCH).unwrap();
+                let first = eng
+                    .prefill(&s.pool, &prompt, model::engine::UBATCH)
+                    .unwrap();
                 let secs = t0.elapsed().as_secs_f64();
                 let mut buf = Vec::new();
                 eng.write_state(&mut buf).unwrap();
@@ -1691,12 +2364,20 @@ fn cmd_bench_arms(a: &Args, spec: &str) {
     let mut hashes: Vec<Vec<String>> = vec![Vec::new(); na];
     let mut last_ids: Vec<Vec<u32>> = vec![Vec::new(); na];
     for rep in 0..reps {
-        let order: Vec<usize> = if rep % 2 == 0 { (0..na).collect() } else { (0..na).rev().collect() };
+        let order: Vec<usize> = if rep % 2 == 0 {
+            (0..na).collect()
+        } else {
+            (0..na).rev().collect()
+        };
         for i in order {
             let eng = &engines[i];
-            let st = states.iter().find(|st| st.0 == eng.kv_type().name()).unwrap();
+            let st = states
+                .iter()
+                .find(|st| st.0 == eng.kv_type().name())
+                .unwrap();
             eng.reset();
-            eng.read_state(&mut &st.1[..], prompt.len()).unwrap_or_else(|e| die(&format!("arm {}: read_state: {e}", arms[i].0)));
+            eng.read_state(&mut &st.1[..], prompt.len())
+                .unwrap_or_else(|e| die(&format!("arm {}: read_state: {e}", arms[i].0)));
             let mut next = st.2;
             let mut gen = Vec::new();
             for _ in 0..warmup {
@@ -1717,7 +2398,13 @@ fn cmd_bench_arms(a: &Args, spec: &str) {
             let mean = ms.iter().sum::<f64>() / ms.len() as f64;
             ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let med = ms[ms.len() / 2];
-            eprintln!("bench --arms: round {rep}{} arm {:<12} {:.3} ms/token median, hash {}", if rep < drop { " (dropped)" } else { "" }, arms[i].0, med, sha_ids(&gen));
+            eprintln!(
+                "bench --arms: round {rep}{} arm {:<12} {:.3} ms/token median, hash {}",
+                if rep < drop { " (dropped)" } else { "" },
+                arms[i].0,
+                med,
+                sha_ids(&gen)
+            );
             medians[i].push(med);
             means[i].push(mean);
             hashes[i].push(sha_ids(&gen));
@@ -1731,12 +2418,19 @@ fn cmd_bench_arms(a: &Args, spec: &str) {
         let eng = &engines[i];
         let kv = eng.kv_type().name();
         // within a KV type every arm and round must generate the same ids
-        let ref_hash = (0..na).find(|&j| engines[j].kv_type().name() == kv).map(|j| hashes[j][0].clone()).unwrap();
+        let ref_hash = (0..na)
+            .find(|&j| engines[j].kv_type().name() == kv)
+            .map(|j| hashes[j][0].clone())
+            .unwrap();
         let same = hashes[i].iter().all(|h| *h == ref_hash);
         hash_ok &= same;
         let mut kept: Vec<f64> = medians[i][drop..].to_vec();
         kept.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let med = if kept.len() % 2 == 1 { kept[kept.len() / 2] } else { (kept[kept.len() / 2 - 1] + kept[kept.len() / 2]) / 2.0 };
+        let med = if kept.len() % 2 == 1 {
+            kept[kept.len() / 2]
+        } else {
+            (kept[kept.len() / 2 - 1] + kept[kept.len() / 2]) / 2.0
+        };
         let mut arm = json!({
             "name": arms[i].0, "env": arms[i].1.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(), "kv": kv,
             "ms_per_token_median_per_round": medians[i], "ms_per_token_mean_per_round": means[i], "rounds_dropped": drop,
@@ -1753,7 +2447,10 @@ fn cmd_bench_arms(a: &Args, spec: &str) {
         }
         out_arms.push(arm);
     }
-    let mem: serde_json::Map<String, serde_json::Value> = memory_report().into_iter().map(|(k, v)| (k, json!(v))).collect();
+    let mem: serde_json::Map<String, serde_json::Value> = memory_report()
+        .into_iter()
+        .map(|(k, v)| (k, json!(v)))
+        .collect();
     let res = json!({
         "engine": "oxe", "engine_commit": option_env!("OXE_GIT_COMMIT").unwrap_or("unknown"),
         "effective": model::engine::effective_switches(),
@@ -1790,14 +2487,26 @@ fn cmd_bench(a: &Args) {
     let profile = a.flag("profile");
     let s = setup(a, n_ctx);
     let plan = &s.loaded.plan;
-    let eng = Engine::new(plan, &s.loaded.ws, EngineConfig { n_ctx, logits: false, trace: false, profile }).unwrap_or_else(|e| die(&e));
+    let eng = Engine::new(
+        plan,
+        &s.loaded.ws,
+        EngineConfig {
+            n_ctx,
+            logits: false,
+            trace: false,
+            profile,
+        },
+    )
+    .unwrap_or_else(|e| die(&e));
     // a fixed deterministic prompt (ids from --tokens, else a fixed pseudo-random sequence)
     let prompt = bench_prompt(a, plen);
     let mut next = 0;
     if a.flag("batched-prompt") {
         // batched prefill of the prompt (long-context decode: --prompt-len 16384 --batched-prompt)
         if !prompt.is_empty() {
-            next = eng.prefill(&s.pool, &prompt, model::engine::UBATCH).unwrap();
+            next = eng
+                .prefill(&s.pool, &prompt, model::engine::UBATCH)
+                .unwrap();
         }
     } else {
         for &t in &prompt {
@@ -1834,7 +2543,10 @@ fn cmd_bench(a: &Args) {
         phases = ph;
         profile_sub = sub;
     }
-    let mem: serde_json::Map<String, serde_json::Value> = memory_report().into_iter().map(|(k, v)| (k, json!(v))).collect();
+    let mem: serde_json::Map<String, serde_json::Value> = memory_report()
+        .into_iter()
+        .map(|(k, v)| (k, json!(v)))
+        .collect();
     let info = &s.loaded.ws.info;
     let res = json!({
         "engine": "oxe", "engine_commit": option_env!("OXE_GIT_COMMIT").unwrap_or("unknown"),
@@ -1888,14 +2600,20 @@ fn cmd_bench(a: &Args) {
 /// the window; at every scored position KLD(f16 || int8) of the full next-token distributions (f64) and top-1
 /// agreement. Output: mean, p50, p99, max KLD and top-1 per window and overall (JSON to --out).
 fn cmd_kv_kld(a: &Args) {
-    let kv = model::engine::KvType::parse(a.get("kv").unwrap_or("kv8")).unwrap_or_else(|| die("--kv f16|k8|v8|kv8"));
+    let kv = model::engine::KvType::parse(a.get("kv").unwrap_or("kv8"))
+        .unwrap_or_else(|| die("--kv f16|k8|v8|kv8"));
     let mut windows: Vec<(usize, usize)> = a
         .get("score")
         .unwrap_or("8192:1024")
         .split(',')
         .map(|w| {
-            let (s, n) = w.split_once(':').unwrap_or_else(|| die("--score START:LEN,.."));
-            (s.parse().unwrap_or_else(|_| die("--score")), n.parse().unwrap_or_else(|_| die("--score")))
+            let (s, n) = w
+                .split_once(':')
+                .unwrap_or_else(|| die("--score START:LEN,.."));
+            (
+                s.parse().unwrap_or_else(|_| die("--score")),
+                n.parse().unwrap_or_else(|_| die("--score")),
+            )
         })
         .collect();
     windows.sort();
@@ -1906,7 +2624,8 @@ fn cmd_kv_kld(a: &Args) {
             // tokenised before: QC-4 2026-11-10 spent its time before the first KLD line). Start
             // with ~8 bytes per needed token and double until there are enough tokens.
             let t_tok = Instant::now();
-            let tk = tokenizer::Tokenizer::from_gguf(a.model()).unwrap_or_else(|e| die(&format!("tokenizer: {e:?}")));
+            let tk = tokenizer::Tokenizer::from_gguf(a.model())
+                .unwrap_or_else(|e| die(&format!("tokenizer: {e:?}")));
             let text = std::fs::read_to_string(f).unwrap_or_else(|e| die(&format!("{f}: {e}")));
             let mut bytes = (need * 8).max(4096).min(text.len());
             let toks = loop {
@@ -1919,26 +2638,55 @@ fn cmd_kv_kld(a: &Args) {
                 }
                 bytes = (bytes * 2).min(text.len());
             };
-            eprintln!("kv-kld: tokenised {} of {} bytes -> {} tokens (need {need}) in {:.2} s", bytes, text.len(), toks.len(), t_tok.elapsed().as_secs_f64());
+            eprintln!(
+                "kv-kld: tokenised {} of {} bytes -> {} tokens (need {need}) in {:.2} s",
+                bytes,
+                text.len(),
+                toks.len(),
+                t_tok.elapsed().as_secs_f64()
+            );
             toks
         }
         (None, Some(t)) => parse_ids(t),
         _ => die("--text-file F or --prompt-ids"),
     };
     if toks.len() < need {
-        die(&format!("text has {} tokens, the windows need {need}", toks.len()));
+        die(&format!(
+            "text has {} tokens, the windows need {need}",
+            toks.len()
+        ));
     }
     let n_ctx = a.num("ctx", 32768).max(need);
     if a.flag("dry-run") {
         // model-free: tokenisation and the plan only
         let steps: usize = windows.iter().map(|w| w.1).sum();
-        println!("{}", json!({ "kv": kv.name(), "n_ctx": n_ctx, "tokens_available": toks.len(), "tokens_needed": need, "windows": windows,
-            "prefill_tokens_per_engine": need - 1 - steps, "decode_steps_per_engine": steps, "engines": 2 }));
+        println!(
+            "{}",
+            json!({ "kv": kv.name(), "n_ctx": n_ctx, "tokens_available": toks.len(), "tokens_needed": need, "windows": windows,
+            "prefill_tokens_per_engine": need - 1 - steps, "decode_steps_per_engine": steps, "engines": 2 })
+        );
         return;
     }
     let s = setup(a, n_ctx);
-    let cfg = EngineConfig { n_ctx, logits: true, trace: false, profile: false };
-    let mk = |t| Engine::with_options(&s.loaded.plan, &s.loaded.ws, cfg.clone(), EngineOptions { verify_lanes: 1, mtp: None, kv_type: Some(t) }).unwrap_or_else(|e| die(&e));
+    let cfg = EngineConfig {
+        n_ctx,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
+    let mk = |t| {
+        Engine::with_options(
+            &s.loaded.plan,
+            &s.loaded.ws,
+            cfg.clone(),
+            EngineOptions {
+                verify_lanes: 1,
+                mtp: None,
+                kv_type: Some(t),
+            },
+        )
+        .unwrap_or_else(|e| die(&e))
+    };
     let ea = mk(model::engine::KvType::F16);
     let eb = mk(kv);
     let lsm = |l: &[f32]| -> Vec<f64> {
@@ -1946,7 +2694,18 @@ fn cmd_kv_kld(a: &Args) {
         let z: f64 = l.iter().map(|&x| (x as f64 - m).exp()).sum::<f64>().ln() + m;
         l.iter().map(|&x| x as f64 - z).collect()
     };
-    let argmax = |l: &[f32]| l.iter().enumerate().fold((0usize, f32::NEG_INFINITY), |b, (i, &x)| if x > b.1 { (i, x) } else { b }).0;
+    let argmax = |l: &[f32]| {
+        l.iter()
+            .enumerate()
+            .fold((0usize, f32::NEG_INFINITY), |b, (i, &x)| {
+                if x > b.1 {
+                    (i, x)
+                } else {
+                    b
+                }
+            })
+            .0
+    };
     let mut pos = 0usize;
     let mut all: Vec<f64> = Vec::new();
     let mut agree = 0usize;
@@ -1957,10 +2716,19 @@ fn cmd_kv_kld(a: &Args) {
             // progress lines: a run that hits a time limit shows where it was
             let tp = Instant::now();
             ea.prefill(&s.pool, &toks[pos..start], model::engine::UBATCH);
-            eprintln!("kv-kld: f16 engine prefilled {}..{start} in {:.1} s", pos, tp.elapsed().as_secs_f64());
+            eprintln!(
+                "kv-kld: f16 engine prefilled {}..{start} in {:.1} s",
+                pos,
+                tp.elapsed().as_secs_f64()
+            );
             let tp = Instant::now();
             eb.prefill(&s.pool, &toks[pos..start], model::engine::UBATCH);
-            eprintln!("kv-kld: {} engine prefilled {}..{start} in {:.1} s", kv.name(), pos, tp.elapsed().as_secs_f64());
+            eprintln!(
+                "kv-kld: {} engine prefilled {}..{start} in {:.1} s",
+                kv.name(),
+                pos,
+                tp.elapsed().as_secs_f64()
+            );
             pos = start;
         }
         let (mut w, mut wa) = (Vec::with_capacity(len), 0usize);
@@ -1975,7 +2743,14 @@ fn cmd_kv_kld(a: &Args) {
             wa += (argmax(la) == argmax(lb)) as usize;
         }
         let st = kld_stats(&w);
-        eprintln!("kv-kld {}: window {start}+{len}: mean {:.3e} p99 {:.3e} max {:.3e} top1 {:.4}", kv.name(), st["mean"].as_f64().unwrap_or(0.0), st["p99"].as_f64().unwrap_or(0.0), st["max"].as_f64().unwrap_or(0.0), wa as f64 / len as f64);
+        eprintln!(
+            "kv-kld {}: window {start}+{len}: mean {:.3e} p99 {:.3e} max {:.3e} top1 {:.4}",
+            kv.name(),
+            st["mean"].as_f64().unwrap_or(0.0),
+            st["p99"].as_f64().unwrap_or(0.0),
+            st["max"].as_f64().unwrap_or(0.0),
+            wa as f64 / len as f64
+        );
         per.push(json!({"start": start, "len": len, "kld": st, "top1": wa as f64 / len as f64}));
         all.extend(&w);
         agree += wa;
@@ -2001,10 +2776,16 @@ fn kld_stats(v: &[f64]) -> serde_json::Value {
 }
 
 fn cmd_vocab_freq(a: &Args) {
-    let tok = tokenizer::Tokenizer::from_gguf(a.model()).unwrap_or_else(|e| die(&format!("tokenizer: {e:?}")));
+    let tok = tokenizer::Tokenizer::from_gguf(a.model())
+        .unwrap_or_else(|e| die(&format!("tokenizer: {e:?}")));
     let n_vocab = tok.n_vocab();
     let mut counts = vec![0u64; n_vocab];
-    let lists: Vec<String> = a.get("files-from").unwrap_or_else(|| die("--files-from LIST[,LIST:WEIGHT..]")).split(',').map(str::to_string).collect();
+    let lists: Vec<String> = a
+        .get("files-from")
+        .unwrap_or_else(|| die("--files-from LIST[,LIST:WEIGHT..]"))
+        .split(',')
+        .map(str::to_string)
+        .collect();
     let mut totals = Vec::new();
     for spec in &lists {
         // LIST or LIST:WEIGHT (integer weight per token occurrence, e.g. to balance code and prose)
@@ -2027,8 +2808,12 @@ fn cmd_vocab_freq(a: &Args) {
                 }
             }
         }
-        eprintln!("vocab-freq: {path}: {files} files ({skipped} skipped), {ntok} tokens, weight {w}");
-        totals.push(json!({"list": path, "files": files, "skipped": skipped, "tokens": ntok, "weight": w}));
+        eprintln!(
+            "vocab-freq: {path}: {files} files ({skipped} skipped), {ntok} tokens, weight {w}"
+        );
+        totals.push(
+            json!({"list": path, "files": files, "skipped": skipped, "tokens": ntok, "weight": w}),
+        );
     }
     let mut ids: Vec<u32> = (0..n_vocab as u32).collect();
     ids.sort_by(|&x, &y| counts[y as usize].cmp(&counts[x as usize]).then(x.cmp(&y)));
@@ -2038,8 +2823,19 @@ fn cmd_vocab_freq(a: &Args) {
     std::fs::write(out, text).unwrap_or_else(|e| die(&format!("{out}: {e}")));
     eprintln!("vocab-freq: {seen} of {n_vocab} ids seen; ranking -> {out}");
     if let Some(j) = a.get("json") {
-        let top: Vec<serde_json::Value> = ids.iter().take(seen).map(|&i| json!([i, counts[i as usize]])).collect();
-        std::fs::write(j, serde_json::to_string(&json!({"lists": totals, "seen": seen, "n_vocab": n_vocab, "counts": top})).unwrap()).unwrap();
+        let top: Vec<serde_json::Value> = ids
+            .iter()
+            .take(seen)
+            .map(|&i| json!([i, counts[i as usize]]))
+            .collect();
+        std::fs::write(
+            j,
+            serde_json::to_string(
+                &json!({"lists": totals, "seen": seen, "n_vocab": n_vocab, "counts": top}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
     }
 }
 
@@ -2069,8 +2865,22 @@ fn cmd_bench_mtp(a: &Args) {
     let s = setup(a, n_ctx);
     let mw = load_mtp(a, &s);
     let plan = &s.loaded.plan;
-    let eng = Engine::with_options(plan, &s.loaded.ws, EngineConfig { n_ctx, logits: false, trace: false, profile: false }, EngineOptions { verify_lanes: depth + 1, mtp: Some(&mw), kv_type: None })
-        .unwrap_or_else(|e| die(&e));
+    let eng = Engine::with_options(
+        plan,
+        &s.loaded.ws,
+        EngineConfig {
+            n_ctx,
+            logits: false,
+            trace: false,
+            profile: false,
+        },
+        EngineOptions {
+            verify_lanes: depth + 1,
+            mtp: Some(&mw),
+            kv_type: None,
+        },
+    )
+    .unwrap_or_else(|e| die(&e));
     let mut drv = MtpDriver::new(&eng, depth).unwrap_or_else(|e| die(&e));
     let prompt = bench_prompt(a, plen);
     let tp = Instant::now();
@@ -2079,22 +2889,34 @@ fn cmd_bench_mtp(a: &Args) {
     if state_file.is_some() && !a.flag("batched-prompt") {
         die("--state-file needs --batched-prompt");
     }
-    let header = state_header(&eng, &format!("bench-mtp head={}", a.get("mtp-from").unwrap_or("model")), &prompt);
+    let header = state_header(
+        &eng,
+        &format!("bench-mtp head={}", a.get("mtp-from").unwrap_or("model")),
+        &prompt,
+    );
     let mut loaded = None;
     if let Some(f) = state_file {
         if let Some((first, mut r)) = state_file_load(f, &eng, &header, prompt.len()) {
             let ne = plan.desc.n_embd;
             let rd = |r: &mut dyn Read, n: usize| -> Vec<u8> {
                 let mut b = vec![0u8; n];
-                r.read_exact(&mut b).unwrap_or_else(|e| die(&format!("state-file: MTP part: {e}")));
+                r.read_exact(&mut b)
+                    .unwrap_or_else(|e| die(&format!("state-file: MTP part: {e}")));
                 b
             };
             let q = u64::from_le_bytes(rd(&mut r, 8).try_into().unwrap()) as usize;
             let n = u64::from_le_bytes(rd(&mut r, 8).try_into().unwrap()) as usize;
-            let toks: Vec<u32> = rd(&mut r, n * 4).chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
-            let f: Vec<f32> = rd(&mut r, (n + 1) * ne * 4).chunks(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+            let toks: Vec<u32> = rd(&mut r, n * 4)
+                .chunks(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            let f: Vec<f32> = rd(&mut r, (n + 1) * ne * 4)
+                .chunks(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
             let (h, hl) = f.split_at(n * ne);
-            drv.import_state(&eng, q, toks, h.to_vec(), hl).unwrap_or_else(|e| die(&format!("state-file: {e}")));
+            drv.import_state(&eng, q, toks, h.to_vec(), hl)
+                .unwrap_or_else(|e| die(&format!("state-file: {e}")));
             loaded = Some(first);
         }
     }
@@ -2114,7 +2936,9 @@ fn cmd_bench_mtp(a: &Args) {
         extra.extend((q as u64).to_le_bytes());
         extra.extend((toks.len() as u64).to_le_bytes());
         toks.iter().for_each(|t| extra.extend(t.to_le_bytes()));
-        h.iter().chain(&hl).for_each(|v| extra.extend(v.to_le_bytes()));
+        h.iter()
+            .chain(&hl)
+            .for_each(|v| extra.extend(v.to_le_bytes()));
         state_file_save(state_file.unwrap(), &eng, &header, x, &extra);
         x
     } else if a.flag("batched-prompt") {
@@ -2126,7 +2950,13 @@ fn cmd_bench_mtp(a: &Args) {
     // --plain-steps (LONG-CTX MTP-by-context pricing): decode depth 0 on the same MTP engine and
     // state (step_plain keeps the MTP catch-up in sync: the server's path beyond --mtp-max-ctx)
     let plain = a.flag("plain-steps");
-    let step = |drv: &mut MtpDriver, x: u32, out: &mut Vec<u32>| if plain { drv.step_plain(&eng, &s.pool, x, out) } else { drv.step(&eng, &s.pool, x, out) };
+    let step = |drv: &mut MtpDriver, x: u32, out: &mut Vec<u32>| {
+        if plain {
+            drv.step_plain(&eng, &s.pool, x, out)
+        } else {
+            drv.step(&eng, &s.pool, x, out)
+        }
+    };
     let mut gen = Vec::new();
     let mut out = Vec::new();
     // warm-up: produce `warmup` tokens (gen holds every token fed to the target, as in the plain bench)
@@ -2155,7 +2985,10 @@ fn cmd_bench_mtp(a: &Args) {
     gen.push(x);
     gen.truncate(warmup + tokens + 1);
     let eff = total_ms / produced.max(1) as f64;
-    let mem: serde_json::Map<String, serde_json::Value> = memory_report().into_iter().map(|(k, v)| (k, json!(v))).collect();
+    let mem: serde_json::Map<String, serde_json::Value> = memory_report()
+        .into_iter()
+        .map(|(k, v)| (k, json!(v)))
+        .collect();
     let info = &s.loaded.ws.info;
     let cm = eng.ctx_mem();
     let ctx_mem_json = json!({ "kv": cm.kv, "kv_per_pos": cm.kv_per_pos, "recurrent": cm.recurrent, "decode_scratch": cm.decode_scratch });
@@ -2205,7 +3038,12 @@ fn bits_eq(a: &[f32], b: &[f32]) -> bool {
 /// prefill's last row) bit-identical to the plain row of that position. Also reports whether
 /// the plain ids equal the oracle's (llama.cpp) greedy continuation.
 fn cmd_mtp_check(a: &Args) {
-    let refs: Vec<PathBuf> = a.get("refs").unwrap_or_else(|| die("--refs DIR,DIR,..")).split(',').map(PathBuf::from).collect();
+    let refs: Vec<PathBuf> = a
+        .get("refs")
+        .unwrap_or_else(|| die("--refs DIR,DIR,.."))
+        .split(',')
+        .map(PathBuf::from)
+        .collect();
     let n = a.num("n", 256);
     let depths: Vec<usize> = parse_range(a.get("depths").unwrap_or("1,2,3"));
     // prompt: batched prefill (Engine::prefill vs MtpDriver::prefill_batched, default) or
@@ -2220,17 +3058,43 @@ fn cmd_mtp_check(a: &Args) {
     if maxd == 0 || maxd > 3 {
         die("--depths: 1..3");
     }
-    let prompts: Vec<(PathBuf, Vec<u32>, Vec<u32>)> = refs.iter().map(|r| { let m = read_manifest(r); (r.clone(), ids_of(&m["tokens"]), ids_of(&m["generated"])) }).collect();
+    let prompts: Vec<(PathBuf, Vec<u32>, Vec<u32>)> = refs
+        .iter()
+        .map(|r| {
+            let m = read_manifest(r);
+            (r.clone(), ids_of(&m["tokens"]), ids_of(&m["generated"]))
+        })
+        .collect();
     let maxp = prompts.iter().map(|p| p.1.len()).max().unwrap_or(1);
     let n_ctx = a.num("ctx", 4096).max(maxp + n + maxd + 2);
     let s = setup(a, n_ctx);
     let mw = load_mtp(a, &s);
     let plan = &s.loaded.plan;
-    let cfg = EngineConfig { n_ctx, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let plain = Engine::new(plan, &s.loaded.ws, cfg.clone()).unwrap_or_else(|e| die(&e));
     let engs: Vec<(usize, Engine)> = depths
         .iter()
-        .map(|&d| (d, Engine::with_options(plan, &s.loaded.ws, cfg.clone(), EngineOptions { verify_lanes: d + 1, mtp: Some(&mw), kv_type: None }).unwrap_or_else(|e| die(&e))))
+        .map(|&d| {
+            (
+                d,
+                Engine::with_options(
+                    plan,
+                    &s.loaded.ws,
+                    cfg.clone(),
+                    EngineOptions {
+                        verify_lanes: d + 1,
+                        mtp: Some(&mw),
+                        kv_type: None,
+                    },
+                )
+                .unwrap_or_else(|e| die(&e)),
+            )
+        })
         .collect();
     let mut results = Vec::new();
     let mut all_ok = true;
@@ -2261,7 +3125,10 @@ fn cmd_mtp_check(a: &Args) {
             let (mut x, last_lane) = if batched {
                 (drv.prefill_batched(e, &s.pool, &s.pool, prompt, ubatch), 0)
             } else {
-                (drv.prefill(e, &s.pool, prompt), (prompt.len() - 1) % e.verify_lanes())
+                (
+                    drv.prefill(e, &s.pool, prompt),
+                    (prompt.len() - 1) % e.verify_lanes(),
+                )
             };
             let mut rows_checked = 0usize;
             let mut rows_bad = 0usize;
@@ -2322,8 +3189,8 @@ fn cmd_mtp_check(a: &Args) {
     }
 }
 
-#[cfg(feature="npu-prefill")]
-fn npu_stats_json(s:model::npu_prefill::Stats)->serde_json::Value{
+#[cfg(feature = "npu-prefill")]
+fn npu_stats_json(s: model::npu_prefill::Stats) -> serde_json::Value {
     json!({"prepared":s.prepared,"skipped":s.skipped,"calls":s.calls,"rows":s.rows,
         "reserved_dma_bytes":s.reserved_dma_bytes,"occupied_weight_bytes":s.occupied_weight_bytes,
         "host_scratch_bytes":s.host_scratch_bytes,"first_error":s.first_error,"recurrent_mode":s.recurrent_mode,"recurrent_mask":format!("{:016x}",s.recurrent_mask),"cpu_f32_matrices":s.cpu_f32_matrices,"gemm_flops":s.gemm_flops,"overlap_shared":s.overlap_shared,"shared_chain_units":s.shared_chain_units,"shared_chain_s":s.shared_chain_s,"expert_units_started_during_shared":s.expert_units_started_during_shared,"host_phases":{"input_s":s.input_s,"device_run_s":s.device_run_s,"output_s":s.output_s,"commit_s":s.commit_s,"projection_s":s.projection_s,"lock_wait_thread_s":s.lock_wait_s},
@@ -2333,98 +3200,217 @@ fn npu_stats_json(s:model::npu_prefill::Stats)->serde_json::Value{
         "accelerator":s.accelerator.map(|a|json!({"pack_s":a.pack_s,"gemm_s":a.gemm_s,"dsp_us":a.dsp_us,"calls":a.calls,"allocated_bytes":a.allocated_bytes,"weights_bytes":a.weights_bytes}))})
 }
 
-fn maybe_npu_prefill(a:&Args,eng:&mut Engine){
-    let Some(mode)=a.get("npu-prefill")else{return};
-    #[cfg(not(feature="npu-prefill"))]{let _=(eng,mode);die("build with the npu-prefill feature");}
-    #[cfg(feature="npu-prefill")]{
-        if !["device","emu"].contains(&mode){die("--npu-prefill must be device or emu");}
-        let g=gguf::Gguf::open(a.model()).unwrap_or_else(|e|die(&e.to_string()));
-        let dir=model::weights::cache_dir(a.load_opts().cache_dir.as_deref()).unwrap_or_else(|e|die(&e));
+fn maybe_npu_prefill(a: &Args, eng: &mut Engine) {
+    let Some(mode) = a.get("npu-prefill") else {
+        return;
+    };
+    #[cfg(not(feature = "npu-prefill"))]
+    {
+        let _ = (eng, mode);
+        die("build with the npu-prefill feature");
+    }
+    #[cfg(feature = "npu-prefill")]
+    {
+        if !["device", "emu"].contains(&mode) {
+            die("--npu-prefill must be device or emu");
+        }
+        let g = gguf::Gguf::open(a.model()).unwrap_or_else(|e| die(&e.to_string()));
+        let dir = model::weights::cache_dir(a.load_opts().cache_dir.as_deref())
+            .unwrap_or_else(|e| die(&e));
         // Check THIS source independently of an inherited target-model SHA env.
-        let sha=model::weights::model_sha256_opt(&g.path,&dir,false).unwrap_or_else(|e|die(&e));
+        let sha =
+            model::weights::model_sha256_opt(&g.path, &dir, false).unwrap_or_else(|e| die(&e));
         // CPU weights already live in the independent repacked cache. A cold
         // source checksum must not leave a second model-sized clean page cache.
-        for t in &g.header.tensors{g.release_range(t,0,t.bytes()as usize);g.drop_cache(t);}
-        let backend:Box<dyn oxn::Backend>=if mode=="emu"{
-            Box::new(oxn::emu::Emu::new(8<<20,1))
-        }else{
-            if !cfg!(feature="npu-device"){die("build with the npu-device feature");}
-            let go=a.get("npu-go-file").unwrap_or_else(||die("device prefill needs --npu-go-file for guard handshake"));
-            println!("{}",json!({"event":"ready_before_device","pid":std::process::id()}));
-            std::io::stdout().flush().unwrap();let deadline=Instant::now()+Duration::from_secs(30);
-            while !Path::new(go).is_file(){if Instant::now()>deadline{die("guard handshake timeout; no NPU opened");}std::thread::sleep(Duration::from_millis(20));}
-            #[cfg(feature="npu-device")]{Box::new(oxn::device::Device::open(1).unwrap_or_else(|e|die(&e)))}
-            #[cfg(not(feature="npu-device"))]{unreachable!()}
+        for t in &g.header.tensors {
+            g.release_range(t, 0, t.bytes() as usize);
+            g.drop_cache(t);
+        }
+        let backend: Box<dyn oxn::Backend> = if mode == "emu" {
+            Box::new(oxn::emu::Emu::new(8 << 20, 1))
+        } else {
+            if !cfg!(feature = "npu-device") {
+                die("build with the npu-device feature");
+            }
+            let go = a
+                .get("npu-go-file")
+                .unwrap_or_else(|| die("device prefill needs --npu-go-file for guard handshake"));
+            println!(
+                "{}",
+                json!({"event":"ready_before_device","pid":std::process::id()})
+            );
+            std::io::stdout().flush().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !Path::new(go).is_file() {
+                if Instant::now() > deadline {
+                    die("guard handshake timeout; no NPU opened");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            #[cfg(feature = "npu-device")]
+            {
+                Box::new(oxn::device::Device::open(1).unwrap_or_else(|e| die(&e)))
+            }
+            #[cfg(not(feature = "npu-device"))]
+            {
+                unreachable!()
+            }
         };
-        let st=eng.enable_npu_prefill(&g,&sha,backend,model::npu_prefill::Config{audit_original:a.get("npu-audit")==Some("1"),
-            recurrent:model::npu_prefill::RecurrentMode::parse(a.get("npu-recurrent").unwrap_or("native")).unwrap_or_else(|e|die(&e)),
-            overlap_shared:match a.get("npu-overlap").unwrap_or("none"){"none"=>false,"shared"=>true,_=>die("--npu-overlap none|shared")},
-            recurrent_mask:a.get("npu-recurrent-mask").map(|s|u64::from_str_radix(s.trim_start_matches("0x"),16).unwrap_or_else(|_|die("hex recurrent mask required"))).unwrap_or(u64::MAX),..Default::default()},&a.cpus()).unwrap_or_else(|e|die(&e));
-        eprintln!("oxe: npu-prefill prepared {}",npu_stats_json(st));
-        println!("{}",json!({"event":"npu_prepared"}));std::io::stdout().flush().unwrap();
+        let st = eng
+            .enable_npu_prefill(
+                &g,
+                &sha,
+                backend,
+                model::npu_prefill::Config {
+                    audit_original: a.get("npu-audit") == Some("1"),
+                    recurrent: model::npu_prefill::RecurrentMode::parse(
+                        a.get("npu-recurrent").unwrap_or("native"),
+                    )
+                    .unwrap_or_else(|e| die(&e)),
+                    overlap_shared: match a.get("npu-overlap").unwrap_or("none") {
+                        "none" => false,
+                        "shared" => true,
+                        _ => die("--npu-overlap none|shared"),
+                    },
+                    recurrent_mask: a
+                        .get("npu-recurrent-mask")
+                        .map(|s| {
+                            u64::from_str_radix(s.trim_start_matches("0x"), 16)
+                                .unwrap_or_else(|_| die("hex recurrent mask required"))
+                        })
+                        .unwrap_or(u64::MAX),
+                    ..Default::default()
+                },
+                &a.cpus(),
+            )
+            .unwrap_or_else(|e| die(&e));
+        eprintln!("oxe: npu-prefill prepared {}", npu_stats_json(st));
+        println!("{}", json!({"event":"npu_prepared"}));
+        std::io::stdout().flush().unwrap();
     }
 }
 
-fn cmd_npu_prefill_check(a:&Args){
-    #[cfg(not(feature="npu-prefill"))]{let _=a;die("build with npu-prefill feature");}
-    #[cfg(feature="npu-prefill")]{
-        if a.get("npu-prefill").is_none(){die("explicit --npu-prefill device|emu is required");}
-        let p=if a.get("ref").is_some()||a.get("tokens").is_some(){prompt(a)}else{
-            (0..a.num("prompt-len",64)as u32).map(|i|i.wrapping_mul(2654435761)%150000+1000).collect()
+fn cmd_npu_prefill_check(a: &Args) {
+    #[cfg(not(feature = "npu-prefill"))]
+    {
+        let _ = a;
+        die("build with npu-prefill feature");
+    }
+    #[cfg(feature = "npu-prefill")]
+    {
+        if a.get("npu-prefill").is_none() {
+            die("explicit --npu-prefill device|emu is required");
+        }
+        let p = if a.get("ref").is_some() || a.get("tokens").is_some() {
+            prompt(a)
+        } else {
+            (0..a.num("prompt-len", 64) as u32)
+                .map(|i| i.wrapping_mul(2654435761) % 150000 + 1000)
+                .collect()
         };
-        let n=a.num("n",16);
-        if p.len()<32||p.len()>1024||n==0||n>128{die("bounded proof needs32..1024 prompt tokens and1..128 decode rows");}
-        let n_ctx=a.num("ctx",2048).max(p.len()+n+1);
-        let s=setup(a,n_ctx);
-        if p.iter().any(|&t|t as usize>=s.loaded.plan.desc.n_vocab){die("prompt token outside vocabulary");}
-        let cfg=EngineConfig{n_ctx,logits:true,trace:false,profile:false};
-        let reference=Engine::new(&s.loaded.plan,&s.loaded.ws,cfg.clone()).unwrap_or_else(|e|die(&e));
-        let single=Engine::new(&s.loaded.plan,&s.loaded.ws,cfg.clone()).unwrap_or_else(|e|die(&e));
-        let mut candidate=Engine::new(&s.loaded.plan,&s.loaded.ws,cfg).unwrap_or_else(|e|die(&e));
-        maybe_npu_prefill(a,&mut candidate);
-        let ubatch=a.num("ubatch",256);
-        let t=Instant::now();let mut next=reference.prefill(&s.pool,&p,ubatch).unwrap();let cpu_prefill_s=t.elapsed().as_secs_f64();
-        for &tok in &p{single.step(&s.pool,tok);}
-        let t=Instant::now();candidate.prefill(&s.pool,&p,ubatch);let npu_prefill_s=t.elapsed().as_secs_f64();
-        let npu_calls_after_prefill=candidate.npu_prefill_stats().unwrap().calls;
-        let mut rows=Vec::new();let mut ids=Vec::new();
-        for i in 0..n{
-            let base=reference.logits();
-            if base.is_empty()||base.len()!=candidate.logits().len()||base.len()!=single.logits().len()
-                ||base.iter().chain(candidate.logits()).chain(single.logits()).any(|v|!v.is_finite()){
+        let n = a.num("n", 16);
+        if p.len() < 32 || p.len() > 1024 || n == 0 || n > 128 {
+            die("bounded proof needs32..1024 prompt tokens and1..128 decode rows");
+        }
+        let n_ctx = a.num("ctx", 2048).max(p.len() + n + 1);
+        let s = setup(a, n_ctx);
+        if p.iter().any(|&t| t as usize >= s.loaded.plan.desc.n_vocab) {
+            die("prompt token outside vocabulary");
+        }
+        let cfg = EngineConfig {
+            n_ctx,
+            logits: true,
+            trace: false,
+            profile: false,
+        };
+        let reference =
+            Engine::new(&s.loaded.plan, &s.loaded.ws, cfg.clone()).unwrap_or_else(|e| die(&e));
+        let single =
+            Engine::new(&s.loaded.plan, &s.loaded.ws, cfg.clone()).unwrap_or_else(|e| die(&e));
+        let mut candidate =
+            Engine::new(&s.loaded.plan, &s.loaded.ws, cfg).unwrap_or_else(|e| die(&e));
+        maybe_npu_prefill(a, &mut candidate);
+        let ubatch = a.num("ubatch", 256);
+        let t = Instant::now();
+        let mut next = reference.prefill(&s.pool, &p, ubatch).unwrap();
+        let cpu_prefill_s = t.elapsed().as_secs_f64();
+        for &tok in &p {
+            single.step(&s.pool, tok);
+        }
+        let t = Instant::now();
+        candidate.prefill(&s.pool, &p, ubatch);
+        let npu_prefill_s = t.elapsed().as_secs_f64();
+        let npu_calls_after_prefill = candidate.npu_prefill_stats().unwrap().calls;
+        let mut rows = Vec::new();
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let base = reference.logits();
+            if base.is_empty()
+                || base.len() != candidate.logits().len()
+                || base.len() != single.logits().len()
+                || base
+                    .iter()
+                    .chain(candidate.logits())
+                    .chain(single.logits())
+                    .any(|v| !v.is_finite())
+            {
                 die("nonfinite or mismatched logit rows");
             }
-            let numeric=kld(base,candidate.logits());let noise=kld(base,single.logits());
+            let numeric = kld(base, candidate.logits());
+            let noise = kld(base, single.logits());
             rows.push(json!({"row":i,"npu_vs_batch_kld":numeric,"single_vs_batch_noise":noise,
                 "npu_top1_matches_batch":argmax(base)==argmax(candidate.logits()),"single_top1_matches_batch":argmax(base)==argmax(single.logits())}));
-            ids.push(next);let tok=next;next=reference.step(&s.pool,tok);single.step(&s.pool,tok);candidate.step(&s.pool,tok);
+            ids.push(next);
+            let tok = next;
+            next = reference.step(&s.pool, tok);
+            single.step(&s.pool, tok);
+            candidate.step(&s.pool, tok);
         }
-        let mean=|key:&str|rows.iter().map(|r|r[key].as_f64().unwrap()).sum::<f64>()/rows.len()as f64;
-        let numeric=mean("npu_vs_batch_kld");let noise=mean("single_vs_batch_noise");
-        let st=candidate.npu_prefill_stats().unwrap();
+        let mean = |key: &str| {
+            rows.iter().map(|r| r[key].as_f64().unwrap()).sum::<f64>() / rows.len() as f64
+        };
+        let numeric = mean("npu_vs_batch_kld");
+        let noise = mean("single_vs_batch_noise");
+        let st = candidate.npu_prefill_stats().unwrap();
         // The already-reviewed W2 gate is SAME-model, SAME-position CPU noise.
         // Top1 at this bounded count is information only, not a2K-position gate.
-        let no_decode_npu=st.calls==npu_calls_after_prefill;
-        let mut before=Fnv(0xcbf29ce484222325);candidate.write_state(&mut before).unwrap();
-        let passed=numeric.is_finite()&&noise.is_finite()&&numeric<=noise&&st.calls>0&&st.first_error.is_none()&&no_decode_npu;
-        let before_decode_release=npu_stats_json(st);
+        let no_decode_npu = st.calls == npu_calls_after_prefill;
+        let mut before = Fnv(0xcbf29ce484222325);
+        candidate.write_state(&mut before).unwrap();
+        let passed = numeric.is_finite()
+            && noise.is_finite()
+            && numeric <= noise
+            && st.calls > 0
+            && st.first_error.is_none()
+            && no_decode_npu;
+        let before_decode_release = npu_stats_json(st);
         candidate.release_npu_prefill();
-        let mut after=Fnv(0xcbf29ce484222325);candidate.write_state(&mut after).unwrap();
-        let release_state_identical=before.0==after.0;
-        let mut reference_decode=Vec::new();let mut candidate_decode=Vec::new();
+        let mut after = Fnv(0xcbf29ce484222325);
+        candidate.write_state(&mut after).unwrap();
+        let release_state_identical = before.0 == after.0;
+        let mut reference_decode = Vec::new();
+        let mut candidate_decode = Vec::new();
         // Identical post-prefill decode inputs test that releasing the offload
         // cache leaves CPU state usable. These are not a timing comparison.
-        for tok in ids.iter().take(2){reference_decode.push(reference.step(&s.pool,*tok));candidate_decode.push(candidate.step(&s.pool,*tok));}
-        let passed=passed&&release_state_identical;
-        let result=json!({"passed":passed,"kind":"bounded-NPU-prefill-numeric-proof","prompt_tokens":p.len(),"rows":rows,
+        for tok in ids.iter().take(2) {
+            reference_decode.push(reference.step(&s.pool, *tok));
+            candidate_decode.push(candidate.step(&s.pool, *tok));
+        }
+        let passed = passed && release_state_identical;
+        let result = json!({"passed":passed,"kind":"bounded-NPU-prefill-numeric-proof","prompt_tokens":p.len(),"rows":rows,
             "mean_npu_kld":numeric,"mean_cpu_batch_single_noise":noise,"gate_multiplier":1.0,"teacher_ids_hash":sha_ids(&ids),
             "cpu_prefill_s_informational":cpu_prefill_s,"npu_prefill_s_informational":npu_prefill_s,"npu":before_decode_release,
             "release_cleared_registry":candidate.npu_prefill_stats().is_none(),"post_release_reference_ids":reference_decode,"post_release_candidate_ids":candidate_decode,
             "decode_npu_calls_zero":no_decode_npu,"release_state_identical":release_state_identical,"release_state_fnv":format!("{:016x}",before.0),
             "model_sha256":s.loaded.ws.info.model_sha256,"threads":s.pool.nthreads(),"effective":model::engine::effective_switches()});
-        let text=serde_json::to_string_pretty(&result).unwrap();
-        if let Some(out)=a.get("out"){std::fs::write(out,&text).unwrap();}println!("{text}");
-        if !passed{std::process::exit(1);}
+        let text = serde_json::to_string_pretty(&result).unwrap();
+        if let Some(out) = a.get("out") {
+            std::fs::write(out, &text).unwrap();
+        }
+        println!("{text}");
+        if !passed {
+            std::process::exit(1);
+        }
     }
 }
 
@@ -2435,8 +3421,10 @@ fn main() {
         return;
     }
     let a = Args::parse();
-    if let Some(mode)=a.get("shared-experts") {
-        if a.cmd != "bench" || mode != "dma" { die("experimental --shared-experts dma is limited to bench"); }
+    if let Some(mode) = a.get("shared-experts") {
+        if a.cmd != "bench" || mode != "dma" {
+            die("experimental --shared-experts dma is limited to bench");
+        }
     }
     // fused-ref: validate its own values (candidate, control, gate numbers) before the generic check
     #[cfg(feature = "f32-reference")]
@@ -2450,14 +3438,25 @@ fn main() {
     // (set before any engine or thread exists); bit-identical either way
     if let Some(v) = a.get("attn-out") {
         if model::engine::AttnOut::parse(v).is_none() {
-            die(&format!("--attn-out {v}: legacy|pb|pb<N> (N multiple of 32 in [32, 4096])"));
+            die(&format!(
+                "--attn-out {v}: legacy|pb|pb<N> (N multiple of 32 in [32, 4096])"
+            ));
         }
         std::env::set_var("OXE_ATTN_OUT", v.trim().to_ascii_lowercase());
     }
-    if a.get("npu-prefill").is_some() && !cfg!(feature="npu-prefill") {
+    if a.get("npu-prefill").is_some() && !cfg!(feature = "npu-prefill") {
         die("this binary was built without the npu-prefill feature");
     }
-    if a.get("npu-prefill").is_some() && !["npu-prefill-check","npu-f32-check","npu-greedy-check","f32-tensor-map","prefill-bench"].contains(&a.cmd.as_str()) {
+    if a.get("npu-prefill").is_some()
+        && ![
+            "npu-prefill-check",
+            "npu-f32-check",
+            "npu-greedy-check",
+            "f32-tensor-map",
+            "prefill-bench",
+        ]
+        .contains(&a.cmd.as_str())
+    {
         die("experimental NPU option is limited to npu-prefill-check and prefill-bench");
     }
     match COMMANDS.iter().find(|(name, _)| *name == a.cmd) {
@@ -2485,22 +3484,49 @@ mod n3_tests {
         for src in sources {
             for part in src.split("flag(\"").skip(1) {
                 let name = &part[..part.find('"').unwrap()];
-                if !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                if !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
                     read.push(name.to_string());
                 }
             }
         }
         read.sort();
         read.dedup();
-        for must in ["plain-steps", "batched-prompt", "check-args", "dry-run", "profile"] {
-            assert!(read.iter().any(|r| r == must), "scanner missed flag(\"{must}\")");
+        for must in [
+            "plain-steps",
+            "batched-prompt",
+            "check-args",
+            "dry-run",
+            "profile",
+        ] {
+            assert!(
+                read.iter().any(|r| r == must),
+                "scanner missed flag(\"{must}\")"
+            );
         }
-        let missing: Vec<&String> = read.iter().filter(|r| !BOOL_FLAGS.contains(&r.as_str())).collect();
-        assert!(missing.is_empty(), "flags read but not parsed as booleans: {missing:?}");
+        let missing: Vec<&String> = read
+            .iter()
+            .filter(|r| !BOOL_FLAGS.contains(&r.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "flags read but not parsed as booleans: {missing:?}"
+        );
         // and the parser treats each as a boolean: the next option is not swallowed
         for f in BOOL_FLAGS {
-            let args = Args::parse_from(vec!["bench".into(), format!("--{f}"), "--n".into(), "7".into()]);
-            assert!(args.flag(f) && args.get("n") == Some("7") && args.kv.len() == 1, "--{f}");
+            let args = Args::parse_from(vec![
+                "bench".into(),
+                format!("--{f}"),
+                "--n".into(),
+                "7".into(),
+            ]);
+            assert!(
+                args.flag(f) && args.get("n") == Some("7") && args.kv.len() == 1,
+                "--{f}"
+            );
         }
     }
 

@@ -11,7 +11,13 @@ use crate::types::{BlockInput, BlockOutput, BlockWeightsF32, Dims};
 /// Output of the linear1 stage for a token range: (q, k, v, m, (x_mod, q_norm, k_norm)) rows, each
 /// concatenated in token order. The last three (LayerNorm+modulate output before rounding; q and
 /// k after QK norm, before RoPE) are empty unless taps are on.
-type Lin1Part = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, (Vec<f32>, Vec<f32>, Vec<f32>));
+type Lin1Part = (
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    (Vec<f32>, Vec<f32>, Vec<f32>),
+);
 
 /// Per-stage intermediates of one block (W5-G taps), `[n_tokens][width]` each.
 #[derive(Default, Debug, Clone)]
@@ -32,7 +38,12 @@ pub fn single_block_ref(w: &BlockWeightsF32, input: &BlockInput, threads: usize)
 
 /// [`single_block_ref`] with the activation arithmetic chosen by `arith` (linear1 and linear2 are
 /// Q8_0 in klein GGUFs, so [`Arith::SdParity`] rounds both inputs to Q8_0 blocks).
-pub fn single_block_ref_arith(w: &BlockWeightsF32, input: &BlockInput, threads: usize, arith: Arith) -> BlockOutput {
+pub fn single_block_ref_arith(
+    w: &BlockWeightsF32,
+    input: &BlockInput,
+    threads: usize,
+    arith: Arith,
+) -> BlockOutput {
     block_impl(w, input, threads, arith, false).0
 }
 
@@ -131,17 +142,44 @@ fn block_impl(
         out.extend(po);
     }
 
-    let taps = if want_taps { StageTaps { x_mod, q: q_norm, k: k_norm, v } } else { StageTaps::default() };
-    (BlockOutput { out, attn, mlp: m, z }, taps)
+    let taps = if want_taps {
+        StageTaps {
+            x_mod,
+            q: q_norm,
+            k: k_norm,
+            v,
+        }
+    } else {
+        StageTaps::default()
+    };
+    (
+        BlockOutput {
+            out,
+            attn,
+            mlp: m,
+            z,
+        },
+        taps,
+    )
 }
 
 /// Contiguous `[start, end)` token ranges covering `0..n`, at most `parts` of them.
 fn split_ranges(n: usize, parts: usize) -> Vec<(usize, usize)> {
     let chunk = n.div_ceil(parts.max(1)).max(1);
-    (0..n).step_by(chunk).map(|s| (s, (s + chunk).min(n))).collect()
+    (0..n)
+        .step_by(chunk)
+        .map(|s| (s, (s + chunk).min(n)))
+        .collect()
 }
 
-fn lin1_stage(w: &BlockWeightsF32, input: &BlockInput, s: usize, e: usize, arith: Arith, want_taps: bool) -> Lin1Part {
+fn lin1_stage(
+    w: &BlockWeightsF32,
+    input: &BlockInput,
+    s: usize,
+    e: usize,
+    arith: Arith,
+    want_taps: bool,
+) -> Lin1Part {
     let d = w.dims;
     let (h, hd, mlp) = (d.hidden, d.head_dim, d.mlp);
     let half = hd / 2;
@@ -152,7 +190,11 @@ fn lin1_stage(w: &BlockWeightsF32, input: &BlockInput, s: usize, e: usize, arith
     let mut v = Vec::with_capacity(rows * h);
     let mut m = Vec::with_capacity(rows * mlp);
     let cap = if want_taps { rows * h } else { 0 };
-    let (mut xs, mut qn, mut kn) = (Vec::with_capacity(cap), Vec::with_capacity(cap), Vec::with_capacity(cap));
+    let (mut xs, mut qn, mut kn) = (
+        Vec::with_capacity(cap),
+        Vec::with_capacity(cap),
+        Vec::with_capacity(cap),
+    );
     // Tokens in groups of TOKEN_GROUP so each weight row is reused from cache; every value is the
     // same `dot` call as per-token processing, so results are bitwise unchanged.
     let mut xg = vec![0f32; TOKEN_GROUP * h];
@@ -162,7 +204,12 @@ fn lin1_stage(w: &BlockWeightsF32, input: &BlockInput, s: usize, e: usize, arith
         let g1 = (g0 + TOKEN_GROUP).min(e);
         for t in g0..g1 {
             let xmod = &mut xg[(t - g0) * h..(t - g0 + 1) * h];
-            layer_norm_modulate(&input.x[t * h..(t + 1) * h], &input.shift, &input.scale, xmod);
+            layer_norm_modulate(
+                &input.x[t * h..(t + 1) * h],
+                &input.shift,
+                &input.scale,
+                xmod,
+            );
             if want_taps {
                 xs.extend_from_slice(xmod); // before rounding, as sd.cpp's dump.s0.xmod
             }

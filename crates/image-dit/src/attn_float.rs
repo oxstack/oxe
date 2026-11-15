@@ -87,8 +87,20 @@ impl FloatStore {
         let half = prec == AttnPrec::F16;
         let n_pad = n.div_ceil(G) * G;
         let bytes = n_pad * hd * if half { 2 } else { 4 };
-        let heads = (0..heads).map(|_| FloatHead { qt: AlignedBytes::zeroed(bytes), kt: AlignedBytes::zeroed(bytes), vt: AlignedBytes::zeroed(bytes) }).collect();
-        FloatStore { half, n, n_pad, hd, heads }
+        let heads = (0..heads)
+            .map(|_| FloatHead {
+                qt: AlignedBytes::zeroed(bytes),
+                kt: AlignedBytes::zeroed(bytes),
+                vt: AlignedBytes::zeroed(bytes),
+            })
+            .collect();
+        FloatStore {
+            half,
+            n,
+            n_pad,
+            hd,
+            heads,
+        }
     }
 
     pub fn n(&self) -> usize {
@@ -105,8 +117,16 @@ impl FloatStore {
         FloatScratch {
             kc_max,
             s: vec![0.0; G * kc_max],
-            pt32: if self.half { Vec::new() } else { vec![0.0; kc_max * G] },
-            pt16: if self.half { vec![0; kc_max * G] } else { Vec::new() },
+            pt32: if self.half {
+                Vec::new()
+            } else {
+                vec![0.0; kc_max * G]
+            },
+            pt16: if self.half {
+                vec![0; kc_max * G]
+            } else {
+                Vec::new()
+            },
             o: vec![0.0; G * self.hd],
             row: vec![0.0; self.hd],
         }
@@ -157,9 +177,18 @@ impl FloatStore {
         for dt in 0..hd / G {
             let off = (dt * n_pad + t) * G;
             if self.half {
-                raw::i8g_fattn_to_f16(row.as_ptr().add(dt * G), G, (vt.as_ptr() as *mut u16).add(off), 1);
+                raw::i8g_fattn_to_f16(
+                    row.as_ptr().add(dt * G),
+                    G,
+                    (vt.as_ptr() as *mut u16).add(off),
+                    1,
+                );
             } else {
-                std::ptr::copy_nonoverlapping(row.as_ptr().add(dt * G), (vt.as_ptr() as *mut f32).add(off), G);
+                std::ptr::copy_nonoverlapping(
+                    row.as_ptr().add(dt * G),
+                    (vt.as_ptr() as *mut f32).add(off),
+                    G,
+                );
             }
         }
     }
@@ -167,11 +196,21 @@ impl FloatStore {
     /// Attention of query group `g` (queries `8g..8g+8`) of `head` over all keys. Writes the
     /// normalised output of each REAL query `t` to `out(t, row)` (`row` has head_dim floats).
     /// The producing stage must have finished (barrier) before any call.
-    pub fn attend(&self, head: usize, g: usize, key_chunk: usize, sc: &mut FloatScratch, mut out: impl FnMut(usize, &[f32])) {
+    pub fn attend(
+        &self,
+        head: usize,
+        g: usize,
+        key_chunk: usize,
+        sc: &mut FloatScratch,
+        mut out: impl FnMut(usize, &[f32]),
+    ) {
         let (n, n_pad, hd) = (self.n, self.n_pad, self.hd);
         assert!(g * G < n_pad);
         let kc_max = sc.kc_max;
-        assert!(key_chunk.min(n_pad) == kc_max, "scratch made for another key chunk");
+        assert!(
+            key_chunk.min(n_pad) == kc_max,
+            "scratch made for another key chunk"
+        );
         let hs = &self.heads[head];
         let mut m = [f32::NEG_INFINITY; G];
         let mut l = [0.0f64; G];
@@ -185,16 +224,36 @@ impl FloatStore {
             // range; s holds 8 rows of kc_max >= kc floats.
             unsafe {
                 if self.half {
-                    raw::i8g_fattn_qk_f16((hs.qt.as_ptr() as *const u16).add(g * hd * G), (hs.kt.as_ptr() as *const u16).add(c0 * hd), hd, kc / G, sc.s.as_mut_ptr(), kc_max);
+                    raw::i8g_fattn_qk_f16(
+                        (hs.qt.as_ptr() as *const u16).add(g * hd * G),
+                        (hs.kt.as_ptr() as *const u16).add(c0 * hd),
+                        hd,
+                        kc / G,
+                        sc.s.as_mut_ptr(),
+                        kc_max,
+                    );
                 } else {
-                    raw::i8g_fattn_qk_f32((hs.qt.as_ptr() as *const f32).add(g * hd * G), (hs.kt.as_ptr() as *const f32).add(c0 * hd), hd, kc / G, sc.s.as_mut_ptr(), kc_max);
+                    raw::i8g_fattn_qk_f32(
+                        (hs.qt.as_ptr() as *const f32).add(g * hd * G),
+                        (hs.kt.as_ptr() as *const f32).add(c0 * hd),
+                        hd,
+                        kc / G,
+                        sc.s.as_mut_ptr(),
+                        kc_max,
+                    );
                 }
             }
             for qi in 0..G {
                 let row = &sc.s[qi * kc_max..qi * kc_max + kc];
-                let cmax = row[..nvalid].iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                let cmax = row[..nvalid]
+                    .iter()
+                    .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
                 if cmax > m[qi] {
-                    let f = if m[qi] == f32::NEG_INFINITY { 0.0 } else { exp_fast(m[qi] - cmax) };
+                    let f = if m[qi] == f32::NEG_INFINITY {
+                        0.0
+                    } else {
+                        exp_fast(m[qi] - cmax)
+                    };
                     for v in &mut sc.o[qi * hd..(qi + 1) * hd] {
                         *v *= f;
                     }
@@ -204,9 +263,23 @@ impl FloatStore {
                 // SAFETY: row holds kc floats (kc % 8 == 0); pt holds kc_max x 8 elements.
                 let sum = unsafe {
                     if self.half {
-                        raw::i8g_fattn_softmax_f16(row.as_ptr(), kc, nvalid, m[qi], sc.pt16.as_mut_ptr(), qi)
+                        raw::i8g_fattn_softmax_f16(
+                            row.as_ptr(),
+                            kc,
+                            nvalid,
+                            m[qi],
+                            sc.pt16.as_mut_ptr(),
+                            qi,
+                        )
                     } else {
-                        raw::i8g_fattn_softmax_f32(row.as_ptr(), kc, nvalid, m[qi], sc.pt32.as_mut_ptr(), qi)
+                        raw::i8g_fattn_softmax_f32(
+                            row.as_ptr(),
+                            kc,
+                            nvalid,
+                            m[qi],
+                            sc.pt32.as_mut_ptr(),
+                            qi,
+                        )
                     }
                 };
                 l[qi] += sum as f64;
@@ -214,9 +287,23 @@ impl FloatStore {
             // SAFETY: vt holds hd/8 tiles of n_pad x 8; keys c0..c0+kc are in range; o is 8 x hd.
             unsafe {
                 if self.half {
-                    raw::i8g_fattn_pv_f16(sc.pt16.as_ptr(), (hs.vt.as_ptr() as *const u16).add(c0 * G), kc, hd, n_pad * G, sc.o.as_mut_ptr());
+                    raw::i8g_fattn_pv_f16(
+                        sc.pt16.as_ptr(),
+                        (hs.vt.as_ptr() as *const u16).add(c0 * G),
+                        kc,
+                        hd,
+                        n_pad * G,
+                        sc.o.as_mut_ptr(),
+                    );
                 } else {
-                    raw::i8g_fattn_pv_f32(sc.pt32.as_ptr(), (hs.vt.as_ptr() as *const f32).add(c0 * G), kc, hd, n_pad * G, sc.o.as_mut_ptr());
+                    raw::i8g_fattn_pv_f32(
+                        sc.pt32.as_ptr(),
+                        (hs.vt.as_ptr() as *const f32).add(c0 * G),
+                        kc,
+                        hd,
+                        n_pad * G,
+                        sc.o.as_mut_ptr(),
+                    );
                 }
             }
             c0 += kc;
@@ -268,12 +355,22 @@ mod tests {
     fn float_attention_matches_reference_attention() {
         let (heads, hd) = (3usize, 32usize);
         let h = heads * hd;
-        for &(n, kc, logit_scale) in &[(37usize, 16usize, 1.0f32), (64, 64, 3.0), (29, 256, 6.0), (8, 8, 1.0)] {
+        for &(n, kc, logit_scale) in &[
+            (37usize, 16usize, 1.0f32),
+            (64, 64, 3.0),
+            (29, 256, 6.0),
+            (8, 8, 1.0),
+        ] {
             let mut rng = Rng(11 + n as u64);
             let q: Vec<f32> = (0..n * h).map(|_| rng.unit() * logit_scale).collect();
             let k: Vec<f32> = (0..n * h).map(|_| rng.unit() * logit_scale).collect();
             let v: Vec<f32> = (0..n * h).map(|_| rng.unit() * 4.0).collect();
-            let dims = crate::types::Dims { hidden: h, heads, head_dim: hd, mlp: 4 * h };
+            let dims = crate::types::Dims {
+                hidden: h,
+                heads,
+                head_dim: hd,
+                mlp: 4 * h,
+            };
             let want = crate::reference::attn_stage_for_tests(dims, &q, &k, &v, n);
             let inv_sqrt = 1.0 / (hd as f32).sqrt();
             for prec in [AttnPrec::F32, AttnPrec::F16] {
@@ -296,19 +393,26 @@ mod tests {
                 let mut sc = st.scratch(kc);
                 for hh in 0..heads {
                     for g in 0..n.div_ceil(G) {
-                        st.attend(hh, g, kc, &mut sc, |t, row| got[t * h + hh * hd..t * h + (hh + 1) * hd].copy_from_slice(row));
+                        st.attend(hh, g, kc, &mut sc, |t, row| {
+                            got[t * h + hh * hd..t * h + (hh + 1) * hd].copy_from_slice(row)
+                        });
                     }
                 }
                 let e = rel_rmse(&got, &want);
                 let lim = if prec == AttnPrec::F32 { 2e-6 } else { 2e-3 };
                 eprintln!("attn_float n {n} kc {kc} logit_scale {logit_scale} {}: rel rmse vs reference {e:.3e}", prec.name());
-                assert!(e < lim, "n {n} kc {kc} scale {logit_scale} {prec:?}: rel rmse {e:e} >= {lim:e}");
+                assert!(
+                    e < lim,
+                    "n {n} kc {kc} scale {logit_scale} {prec:?}: rel rmse {e:e} >= {lim:e}"
+                );
                 // repeatable, and independent of the key chunk up to float noise
                 let mut again = vec![0f32; n * h];
                 let mut sc2 = st.scratch(8);
                 for hh in 0..heads {
                     for g in 0..n.div_ceil(G) {
-                        st.attend(hh, g, 8, &mut sc2, |t, row| again[t * h + hh * hd..t * h + (hh + 1) * hd].copy_from_slice(row));
+                        st.attend(hh, g, 8, &mut sc2, |t, row| {
+                            again[t * h + hh * hd..t * h + (hh + 1) * hd].copy_from_slice(row)
+                        });
                     }
                 }
                 assert!(rel_rmse(&again, &got) < if prec == AttnPrec::F32 { 2e-6 } else { 2e-3 });

@@ -19,8 +19,8 @@
 //! verify graph per width; default 0) --cache-policy lfu|clock --quota-weights builtin|equal (defaults as flash-m3).
 //! MODEL commands load model bytes: Codex runs them (inference lease, 28G scope), never a Claude agent.
 
-use qwen4exp::cli::{cgroup_file, die, read_tokens, status_kib, Args, EOG};
 use qwen4exp::cache::Policy;
+use qwen4exp::cli::{cgroup_file, die, read_tokens, status_kib, Args, EOG};
 use qwen4exp::dense::{Dense, DenseMode};
 use qwen4exp::graph::{argmax, FgOptions, GraphCtx, GraphModel};
 use qwen4exp::model::{Shards, N_VOCAB};
@@ -40,10 +40,47 @@ fn main() {
     let cmd = argv.first().cloned().unwrap_or_default();
     let a = Args::parse(&argv[1.min(argv.len())..]);
     // an unknown or mistyped flag is an error, not a silent default (TEST-ECONOMY R1b); --check-args: parse only
-    const KNOWN: [&str; 39] = ["always", "answer", "attn", "cache-gib", "cache-policy", "check-args", "check-prefill-h", "coverage-of", "depth", "draft-cost",
-        "executor", "exts", "floor", "fuse", "head", "head-willneed", "holdout", "io-cpu", "max-file-bytes", "max-files", "max-new", "max-width",
-        "model-dir", "n-ctx", "oracle", "out", "plain", "qd", "quota-weights", "roots", "row-cost", "sidecar", "steps", "threads",
-        "threads-batch", "top", "ubatch", "verify-cache", "vocab"];
+    const KNOWN: [&str; 39] = [
+        "always",
+        "answer",
+        "attn",
+        "cache-gib",
+        "cache-policy",
+        "check-args",
+        "check-prefill-h",
+        "coverage-of",
+        "depth",
+        "draft-cost",
+        "executor",
+        "exts",
+        "floor",
+        "fuse",
+        "head",
+        "head-willneed",
+        "holdout",
+        "io-cpu",
+        "max-file-bytes",
+        "max-files",
+        "max-new",
+        "max-width",
+        "model-dir",
+        "n-ctx",
+        "oracle",
+        "out",
+        "plain",
+        "qd",
+        "quota-weights",
+        "roots",
+        "row-cost",
+        "sidecar",
+        "steps",
+        "threads",
+        "threads-batch",
+        "top",
+        "ubatch",
+        "verify-cache",
+        "vocab",
+    ];
     if let Some(k) = a.0.keys().find(|k| !KNOWN.contains(&k.as_str())) {
         die(&format!("flash-t2: unknown option --{k}"));
     }
@@ -60,7 +97,10 @@ fn main() {
             for nth in [1, 3, 8] {
                 ok &= qwen4exp::mtp_graph::selftest_mtp(nth);
             }
-            println!("selftest mtp (mm_cols, GDN commit): {}", if ok { "PASS" } else { "FAIL" });
+            println!(
+                "selftest mtp (mm_cols, GDN commit): {}",
+                if ok { "PASS" } else { "FAIL" }
+            );
             std::process::exit(if ok { 0 } else { 1 })
         }
         "vocab" => vocab(&a),
@@ -75,17 +115,36 @@ fn home() -> PathBuf {
 }
 
 fn model_dir(a: &Args) -> PathBuf {
-    PathBuf::from(a.s("model-dir", &home().join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS").to_string_lossy()))
+    PathBuf::from(
+        a.s(
+            "model-dir",
+            &home()
+                .join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS")
+                .to_string_lossy(),
+        ),
+    )
 }
 
 fn vocab(a: &Args) {
     use qwen4exp::mtp_vocab as v;
     let dir = model_dir(a);
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap_or_else(|e| die(&format!("{}: {e}", dir.display()))).filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().map(|x| x == "gguf").unwrap_or(false)).collect();
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| die(&format!("{}: {e}", dir.display())))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().map(|x| x == "gguf").unwrap_or(false))
+        .collect();
     paths.sort();
-    let first = paths.first().unwrap_or_else(|| die("no .gguf in the model dir"));
-    let tk = tokenizer::Tokenizer::from_gguf(first).unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
-    let roots: Vec<PathBuf> = a.s("roots", "").split(',').filter(|s| !s.is_empty()).map(PathBuf::from).collect();
+    let first = paths
+        .first()
+        .unwrap_or_else(|| die("no .gguf in the model dir"));
+    let tk =
+        tokenizer::Tokenizer::from_gguf(first).unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
+    let roots: Vec<PathBuf> = a
+        .s("roots", "")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
     if roots.is_empty() {
         die("--roots A,B");
     }
@@ -97,8 +156,11 @@ fn vocab(a: &Args) {
         // score an existing id list on every walked file; writes nothing
         let ids = v::read_ids(Path::new(cf)).unwrap_or_else(|e| die(&e));
         let (counts, total, used) = v::count_files(&tk, &files, N_VOCAB, max_bytes);
-        println!("{}", json!({"kind": "flash-t2-vocab-coverage", "ids": ids.len(), "files": used, "tokens": total,
-                              "coverage": v::coverage(&counts, &ids), "ids_file": cf}));
+        println!(
+            "{}",
+            json!({"kind": "flash-t2-vocab-coverage", "ids": ids.len(), "files": used, "tokens": total,
+                              "coverage": v::coverage(&counts, &ids), "ids_file": cf})
+        );
         return;
     }
     // held-out split: a file is held out iff fnv1a(path) % K == 0 (K = 0: no split); ids come from train only
@@ -108,17 +170,24 @@ fn vocab(a: &Args) {
     let (hcounts, htotal, hused) = v::count_files(&tk, &hold_files, N_VOCAB, max_bytes);
     let top: usize = a.n("top", 32768);
     let mut always: Vec<i32> = EOG.to_vec();
-    always.extend(a.s("always", "").split(',').filter_map(|s| s.parse::<i32>().ok()));
+    always.extend(
+        a.s("always", "")
+            .split(',')
+            .filter_map(|s| s.parse::<i32>().ok()),
+    );
     let ids = v::top_ids(&counts, top, &always);
     let out = a.s("out", "mtp-vocab.bin");
     v::write_ids(Path::new(&out), &ids).unwrap_or_else(|e| die(&e));
     let distinct = counts.iter().filter(|&&c| c > 0).count();
-    println!("{}", json!({"kind": "flash-t2-vocab", "files": used, "tokens": total, "distinct_ids": distinct, "top": ids.len(),
+    println!(
+        "{}",
+        json!({"kind": "flash-t2-vocab", "files": used, "tokens": total, "distinct_ids": distinct, "top": ids.len(),
                           "coverage": v::coverage(&counts, &ids), "out": out,
                           "holdout_k": holdout_k, "train_files": used, "train_tokens": total,
                           "holdout_files": hused, "holdout_tokens": htotal,
                           "coverage_train": v::coverage(&counts, &ids), "coverage_holdout": v::coverage(&hcounts, &ids),
-                          "holdout_distinct_ids_missing": v::distinct_missing(&hcounts, &ids)}));
+                          "holdout_distinct_ids_missing": v::distinct_missing(&hcounts, &ids)})
+    );
 }
 
 struct Loaded {
@@ -144,14 +213,32 @@ fn load(a: &Args, want_head: bool) -> Loaded {
         "twopass" => 3,
         x => die(&format!("--attn {x}: online|twopass")),
     };
-    let opts = FgOptions { fixed_attn: attn, shexp_first: 1, batch_min_tokens: 17, profile: 0, rs_view: 1, executor: a.flag("executor", false) as i32, fuse: a.n("fuse", 0i32) };
+    let opts = FgOptions {
+        fixed_attn: attn,
+        shexp_first: 1,
+        batch_min_tokens: 17,
+        profile: 0,
+        rs_view: 1,
+        executor: a.flag("executor", false) as i32,
+        fuse: a.n("fuse", 0i32),
+    };
     qwen4exp::mtp_graph::set_verify_cache(a.flag("verify-cache", false));
-    let sidecar = PathBuf::from(a.s("sidecar", &home().join(".cache/local-ai/snapdragon-engine/flash/experts-r4.bin").to_string_lossy()));
+    let sidecar = PathBuf::from(
+        a.s(
+            "sidecar",
+            &home()
+                .join(".cache/local-ai/snapdragon-engine/flash/experts-r4.bin")
+                .to_string_lossy(),
+        ),
+    );
     let s = Shards::open(&model_dir(a)).unwrap_or_else(|e| die(&e));
     let d = Dense::load(&s, DenseMode::VecDot).unwrap_or_else(|e| die(&e));
     let mut gm = GraphModel::new(&s, &d, false).unwrap_or_else(|e| die(&e));
     let head = if want_head {
-        let hp = a.0.get("head").map(PathBuf::from).unwrap_or_else(qwen4exp::mtp_head::default_path);
+        let hp =
+            a.0.get("head")
+                .map(PathBuf::from)
+                .unwrap_or_else(qwen4exp::mtp_head::default_path);
         let h = HeadFile::open(&hp).unwrap_or_else(|e| die(&e));
         h.attach(&mut gm).unwrap_or_else(|e| die(&e));
         h.advise_experts(a.has("head-willneed"));
@@ -165,7 +252,12 @@ fn load(a: &Args, want_head: bool) -> Loaded {
         None
     };
     let cache_gib: f64 = a.n("cache-gib", 18.0);
-    let cfg = StreamConfig { cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize, qd: a.n("qd", 32u32), io_cpu: a.0.get("io-cpu").and_then(|v| v.parse().ok()), prefault: true };
+    let cfg = StreamConfig {
+        cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize,
+        qd: a.n("qd", 32u32),
+        io_cpu: a.0.get("io-cpu").and_then(|v| v.parse().ok()),
+        prefault: true,
+    };
     // cache defaults as flash-m3 run on the integrated tree (ticket 035): LFU + the built-in per-layer quotas
     let qw = a.s("quota-weights", "builtin");
     let w: Option<&[f64]> = match qw.as_str() {
@@ -181,7 +273,19 @@ fn load(a: &Args, want_head: bool) -> Loaded {
     };
     st.resident_first = true;
     st.batch_gemm = true;
-    Loaded { s, _d: d, gm, st, opts, threads, threads_batch, ubatch: a.n("ubatch", 4096), n_ctx: a.n("n-ctx", 4096), cache_gib, _head: head }
+    Loaded {
+        s,
+        _d: d,
+        gm,
+        st,
+        opts,
+        threads,
+        threads_batch,
+        ubatch: a.n("ubatch", 4096),
+        n_ctx: a.n("n-ctx", 4096),
+        cache_gib,
+        _head: head,
+    }
 }
 
 fn oracle(a: &Args) -> (Vec<i32>, Vec<i32>) {
@@ -221,14 +325,16 @@ fn selfcheck(a: &Args) {
     let mut logits = vec![0f32; N_VOCAB];
     // (1) plain: prefill + teacher-forced one-token decodes; ref[i] = hash of the row after position P + i - 1
     for ch in prompt.chunks(l.ubatch) {
-        g.decode(ch, l.threads_batch, &mut logits, None).unwrap_or_else(|e| die(&e));
+        g.decode(ch, l.threads_batch, &mut logits, None)
+            .unwrap_or_else(|e| die(&e));
     }
     let prefill_hash = row_hash(&logits);
     let (ptoks, pstate) = g.save_compact();
     let mut refh: Vec<u64> = Vec::with_capacity(steps);
     let t0 = Instant::now();
     for &t in &want[..steps] {
-        g.decode(&[t], l.threads, &mut logits, None).unwrap_or_else(|e| die(&e));
+        g.decode(&[t], l.threads, &mut logits, None)
+            .unwrap_or_else(|e| die(&e));
         refh.push(row_hash(&logits));
     }
     let plain_ms = t0.elapsed().as_secs_f64() * 1e3 / steps.max(1) as f64;
@@ -236,13 +342,15 @@ fn selfcheck(a: &Args) {
     g.load_compact(&ptoks, &pstate).unwrap_or_else(|e| die(&e));
     let mut la = vec![0f32; max_w * N_VOCAB];
     let mut ha = vec![0f32; max_w * H_DIM];
-    let (mut i, mut cyc, mut rows, mut bad, mut rollbacks) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut i, mut cyc, mut rows, mut bad, mut rollbacks) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut first_bad: Option<(usize, usize, usize)> = None; // (step, width, row)
     let mut by_width = vec![(0usize, 0usize); max_w + 1]; // (rows, mismatches)
     let t1 = Instant::now();
     while i < steps {
         let w = (1 + cyc % max_w).min(steps - i);
-        g.verify(&want[i..i + w], l.threads, &mut la, &mut ha).unwrap_or_else(|e| die(&e));
+        g.verify(&want[i..i + w], l.threads, &mut la, &mut ha)
+            .unwrap_or_else(|e| die(&e));
         for r in 0..w {
             rows += 1;
             by_width[w].0 += 1;
@@ -267,7 +375,8 @@ fn selfcheck(a: &Args) {
         g.clear();
         let mut h = vec![0f32; prompt.len().min(l.ubatch) * H_DIM];
         for ch in prompt.chunks(l.ubatch) {
-            g.decode_h(ch, l.threads_batch, &mut logits, &mut h).unwrap_or_else(|e| die(&e));
+            g.decode_h(ch, l.threads_batch, &mut logits, &mut h)
+                .unwrap_or_else(|e| die(&e));
         }
         ph_same = Some(row_hash(&logits) == prefill_hash);
     }
@@ -304,11 +413,18 @@ fn run(a: &Args) {
     let mut logits = vec![0f32; N_VOCAB];
     let mut eng = MtpEngine::new(&mut g, l.n_ctx as usize, l.threads, !plain);
     let tp = Instant::now();
-    eng.prefill(&prompt, l.ubatch, l.threads_batch, &mut logits).unwrap_or_else(|e| die(&e));
+    eng.prefill(&prompt, l.ubatch, l.threads_batch, &mut logits)
+        .unwrap_or_else(|e| die(&e));
     let prefill_s = tp.elapsed().as_secs_f64();
     let mut got: Vec<i32> = vec![argmax(&logits) as i32];
-    let mut cfg = MtpConfig { max_depth: depth, floor: a.n("floor", 0.3f32), ..MtpConfig::default() };
-    cfg.verify_cost = (0..=depth).map(|i| 1.0 + a.n("row-cost", 0.25f32) * i as f32).collect();
+    let mut cfg = MtpConfig {
+        max_depth: depth,
+        floor: a.n("floor", 0.3f32),
+        ..MtpConfig::default()
+    };
+    cfg.verify_cost = (0..=depth)
+        .map(|i| 1.0 + a.n("row-cost", 0.25f32) * i as f32)
+        .collect();
     cfg.draft_cost = a.n("draft-cost", 0.06f32);
     let mut drv = MtpDriver::new(cfg);
     eng.g.timing(true);
@@ -320,7 +436,9 @@ fn run(a: &Args) {
         let t = *got.last().unwrap();
         let tc = Instant::now();
         if plain {
-            eng.g.decode(&[t], l.threads, &mut logits, None).unwrap_or_else(|e| die(&e));
+            eng.g
+                .decode(&[t], l.threads, &mut logits, None)
+                .unwrap_or_else(|e| die(&e));
             got.push(argmax(&logits) as i32);
         } else {
             let new = drv.cycle(&mut eng, t).unwrap_or_else(|e| die(&e));
@@ -335,10 +453,19 @@ fn run(a: &Args) {
     }
     let decode_s = t0.elapsed().as_secs_f64();
     let n_new = (got.len() - 1).max(1) as f64;
-    let ans: Vec<i32> = got.iter().copied().take_while(|t| !EOG.contains(t)).collect();
-    let want_ans: Vec<i32> = want.iter().copied().take_while(|t| !EOG.contains(t)).collect();
+    let ans: Vec<i32> = got
+        .iter()
+        .copied()
+        .take_while(|t| !EOG.contains(t))
+        .collect();
+    let want_ans: Vec<i32> = want
+        .iter()
+        .copied()
+        .take_while(|t| !EOG.contains(t))
+        .collect();
     if let Some(p) = a.0.get("answer") {
-        let tk = tokenizer::Tokenizer::from_gguf(&l.s.paths[0]).unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
+        let tk = tokenizer::Tokenizer::from_gguf(&l.s.paths[0])
+            .unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
         let toks: Vec<u32> = ans.iter().map(|&t| t as u32).collect();
         std::fs::write(p, tk.decode_bytes(&toks, false)).unwrap_or_else(|e| die(&e.to_string()));
     }

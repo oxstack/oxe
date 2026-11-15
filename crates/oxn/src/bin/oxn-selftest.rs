@@ -27,7 +27,8 @@ const REL_TOL: f64 = 1e-3;
 /// VTCM size requested from the CPU emulator.
 const EMU_VTCM_BYTES: u32 = 8 << 20;
 
-const USAGE: &str = "usage: oxn-selftest [--backend emu|device] [--sessions N] [--set quick|klein|all]
+const USAGE: &str =
+    "usage: oxn-selftest [--backend emu|device] [--sessions N] [--set quick|klein|all]
                    [--rounds N] [--samples N] [--seed N] [--break-ref]
   defaults: --backend emu --sessions 1 --set quick --rounds 3 --samples 2048 --seed 1
   --break-ref  self-check of the checker: multiply every reference value by 1.01
@@ -44,22 +45,94 @@ struct Case {
 }
 
 const QUICK: &[Case] = &[
-    Case { name: "q-1tile", t: 32, k: 32, o: 32, w8: true },
-    Case { name: "q-multi", t: 64, k: 128, o: 96, w8: true },
-    Case { name: "q-tails", t: 160, k: 256, o: 288, w8: true },
+    Case {
+        name: "q-1tile",
+        t: 32,
+        k: 32,
+        o: 32,
+        w8: true,
+    },
+    Case {
+        name: "q-multi",
+        t: 64,
+        k: 128,
+        o: 96,
+        w8: true,
+    },
+    Case {
+        name: "q-tails",
+        t: 160,
+        k: 256,
+        o: 288,
+        w8: true,
+    },
     // T=40 is padded to 64 rows by ActLayout; rows 40..63 stay zero.
-    Case { name: "q-pad", t: 40, k: 64, o: 64, w8: true },
-    Case { name: "q-fp16", t: 64, k: 128, o: 96, w8: false },
+    Case {
+        name: "q-pad",
+        t: 40,
+        k: 64,
+        o: 64,
+        w8: true,
+    },
+    Case {
+        name: "q-fp16",
+        t: 64,
+        k: 128,
+        o: 96,
+        w8: false,
+    },
 ];
 
 const KLEIN: &[Case] = &[
-    Case { name: "k-txt-qkv", t: 512, k: 3072, o: 9216, w8: true },
-    Case { name: "k-img-qkv", t: 1024, k: 3072, o: 9216, w8: true },
-    Case { name: "k-img-mlp0", t: 1024, k: 3072, o: 18432, w8: true },
-    Case { name: "k-lin1", t: 1536, k: 3072, o: 27648, w8: true },
-    Case { name: "k-lin2-chunk", t: 1536, k: 3072, o: 3072, w8: true },
-    Case { name: "k-proj", t: 1024, k: 3072, o: 3072, w8: true },
-    Case { name: "k-qkv-fp16", t: 1536, k: 3072, o: 9216, w8: false },
+    Case {
+        name: "k-txt-qkv",
+        t: 512,
+        k: 3072,
+        o: 9216,
+        w8: true,
+    },
+    Case {
+        name: "k-img-qkv",
+        t: 1024,
+        k: 3072,
+        o: 9216,
+        w8: true,
+    },
+    Case {
+        name: "k-img-mlp0",
+        t: 1024,
+        k: 3072,
+        o: 18432,
+        w8: true,
+    },
+    Case {
+        name: "k-lin1",
+        t: 1536,
+        k: 3072,
+        o: 27648,
+        w8: true,
+    },
+    Case {
+        name: "k-lin2-chunk",
+        t: 1536,
+        k: 3072,
+        o: 3072,
+        w8: true,
+    },
+    Case {
+        name: "k-proj",
+        t: 1024,
+        k: 3072,
+        o: 3072,
+        w8: true,
+    },
+    Case {
+        name: "k-qkv-fp16",
+        t: 1536,
+        k: 3072,
+        o: 9216,
+        w8: false,
+    },
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -161,7 +234,8 @@ fn next_val(it: &mut impl Iterator<Item = String>, flag: &str) -> Result<String,
 }
 
 fn num<T: FromStr>(s: &str, flag: &str) -> Result<T, String> {
-    s.parse::<T>().map_err(|_| format!("{flag}: bad value '{s}'"))
+    s.parse::<T>()
+        .map_err(|_| format!("{flag}: bad value '{s}'"))
 }
 
 fn parse_args(args: Vec<String>) -> Result<Opts, String> {
@@ -270,7 +344,11 @@ struct Slot {
 
 impl Slot {
     fn from_buf(b: &Buf) -> Slot {
-        Slot { ptr: b.ptr, len: b.len, id: b.slot }
+        Slot {
+            ptr: b.ptr,
+            len: b.len,
+            id: b.slot,
+        }
     }
 }
 
@@ -293,7 +371,11 @@ fn view(s: &Slot, off: usize) -> Option<Slot> {
     if off > s.len {
         return None;
     }
-    Some(Slot { ptr: s.ptr.wrapping_add(off), len: s.len - off, id: s.id })
+    Some(Slot {
+        ptr: s.ptr.wrapping_add(off),
+        len: s.len - off,
+        id: s.id,
+    })
 }
 
 /// Guard regions (start, len) in the full Y buffer around the used range
@@ -493,7 +575,8 @@ fn open_backend(opts: &Opts) -> Result<Box<dyn Backend>, String> {
     if opts.device {
         #[cfg(feature = "device")]
         {
-            return oxn::device::Device::open(opts.sessions).map(|d| Box::new(d) as Box<dyn Backend>);
+            return oxn::device::Device::open(opts.sessions)
+                .map(|d| Box::new(d) as Box<dyn Backend>);
         }
         #[cfg(not(feature = "device"))]
         {
@@ -514,7 +597,10 @@ fn backend_error(text: &str) -> i32 {
 fn drive(opts: &Opts, be: &mut dyn Backend) -> Result<i32, String> {
     let sessions = opts.sessions;
     if be.sessions() < sessions {
-        return Err(format!("backend has {} sessions, {sessions} requested", be.sessions()));
+        return Err(format!(
+            "backend has {} sessions, {sessions} requested",
+            be.sessions()
+        ));
     }
     emit(&format!(
         "{{\"ev\":\"start\",\"backend\":{},\"sessions\":{sessions},\"vtcm_bytes\":{}}}",
@@ -564,7 +650,10 @@ fn drive(opts: &Opts, be: &mut dyn Backend) -> Result<i32, String> {
             let y_used = lay_y.bytes();
             let guards = guard_regions(y.len, y_off, y_used);
             let flops = 2.0 * case.t as f64 * case.k as f64 * case.o as f64;
-            let mut agg = Agg { all_ok: true, ..Default::default() };
+            let mut agg = Agg {
+                all_ok: true,
+                ..Default::default()
+            };
 
             for round in 0..opts.rounds {
                 // SAFETY: yv covers y_used bytes of the backend's Y buffer (checked by fits);
@@ -573,7 +662,9 @@ fn drive(opts: &Opts, be: &mut dyn Backend) -> Result<i32, String> {
                 unsafe { std::slice::from_raw_parts_mut(yv.ptr, y_used).fill(0xff) };
                 for &(st, ln) in &guards {
                     // SAFETY: (st, ln) is inside the full Y buffer (guard_regions).
-                    unsafe { std::slice::from_raw_parts_mut(y.ptr.wrapping_add(st), ln).fill(GUARD_BYTE) };
+                    unsafe {
+                        std::slice::from_raw_parts_mut(y.ptr.wrapping_add(st), ln).fill(GUARD_BYTE)
+                    };
                 }
                 let args = GemmArgs {
                     x_slot: x.id,
@@ -599,7 +690,10 @@ fn drive(opts: &Opts, be: &mut dyn Backend) -> Result<i32, String> {
                         .iter()
                         .all(|&b| b == GUARD_BYTE)
                 });
-                let mut srng = Rng::new(stream_seed(opts.seed, &[gi as u64, s as u64, round as u64, 0x5a]));
+                let mut srng = Rng::new(stream_seed(
+                    opts.seed,
+                    &[gi as u64, s as u64, round as u64, 0x5a],
+                ));
                 let chk = check(
                     &case,
                     &lay_y,
@@ -693,7 +787,10 @@ fn drive(opts: &Opts, be: &mut dyn Backend) -> Result<i32, String> {
             }
         }
         if case_numeric_fail {
-            eprintln!("oxn-selftest: numeric failure in {}, stopping after this case", case.name);
+            eprintln!(
+                "oxn-selftest: numeric failure in {}, stopping after this case",
+                case.name
+            );
             break;
         }
     }
@@ -703,7 +800,11 @@ fn drive(opts: &Opts, be: &mut dyn Backend) -> Result<i32, String> {
         "{{\"ev\":\"result\",\"cases\":{},\"rounds\":{total_rounds},\"failed\":{failed},\"pass\":{pass}}}",
         cases.len()
     ));
-    eprintln!("oxn-selftest: {} rounds, {failed} failed: {}", total_rounds, if pass { "PASS" } else { "FAIL" });
+    eprintln!(
+        "oxn-selftest: {} rounds, {failed} failed: {}",
+        total_rounds,
+        if pass { "PASS" } else { "FAIL" }
+    );
     Ok(if pass { 0 } else { 1 })
 }
 

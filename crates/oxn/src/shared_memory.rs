@@ -156,7 +156,9 @@ impl SharedMemory {
     }
 }
 impl AsRef<[u8]> for SharedMemory {
-    fn as_ref(&self) -> &[u8] { self.as_bytes() }
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
 }
 impl AsFd for SharedMemory {
     fn as_fd(&self) -> BorrowedFd<'_> {

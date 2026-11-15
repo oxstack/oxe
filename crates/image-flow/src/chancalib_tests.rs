@@ -41,20 +41,38 @@ fn spread_outliers_are_fixed_on_held_out_rows() {
     let hold = rows(n, h, &big, 12);
     let p = plan_operand("single.3.lin1_in", &accum(&cal, n, h), &hold, n, 256, 0.25).unwrap();
     let e = &p.errors;
-    let (target, nat) = (e["target_natural_chunk32"].as_f64().unwrap(), e["natural"].as_f64().unwrap());
+    let (target, nat) = (
+        e["target_natural_chunk32"].as_f64().unwrap(),
+        e["natural"].as_f64().unwrap(),
+    );
     assert!(nat > 2.0 * target, "natural {nat} vs target {target}");
     assert_ne!(p.arrange, "natural");
     // whichever fix is chosen, its held-out error is below natural
     let chosen = match p.arrange {
         "sorted" => e["sorted"].as_f64().unwrap(),
-        _ => e["equalized"].as_array().unwrap().iter().find(|v| v["alpha"].as_f64().unwrap() as f32 == p.alpha.unwrap()).unwrap()["error"].as_f64().unwrap(),
+        _ => e["equalized"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["alpha"].as_f64().unwrap() as f32 == p.alpha.unwrap())
+            .unwrap()["error"]
+            .as_f64()
+            .unwrap(),
     };
     assert!(chosen < nat, "chosen {chosen} natural {nat}");
 }
 
 #[test]
 fn sorting_groups_outliers_into_one_chunk() {
-    let mag: Vec<f32> = (0..64).map(|k| if k == 3 || k == 40 { 100.0 } else { 1.0 + k as f32 * 1e-3 }).collect();
+    let mag: Vec<f32> = (0..64)
+        .map(|k| {
+            if k == 3 || k == 40 {
+                100.0
+            } else {
+                1.0 + k as f32 * 1e-3
+            }
+        })
+        .collect();
     let p = sorted_perm(&mag);
     assert_eq!(&p[62..], &[3, 40]);
     let mut q = p.clone();
@@ -82,7 +100,8 @@ fn quant_error_with_identity_matches_actstats() {
     let id: Vec<u32> = (0..h as u32).collect();
     let ones = vec![1f32; h];
     for chunk in [32, 64, 256] {
-        let a = crate::actstats::quant_error(&x, n, h, &mag, chunk, crate::actstats::Arrange::Natural);
+        let a =
+            crate::actstats::quant_error(&x, n, h, &mag, chunk, crate::actstats::Arrange::Natural);
         let b = quant_error_with(&x, n, h, &id, &ones, &mag, chunk);
         assert_eq!(a.0.to_bits(), b.0.to_bits());
         assert_eq!(a.1.to_bits(), b.1.to_bits());

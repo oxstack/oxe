@@ -277,7 +277,10 @@ mod tests {
     fn coverage_fraction() {
         let total = COUNTS.iter().sum::<u64>() as f64;
         let c = coverage(&COUNTS, &[1, 2]);
-        assert!((c - (COUNTS[1] + COUNTS[2]) as f64 / total).abs() < 1e-12, "got {c}");
+        assert!(
+            (c - (COUNTS[1] + COUNTS[2]) as f64 / total).abs() < 1e-12,
+            "got {c}"
+        );
         // duplicates are not counted twice
         let c = coverage(&COUNTS, &[1, 1]);
         assert!((c - COUNTS[1] as f64 / total).abs() < 1e-12, "got {c}");
@@ -292,11 +295,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!(
-            "mtp_vocab_rt_{}_{}.bin",
-            std::process::id(),
-            nanos
-        ));
+        let path =
+            std::env::temp_dir().join(format!("mtp_vocab_rt_{}_{}.bin", std::process::id(), nanos));
         let ids = vec![0, 7, 248046, 248044];
         write_ids(&path, &ids).unwrap();
         let back = read_ids(&path);
@@ -331,7 +331,9 @@ mod tests {
 
     #[test]
     fn holdout_split_partitions_files() {
-        let files: Vec<PathBuf> = (0..200).map(|i| PathBuf::from(format!("src/f{i}.rs"))).collect();
+        let files: Vec<PathBuf> = (0..200)
+            .map(|i| PathBuf::from(format!("src/f{i}.rs")))
+            .collect();
         let (train, hold) = split_holdout(&files, 5);
         assert_eq!(train.len() + hold.len(), files.len());
         assert!(!hold.is_empty() && !train.is_empty());
@@ -343,14 +345,17 @@ mod tests {
         }
         // every file lands in exactly one set
         for f in &files {
-            let n = train.iter().filter(|t| *t == f).count() + hold.iter().filter(|h| *h == f).count();
+            let n =
+                train.iter().filter(|t| *t == f).count() + hold.iter().filter(|h| *h == f).count();
             assert_eq!(n, 1, "{}", f.display());
         }
     }
 
     #[test]
     fn holdout_zero_keeps_everything_in_train() {
-        let files: Vec<PathBuf> = (0..50).map(|i| PathBuf::from(format!("d/{i}.md"))).collect();
+        let files: Vec<PathBuf> = (0..50)
+            .map(|i| PathBuf::from(format!("d/{i}.md")))
+            .collect();
         let (train, hold) = split_holdout(&files, 0);
         assert_eq!(train, files);
         assert!(hold.is_empty());

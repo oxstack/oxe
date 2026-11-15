@@ -114,7 +114,11 @@ pub fn cpu_has(f: &str) -> bool {
 
 /// The required features `has` reports missing (in [`REQUIRED_CPU_FEATURES`] order).
 pub fn missing_cpu_features(has: &dyn Fn(&str) -> bool) -> Vec<&'static str> {
-    REQUIRED_CPU_FEATURES.iter().copied().filter(|f| !has(f)).collect()
+    REQUIRED_CPU_FEATURES
+        .iter()
+        .copied()
+        .filter(|f| !has(f))
+        .collect()
 }
 
 pub fn cpu_message(missing: &[&str]) -> String {
@@ -164,11 +168,20 @@ const KNOWN: &[(&str, Kind)] = &[
     ("OXE_PF_MMID_MIN", Kind::Uint(0, 64)),
     ("OXE_PF_ATTN_PB", Kind::Uint(1, 1 << 20)),
     // v0.1.3 PREFILL-POLICY: prefill attention mode and what `auto` resolves to
-    ("OXE_PF_ATTN", Kind::Word(&["auto", "tiled", "fa2", "fa2x", "pfg", ""])),
-    ("OXE_PF_ATTN_AUTO_KERNEL", Kind::Word(&["fa2", "fa2x", "pfg"])),
+    (
+        "OXE_PF_ATTN",
+        Kind::Word(&["auto", "tiled", "fa2", "fa2x", "pfg", ""]),
+    ),
+    (
+        "OXE_PF_ATTN_AUTO_KERNEL",
+        Kind::Word(&["fa2", "fa2x", "pfg"]),
+    ),
     // v0.1.4 PFG: pfg kernel parameters (an invalid combination warns in the engine and keeps
     // the defaults)
-    ("OXE_PF_PFG_FOLD", Kind::Word(&["16", "32", "16:16", "16:32", "32:16", "32:32"])),
+    (
+        "OXE_PF_PFG_FOLD",
+        Kind::Word(&["16", "32", "16:16", "16:32", "32:16", "32:32"]),
+    ),
     ("OXE_PF_PFG_CH", Kind::Uint(32, 256)),
     ("OXE_PF_PFG_TB", Kind::Word(&["8", "16", "32"])),
     ("OXE_PF_PFG_MK", Kind::Word(&["ld1r", "elem"])),
@@ -176,8 +189,14 @@ const KNOWN: &[(&str, Kind)] = &[
     // v0.2.0: the MTP acceptance guard (`mtp_guard::parse`)
     ("OXE_MTP_GUARD", Kind::Check(check_mtp_guard)),
     ("OXE_SMALL_PREFILL", Kind::Uint(0, u64::MAX)),
-    ("OXE_KV_TYPE", Kind::Word(&["f16", "k8", "v8", "kv8", "q8_0"])),
-    ("OXE_KV8_PV", Kind::Word(&["fast", "ref", "i16", "int16", "i8", "int8"])),
+    (
+        "OXE_KV_TYPE",
+        Kind::Word(&["f16", "k8", "v8", "kv8", "q8_0"]),
+    ),
+    (
+        "OXE_KV8_PV",
+        Kind::Word(&["fast", "ref", "i16", "int16", "i8", "int8"]),
+    ),
     ("OXE_KV8_FUSED", Kind::Bool01),
     ("OXE_KV_VPAD", Kind::Uint(0, 4096)),
     ("OXE_ATTN", Kind::Word(&["tiled", "fused", "legacy"])),
@@ -188,7 +207,10 @@ const KNOWN: &[(&str, Kind)] = &[
     ("OXE_IDLE_SPIN_US", Kind::Uint(0, 10_000_000)),
     ("OXE_MTP_DRAFT_K", Kind::Uint(1, u64::MAX)),
     ("OXE_WEIGHTS", Kind::Word(&["file", "anon"])),
-    ("OXE_ECHO", Kind::Word(&["0", "1", "on", "off", "true", "false", "yes", "no"])),
+    (
+        "OXE_ECHO",
+        Kind::Word(&["0", "1", "on", "off", "true", "false", "yes", "no"]),
+    ),
     ("OXE_ECHO_MAX_TOKENS", Kind::Uint(0, u64::MAX)),
     ("OXE_ECHO_TTL_SECS", Kind::Uint(0, u64::MAX)),
     ("OXE_STREAM_STALL_SECS", Kind::PosFloat),
@@ -270,7 +292,12 @@ fn check_one(name: &str, kind: Kind, v: &str) -> Result<serde_json::Value, Strin
         Kind::Mask(known) => {
             let n = match t.parse::<u64>() {
                 Ok(n) => n,
-                Err(_) if parse_u64(t).is_some() => return Err(format!("{name}={v:?}: write the mask in decimal (the engine reads decimal; {} here)", parse_u64(t).unwrap())),
+                Err(_) if parse_u64(t).is_some() => {
+                    return Err(format!(
+                    "{name}={v:?}: write the mask in decimal (the engine reads decimal; {} here)",
+                    parse_u64(t).unwrap()
+                ))
+                }
                 Err(_) => return Err(format!("{name}={v:?}: not a decimal bit mask")),
             };
             if n > u32::MAX as u64 || (n as u32) & !known != 0 {
@@ -291,7 +318,9 @@ fn check_one(name: &str, kind: Kind, v: &str) -> Result<serde_json::Value, Strin
                 Err(format!("{name}={v:?}: one of {}", ws.join("|")))
             }
         }
-        Kind::Check(f) => f(t).map(|()| J::String(t.to_string())).map_err(|e| format!("{name}={v:?}: {e}")),
+        Kind::Check(f) => f(t)
+            .map(|()| J::String(t.to_string()))
+            .map_err(|e| format!("{name}={v:?}: {e}")),
         Kind::PosFloat => match t.parse::<f64>() {
             Ok(x) if x.is_finite() && x > 0.0 => Ok(J::from(x)),
             _ => Err(format!("{name}={v:?}: a positive number")),
@@ -303,17 +332,23 @@ fn check_one(name: &str, kind: Kind, v: &str) -> Result<serde_json::Value, Strin
 /// Validate the `OXE_*` variables of `env` (name, value).
 pub fn check_env(env: &[(String, String)]) -> EnvReport {
     let mut r = EnvReport::default();
-    let mut env: Vec<&(String, String)> = env.iter().filter(|(k, _)| k.starts_with("OXE_")).collect();
+    let mut env: Vec<&(String, String)> =
+        env.iter().filter(|(k, _)| k.starts_with("OXE_")).collect();
     env.sort();
     for (k, v) in env {
         match KNOWN.iter().find(|(n, _)| n == k) {
             Some((_, kind)) => match check_one(k, *kind, v) {
                 Ok(eff) => {
-                    r.effective.insert(k.clone(), serde_json::json!({ "value": v, "effective": eff }));
+                    r.effective.insert(
+                        k.clone(),
+                        serde_json::json!({ "value": v, "effective": eff }),
+                    );
                 }
                 Err(e) => r.errors.push(e),
             },
-            None => r.warnings.push(format!("unknown environment variable {k} (not read by this build; a typo?)")),
+            None => r.warnings.push(format!(
+                "unknown environment variable {k} (not read by this build; a typo?)"
+            )),
         }
         if k == "OXE_KV_TYPE" && !matches!(v.trim().to_ascii_lowercase().as_str(), "f16" | "") {
             r.warnings.push(format!("OXE_KV_TYPE={v} is inherited from the environment: --cache-type-k/-v f16 does not clear it (oxe engine KV type)"));
@@ -326,8 +361,14 @@ pub fn check_env(env: &[(String, String)]) -> EnvReport {
 pub fn usage_flags(usage: &str) -> std::collections::BTreeSet<String> {
     usage
         .split(|c: char| c.is_whitespace() || "[](),|=\"".contains(c))
-        .filter(|w| w.starts_with('-') && w.len() > 1 && w.as_bytes()[1].is_ascii_alphabetic() || w.starts_with("--") && w.len() > 2)
-        .map(|w| w.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()).to_string())
+        .filter(|w| {
+            w.starts_with('-') && w.len() > 1 && w.as_bytes()[1].is_ascii_alphabetic()
+                || w.starts_with("--") && w.len() > 2
+        })
+        .map(|w| {
+            w.trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+                .to_string()
+        })
         .filter(|w| w.len() > 1)
         .collect()
 }
@@ -338,7 +379,9 @@ pub fn flags_not_in_usage(args: &[String], usage: &str) -> Vec<String> {
     let known = usage_flags(usage);
     let mut out = Vec::new();
     for a in args {
-        let is_flag = a.starts_with('-') && a.len() > 1 && !a[1..].starts_with(|c: char| c.is_ascii_digit() || c == '.');
+        let is_flag = a.starts_with('-')
+            && a.len() > 1
+            && !a[1..].starts_with(|c: char| c.is_ascii_digit() || c == '.');
         if is_flag && a != "--check-args" && !known.contains(a.as_str()) && !out.contains(a) {
             out.push(a.clone());
         }

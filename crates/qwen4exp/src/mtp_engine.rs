@@ -44,11 +44,28 @@ impl<'a> MtpEngine<'a> {
     /// `g`: a cleared context (position 0); with `head` the model must have the head attached and
     /// `g.mtp_init()` done.
     pub fn new(g: &'a mut GraphCtx, n_ctx: usize, threads: usize, head: bool) -> MtpEngine<'a> {
-        MtpEngine { g, threads, n_ctx, head, times: MtpTimes::default(), pending_h: vec![0.0; H_DIM], drafted: false, lbuf: Vec::new(), hbuf: Vec::new(), chain: vec![0.0; H_DIM] }
+        MtpEngine {
+            g,
+            threads,
+            n_ctx,
+            head,
+            times: MtpTimes::default(),
+            pending_h: vec![0.0; H_DIM],
+            drafted: false,
+            lbuf: Vec::new(),
+            hbuf: Vec::new(),
+            chain: vec![0.0; H_DIM],
+        }
     }
 
     /// Prefill `prompt` in ubatches; the head (if any) follows every ubatch. `logits`: the last row's.
-    pub fn prefill(&mut self, prompt: &[i32], ubatch: usize, threads_batch: usize, logits: &mut [f32]) -> Result<(), String> {
+    pub fn prefill(
+        &mut self,
+        prompt: &[i32],
+        ubatch: usize,
+        threads_batch: usize,
+        logits: &mut [f32],
+    ) -> Result<(), String> {
         for ch in prompt.chunks(ubatch.max(1)) {
             let pos0 = self.g.pos();
             if !self.head {
@@ -62,7 +79,8 @@ impl<'a> MtpEngine<'a> {
             let mut hh = vec![0f32; n * H_DIM];
             hh[..H_DIM].copy_from_slice(&self.pending_h);
             hh[H_DIM..].copy_from_slice(&h[..(n - 1) * H_DIM]);
-            self.g.mtp_step(ch, &hh, pos0, threads_batch, false, &mut [])?;
+            self.g
+                .mtp_step(ch, &hh, pos0, threads_batch, false, &mut [])?;
             self.pending_h.copy_from_slice(&h[(n - 1) * H_DIM..]);
         }
         self.drafted = false;
@@ -76,11 +94,22 @@ impl Target for MtpEngine<'_> {
         self.lbuf.resize(n * N_VOCAB, 0.0);
         self.hbuf.resize(n * H_DIM, 0.0);
         let t = Instant::now();
-        self.g.verify(toks, self.threads, &mut self.lbuf, &mut self.hbuf)?;
+        self.g
+            .verify(toks, self.threads, &mut self.lbuf, &mut self.hbuf)?;
         self.times.verify_s += t.elapsed().as_secs_f64();
         Ok(Rows {
-            logits: self.lbuf.chunks_exact(N_VOCAB).take(n).map(|r| r.to_vec()).collect(),
-            h: self.hbuf.chunks_exact(H_DIM).take(n).map(|r| r.to_vec()).collect(),
+            logits: self
+                .lbuf
+                .chunks_exact(N_VOCAB)
+                .take(n)
+                .map(|r| r.to_vec())
+                .collect(),
+            h: self
+                .hbuf
+                .chunks_exact(H_DIM)
+                .take(n)
+                .map(|r| r.to_vec())
+                .collect(),
         })
     }
     fn commit(&mut self, m: usize) -> Result<(), String> {
@@ -106,7 +135,9 @@ impl Draft for MtpEngine<'_> {
                 break;
             }
             let mut h_out = std::mem::take(&mut self.chain);
-            let r = self.g.mtp_step(&[tok], &h_in, pos0 + i, self.threads, true, &mut h_out);
+            let r = self
+                .g
+                .mtp_step(&[tok], &h_in, pos0 + i, self.threads, true, &mut h_out);
             self.chain = h_out;
             let (d, p) = r?.ok_or("mtp_step returned no draft")?;
             self.times.draft_steps += 1;
@@ -145,7 +176,8 @@ impl Draft for MtpEngine<'_> {
                 let src: &[f32] = if i == 0 { &self.pending_h } else { &h[i - 1] };
                 hh[(i - skip) * H_DIM..(i - skip + 1) * H_DIM].copy_from_slice(src);
             }
-            self.g.mtp_step(&toks[skip..], &hh, p0 + skip, self.threads, false, &mut [])?;
+            self.g
+                .mtp_step(&toks[skip..], &hh, p0 + skip, self.threads, false, &mut [])?;
             self.times.catch_up_rows += n as u64;
         }
         self.pending_h.copy_from_slice(&h[m - 1]);

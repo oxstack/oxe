@@ -45,7 +45,15 @@ NOT a full-model f32 reference; clause (d) tool-JSON is run separately";
 
 /// f32-attention reference of one query head: f32 inputs (the stored f16 K / V widened, the
 /// roped f32 query), dot products and softmax accumulated in f64, output rounded to f32.
-pub fn ref_attn_f64(q: &[f32], k: &[f32], v: &[f32], n: usize, hd: usize, scale: f32, out: &mut [f32]) {
+pub fn ref_attn_f64(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    n: usize,
+    hd: usize,
+    scale: f32,
+    out: &mut [f32],
+) {
     let mut s = vec![0f64; n];
     let mut m = f64::NEG_INFINITY;
     for p in 0..n {
@@ -85,7 +93,11 @@ pub enum Arm {
 fn set_arm(e: &mut Engine, arm: Arm) {
     // the reference hook takes precedence over the fused path; keep fused off while it runs so
     // the barrier count is the tiled one the hook mirrors
-    e.set_attn_ref(if arm == Arm::Ref { Some(ref_attn_f64 as AttnRef) } else { None });
+    e.set_attn_ref(if arm == Arm::Ref {
+        Some(ref_attn_f64 as AttnRef)
+    } else {
+        None
+    });
     e.set_attn_fused(arm == Arm::Fused);
 }
 
@@ -102,7 +114,11 @@ pub fn argmax(v: &[f32]) -> usize {
 /// (top-1, top-1 minus top-2 logit).
 pub fn top1_margin(v: &[f32]) -> (usize, f32) {
     let t = argmax(v);
-    let second = v.iter().enumerate().filter(|&(i, _)| i != t).fold(f32::NEG_INFINITY, |m, (_, &x)| m.max(x));
+    let second = v
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != t)
+        .fold(f32::NEG_INFINITY, |m, (_, &x)| m.max(x));
     (t, v[t] - second)
 }
 
@@ -131,7 +147,12 @@ pub fn kld(r: &[f32], o: &[f32]) -> f64 {
 
 /// Root-mean-square logit difference (the per-position logit error of (b)).
 pub fn rms(a: &[f32], b: &[f32]) -> f64 {
-    (a.iter().zip(b).map(|(&x, &y)| ((x - y) as f64).powi(2)).sum::<f64>() / a.len().max(1) as f64).sqrt()
+    (a.iter()
+        .zip(b)
+        .map(|(&x, &y)| ((x - y) as f64).powi(2))
+        .sum::<f64>()
+        / a.len().max(1) as f64)
+        .sqrt()
 }
 
 /// Every value finite (no NaN / inf).
@@ -144,7 +165,14 @@ pub fn all_finite(v: &[f32]) -> bool {
 /// fails the verdict, whatever argmax would pick.
 pub fn compare_row(index: usize, position: usize, arm: &[f32], inc: &[f32]) -> Row {
     let finite = all_finite(arm) && all_finite(inc);
-    Row { index, position, kld: if finite { kld(arm, inc) } else { f64::NAN }, top1: argmax(arm), inc_top1: argmax(inc), finite }
+    Row {
+        index,
+        position,
+        kld: if finite { kld(arm, inc) } else { f64::NAN },
+        top1: argmax(arm),
+        inc_top1: argmax(inc),
+        finite,
+    }
 }
 
 fn bits_eq(a: &[f32], b: &[f32]) -> bool {
@@ -164,7 +192,6 @@ pub fn sample_positions(n: usize, count: usize) -> Vec<usize> {
     v.dedup();
     v
 }
-
 
 fn quant(s: &[f64], f: f64) -> f64 {
     if s.is_empty() {
@@ -223,7 +250,11 @@ impl Candidate {
 
 /// Units of the fa2-class kernels in `p`: (fa2, fa2x, pfg).
 fn fa2_class_units(p: &PfCounts) -> [(Candidate, u64); 3] {
-    [(Candidate::PrefillFa2, p.units_fa2), (Candidate::PrefillFa2x, p.units_fa2x), (Candidate::PrefillPfg, p.units_pfg)]
+    [
+        (Candidate::PrefillFa2, p.units_fa2),
+        (Candidate::PrefillFa2x, p.units_fa2x),
+        (Candidate::PrefillPfg, p.units_pfg),
+    ]
 }
 
 /// Units of every non-tiled kernel in `p` (fa2, fa2x, pfg, f32-attention reference).
@@ -247,7 +278,11 @@ impl Control {
     pub fn parse(s: &str) -> Option<Control> {
         match s.trim() {
             "decode" => Some(Control::Decode),
-            x => x.strip_prefix("ubatch:").and_then(|n| n.parse().ok()).filter(|&n| n >= 1).map(Control::Ubatch),
+            x => x
+                .strip_prefix("ubatch:")
+                .and_then(|n| n.parse().ok())
+                .filter(|&n| n >= 1)
+                .map(Control::Ubatch),
         }
     }
 
@@ -355,7 +390,16 @@ pub struct Gate {
 
 impl Default for Gate {
     fn default() -> Gate {
-        Gate { kld_factor: 1.0, top1_slack: 0.005, ref_ratio_max: 1.1, jump_threshold: 1e-3, jump_tol_min: 2, jump_tol_frac: 0.03, min_positions: 1000, min_ref_samples: 200 }
+        Gate {
+            kld_factor: 1.0,
+            top1_slack: 0.005,
+            ref_ratio_max: 1.1,
+            jump_threshold: 1e-3,
+            jump_tol_min: 2,
+            jump_tol_frac: 0.03,
+            min_positions: 1000,
+            min_ref_samples: 200,
+        }
     }
 }
 
@@ -363,7 +407,8 @@ impl Gate {
     /// (c) jump allowance over `samples` sampled positions: max(jump_tol_min, ceil(jump_tol_frac x
     /// samples)) (O-117 "tiled + max(2, 3%)"; 200 samples -> 6, 1000 -> 30).
     pub fn jump_allowance(&self, samples: usize) -> usize {
-        self.jump_tol_min.max((self.jump_tol_frac * samples as f64 - 1e-9).ceil() as usize)
+        self.jump_tol_min
+            .max((self.jump_tol_frac * samples as f64 - 1e-9).ceil() as usize)
     }
 }
 
@@ -384,10 +429,26 @@ pub fn stats(rows: &[Row]) -> Stats {
     k.sort_by(|a, b| a.total_cmp(b));
     let n = k.len();
     if n == 0 {
-        return Stats { rows: 0, mean: f64::NAN, p50: f64::NAN, p90: f64::NAN, p99: f64::NAN, max: f64::NAN, top1: f64::NAN };
+        return Stats {
+            rows: 0,
+            mean: f64::NAN,
+            p50: f64::NAN,
+            p90: f64::NAN,
+            p99: f64::NAN,
+            max: f64::NAN,
+            top1: f64::NAN,
+        };
     }
     let agree = rows.iter().filter(|p| p.top1 == p.inc_top1).count();
-    Stats { rows: n, mean: k.iter().sum::<f64>() / n as f64, p50: quant(&k, 0.5), p90: quant(&k, 0.9), p99: quant(&k, 0.99), max: k[n - 1], top1: agree as f64 / n as f64 }
+    Stats {
+        rows: n,
+        mean: k.iter().sum::<f64>() / n as f64,
+        p50: quant(&k, 0.5),
+        p90: quant(&k, 0.9),
+        p99: quant(&k, 0.99),
+        max: k[n - 1],
+        top1: agree as f64 / n as f64,
+    }
 }
 
 /// Summary numbers and the per-clause verdict.
@@ -442,7 +503,16 @@ impl RefRow {
     /// The row and every metric the verdict reads from it are finite.
     pub fn all_finite(&self) -> bool {
         self.finite
-            && [self.inc_rms, self.cand_rms, self.inc_attn.0, self.inc_attn.1, self.cand_attn.0, self.cand_attn.1].iter().all(|x| x.is_finite())
+            && [
+                self.inc_rms,
+                self.cand_rms,
+                self.inc_attn.0,
+                self.inc_attn.1,
+                self.cand_attn.0,
+                self.cand_attn.1,
+            ]
+            .iter()
+            .all(|x| x.is_finite())
             && self.ref_margin.is_finite()
             && self.ref_absmax.is_finite()
     }
@@ -464,26 +534,87 @@ pub fn path_problems(r: &Report) -> Vec<String> {
     if r.candidate.is_prefill() {
         // the candidate's kernel ran units, no other fa2-class kernel did (v0.1.4: pfg included)
         let units = fa2_class_units(&cand.pf);
-        let want: u64 = units.iter().filter(|u| u.0 == r.candidate).map(|u| u.1).sum();
-        let other: u64 = units.iter().filter(|u| u.0 != r.candidate).map(|u| u.1).sum();
+        let want: u64 = units
+            .iter()
+            .filter(|u| u.0 == r.candidate)
+            .map(|u| u.1)
+            .sum();
+        let other: u64 = units
+            .iter()
+            .filter(|u| u.0 != r.candidate)
+            .map(|u| u.1)
+            .sum();
         need(cand.decode_steps == 0 && cand.pf.rows == n && n > 0, format!("candidate rows not all from batched prefill ({} of {n} rows batched, {} decode steps)", cand.pf.rows, cand.decode_steps));
         need(cand.pf.max_rows > 1, format!("candidate passes are not batched (largest pass {} rows): a scalar-step run is never a pass", cand.pf.max_rows));
-        need(want > 0 && other == 0 && cand.pf.units_ref == 0, format!("candidate kernel {} did not run (units fa2 {} fa2x {} pfg {} ref {})", r.candidate.name(), cand.pf.units_fa2, cand.pf.units_fa2x, cand.pf.units_pfg, cand.pf.units_ref));
-        need(inc.decode_steps == 0 && inc.pf.rows == n, format!("incumbent rows not all from batched prefill ({} of {n})", inc.pf.rows));
-        need(non_tiled_units(&inc.pf) == 0 && inc.pf.units_tiled + inc.pf.units_per_head > 0, format!("incumbent is not the tiled prefill ({:?})", inc.pf));
+        need(
+            want > 0 && other == 0 && cand.pf.units_ref == 0,
+            format!(
+                "candidate kernel {} did not run (units fa2 {} fa2x {} pfg {} ref {})",
+                r.candidate.name(),
+                cand.pf.units_fa2,
+                cand.pf.units_fa2x,
+                cand.pf.units_pfg,
+                cand.pf.units_ref
+            ),
+        );
+        need(
+            inc.decode_steps == 0 && inc.pf.rows == n,
+            format!(
+                "incumbent rows not all from batched prefill ({} of {n})",
+                inc.pf.rows
+            ),
+        );
+        need(
+            non_tiled_units(&inc.pf) == 0 && inc.pf.units_tiled + inc.pf.units_per_head > 0,
+            format!("incumbent is not the tiled prefill ({:?})", inc.pf),
+        );
         if !r.refs.is_empty() {
             match arm("reference") {
-                Some(a) => need(a.pf.rows == n && a.pf.units_ref > 0 && a.pf.units_fa2 + a.pf.units_fa2x + a.pf.units_pfg + a.pf.units_tiled + a.pf.units_per_head == 0, format!("reference pass did not run the f32-attention reference everywhere ({:?})", a.pf)),
+                Some(a) => need(
+                    a.pf.rows == n
+                        && a.pf.units_ref > 0
+                        && a.pf.units_fa2
+                            + a.pf.units_fa2x
+                            + a.pf.units_pfg
+                            + a.pf.units_tiled
+                            + a.pf.units_per_head
+                            == 0,
+                    format!(
+                        "reference pass did not run the f32-attention reference everywhere ({:?})",
+                        a.pf
+                    ),
+                ),
                 None => need(false, "reference arm missing".into()),
             }
         }
     } else {
-        need(cand.fused && cand.decode_steps == n && n > 0, format!("candidate is not the fused decode over every position (fused {}, {} steps of {n})", cand.fused, cand.decode_steps));
-        need(!inc.fused && inc.decode_steps == n, format!("incumbent is not the tiled decode over every position ({} steps)", inc.decode_steps));
+        need(
+            cand.fused && cand.decode_steps == n && n > 0,
+            format!(
+                "candidate is not the fused decode over every position (fused {}, {} steps of {n})",
+                cand.fused, cand.decode_steps
+            ),
+        );
+        need(
+            !inc.fused && inc.decode_steps == n,
+            format!(
+                "incumbent is not the tiled decode over every position ({} steps)",
+                inc.decode_steps
+            ),
+        );
     }
     match (arm("control"), r.control) {
-        (Some(c), Control::Decode) => need(c.decode_steps == n && !c.fused, format!("control decode ran {} of {n} steps", c.decode_steps)),
-        (Some(c), Control::Ubatch(_)) => need(c.pf.rows == n && non_tiled_units(&c.pf) == 0, format!("control is not a tiled batched prefill of every row ({:?})", c.pf)),
+        (Some(c), Control::Decode) => need(
+            c.decode_steps == n && !c.fused,
+            format!("control decode ran {} of {n} steps", c.decode_steps),
+        ),
+        (Some(c), Control::Ubatch(_)) => need(
+            c.pf.rows == n && non_tiled_units(&c.pf) == 0,
+            format!(
+                "control is not a tiled batched prefill of every row ({:?})",
+                c.pf
+            ),
+        ),
         (None, _) => need(false, "control arm missing".into()),
     }
     if r.candidate == Candidate::FusedDecode && r.control == Control::Decode {
@@ -495,7 +626,12 @@ pub fn path_problems(r: &Report) -> Vec<String> {
 impl Report {
     pub fn verdict(&self, g: &Gate) -> Verdict {
         let (cand, control) = (stats(&self.rows), stats(&self.control_rows));
-        let same_positions = self.rows.len() == self.control_rows.len() && self.rows.iter().zip(&self.control_rows).all(|(a, b)| a.position == b.position);
+        let same_positions = self.rows.len() == self.control_rows.len()
+            && self
+                .rows
+                .iter()
+                .zip(&self.control_rows)
+                .all(|(a, b)| a.position == b.position);
         let kld_max = g.kld_factor * control.mean;
         let top1_min = control.top1 - g.top1_slack;
         // (a) an absolute floor so two bit-exact arms (both 0) compare equal
@@ -509,12 +645,19 @@ impl Report {
             v
         };
         let (is, cs) = (sorted(&|r| r.inc_rms), sorted(&|r| r.cand_rms));
-        let (i50, i90, c50, c90) = (quant(&is, 0.5), quant(&is, 0.9), quant(&cs, 0.5), quant(&cs, 0.9));
+        let (i50, i90, c50, c90) = (
+            quant(&is, 0.5),
+            quant(&is, 0.9),
+            quant(&cs, 0.5),
+            quant(&cs, 0.9),
+        );
         let inc_jumps = is.iter().filter(|&&x| x > g.jump_threshold).count();
         let cand_jumps = cs.iter().filter(|&&x| x > g.jump_threshold).count();
         let jump_allowance = g.jump_allowance(sampled.len());
         let rel = |f: &dyn Fn(&RefRow) -> (f64, f64)| {
-            let (e, r) = sampled.iter().fold((0.0, 0.0), |a, x| (a.0 + f(x).0, a.1 + f(x).1));
+            let (e, r) = sampled
+                .iter()
+                .fold((0.0, 0.0), |a, x| (a.0 + f(x).0, a.1 + f(x).1));
             if r > 0.0 {
                 (e / r).sqrt()
             } else {
@@ -531,8 +674,14 @@ impl Report {
         let path_problems = path_problems(self);
         let path_ok = path_problems.is_empty();
         let fork_replay_exact = self.refs.iter().all(|r| r.fork_replay_exact);
-        let scope_met = cand.rows >= g.min_positions && same_positions && sampled.len() >= g.min_ref_samples;
-        let nonfinite_rows = self.rows.iter().chain(&self.control_rows).filter(|r| !r.finite || !r.kld.is_finite()).count();
+        let scope_met =
+            cand.rows >= g.min_positions && same_positions && sampled.len() >= g.min_ref_samples;
+        let nonfinite_rows = self
+            .rows
+            .iter()
+            .chain(&self.control_rows)
+            .filter(|r| !r.finite || !r.kld.is_finite())
+            .count();
         let nonfinite_refs = self.refs.iter().filter(|r| !r.all_finite()).count();
         let finite_ok = nonfinite_rows == 0 && nonfinite_refs == 0;
         Verdict {
@@ -567,7 +716,13 @@ impl Report {
             nonfinite_refs,
             finite_ok,
             scope_met,
-            passed: scope_met && path_ok && fork_replay_exact && finite_ok && pass_a && pass_b && pass_c,
+            passed: scope_met
+                && path_ok
+                && fork_replay_exact
+                && finite_ok
+                && pass_a
+                && pass_b
+                && pass_c,
             cand,
             control,
         }
@@ -579,7 +734,18 @@ impl Report {
 /// One batched teacher-forced pass of `cont` from the loaded state: every row's output-normed
 /// hidden state, the attention check of `check` positions, what ran.
 #[allow(clippy::too_many_arguments)]
-fn batched_arm<'a, P: Team + ?Sized>(e: &mut Engine<'a>, pool: &P, load: &mut dyn FnMut(&Engine<'a>), base: usize, cont: &[u32], ubatch: usize, mode: PfAttn, pf_ref: bool, check: Option<Vec<usize>>, role: &'static str) -> (Vec<f32>, Vec<(usize, f64, f64)>, ArmRun) {
+fn batched_arm<'a, P: Team + ?Sized>(
+    e: &mut Engine<'a>,
+    pool: &P,
+    load: &mut dyn FnMut(&Engine<'a>),
+    base: usize,
+    cont: &[u32],
+    ubatch: usize,
+    mode: PfAttn,
+    pf_ref: bool,
+    check: Option<Vec<usize>>,
+    role: &'static str,
+) -> (Vec<f32>, Vec<(usize, f64, f64)>, ArmRun) {
     load(e);
     assert_eq!(e.pos(), base, "load() must restore the saved prefix state");
     e.set_pf_attn(mode);
@@ -589,15 +755,28 @@ fn batched_arm<'a, P: Team + ?Sized>(e: &mut Engine<'a>, pool: &P, load: &mut dy
     let mut h = Vec::new();
     e.prefill_ext(pool, cont, ubatch, Some(&mut h));
     let chk = e.take_pf_check();
-    let kernel = if pf_ref { "f32-attention reference" } else { e.pf_attn_kernel() };
-    let run = ArmRun { role, path: format!("batched prefill, ubatch {ubatch}, attention {kernel}"), decode_steps: 0, fused: false, pf: e.pf_counts(), pf_kernel: e.pf_attn_kernel() };
+    let kernel = if pf_ref {
+        "f32-attention reference"
+    } else {
+        e.pf_attn_kernel()
+    };
+    let run = ArmRun {
+        role,
+        path: format!("batched prefill, ubatch {ubatch}, attention {kernel}"),
+        decode_steps: 0,
+        fused: false,
+        pf: e.pf_counts(),
+        pf_kernel: e.pf_attn_kernel(),
+    };
     e.set_pf_ref(false);
     e.set_pf_check(None);
     (h, chk, run)
 }
 
 fn check_of(chk: &[(usize, f64, f64)], pos: usize) -> (f64, f64) {
-    chk.iter().find(|c| c.0 == pos).map_or((0.0, 0.0), |c| (c.1, c.2))
+    chk.iter()
+        .find(|c| c.0 == pos)
+        .map_or((0.0, 0.0), |c| (c.1, c.2))
 }
 
 /// O-117 for a prefill candidate on engine `e` (f16 KV). `load(e)` restores the saved prefix
@@ -606,7 +785,17 @@ fn check_of(chk: &[(usize, f64, f64)], pos: usize) -> (f64, f64) {
 /// set skips the reference pass: (c) then fails). Arms: tiled batched (incumbent), candidate
 /// batched, reference batched, control; the logits of every row through [`head_logits`].
 #[allow(clippy::too_many_arguments)]
-pub fn run_prefill<'a, P: Team + ?Sized>(e: &mut Engine<'a>, pool: &P, load: &mut dyn FnMut(&Engine<'a>), cand: Candidate, cont: &[u32], ubatch: usize, control: Control, samples: &[usize], progress: &mut dyn FnMut(&str)) -> Report {
+pub fn run_prefill<'a, P: Team + ?Sized>(
+    e: &mut Engine<'a>,
+    pool: &P,
+    load: &mut dyn FnMut(&Engine<'a>),
+    cand: Candidate,
+    cont: &[u32],
+    ubatch: usize,
+    control: Control,
+    samples: &[usize],
+    progress: &mut dyn FnMut(&str),
+) -> Report {
     assert!(cand.is_prefill(), "run_prefill: a prefill candidate");
     assert!(ubatch >= 1 && !cont.is_empty());
     let (plan, ws) = (e.plan, e.weight_store());
@@ -615,22 +804,66 @@ pub fn run_prefill<'a, P: Team + ?Sized>(e: &mut Engine<'a>, pool: &P, load: &mu
     load(e);
     let base = e.pos();
     let check: Vec<usize> = samples.iter().map(|&i| base + i).collect();
-    let (h_inc, chk_inc, a_inc) = batched_arm(e, pool, &mut *load, base, cont, ubatch, PfAttn::Tiled, false, Some(check.clone()), "incumbent");
+    let (h_inc, chk_inc, a_inc) = batched_arm(
+        e,
+        pool,
+        &mut *load,
+        base,
+        cont,
+        ubatch,
+        PfAttn::Tiled,
+        false,
+        Some(check.clone()),
+        "incumbent",
+    );
     progress("incumbent (tiled batched) pass done");
-    let (h_cand, chk_cand, a_cand) = batched_arm(e, pool, &mut *load, base, cont, ubatch, cand.pf_attn(), false, Some(check.clone()), "candidate");
+    let (h_cand, chk_cand, a_cand) = batched_arm(
+        e,
+        pool,
+        &mut *load,
+        base,
+        cont,
+        ubatch,
+        cand.pf_attn(),
+        false,
+        Some(check.clone()),
+        "candidate",
+    );
     progress("candidate batched pass done");
     let mut arms = vec![a_inc, a_cand];
     let h_ref = if samples.is_empty() {
         Vec::new()
     } else {
-        let (h, _, a) = batched_arm(e, pool, &mut *load, base, cont, ubatch, PfAttn::Tiled, true, None, "reference");
+        let (h, _, a) = batched_arm(
+            e,
+            pool,
+            &mut *load,
+            base,
+            cont,
+            ubatch,
+            PfAttn::Tiled,
+            true,
+            None,
+            "reference",
+        );
         arms.push(a);
         progress("reference (f32-attention) batched pass done");
         h
     };
     let h_ctl = match control {
         Control::Ubatch(u) => {
-            let (h, _, a) = batched_arm(e, pool, &mut *load, base, cont, u, PfAttn::Tiled, false, None, "control");
+            let (h, _, a) = batched_arm(
+                e,
+                pool,
+                &mut *load,
+                base,
+                cont,
+                u,
+                PfAttn::Tiled,
+                false,
+                None,
+                "control",
+            );
             arms.push(a);
             h
         }
@@ -689,9 +922,24 @@ pub fn run_prefill<'a, P: Team + ?Sized>(e: &mut Engine<'a>, pool: &P, load: &mu
         }
     }
     if control == Control::Decode {
-        arms.push(ArmRun { role: "control", path: "tiled decode, one token per step".into(), decode_steps: cont.len() as u64, fused: false, pf: PfCounts::default(), pf_kernel: "n/a" });
+        arms.push(ArmRun {
+            role: "control",
+            path: "tiled decode, one token per step".into(),
+            decode_steps: cont.len() as u64,
+            fused: false,
+            pf: PfCounts::default(),
+            pf_kernel: "n/a",
+        });
     }
-    Report { candidate: cand, control, ubatch, rows, control_rows, refs, arms }
+    Report {
+        candidate: cand,
+        control,
+        ubatch,
+        rows,
+        control_rows,
+        refs,
+        arms,
+    }
 }
 
 // ------------------------------------------------------------------ fused decode candidate
@@ -718,7 +966,15 @@ pub fn configure(a: &mut Engine, b: &mut Engine) {
 /// at every top-1 disagreement: one step three ways (f32-attention reference, fused, tiled) over
 /// A's stored state, the tiled one checked to replay bit for bit. `on_pos(i, tiled, fused)` sees
 /// both continuous logit rows of every position.
-pub fn run_decode<P: Team + ?Sized>(a: &mut Engine, b: &mut Engine, pool: &P, cont: &[u32], samples: &[usize], on_pos: &mut dyn FnMut(usize, &[f32], &[f32]), progress: &mut dyn FnMut(usize, &[Row])) -> (Vec<Row>, Vec<RefRow>) {
+pub fn run_decode<P: Team + ?Sized>(
+    a: &mut Engine,
+    b: &mut Engine,
+    pool: &P,
+    cont: &[u32],
+    samples: &[usize],
+    on_pos: &mut dyn FnMut(usize, &[f32], &[f32]),
+    progress: &mut dyn FnMut(usize, &[Row]),
+) -> (Vec<Row>, Vec<RefRow>) {
     assert_eq!(a.pos(), b.pos(), "A and B must start from the same state");
     assert!(!a.attn_fused() && b.attn_fused(), "configure() first");
     let base = a.pos();
@@ -789,14 +1045,36 @@ pub fn run_decode<P: Team + ?Sized>(a: &mut Engine, b: &mut Engine, pool: &P, co
 /// (`Control::Ubatch`), compared with the tiled decode incumbent at every position
 /// (KL(P_batched || P_decode)); then [`run_decode`]. `load(e)` restores the saved prefix state.
 #[allow(clippy::too_many_arguments)]
-pub fn run_fused_decode<'a, P: Team + ?Sized>(a: &mut Engine<'a>, b: &mut Engine<'a>, pool: &P, load: &mut dyn FnMut(&Engine<'a>), cont: &[u32], control: Control, samples: &[usize], progress: &mut dyn FnMut(&str)) -> Report {
-    let Control::Ubatch(cu) = control else { panic!("fused-decode needs a batched control (--control ubatch:N)") };
+pub fn run_fused_decode<'a, P: Team + ?Sized>(
+    a: &mut Engine<'a>,
+    b: &mut Engine<'a>,
+    pool: &P,
+    load: &mut dyn FnMut(&Engine<'a>),
+    cont: &[u32],
+    control: Control,
+    samples: &[usize],
+    progress: &mut dyn FnMut(&str),
+) -> Report {
+    let Control::Ubatch(cu) = control else {
+        panic!("fused-decode needs a batched control (--control ubatch:N)")
+    };
     let (plan, ws) = (a.plan, a.weight_store());
     let (de, nv) = (plan.desc.n_embd, plan.desc.n_vocab);
     a.set_attn_fused(false);
     load(a);
     let base = a.pos();
-    let (h_ctl, _, a_ctl) = batched_arm(a, pool, &mut *load, base, cont, cu, PfAttn::Tiled, false, None, "control");
+    let (h_ctl, _, a_ctl) = batched_arm(
+        a,
+        pool,
+        &mut *load,
+        base,
+        cont,
+        cu,
+        PfAttn::Tiled,
+        false,
+        None,
+        "control",
+    );
     progress("control (tiled batched) pass done");
     load(a);
     load(b);
@@ -822,10 +1100,39 @@ pub fn run_fused_decode<'a, P: Team + ?Sized>(a: &mut Engine<'a>, b: &mut Engine
     );
     let forks = refs.len() as u64;
     let arms = vec![
-        ArmRun { role: "incumbent", path: "tiled decode, one token per step".into(), decode_steps: n as u64, fused: a.attn_fused(), pf: PfCounts::default(), pf_kernel: "n/a" },
-        ArmRun { role: "candidate", path: "fused decode (O-70), one token per step, cutoffs 0".into(), decode_steps: n as u64, fused: b.attn_fused(), pf: PfCounts::default(), pf_kernel: "n/a" },
-        ArmRun { role: "reference", path: format!("forked decode steps of A, f32-attention reference ({forks} forks)"), decode_steps: 0, fused: false, pf: PfCounts::default(), pf_kernel: "n/a" },
+        ArmRun {
+            role: "incumbent",
+            path: "tiled decode, one token per step".into(),
+            decode_steps: n as u64,
+            fused: a.attn_fused(),
+            pf: PfCounts::default(),
+            pf_kernel: "n/a",
+        },
+        ArmRun {
+            role: "candidate",
+            path: "fused decode (O-70), one token per step, cutoffs 0".into(),
+            decode_steps: n as u64,
+            fused: b.attn_fused(),
+            pf: PfCounts::default(),
+            pf_kernel: "n/a",
+        },
+        ArmRun {
+            role: "reference",
+            path: format!("forked decode steps of A, f32-attention reference ({forks} forks)"),
+            decode_steps: 0,
+            fused: false,
+            pf: PfCounts::default(),
+            pf_kernel: "n/a",
+        },
         a_ctl,
     ];
-    Report { candidate: Candidate::FusedDecode, control, ubatch: cu, rows, control_rows, refs, arms }
+    Report {
+        candidate: Candidate::FusedDecode,
+        control,
+        ubatch: cu,
+        rows,
+        control_rows,
+        refs,
+        arms,
+    }
 }

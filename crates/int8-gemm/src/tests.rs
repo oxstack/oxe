@@ -108,15 +108,24 @@ fn check_bitwise(n: usize, m: usize, k: usize, chunk: usize, seed: u64) {
         gemm(&x, &w, tg.clone(), rg.clone(), &mut a, stride, order, false);
         gemm_ref(&x, &w, tg.clone(), rg.clone(), &mut b, stride, order, false);
         for t in 0..tg.len() * G {
-            assert_eq!(bits(&a[t * stride..t * stride + rg.len() * G]), bits(&b[t * stride..t * stride + rg.len() * G]), "n{n} m{m} k{k} chunk{chunk} {order:?} t{t}");
+            assert_eq!(
+                bits(&a[t * stride..t * stride + rg.len() * G]),
+                bits(&b[t * stride..t * stride + rg.len() * G]),
+                "n{n} m{m} k{k} chunk{chunk} {order:?} t{t}"
+            );
             // the gap between rows of y is not touched
-            assert!(a[t * stride + rg.len() * G..(t + 1) * stride].iter().all(|v| v.is_nan()));
+            assert!(a[t * stride + rg.len() * G..(t + 1) * stride]
+                .iter()
+                .all(|v| v.is_nan()));
         }
         // accumulate: second pass adds onto the first, same contract
         gemm(&x, &w, tg.clone(), rg.clone(), &mut a, stride, order, true);
         gemm_ref(&x, &w, tg.clone(), rg.clone(), &mut b, stride, order, true);
         for t in 0..tg.len() * G {
-            assert_eq!(bits(&a[t * stride..t * stride + rg.len() * G]), bits(&b[t * stride..t * stride + rg.len() * G]));
+            assert_eq!(
+                bits(&a[t * stride..t * stride + rg.len() * G]),
+                bits(&b[t * stride..t * stride + rg.len() * G])
+            );
         }
     }
 }
@@ -144,7 +153,10 @@ fn sub_ranges_match_full() {
     gemm(&x, &w, 1..3, 2..5, &mut part, 24, Order::MulAdd, false);
     for t in 0..16 {
         for r in 0..24 {
-            assert_eq!(part[t * 24 + r].to_bits(), full[(t + 8) * m + r + 16].to_bits());
+            assert_eq!(
+                part[t * 24 + r].to_bits(),
+                full[(t + 8) * m + r + 16].to_bits()
+            );
         }
     }
 }
@@ -163,7 +175,9 @@ fn extreme_codes_do_not_overflow() {
     gemm(&x, &w, 0..1, 0..1, &mut y, 8, Order::MulAdd, false);
     for t in 0..8 {
         for r in 0..8 {
-            let want = (if t % 2 == 0 { 127i64 } else { -127 }) * (if r < 4 { -128 } else { 127 }) * k as i64;
+            let want = (if t % 2 == 0 { 127i64 } else { -127 })
+                * (if r < 4 { -128 } else { 127 })
+                * k as i64;
             assert_eq!(y[t * 8 + r], want as f32);
         }
     }
@@ -242,7 +256,9 @@ fn gemm_accuracy_vs_f64() {
     let mut want = vec![0.0f64; n * m];
     for t in 0..n {
         for r in 0..m {
-            want[t * m + r] = (0..k).map(|i| xf[t * k + i] as f64 * wf[r * k + i] as f64).sum();
+            want[t * m + r] = (0..k)
+                .map(|i| xf[t * k + i] as f64 * wf[r * k + i] as f64)
+                .sum();
         }
     }
     let mut last = f64::MAX;
@@ -268,13 +284,18 @@ fn two_level_matches_reference_and_values() {
     let mut sub_scales = vec![0i16; w.groups() * (k / sub) * G];
     for r in 0..m {
         let codes: Vec<i8> = (0..k).map(|_| (rng.next() % 64) as i8 - 32).collect();
-        let sup: Vec<f32> = (0..k / chunk).map(|_| 0.001 + rng.unit().abs() * 0.01).collect();
+        let sup: Vec<f32> = (0..k / chunk)
+            .map(|_| 0.001 + rng.unit().abs() * 0.01)
+            .collect();
         w.set_codes(r, 0, &codes, &sup);
         for sb in 0..k / sub {
             sub_scales[((r / G) * (k / sub) + sb) * G + r % G] = (rng.next() % 255) as i16 - 127;
         }
     }
-    w.sub = Some(SubScales { sub, scales: sub_scales });
+    w.sub = Some(SubScales {
+        sub,
+        scales: sub_scales,
+    });
     for order in [Order::MulAdd, Order::Fma] {
         let mut a = vec![0.0f32; n * m];
         let mut b = vec![0.0f32; n * m];
@@ -301,18 +322,39 @@ fn blocked_driver_covers_everything_once() {
     let x = Packed::from_f32(&random_f32(&mut rng, n * k), n, k, chunk);
     let w = Packed::from_f32(&random_f32(&mut rng, m * k), m, k, chunk);
     let mut full = vec![0.0f32; x.groups() * G * m];
-    gemm(&x, &w, 0..x.groups(), 0..3, &mut full, m, Order::MulAdd, false);
+    gemm(
+        &x,
+        &w,
+        0..x.groups(),
+        0..3,
+        &mut full,
+        m,
+        Order::MulAdd,
+        false,
+    );
     let mut seen = vec![0u32; x.groups() * G];
     let mut scratch = Vec::new();
-    gemm_blocked(&x, &w, 0..x.groups(), 1..3, 2, Order::MulAdd, &mut scratch, |t0, nt, block| {
-        assert_eq!(block.len(), nt * 16);
-        for t in 0..nt {
-            seen[t0 + t] += 1;
-            for r in 0..16 {
-                assert_eq!(block[t * 16 + r].to_bits(), full[(t0 + t) * m + 8 + r].to_bits());
+    gemm_blocked(
+        &x,
+        &w,
+        0..x.groups(),
+        1..3,
+        2,
+        Order::MulAdd,
+        &mut scratch,
+        |t0, nt, block| {
+            assert_eq!(block.len(), nt * 16);
+            for t in 0..nt {
+                seen[t0 + t] += 1;
+                for r in 0..16 {
+                    assert_eq!(
+                        block[t * 16 + r].to_bits(),
+                        full[(t0 + t) * m + 8 + r].to_bits()
+                    );
+                }
             }
-        }
-    });
+        },
+    );
     assert!(seen.iter().all(|&c| c == 1));
 }
 
@@ -321,7 +363,9 @@ fn unsigned_kernel_matches_scalar() {
     let mut rng = Rng(61);
     let steps = 5;
     let x: Vec<u8> = (0..steps * 64).map(|_| (rng.next() % 256) as u8).collect();
-    let w: Vec<i8> = (0..steps * 64).map(|_| (rng.next() % 256) as u8 as i8).collect();
+    let w: Vec<i8> = (0..steps * 64)
+        .map(|_| (rng.next() % 256) as u8 as i8)
+        .collect();
     let mut out = [0i32; 64];
     unsafe { raw::i8g_udot8x8(x.as_ptr(), w.as_ptr(), steps, out.as_mut_ptr()) };
     for t in 0..8 {
@@ -338,7 +382,19 @@ fn unsigned_kernel_matches_scalar() {
     // scaled unsigned tile: one chunk, scales 1 -> same integers as floats
     let ones = [1.0f32; 8];
     let mut y = [0.0f32; 64];
-    unsafe { raw::i8g_utile8x8(x.as_ptr(), w.as_ptr(), steps, 1, ones.as_ptr(), ones.as_ptr(), y.as_mut_ptr(), 8, 0) };
+    unsafe {
+        raw::i8g_utile8x8(
+            x.as_ptr(),
+            w.as_ptr(),
+            steps,
+            1,
+            ones.as_ptr(),
+            ones.as_ptr(),
+            y.as_mut_ptr(),
+            8,
+            0,
+        )
+    };
     for i in 0..64 {
         assert_eq!(y[i], out[i] as f32);
     }
@@ -358,21 +414,41 @@ fn softmax_pack_matches_scalar() {
             let cmax = unsafe { raw::i8g_row_max(s.as_ptr(), kc) };
             assert_eq!(cmax, s.iter().copied().fold(f32::NEG_INFINITY, f32::max));
             let m = cmax + 0.25; // a running max from an earlier chunk
-            // scalar reference in f64
-            let e: Vec<f64> = s.iter().map(|&v| ((v - m) as f64).max(-87.0).exp()).collect();
+                                 // scalar reference in f64
+            let e: Vec<f64> = s
+                .iter()
+                .map(|&v| ((v - m) as f64).max(-87.0).exp())
+                .collect();
             let want_sum: f64 = e.iter().sum();
             let pv: Vec<f64> = e.iter().zip(&sv).map(|(a, b)| a * *b as f64).collect();
             let pmax = pv.iter().copied().fold(0.0f64, f64::max);
             let mut codes = vec![0xAAu8; (kc / 8) * 64];
             let (mut sum, mut scale) = (0.0f32, 0.0f32);
             let mut work = s.clone();
-            unsafe { raw::i8g_softmax_pack(work.as_mut_ptr(), kc, m, sv.as_ptr(), codes.as_mut_ptr(), qi, &mut sum, &mut scale) };
-            assert!(((sum as f64 - want_sum) / want_sum).abs() < 1e-4, "sum {sum} vs {want_sum}");
+            unsafe {
+                raw::i8g_softmax_pack(
+                    work.as_mut_ptr(),
+                    kc,
+                    m,
+                    sv.as_ptr(),
+                    codes.as_mut_ptr(),
+                    qi,
+                    &mut sum,
+                    &mut scale,
+                )
+            };
+            assert!(
+                ((sum as f64 - want_sum) / want_sum).abs() < 1e-4,
+                "sum {sum} vs {want_sum}"
+            );
             assert!(((scale as f64 - pmax / 255.0) / (pmax / 255.0)).abs() < 1e-4);
             for j in 0..kc {
                 let got = codes[(j / 8) * 64 + qi * 8 + j % 8] as f64;
                 let want = pv[j] / pmax * 255.0;
-                assert!((got - want).abs() <= 0.5 + 0.05, "kc {kc} qi {qi} j {j}: {got} vs {want}");
+                assert!(
+                    (got - want).abs() <= 0.5 + 0.05,
+                    "kc {kc} qi {qi} j {j}: {got} vs {want}"
+                );
             }
             // other queries' bytes are untouched
             for (i, &b) in codes.iter().enumerate() {
@@ -387,10 +463,23 @@ fn softmax_pack_matches_scalar() {
     let sv = vec![0.0f32; 16];
     let mut codes = vec![7u8; 128];
     let (mut sum, mut scale) = (0.0f32, 1.0f32);
-    unsafe { raw::i8g_softmax_pack(s.as_mut_ptr(), 16, 0.0, sv.as_ptr(), codes.as_mut_ptr(), 2, &mut sum, &mut scale) };
+    unsafe {
+        raw::i8g_softmax_pack(
+            s.as_mut_ptr(),
+            16,
+            0.0,
+            sv.as_ptr(),
+            codes.as_mut_ptr(),
+            2,
+            &mut sum,
+            &mut scale,
+        )
+    };
     assert_eq!(scale, 0.0);
     assert!((sum - 16.0).abs() < 1e-4);
-    assert!(codes[16..24].iter().all(|&b| b == 0) && codes[64 + 16..64 + 24].iter().all(|&b| b == 0));
+    assert!(
+        codes[16..24].iter().all(|&b| b == 0) && codes[64 + 16..64 + 24].iter().all(|&b| b == 0)
+    );
 }
 
 /// Kernel roofline on one core (ignored: timing). L1-resident operands, so this is the SMMLA tile
@@ -401,11 +490,29 @@ fn softmax_pack_matches_scalar() {
 fn kernel_peak_single_core() {
     let mut rng = Rng(99);
     for &(n, m, k, chunk, label) in &[
-        (8usize, 8usize, 3072usize, 3072usize, "L1: 1 tile, k=3072, one fix-up"),
+        (
+            8usize,
+            8usize,
+            3072usize,
+            3072usize,
+            "L1: 1 tile, k=3072, one fix-up",
+        ),
         (8, 8, 3072, 256, "L1: 1 tile, k=3072, chunk 256"),
         (8, 8, 3072, 32, "L1: 1 tile, k=3072, chunk 32"),
-        (8, 256, 3072, 256, "X in L1, W 786 KB (L2): 32 row groups, chunk 256"),
-        (64, 256, 3072, 256, "X 196 KB, W 786 KB (both L2), chunk 256"),
+        (
+            8,
+            256,
+            3072,
+            256,
+            "X in L1, W 786 KB (L2): 32 row groups, chunk 256",
+        ),
+        (
+            64,
+            256,
+            3072,
+            256,
+            "X 196 KB, W 786 KB (both L2), chunk 256",
+        ),
         (8, 8, 128, 128, "attention QK shape: k=128"),
     ] {
         let x = Packed::from_f32(&random_f32(&mut rng, n * k), n, k, chunk);
@@ -417,12 +524,25 @@ fn kernel_peak_single_core() {
         for _ in 0..3 {
             let t0 = std::time::Instant::now();
             for _ in 0..passes {
-                gemm(&x, &w, 0..x.groups(), 0..w.groups(), &mut y, m, Order::MulAdd, false);
+                gemm(
+                    &x,
+                    &w,
+                    0..x.groups(),
+                    0..w.groups(),
+                    &mut y,
+                    m,
+                    Order::MulAdd,
+                    false,
+                );
             }
             best = best.min(t0.elapsed().as_secs_f64());
         }
         let gmac_s = macs_per_pass * passes as f64 / best / 1e9;
-        println!("kernel peak [{label}]: {gmac_s:.1} GMAC/s per core = {:.2} TOPS/core, {:.2} SMMLA/ns", 2.0 * gmac_s / 1000.0, gmac_s / 32.0);
+        println!(
+            "kernel peak [{label}]: {gmac_s:.1} GMAC/s per core = {:.2} TOPS/core, {:.2} SMMLA/ns",
+            2.0 * gmac_s / 1000.0,
+            gmac_s / 32.0
+        );
         assert!(y.iter().all(|v| v.is_finite()));
     }
 }
@@ -434,8 +554,12 @@ fn kernel_peak_single_core() {
 fn kernel_peak_sdot_vs_smmla() {
     let mut rng = Rng(5);
     let steps = 192usize; // 3072 k for SDOT (16 per step), 12 KB per operand
-    let x: Vec<i8> = (0..steps * 64).map(|_| (rng.next() % 255) as i32 as i8).collect();
-    let w: Vec<i8> = (0..steps * 64).map(|_| (rng.next() % 255) as i32 as i8).collect();
+    let x: Vec<i8> = (0..steps * 64)
+        .map(|_| (rng.next() % 255) as i32 as i8)
+        .collect();
+    let w: Vec<i8> = (0..steps * 64)
+        .map(|_| (rng.next() % 255) as i32 as i8)
+        .collect();
     // correctness of the probe on the first tile
     let mut out = [0i32; 16];
     unsafe { raw::i8g_probe_sdot4x4(x.as_ptr(), w.as_ptr(), steps, out.as_mut_ptr()) };
@@ -485,15 +609,47 @@ fn kernel_peak_sdot_vs_smmla() {
 #[test]
 #[ignore]
 fn kernel_peak_all_cores() {
-    let threads: usize = std::env::var("OXI_PEAK_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(12);
+    let threads: usize = std::env::var("OXI_PEAK_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
     // OXI_PEAK_SCALE multiplies the work per case (default about 0.15 s each); OXI_PEAK_CASES picks cases ("0,1").
-    let scale: f64 = std::env::var("OXI_PEAK_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
-    let cases: Option<Vec<usize>> = std::env::var("OXI_PEAK_CASES").ok().map(|v| v.split(',').filter_map(|s| s.parse().ok()).collect());
+    let scale: f64 = std::env::var("OXI_PEAK_SCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0);
+    let cases: Option<Vec<usize>> = std::env::var("OXI_PEAK_CASES")
+        .ok()
+        .map(|v| v.split(',').filter_map(|s| s.parse().ok()).collect());
     for (ci, &(n, m, k, chunk, label)) in [
-        (8usize, 8usize, 3072usize, 256usize, "L1: 1 tile, k=3072, chunk 256"),
-        (32, 128, 3072, 256, "X 98 KB, W 393 KB per thread (qkv unit), chunk 256"),
-        (32, 512, 3072, 256, "X 98 KB, W 1.57 MB per thread (mlp unit), chunk 256"),
-        (32, 64, 12288, 256, "X 393 KB, W 786 KB per thread (linear2 block), chunk 256"),
+        (
+            8usize,
+            8usize,
+            3072usize,
+            256usize,
+            "L1: 1 tile, k=3072, chunk 256",
+        ),
+        (
+            32,
+            128,
+            3072,
+            256,
+            "X 98 KB, W 393 KB per thread (qkv unit), chunk 256",
+        ),
+        (
+            32,
+            512,
+            3072,
+            256,
+            "X 98 KB, W 1.57 MB per thread (mlp unit), chunk 256",
+        ),
+        (
+            32,
+            64,
+            12288,
+            256,
+            "X 393 KB, W 786 KB per thread (linear2 block), chunk 256",
+        ),
     ]
     .iter()
     .enumerate()
@@ -513,11 +669,29 @@ fn kernel_peak_all_cores() {
                         let mut y = vec![0.0f32; n * m];
                         let macs_per_pass = (n * m * k) as f64;
                         let passes = (3.0e10 * scale / macs_per_pass).ceil() as usize;
-                        gemm(&x, &w, 0..x.groups(), 0..w.groups(), &mut y, m, Order::MulAdd, false);
+                        gemm(
+                            &x,
+                            &w,
+                            0..x.groups(),
+                            0..w.groups(),
+                            &mut y,
+                            m,
+                            Order::MulAdd,
+                            false,
+                        );
                         start.wait();
                         let t0 = std::time::Instant::now();
                         for _ in 0..passes {
-                            gemm(&x, &w, 0..x.groups(), 0..w.groups(), &mut y, m, Order::MulAdd, false);
+                            gemm(
+                                &x,
+                                &w,
+                                0..x.groups(),
+                                0..w.groups(),
+                                &mut y,
+                                m,
+                                Order::MulAdd,
+                                false,
+                            );
                         }
                         macs_per_pass * passes as f64 / t0.elapsed().as_secs_f64() / 1e9
                     })
@@ -534,7 +708,13 @@ fn kernel_peak_all_cores() {
 #[test]
 fn rows1_is_bitwise_gemm() {
     let mut rng = Rng(4242);
-    for &(n, m, k) in &[(8usize, 8usize, 128usize), (24, 40, 128), (13, 250, 32), (16, 64, 8), (40, 24, 256)] {
+    for &(n, m, k) in &[
+        (8usize, 8usize, 128usize),
+        (24, 40, 128),
+        (13, 250, 32),
+        (16, 64, 8),
+        (40, 24, 256),
+    ] {
         let x = Packed::from_f32(&random_f32(&mut rng, n * k), n, k, k);
         let w = Packed::from_f32(&random_f32(&mut rng, m * k), m, k, k);
         let stride = w.groups() * G + 5;
@@ -543,9 +723,21 @@ fn rows1_is_bitwise_gemm() {
                 let len = 7 * stride + rg.len() * G;
                 let mut a = vec![7.0f32; len];
                 let mut b = vec![7.0f32; len];
-                gemm(&x, &w, tg..tg + 1, rg.clone(), &mut a, stride, Order::MulAdd, false);
+                gemm(
+                    &x,
+                    &w,
+                    tg..tg + 1,
+                    rg.clone(),
+                    &mut a,
+                    stride,
+                    Order::MulAdd,
+                    false,
+                );
                 gemm_rows1(&x, &w, tg, rg.clone(), &mut b, stride);
-                assert!(a.iter().zip(&b).all(|(p, q)| p.to_bits() == q.to_bits()), "n {n} m {m} k {k} tg {tg} rg {rg:?}");
+                assert!(
+                    a.iter().zip(&b).all(|(p, q)| p.to_bits() == q.to_bits()),
+                    "n {n} m {m} k {k} tg {tg} rg {rg:?}"
+                );
             }
         }
     }

@@ -91,19 +91,20 @@ impl SafeTensors {
                 .ok_or_else(|| format!("safetensors: {name}: missing data_offsets"))?;
             let start = offs[0]
                 .as_u64()
-                .ok_or_else(|| format!("safetensors: {name}: bad data_offsets"))? as usize;
+                .ok_or_else(|| format!("safetensors: {name}: bad data_offsets"))?
+                as usize;
             let end = offs[1]
                 .as_u64()
-                .ok_or_else(|| format!("safetensors: {name}: bad data_offsets"))? as usize;
+                .ok_or_else(|| format!("safetensors: {name}: bad data_offsets"))?
+                as usize;
             if start > end || end > data_len {
                 return Err(format!(
                     "safetensors: {name}: data_offsets [{start},{end}) outside data region of {data_len} bytes"
                 ));
             }
             let numel: usize = shape.iter().product();
-            let elem = dtype_size(&dtype).ok_or_else(|| {
-                format!("safetensors: {name}: unsupported dtype {dtype}")
-            })?;
+            let elem = dtype_size(&dtype)
+                .ok_or_else(|| format!("safetensors: {name}: unsupported dtype {dtype}"))?;
             if numel * elem != end - start {
                 return Err(format!(
                     "safetensors: {name}: shape {shape:?} x {elem} bytes != {} bytes",
@@ -277,7 +278,8 @@ mod tests {
     #[test]
     fn rejects_bad_offsets_and_sizes() {
         // Offsets past the end of the data region.
-        let mut header = String::from("{\"x\":{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,8]}}");
+        let mut header =
+            String::from("{\"x\":{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,8]}}");
         while header.len() % 8 != 0 {
             header.push(' ');
         }

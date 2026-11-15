@@ -45,7 +45,9 @@ impl Qwen3Config {
     pub fn from_header(h: &Header) -> Result<Qwen3Config, String> {
         let arch = h.architecture().unwrap_or("");
         if arch != "qwen3" {
-            return Err(format!("text encoder: architecture '{arch}', want qwen3 (dense)"));
+            return Err(format!(
+                "text encoder: architecture '{arch}', want qwen3 (dense)"
+            ));
         }
         let u = |k: &str| -> Result<usize, String> {
             h.get(&format!("qwen3.{k}"))
@@ -53,7 +55,11 @@ impl Qwen3Config {
                 .map(|v| v as usize)
                 .ok_or_else(|| format!("text encoder: missing qwen3.{k}"))
         };
-        let f = |k: &str, d: f64| -> f32 { h.get(&format!("qwen3.{k}")).and_then(|v| v.as_f64()).unwrap_or(d) as f32 };
+        let f = |k: &str, d: f64| -> f32 {
+            h.get(&format!("qwen3.{k}"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(d) as f32
+        };
         let hidden = u("embedding_length")?;
         let n_heads = u("attention.head_count")?;
         let head_dim = u("attention.key_length").unwrap_or(hidden / n_heads.max(1));
@@ -77,11 +83,19 @@ impl Qwen3Config {
     }
 
     pub fn check(&self) -> Result<(), String> {
-        if self.hidden == 0 || self.n_heads == 0 || self.n_kv_heads == 0 || self.head_dim == 0 || self.ff == 0 {
+        if self.hidden == 0
+            || self.n_heads == 0
+            || self.n_kv_heads == 0
+            || self.head_dim == 0
+            || self.ff == 0
+        {
             return Err(format!("text encoder: zero dimension in {self:?}"));
         }
         if self.n_heads % self.n_kv_heads != 0 {
-            return Err(format!("text encoder: {} heads not a multiple of {} kv heads", self.n_heads, self.n_kv_heads));
+            return Err(format!(
+                "text encoder: {} heads not a multiple of {} kv heads",
+                self.n_heads, self.n_kv_heads
+            ));
         }
         if self.head_dim % 2 != 0 {
             return Err("text encoder: odd head_dim".into());
@@ -127,7 +141,10 @@ impl KleinSpec {
 
     pub fn check(&self, c: &Qwen3Config) -> Result<(), String> {
         if self.out_layers.is_empty() || self.out_layers.iter().any(|&l| l == 0 || l > c.n_layers) {
-            return Err(format!("klein spec: out_layers {:?} outside 1..={}", self.out_layers, c.n_layers));
+            return Err(format!(
+                "klein spec: out_layers {:?} outside 1..={}",
+                self.out_layers, c.n_layers
+            ));
         }
         if self.out_layers.windows(2).any(|w| w[0] >= w[1]) {
             return Err("klein spec: out_layers must be strictly increasing".into());

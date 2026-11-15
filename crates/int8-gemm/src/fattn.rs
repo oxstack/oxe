@@ -5,12 +5,54 @@
 /// The C kernels (csrc/i8g_fattn.c). See the C file for the exact layouts.
 pub mod raw {
     extern "C" {
-        pub fn i8g_fattn_qk_f32(qt: *const f32, kt: *const f32, hd: usize, steps: usize, s: *mut f32, ss: usize);
-        pub fn i8g_fattn_qk_f16(qt: *const u16, kt: *const u16, hd: usize, steps: usize, s: *mut f32, ss: usize);
-        pub fn i8g_fattn_softmax_f32(s: *const f32, kc: usize, nvalid: usize, m: f32, pt: *mut f32, qi: usize) -> f32;
-        pub fn i8g_fattn_softmax_f16(s: *const f32, kc: usize, nvalid: usize, m: f32, pt: *mut u16, qi: usize) -> f32;
-        pub fn i8g_fattn_pv_f32(pt: *const f32, vt: *const f32, kc: usize, hd: usize, vstride: usize, o: *mut f32);
-        pub fn i8g_fattn_pv_f16(pt: *const u16, vt: *const u16, kc: usize, hd: usize, vstride: usize, o: *mut f32);
+        pub fn i8g_fattn_qk_f32(
+            qt: *const f32,
+            kt: *const f32,
+            hd: usize,
+            steps: usize,
+            s: *mut f32,
+            ss: usize,
+        );
+        pub fn i8g_fattn_qk_f16(
+            qt: *const u16,
+            kt: *const u16,
+            hd: usize,
+            steps: usize,
+            s: *mut f32,
+            ss: usize,
+        );
+        pub fn i8g_fattn_softmax_f32(
+            s: *const f32,
+            kc: usize,
+            nvalid: usize,
+            m: f32,
+            pt: *mut f32,
+            qi: usize,
+        ) -> f32;
+        pub fn i8g_fattn_softmax_f16(
+            s: *const f32,
+            kc: usize,
+            nvalid: usize,
+            m: f32,
+            pt: *mut u16,
+            qi: usize,
+        ) -> f32;
+        pub fn i8g_fattn_pv_f32(
+            pt: *const f32,
+            vt: *const f32,
+            kc: usize,
+            hd: usize,
+            vstride: usize,
+            o: *mut f32,
+        );
+        pub fn i8g_fattn_pv_f16(
+            pt: *const u16,
+            vt: *const u16,
+            kc: usize,
+            hd: usize,
+            vstride: usize,
+            o: *mut f32,
+        );
         pub fn i8g_fattn_to_f16(x: *const f32, n: usize, dst: *mut u16, stride: usize);
         pub fn i8g_fattn_from_f16(src: *const u16, n: usize, x: *mut f32);
     }
@@ -23,7 +65,13 @@ pub fn f16_bits_ref(x: f32) -> u16 {
     let exp = ((b >> 23) & 0xff) as i32;
     let man = b & 0x7f_ffff;
     if exp == 0xff {
-        return sign | 0x7c00 | if man != 0 { 0x200 | (man >> 13) as u16 } else { 0 };
+        return sign
+            | 0x7c00
+            | if man != 0 {
+                0x200 | (man >> 13) as u16
+            } else {
+                0
+            };
     }
     let e = exp - 127 + 15;
     if e >= 0x1f {
@@ -39,7 +87,11 @@ pub fn f16_bits_ref(x: f32) -> u16 {
         let q = full >> shift;
         let rem = full & ((1 << shift) - 1);
         let half = 1 << (shift - 1);
-        let q = if rem > half || (rem == half && q & 1 == 1) { q + 1 } else { q };
+        let q = if rem > half || (rem == half && q & 1 == 1) {
+            q + 1
+        } else {
+            q
+        };
         return sign | q as u16;
     }
     let q = man >> 13;
@@ -61,7 +113,11 @@ pub fn f16_to_f32(h: u16) -> f32 {
         let mag = man as f32 * (1.0 / 16_777_216.0);
         return if sign != 0 { -mag } else { mag };
     }
-    let bits = if exp == 0x1f { sign | 0x7f80_0000 | (man << 13) } else { sign | ((exp + 127 - 15) << 23) | (man << 13) };
+    let bits = if exp == 0x1f {
+        sign | 0x7f80_0000 | (man << 13)
+    } else {
+        sign | ((exp + 127 - 15) << 23) | (man << 13)
+    };
     f32::from_bits(bits)
 }
 
@@ -111,7 +167,21 @@ mod tests {
     #[test]
     fn f16_conversion_matches_neon() {
         let mut rng = Rng(0xf16);
-        let mut xs: Vec<f32> = vec![0.0, -0.0, 1.0, 65504.0, 65520.0, 1e9, -1e9, 6.0e-8, 2.9e-8, 3.0e-8, 5.96e-8, 6.1e-5, 1.0 / 3.0];
+        let mut xs: Vec<f32> = vec![
+            0.0,
+            -0.0,
+            1.0,
+            65504.0,
+            65520.0,
+            1e9,
+            -1e9,
+            6.0e-8,
+            2.9e-8,
+            3.0e-8,
+            5.96e-8,
+            6.1e-5,
+            1.0 / 3.0,
+        ];
         for _ in 0..20000 {
             let e = (rng.next() % 40) as i32 - 28;
             xs.push(rng.unit() * 2f32.powi(e));
@@ -178,25 +248,87 @@ mod tests {
                 unsafe {
                     raw::i8g_fattn_qk_f16(qh.as_ptr(), kh.as_ptr(), hd, steps, s.as_mut_ptr(), ss);
                     for qi in 0..8 {
-                        sums[qi] = raw::i8g_fattn_softmax_f16(s.as_ptr().add(qi * ss), kc, nvalid, m, pt.as_mut_ptr(), qi);
+                        sums[qi] = raw::i8g_fattn_softmax_f16(
+                            s.as_ptr().add(qi * ss),
+                            kc,
+                            nvalid,
+                            m,
+                            pt.as_mut_ptr(),
+                            qi,
+                        );
                     }
                     let mut pf = vec![0f32; kc * 8];
                     raw::i8g_fattn_from_f16(pt.as_ptr(), kc * 8, pf.as_mut_ptr());
-                    check(&q, &k, &v, hd, kc, nvalid, m, &s, ss, &pf, &sums, &o.clone(), &mut o, &rnd, half, |o| {
-                        raw::i8g_fattn_pv_f16(pt.as_ptr(), vh.as_ptr(), kc, hd, kc * 8, o.as_mut_ptr())
-                    });
+                    check(
+                        &q,
+                        &k,
+                        &v,
+                        hd,
+                        kc,
+                        nvalid,
+                        m,
+                        &s,
+                        ss,
+                        &pf,
+                        &sums,
+                        &o.clone(),
+                        &mut o,
+                        &rnd,
+                        half,
+                        |o| {
+                            raw::i8g_fattn_pv_f16(
+                                pt.as_ptr(),
+                                vh.as_ptr(),
+                                kc,
+                                hd,
+                                kc * 8,
+                                o.as_mut_ptr(),
+                            )
+                        },
+                    );
                 }
             } else {
                 let mut pt = vec![0f32; kc * 8];
                 unsafe {
                     raw::i8g_fattn_qk_f32(qt.as_ptr(), kt.as_ptr(), hd, steps, s.as_mut_ptr(), ss);
                     for qi in 0..8 {
-                        sums[qi] = raw::i8g_fattn_softmax_f32(s.as_ptr().add(qi * ss), kc, nvalid, m, pt.as_mut_ptr(), qi);
+                        sums[qi] = raw::i8g_fattn_softmax_f32(
+                            s.as_ptr().add(qi * ss),
+                            kc,
+                            nvalid,
+                            m,
+                            pt.as_mut_ptr(),
+                            qi,
+                        );
                     }
                     let pf = pt.clone();
-                    check(&q, &k, &v, hd, kc, nvalid, m, &s, ss, &pf, &sums, &o.clone(), &mut o, &rnd, half, |o| {
-                        raw::i8g_fattn_pv_f32(pt.as_ptr(), vt.as_ptr(), kc, hd, kc * 8, o.as_mut_ptr())
-                    });
+                    check(
+                        &q,
+                        &k,
+                        &v,
+                        hd,
+                        kc,
+                        nvalid,
+                        m,
+                        &s,
+                        ss,
+                        &pf,
+                        &sums,
+                        &o.clone(),
+                        &mut o,
+                        &rnd,
+                        half,
+                        |o| {
+                            raw::i8g_fattn_pv_f32(
+                                pt.as_ptr(),
+                                vt.as_ptr(),
+                                kc,
+                                hd,
+                                kc * 8,
+                                o.as_mut_ptr(),
+                            )
+                        },
+                    );
                 }
             }
         }
@@ -225,21 +357,42 @@ mod tests {
         for qi in 0..8 {
             let mut sum_ref = 0f64;
             for key in 0..kc {
-                let want: f64 = (0..hd).map(|d| rnd(q[qi * hd + d]) as f64 * rnd(k[key * hd + d]) as f64).sum();
+                let want: f64 = (0..hd)
+                    .map(|d| rnd(q[qi * hd + d]) as f64 * rnd(k[key * hd + d]) as f64)
+                    .sum();
                 let got = s[qi * ss + key] as f64;
-                assert!((got - want).abs() < 1e-5 * (1.0 + want.abs()), "qk qi {qi} key {key}: {got} vs {want}");
-                let p_want = if key < nvalid { (s[qi * ss + key] as f64 - m as f64).exp() } else { 0.0 };
+                assert!(
+                    (got - want).abs() < 1e-5 * (1.0 + want.abs()),
+                    "qk qi {qi} key {key}: {got} vs {want}"
+                );
+                let p_want = if key < nvalid {
+                    (s[qi * ss + key] as f64 - m as f64).exp()
+                } else {
+                    0.0
+                };
                 let p_got = pf[key * 8 + qi] as f64;
                 // f16 storage: half-ulp relative 2^-11 (plus exp's ~1e-7)
                 let tol = if half { 6e-4 } else { 1e-6 };
-                assert!((p_got - p_want).abs() <= tol * p_want.abs() + 1e-30, "p qi {qi} key {key}: {p_got} vs {p_want}");
+                assert!(
+                    (p_got - p_want).abs() <= tol * p_want.abs() + 1e-30,
+                    "p qi {qi} key {key}: {p_got} vs {p_want}"
+                );
                 sum_ref += p_got;
             }
-            assert!((sums[qi] as f64 - sum_ref).abs() < 1e-5 * sum_ref, "sum qi {qi}");
+            assert!(
+                (sums[qi] as f64 - sum_ref).abs() < 1e-5 * sum_ref,
+                "sum qi {qi}"
+            );
             for d in 0..hd {
-                let want = o0[qi * hd + d] as f64 + (0..kc).map(|key| pf[key * 8 + qi] as f64 * rnd(v[key * hd + d]) as f64).sum::<f64>();
+                let want = o0[qi * hd + d] as f64
+                    + (0..kc)
+                        .map(|key| pf[key * 8 + qi] as f64 * rnd(v[key * hd + d]) as f64)
+                        .sum::<f64>();
                 let got = o[qi * hd + d] as f64;
-                assert!((got - want).abs() < 1e-5 * (1.0 + want.abs()), "pv qi {qi} d {d}: {got} vs {want}");
+                assert!(
+                    (got - want).abs() < 1e-5 * (1.0 + want.abs()),
+                    "pv qi {qi} d {d}: {got} vs {want}"
+                );
             }
         }
     }

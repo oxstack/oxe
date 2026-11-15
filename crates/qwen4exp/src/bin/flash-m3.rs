@@ -76,10 +76,16 @@ fn main() {
         "kld" => kld_files(&a),
         "la-check" => {
             // model-free: flash-m3 la-check --lookahead F.lat --vectors F.lav (tools/la_dense.py reference vectors)
-            let mut la = qwen4exp::lookahead::Lookahead::load(Path::new(&a.s("lookahead", "")), 8).unwrap_or_else(|e| die(&e));
-            let v = std::fs::read(a.s("vectors", "")).unwrap_or_else(|e| die(&format!("--vectors: {e}")));
-            let (n, bad) = qwen4exp::lookahead::check_vectors(&mut la, &v).unwrap_or_else(|e| die(&e));
-            println!("{}", json!({"kind": "flash-m3-la-check", "vectors": n, "mismatches": bad, "pass": n > 0 && bad == 0}));
+            let mut la = qwen4exp::lookahead::Lookahead::load(Path::new(&a.s("lookahead", "")), 8)
+                .unwrap_or_else(|e| die(&e));
+            let v = std::fs::read(a.s("vectors", ""))
+                .unwrap_or_else(|e| die(&format!("--vectors: {e}")));
+            let (n, bad) =
+                qwen4exp::lookahead::check_vectors(&mut la, &v).unwrap_or_else(|e| die(&e));
+            println!(
+                "{}",
+                json!({"kind": "flash-m3-la-check", "vectors": n, "mismatches": bad, "pass": n > 0 && bad == 0})
+            );
             if n == 0 || bad != 0 {
                 std::process::exit(1);
             }
@@ -90,12 +96,27 @@ fn main() {
             let copies: usize = a.n("copies", 4);
             let reps: usize = a.n("reps", 5);
             for t in a.s("threads", "1,4,8").split(',') {
-                qwen4exp::graph::bench_dense(t.parse().unwrap_or_else(|_| die("--threads a,b,c")), copies, reps);
+                qwen4exp::graph::bench_dense(
+                    t.parse().unwrap_or_else(|_| die("--threads a,b,c")),
+                    copies,
+                    reps,
+                );
             }
         }
         "selftest" => {
             let mut ok = true;
-            for (kv, r) in [(256, 1), (512, 1), (512, 4), (1024, 3), (2304, 2), (1024, 20), (2304, 17), (512, 64), (32768, 1), (32768, 2)] {
+            for (kv, r) in [
+                (256, 1),
+                (512, 1),
+                (512, 4),
+                (1024, 3),
+                (2304, 2),
+                (1024, 20),
+                (2304, 17),
+                (512, 64),
+                (32768, 1),
+                (32768, 2),
+            ] {
                 ok &= qwen4exp::graph::selftest_attn(kv, r);
             }
             println!("selftest attention: {}", if ok { "PASS" } else { "FAIL" });
@@ -113,12 +134,22 @@ fn main() {
             ok &= ok3;
             // PREFILL FP-1: register-tile attention part op == the graph port's tiled path, bitwise, whole output
             let mut ok4 = true;
-            for (kv, rows, pat) in [(256, 16, 0), (512, 24, 1), (1024, 37, 2), (2304, 64, 0), (2304, 40, 1), (768, 96, 2)] {
+            for (kv, rows, pat) in [
+                (256, 16, 0),
+                (512, 24, 1),
+                (1024, 37, 2),
+                (2304, 64, 0),
+                (2304, 40, 1),
+                (768, 96, 2),
+            ] {
                 for nth in [1, 3, 8, 11] {
                     ok4 &= qwen4exp::graph::selftest_attn_tile(kv, rows, nth, pat, 1).0;
                 }
             }
-            println!("selftest attention tiles: {}", if ok4 { "PASS" } else { "FAIL" });
+            println!(
+                "selftest attention tiles: {}",
+                if ok4 { "PASS" } else { "FAIL" }
+            );
             ok &= ok4;
             let ok5 = qwen4exp::graph::selftest_abort();
             println!("selftest abort: {}", if ok5 { "PASS" } else { "FAIL" });
@@ -144,7 +175,14 @@ fn main() {
                      pf(h), pf(f), pf(pc), pf(gd), pf(at));
             // chunked-prefill split evidence: printed, not part of the exit code (matmul lines are width-dependent by design)
             let sp = qwen4exp::graph::selftest_split(8);
-            println!("selftest chat-split: {}", if sp { "expected components bitwise (see split lines)" } else { "EXPECTED COMPONENT DIFFERS (see split lines)" });
+            println!(
+                "selftest chat-split: {}",
+                if sp {
+                    "expected components bitwise (see split lines)"
+                } else {
+                    "EXPECTED COMPONENT DIFFERS (see split lines)"
+                }
+            );
             std::process::exit(if ok { 0 } else { 1 })
         }
         // model-free timing of the multi-column dense matmul vs ggml_mul_mat on the Flash shapes (DEV windows only)
@@ -153,17 +191,29 @@ fn main() {
             let t: usize = a.n("n-tokens", 2048);
             let reps: usize = a.n("reps", 3);
             // (name, ggml type, K, R): Q6_K = 14, Q8_0 = 8
-            let shapes = [("attn_qkv", 14, 2560, 10240), ("attn_gate z", 14, 2560, 6144), ("ssm_out", 14, 6144, 2560), ("attn_q", 14, 2560, 12288),
-                ("shexp_up", 14, 2560, 640), ("hc_down", 8, 10240, 320), ("hc_up", 8, 320, 10240), ("shexp_down", 8, 640, 2560)];
+            let shapes = [
+                ("attn_qkv", 14, 2560, 10240),
+                ("attn_gate z", 14, 2560, 6144),
+                ("ssm_out", 14, 6144, 2560),
+                ("attn_q", 14, 2560, 12288),
+                ("shexp_up", 14, 2560, 640),
+                ("hc_down", 8, 10240, 320),
+                ("hc_up", 8, 320, 10240),
+                ("shexp_down", 8, 640, 2560),
+            ];
             let mut rows = Vec::new();
             for (name, ty, k, r) in shapes {
-                let (ms_ggml, ms_pf, same) = qwen4exp::graph::bench_dense_gemm(ty, k, r, t, nth, reps);
+                let (ms_ggml, ms_pf, same) =
+                    qwen4exp::graph::bench_dense_gemm(ty, k, r, t, nth, reps);
                 let gmac = (k * r * t) as f64 / 1e9;
                 println!("{name:12} K {k:5} R {r:5} T {t}: ggml {ms_ggml:8.1} ms ({:6.1} GMAC/s)  multi-column {ms_pf:8.1} ms ({:6.1} GMAC/s)  x{:.2}  bitwise {}",
                     gmac / (ms_ggml / 1e3), gmac / (ms_pf / 1e3), ms_ggml / ms_pf, same);
                 rows.push(serde_json::json!({"name": name, "type": ty, "k": k, "r": r, "t": t, "ms_ggml": ms_ggml, "ms_multi_column": ms_pf, "bitwise": same}));
             }
-            println!("{}", serde_json::json!({"kind": "flash-m3-bench-dense-gemm", "threads": nth, "rows": rows}));
+            println!(
+                "{}",
+                serde_json::json!({"kind": "flash-m3-bench-dense-gemm", "threads": nth, "rows": rows})
+            );
         }
         // model-free single-thread timing of the expert kernels on one synthetic expert: today's path (gemm4 over 4-token
         // groups / vec_dot per row) vs the 8-token tiles, with the bitwise comparison (DEV windows only)
@@ -174,14 +224,22 @@ fn main() {
             let nth: usize = a.n("threads", 11);
             let reps: usize = a.n("reps", 2);
             let mut rows = Vec::new();
-            for (kv, r, pat) in [(2048usize, 512usize, 0usize), (2048, 512, 2), (5632, 256, 1), (5632, 256, 0)] {
+            for (kv, r, pat) in [
+                (2048usize, 512usize, 0usize),
+                (2048, 512, 2),
+                (5632, 256, 1),
+                (5632, 256, 0),
+            ] {
                 let (same, o) = qwen4exp::graph::selftest_attn_tile4(kv, r, nth, pat, reps);
                 let (off, on) = (o[0], o[1]);
                 // pairs = (query, visible cell) for 24 heads; 512 FMA per pair (score + P.V)
                 println!("n_kv {kv} rows {r} pattern {pat}: graph tiled {off:.1} ms  register tiles {on:.1} ms  x{:.2}; part + merge {:.1} ms  fused node {:.1} ms  bitwise (all) {same}", off / on, o[2], o[3]);
                 rows.push(serde_json::json!({"n_kv": kv, "rows": r, "pattern": pat, "ms_off": off, "ms_on": on, "ms_part_merge": o[2], "ms_fused": o[3], "bitwise": same}));
             }
-            println!("{}", serde_json::json!({"kind": "flash-m3-bench-attn", "threads": nth, "rows": rows}));
+            println!(
+                "{}",
+                serde_json::json!({"kind": "flash-m3-bench-attn", "threads": nth, "rows": rows})
+            );
         }
         _ => die("usage: flash-m3 run --oracle DIR [--exact] [...] (see the source header)"),
     }
@@ -198,15 +256,20 @@ fn make_stream(a: &Args, s: &Shards, sidecar: &Path, cfg: &StreamConfig) -> Box<
         None
     } else {
         Some(&qw).map(|p| {
-        let t = std::fs::read_to_string(p).unwrap_or_else(|e| die(&format!("--quota-weights {p}: {e}")));
-        t.lines()
-            .filter(|l| !l.trim_start().starts_with('#'))
-            .flat_map(|l| l.split_whitespace())
-            .map(|x| x.parse().unwrap_or_else(|_| die(&format!("--quota-weights: bad value {x}"))))
-            .collect()
-    })
+            let t = std::fs::read_to_string(p)
+                .unwrap_or_else(|e| die(&format!("--quota-weights {p}: {e}")));
+            t.lines()
+                .filter(|l| !l.trim_start().starts_with('#'))
+                .flat_map(|l| l.split_whitespace())
+                .map(|x| {
+                    x.parse()
+                        .unwrap_or_else(|_| die(&format!("--quota-weights: bad value {x}")))
+                })
+                .collect()
+        })
     };
-    let mut st = Box::new(Stream::new_with(s, sidecar, cfg, w.as_deref()).unwrap_or_else(|e| die(&e)));
+    let mut st =
+        Box::new(Stream::new_with(s, sidecar, cfg, w.as_deref()).unwrap_or_else(|e| die(&e)));
     st.cache.policy = match a.s("cache-policy", "lfu").as_str() {
         "clock" => Policy::Clock,
         "lfu" => Policy::Lfu,
@@ -216,10 +279,16 @@ fn make_stream(a: &Args, s: &Shards, sidecar: &Path, cfg: &StreamConfig) -> Box<
         st.enable_trace();
     }
     // QC-A (FLASH-LOOKAHEAD-DESIGN): N wasted Prefetch reads per decode token; off by default
-    st.enable_stage_junk(a.n("stage-junk", 0usize)).unwrap_or_else(|e| die(&e));
+    st.enable_stage_junk(a.n("stage-junk", 0usize))
+        .unwrap_or_else(|e| die(&e));
     // expert lookahead (FLASH-LOOKAHEAD-DESIGN section 6): speculate layer l+1 at layer l's FETCH; off by default
     if let Some(p) = a.0.get("lookahead") {
-        st.enable_lookahead(Path::new(p), a.n("la-max", 2usize), a.n("la-pending", 2usize)).unwrap_or_else(|e| die(&e));
+        st.enable_lookahead(
+            Path::new(p),
+            a.n("la-max", 2usize),
+            a.n("la-pending", 2usize),
+        )
+        .unwrap_or_else(|e| die(&e));
     }
     st
 }
@@ -245,7 +314,9 @@ fn split_mean(ms: &[f64], a: usize, b: usize) -> serde_json::Value {
 /// Lookahead receipt: the table, the per-layer cap, the scorer's counters and the cache's speculation counters (whole
 /// run; speculation only happens in one-token decodes). Null when off.
 fn lookahead_json(a: &Args, st: &Stream) -> serde_json::Value {
-    let Some(la) = st.lookahead_stats() else { return serde_json::Value::Null };
+    let Some(la) = st.lookahead_stats() else {
+        return serde_json::Value::Null;
+    };
     let cs = st.stats();
     json!({"table": a.0.get("lookahead"), "la_max": a.n("la-max", 2usize), "la_pending": a.n("la-pending", 2usize),
            "layers_scored": la.scored, "above_threshold": la.above_thr, "issued": la.issued, "no_slot": la.no_slot,
@@ -281,7 +352,9 @@ fn attn_mode(a: &Args) -> i32 {
 struct LogitsWriter(std::io::BufWriter<std::fs::File>);
 impl LogitsWriter {
     fn new(p: &Path) -> LogitsWriter {
-        let mut f = std::io::BufWriter::new(std::fs::File::create(p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display()))));
+        let mut f = std::io::BufWriter::new(
+            std::fs::File::create(p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display()))),
+        );
         f.write_all(b"FLG1").unwrap();
         f.write_all(&(N_VOCAB as u64).to_le_bytes()).unwrap();
         LogitsWriter(f)
@@ -296,17 +369,25 @@ impl LogitsWriter {
 struct LogitsReader(std::io::BufReader<std::fs::File>, Vec<u8>);
 impl LogitsReader {
     fn open(p: &Path) -> LogitsReader {
-        let mut f = std::io::BufReader::new(std::fs::File::open(p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display()))));
+        let mut f = std::io::BufReader::new(
+            std::fs::File::open(p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display()))),
+        );
         let mut h = [0u8; 12];
         f.read_exact(&mut h).unwrap_or_else(|e| die(&e.to_string()));
-        if &h[..4] != b"FLG1" || u64::from_le_bytes(h[4..12].try_into().unwrap()) != N_VOCAB as u64 {
+        if &h[..4] != b"FLG1" || u64::from_le_bytes(h[4..12].try_into().unwrap()) != N_VOCAB as u64
+        {
             die("--kld-ref: not an FLG1 logits file of this vocabulary");
         }
         LogitsReader(f, vec![0u8; N_VOCAB * 4])
     }
     fn next(&mut self) -> Option<Vec<f32>> {
         self.0.read_exact(&mut self.1).ok()?;
-        Some(self.1.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect())
+        Some(
+            self.1
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect(),
+        )
     }
 }
 
@@ -321,7 +402,14 @@ fn pct(v: &[f64], p: f64) -> Option<f64> {
 
 fn run(a: &Args) {
     let home = PathBuf::from(std::env::var("HOME").unwrap());
-    let model_dir = PathBuf::from(a.s("model-dir", &home.join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS").to_string_lossy()));
+    let model_dir = PathBuf::from(
+        a.s(
+            "model-dir",
+            &home
+                .join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS")
+                .to_string_lossy(),
+        ),
+    );
     // `--text F [--text-prefix 64]` (with --teacher-force): the prompt is the first `text-prefix` tokens of a text file
     // and the decode follows the text, as `export` does (lookahead QC on code text); otherwise the oracle dump.
     let (prompt, want): (Vec<i32>, Vec<i32>) = if let Some(tp) = a.0.get("text") {
@@ -330,12 +418,20 @@ fn run(a: &Args) {
         }
         let text = std::fs::read_to_string(tp).unwrap_or_else(|e| die(&format!("--text: {e}")));
         let sh = Shards::open(&model_dir).unwrap_or_else(|e| die(&e));
-        let tk = tokenizer::Tokenizer::from_gguf(&sh.paths[0]).unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
-        let all: Vec<i32> = tk.encode(&text, false, false).into_iter().map(|t| t as i32).collect();
+        let tk = tokenizer::Tokenizer::from_gguf(&sh.paths[0])
+            .unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
+        let all: Vec<i32> = tk
+            .encode(&text, false, false)
+            .into_iter()
+            .map(|t| t as i32)
+            .collect();
         let pre: usize = a.n("text-prefix", 64);
         let n_new: usize = a.n("max-new", 400);
         if pre < 2 || all.len() < pre + n_new + 1 {
-            die(&format!("--text: {} tokens, need --text-prefix {pre} + --max-new {n_new} + 1", all.len()));
+            die(&format!(
+                "--text: {} tokens, need --text-prefix {pre} + --max-new {n_new} + 1",
+                all.len()
+            ));
         }
         (all[..pre].to_vec(), all[pre..pre + n_new + 1].to_vec())
     } else {
@@ -361,7 +457,11 @@ fn run(a: &Args) {
         FgOptions {
             fixed_attn: attn_mode(a),
             shexp_first: a.flag("shexp-first", true) as i32,
-            batch_min_tokens: if a.flag("stream-prefill", true) { 17 } else { 0 },
+            batch_min_tokens: if a.flag("stream-prefill", true) {
+                17
+            } else {
+                0
+            },
             profile: 0,
             rs_view: a.flag("rs-view", true) as i32,
             // FD-1 --trace-work needs the executor as its harness (bitwise and speed-neutral, ticket 017)
@@ -371,7 +471,10 @@ fn run(a: &Args) {
     };
     let resident_first = !exact && a.flag("resident-first", true);
     let stream_prefill = opts.batch_min_tokens > 0;
-    let sidecar = PathBuf::from(a.s("sidecar", &qwen4exp::sidecar::default_path().to_string_lossy()));
+    let sidecar = PathBuf::from(a.s(
+        "sidecar",
+        &qwen4exp::sidecar::default_path().to_string_lossy(),
+    ));
     let io_cpu: Option<usize> = a.0.get("io-cpu").and_then(|v| v.parse().ok());
 
     let t0 = Instant::now();
@@ -380,24 +483,31 @@ fn run(a: &Args) {
     let load_s = t0.elapsed().as_secs_f64();
     // the shard mappings of the experts are only needed for a mapped-expert prefill
     let gm = GraphModel::new(&s, &d, !stream_prefill).unwrap_or_else(|e| die(&e));
-    let cfg = StreamConfig { cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize, qd: a.n("qd", 32u32), io_cpu, prefault: true };
+    let cfg = StreamConfig {
+        cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize,
+        qd: a.n("qd", 32u32),
+        io_cpu,
+        prefault: true,
+    };
     let ts = Instant::now();
     let mut st = make_stream(a, &s, &sidecar, &cfg);
     st.resident_first = resident_first;
     st.batch_gemm = a.flag("batch-gemm", true);
     st.batch_tile = a.flag("expert-tile", !exact); // PREFILL: IQ2_S gate/up in 8-token tiles (bitwise = gemm4); default on (G4)
-    // W4-I policy (G4): order on; read-ahead "auto" = 64 experts per layer on passes that start warm, 0 on cold ones;
-    // `--pf-readahead N` forces N on every pass (0 = off); `--pf-ra-warm X` = the warm threshold (resident share)
+                                                   // W4-I policy (G4): order on; read-ahead "auto" = 64 experts per layer on passes that start warm, 0 on cold ones;
+                                                   // `--pf-readahead N` forces N on every pass (0 = off); `--pf-ra-warm X` = the warm threshold (resident share)
     st.pf_order = a.flag("pf-order", !exact); // the exact path keeps the prefill switches off unless given (as W4-C)
     st.pf_order_last = a.flag("pf-order-last", false); // F123 (server --flash-pf-order 2)
-    // G4' (W5-C): read-ahead default OFF (auto bought nothing beyond the order); `auto` stays selectable
+                                                       // G4' (W5-C): read-ahead default OFF (auto bought nothing beyond the order); `auto` stays selectable
     match a.s("pf-readahead", "0").as_str() {
         "auto" => {
             st.pf_readahead = 64;
             st.pf_readahead_auto = true;
         }
         v => {
-            st.pf_readahead = v.parse().unwrap_or_else(|_| die("--pf-readahead: auto or a number"));
+            st.pf_readahead = v
+                .parse()
+                .unwrap_or_else(|_| die("--pf-readahead: auto or a number"));
             st.pf_readahead_auto = false;
         }
     }
@@ -406,11 +516,16 @@ fn run(a: &Args) {
     // (auto = 8192), limited by MemAvailable; 0 (default) = plain chunks of `--ubatch`
     let pf_max_pass: usize = match a.s("pf-max-pass", "0").as_str() {
         "auto" => 8192,
-        v => v.parse().unwrap_or_else(|_| die("--pf-max-pass: auto or a number")),
+        v => v
+            .parse()
+            .unwrap_or_else(|_| die("--pf-max-pass: auto or a number")),
     };
     // W4-I per-phase IO core: the IO thread(s) move to these CPUs for the batched prefill (comma list), back to
     // `--io-cpu` afterwards (decode)
-    let io_cpu_prefill: Vec<usize> = a.0.get("io-cpu-prefill").map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
+    let io_cpu_prefill: Vec<usize> =
+        a.0.get("io-cpu-prefill")
+            .map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect())
+            .unwrap_or_default();
     let mut io_moved = 0usize; // IO threads re-pinned by the last --io-cpu-prefill switch (0 = none / not found)
     let stream_setup_s = ts.elapsed().as_secs_f64();
     // PREFILL: multi-column dense matmul for ubatches of >= 256 tokens (bitwise = ggml's mul_mat); default on (G4)
@@ -421,7 +536,11 @@ fn run(a: &Args) {
     let attn_tile: i32 = match a.s("attn-tile", if exact { "0" } else { "1" }).as_str() {
         "true" | "on" => 1, // the boolean spellings
         "false" | "off" => 0,
-        v => v.parse().ok().filter(|m| (0..=2).contains(m)).unwrap_or_else(|| die("--attn-tile: 0, 1 or 2")),
+        v => v
+            .parse()
+            .ok()
+            .filter(|m| (0..=2).contains(m))
+            .unwrap_or_else(|| die("--attn-tile: 0, 1 or 2")),
     };
     qwen4exp::graph::set_attn_tile_mode(attn_tile);
     qwen4exp::graph::attn_tile_units(true);
@@ -438,28 +557,36 @@ fn run(a: &Args) {
     );
 
     let mut logits = vec![0f32; N_VOCAB];
-    let mut save = a.0.get("save-logits").map(|p| LogitsWriter::new(Path::new(p)));
+    let mut save =
+        a.0.get("save-logits")
+            .map(|p| LogitsWriter::new(Path::new(p)));
     let mut kref = a.0.get("kld-ref").map(|p| LogitsReader::open(Path::new(p)));
     let mut klds: Vec<f64> = Vec::new();
     let mut top1s: Vec<bool> = Vec::new();
     let mut top1_agree = 0usize;
-    let mut on_logits = |l: &[f32], save: &mut Option<LogitsWriter>, kref: &mut Option<LogitsReader>| {
-        if let Some(w) = save.as_mut() {
-            w.push(l);
-        }
-        if let Some(r) = kref.as_mut() {
-            if let Some(rl) = r.next() {
-                let (k, same) = kld(&rl, l);
-                klds.push(k);
-                top1s.push(same);
-                top1_agree += same as usize;
+    let mut on_logits =
+        |l: &[f32], save: &mut Option<LogitsWriter>, kref: &mut Option<LogitsReader>| {
+            if let Some(w) = save.as_mut() {
+                w.push(l);
             }
-        }
-    };
+            if let Some(r) = kref.as_mut() {
+                if let Some(rl) = r.next() {
+                    let (k, same) = kld(&rl, l);
+                    klds.push(k);
+                    top1s.push(same);
+                    top1_agree += same as usize;
+                }
+            }
+        };
 
     // ---- prefill ----
     let tp = Instant::now();
-    let pstate = a.0.get("prefill-state").map(|p| PathBuf::from(format!("{p}.ctx{n_ctx}.tb{threads_batch}.{}", if exact { "exact" } else { "fast" })));
+    let pstate = a.0.get("prefill-state").map(|p| {
+        PathBuf::from(format!(
+            "{p}.ctx{n_ctx}.tb{threads_batch}.{}",
+            if exact { "exact" } else { "fast" }
+        ))
+    });
     let mut prefill_from_file = false;
     let stats_before_prefill = st.stats();
     if let Some(p) = pstate.as_ref().filter(|p| p.exists()) {
@@ -486,7 +613,8 @@ fn run(a: &Args) {
         for n in plan {
             let ch = &prompt[at..at + n];
             at += n;
-            g.decode(ch, threads_batch, &mut logits, None).unwrap_or_else(|e| die(&e));
+            g.decode(ch, threads_batch, &mut logits, None)
+                .unwrap_or_else(|e| die(&e));
             if let Some(e) = st.take_error() {
                 die(&format!("prefill: {e}"));
             }
@@ -530,8 +658,15 @@ fn run(a: &Args) {
     let profile_last = profile_from + profile_steps - 1;
     let mut profile_rows: Vec<(String, u64, f64)> = Vec::new();
     let c0 = st.stats();
-    let (w0, f0, calls0) = (st.counters.wait0_ns.load(Relaxed), st.counters.fetch_ns.load(Relaxed), st.counters.calls.load(Relaxed));
-    let io0 = (st.io.counters.completed[0].load(Relaxed), st.io.counters.lat_ns[0].load(Relaxed));
+    let (w0, f0, calls0) = (
+        st.counters.wait0_ns.load(Relaxed),
+        st.counters.fetch_ns.load(Relaxed),
+        st.counters.calls.load(Relaxed),
+    );
+    let io0 = (
+        st.io.counters.completed[0].load(Relaxed),
+        st.io.counters.lat_ns[0].load(Relaxed),
+    );
     let mut first_mismatch: Option<usize> = if got[0] != want[0] { Some(0) } else { None };
     g.timing(true);
     let mut stage_ms = [0f64; 4];
@@ -555,7 +690,8 @@ fn run(a: &Args) {
             g.profile_reset();
         }
         let t = Instant::now();
-        g.decode(&[input], threads, &mut logits, None).unwrap_or_else(|e| die(&e));
+        g.decode(&[input], threads, &mut logits, None)
+            .unwrap_or_else(|e| die(&e));
         if let Some(e) = st.take_error() {
             die(&format!("decode step {i}: {e}"));
         }
@@ -579,24 +715,39 @@ fn run(a: &Args) {
         got.push(next);
         if first_mismatch.is_none() && !want_ok(&want, i, next) {
             first_mismatch = Some(i);
-            eprintln!("flash-m3: first token difference at generated token {i}: got {next}, want {:?}", want.get(i));
+            eprintln!(
+                "flash-m3: first token difference at generated token {i}: got {next}, want {:?}",
+                want.get(i)
+            );
             // a teacher-forced run keeps going (its logits file must cover every step)
             if exact && !teacher && !a.has("keep-going") {
                 break;
             }
         }
         if i % 50 == 0 {
-            eprintln!("flash-m3: {i} tokens, {:.1} ms/token", step_ms.iter().sum::<f64>() / step_ms.len() as f64);
+            eprintln!(
+                "flash-m3: {i} tokens, {:.1} ms/token",
+                step_ms.iter().sum::<f64>() / step_ms.len() as f64
+            );
         }
         if !teacher && EOG.contains(&next) {
             break;
         }
     }
     drop(save);
-    let ans: Vec<i32> = got.iter().copied().take_while(|t| !EOG.contains(t)).collect();
-    let want_ans: Vec<i32> = want.iter().copied().take_while(|t| !EOG.contains(t)).collect();
+    let ans: Vec<i32> = got
+        .iter()
+        .copied()
+        .take_while(|t| !EOG.contains(t))
+        .collect();
+    let want_ans: Vec<i32> = want
+        .iter()
+        .copied()
+        .take_while(|t| !EOG.contains(t))
+        .collect();
     if let Some(p) = a.0.get("answer") {
-        let tk = tokenizer::Tokenizer::from_gguf(&s.paths[0]).unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
+        let tk = tokenizer::Tokenizer::from_gguf(&s.paths[0])
+            .unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
         let toks: Vec<u32> = ans.iter().map(|&t| t as u32).collect();
         std::fs::write(p, tk.decode_bytes(&toks, false)).unwrap_or_else(|e| die(&e.to_string()));
     }
@@ -604,7 +755,8 @@ fn run(a: &Args) {
     let toks = step_ms.len().max(1) as f64;
     let cs = st.stats();
     let dl = cs.demand_lookups - c0.demand_lookups;
-    let dh = (cs.demand_hits_ready + cs.demand_hits_pending) - (c0.demand_hits_ready + c0.demand_hits_pending);
+    let dh = (cs.demand_hits_ready + cs.demand_hits_pending)
+        - (c0.demand_hits_ready + c0.demand_hits_pending);
     let io_n = st.io.counters.completed[0].load(Relaxed) - io0.0;
     let io_lat = st.io.counters.lat_ns[0].load(Relaxed) - io0.1;
     let out = json!({
@@ -670,7 +822,12 @@ fn run(a: &Args) {
     if let Some(p) = a.0.get("kld-out") {
         // step 0 = the logits after the prompt; step i = after decoding generated token i
         let csv: String = std::iter::once("step,kld,top1_same\n".to_string())
-            .chain(klds.iter().zip(&top1s).enumerate().map(|(i, (k, t))| format!("{i},{k:e},{}\n", *t as u8)))
+            .chain(
+                klds.iter()
+                    .zip(&top1s)
+                    .enumerate()
+                    .map(|(i, (k, t))| format!("{i},{k:e},{}\n", *t as u8)),
+            )
             .collect();
         std::fs::write(p, csv).unwrap_or_else(|e| die(&format!("--kld-out {p}: {e}")));
     }
@@ -693,8 +850,15 @@ fn kld_files(a: &Args) {
         .s("windows", &format!("0:1,1:100,100:{n},0:{n}"))
         .split(',')
         .map(|w| {
-            let (x, y) = w.split_once(':').unwrap_or_else(|| die("--windows a:b,..."));
-            (x.parse().unwrap_or_else(|_| die("--windows")), y.parse::<usize>().unwrap_or_else(|_| die("--windows")).min(n))
+            let (x, y) = w
+                .split_once(':')
+                .unwrap_or_else(|| die("--windows a:b,..."));
+            (
+                x.parse().unwrap_or_else(|_| die("--windows")),
+                y.parse::<usize>()
+                    .unwrap_or_else(|_| die("--windows"))
+                    .min(n),
+            )
         })
         .collect();
     let rows: Vec<serde_json::Value> = wins
@@ -718,14 +882,25 @@ fn kld_files(a: &Args) {
 
 fn prefill(a: &Args) {
     let home = PathBuf::from(std::env::var("HOME").unwrap());
-    let model_dir = PathBuf::from(a.s("model-dir", &home.join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS").to_string_lossy()));
+    let model_dir = PathBuf::from(
+        a.s(
+            "model-dir",
+            &home
+                .join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS")
+                .to_string_lossy(),
+        ),
+    );
     let n_tok: usize = a.n("n-tokens", 0);
-    let text = std::fs::read_to_string(a.s("text", "")).unwrap_or_else(|e| die(&format!("--text: {e}")));
+    let text =
+        std::fs::read_to_string(a.s("text", "")).unwrap_or_else(|e| die(&format!("--text: {e}")));
     let mapped = a.has("mapped");
     let threads: usize = a.n("threads", 8);
     let ubatch: usize = a.n("ubatch", 4096);
     let reps: usize = a.n("reps", 2).max(1);
-    let n_ctx: u32 = a.n("n-ctx", (((n_tok + 64) as u32).div_ceil(256) * 256).max(4096));
+    let n_ctx: u32 = a.n(
+        "n-ctx",
+        (((n_tok + 64) as u32).div_ceil(256) * 256).max(4096),
+    );
     let cache_gib: f64 = a.n("cache-gib", 20.0);
     let opts = FgOptions {
         fixed_attn: attn_mode(a),
@@ -736,37 +911,55 @@ fn prefill(a: &Args) {
         executor: a.flag("executor", false) as i32,
         fuse: a.n("fuse", 0i32),
     };
-    let sidecar = PathBuf::from(a.s("sidecar", &qwen4exp::sidecar::default_path().to_string_lossy()));
+    let sidecar = PathBuf::from(a.s(
+        "sidecar",
+        &qwen4exp::sidecar::default_path().to_string_lossy(),
+    ));
     let io_cpu: Option<usize> = a.0.get("io-cpu").and_then(|v| v.parse().ok());
 
     let t0 = Instant::now();
     let s = Shards::open(&model_dir).unwrap_or_else(|e| die(&e));
-    let tk = tokenizer::Tokenizer::from_gguf(&s.paths[0]).unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
-    let all: Vec<i32> = tk.encode(&text, false, false).into_iter().map(|t| t as i32).collect();
+    let tk = tokenizer::Tokenizer::from_gguf(&s.paths[0])
+        .unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
+    let all: Vec<i32> = tk
+        .encode(&text, false, false)
+        .into_iter()
+        .map(|t| t as i32)
+        .collect();
     if n_tok == 0 || all.len() < n_tok {
-        die(&format!("--n-tokens {n_tok}: the text has {} tokens", all.len()));
+        die(&format!(
+            "--n-tokens {n_tok}: the text has {} tokens",
+            all.len()
+        ));
     }
     let prompt = &all[..n_tok];
     let d = Dense::load(&s, DenseMode::VecDot).unwrap_or_else(|e| die(&e));
     let gm = GraphModel::new(&s, &d, mapped).unwrap_or_else(|e| die(&e));
     let load_s = t0.elapsed().as_secs_f64();
-    let cfg = StreamConfig { cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize, qd: a.n("qd", 32u32), io_cpu, prefault: true };
+    let cfg = StreamConfig {
+        cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize,
+        qd: a.n("qd", 32u32),
+        io_cpu,
+        prefault: true,
+    };
     let mut st = make_stream(a, &s, &sidecar, &cfg);
     st.resident_first = a.flag("resident-first", true);
     st.batch_gemm = a.flag("batch-gemm", true);
     st.batch_tile = a.flag("expert-tile", true); // PREFILL: IQ2_S gate/up in 8-token tiles (bitwise = gemm4); default on (G4)
-    // W4-I policy (G4): order on; read-ahead "auto" = 64 experts per layer on passes that start warm, 0 on cold ones;
-    // `--pf-readahead N` forces N on every pass (0 = off); `--pf-ra-warm X` = the warm threshold (resident share)
+                                                 // W4-I policy (G4): order on; read-ahead "auto" = 64 experts per layer on passes that start warm, 0 on cold ones;
+                                                 // `--pf-readahead N` forces N on every pass (0 = off); `--pf-ra-warm X` = the warm threshold (resident share)
     st.pf_order = a.flag("pf-order", true);
     st.pf_order_last = a.flag("pf-order-last", false); // F123 (server --flash-pf-order 2)
-    // G4' (W5-C): read-ahead default OFF; `auto` stays selectable
+                                                       // G4' (W5-C): read-ahead default OFF; `auto` stays selectable
     match a.s("pf-readahead", "0").as_str() {
         "auto" => {
             st.pf_readahead = 64;
             st.pf_readahead_auto = true;
         }
         v => {
-            st.pf_readahead = v.parse().unwrap_or_else(|_| die("--pf-readahead: auto or a number"));
+            st.pf_readahead = v
+                .parse()
+                .unwrap_or_else(|_| die("--pf-readahead: auto or a number"));
             st.pf_readahead_auto = false;
         }
     }
@@ -775,13 +968,18 @@ fn prefill(a: &Args) {
     // (auto = 8192), limited by MemAvailable; 0 (default) = plain chunks of `--ubatch`
     let pf_max_pass: usize = match a.s("pf-max-pass", "0").as_str() {
         "auto" => 8192,
-        v => v.parse().unwrap_or_else(|_| die("--pf-max-pass: auto or a number")),
+        v => v
+            .parse()
+            .unwrap_or_else(|_| die("--pf-max-pass: auto or a number")),
     };
     // W4-I per-phase IO core: the IO thread(s) move to these CPUs for the batched prefill (comma list), back to
     // `--io-cpu` afterwards (decode)
-    let io_cpu_prefill: Vec<usize> = a.0.get("io-cpu-prefill").map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
+    let io_cpu_prefill: Vec<usize> =
+        a.0.get("io-cpu-prefill")
+            .map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect())
+            .unwrap_or_default();
     let mut io_moved = 0usize; // IO threads re-pinned by the last --io-cpu-prefill switch (0 = none / not found)
-    // PREFILL: multi-column dense matmul for ubatches of >= 256 tokens (bitwise = ggml's mul_mat); default on (G4)
+                               // PREFILL: multi-column dense matmul for ubatches of >= 256 tokens (bitwise = ggml's mul_mat); default on (G4)
     let dense_gemm = a.flag("dense-gemm", true);
     qwen4exp::graph::set_dense_gemm(dense_gemm);
     // PREFILL FP-1: register-tile attention for prefill ubatches (bitwise): 0 off, 1 tiles (default on, G4),
@@ -789,7 +987,11 @@ fn prefill(a: &Args) {
     let attn_tile: i32 = match a.s("attn-tile", "1").as_str() {
         "true" | "on" => 1, // the boolean spellings
         "false" | "off" => 0,
-        v => v.parse().ok().filter(|m| (0..=2).contains(m)).unwrap_or_else(|| die("--attn-tile: 0, 1 or 2")),
+        v => v
+            .parse()
+            .ok()
+            .filter(|m| (0..=2).contains(m))
+            .unwrap_or_else(|| die("--attn-tile: 0, 1 or 2")),
     };
     qwen4exp::graph::set_attn_tile_mode(attn_tile);
     qwen4exp::graph::attn_tile_units(true);
@@ -815,12 +1017,18 @@ fn prefill(a: &Args) {
     for rep in 0..reps {
         g.clear();
         let prof = rep == 0 && a.has("profile");
-        g.set_options(&FgOptions { profile: prof as i32, ..opts });
+        g.set_options(&FgOptions {
+            profile: prof as i32,
+            ..opts
+        });
         if prof {
             g.profile_reset();
         }
         let c0 = st.stats();
-        let (w0, wall0) = (st.counters.wait0_ns.load(Relaxed), st.counters.wait_ns.load(Relaxed));
+        let (w0, wall0) = (
+            st.counters.wait0_ns.load(Relaxed),
+            st.counters.wait_ns.load(Relaxed),
+        );
         let tp = Instant::now();
         let mut chunk_s = Vec::new();
         if !io_cpu_prefill.is_empty() {
@@ -829,13 +1037,19 @@ fn prefill(a: &Args) {
         let plan = pf_plan_for(prompt.len(), ubatch, pf_max_pass, attn_tile == 2);
         plan_used = plan.clone();
         qwen4exp::graph::pf_phase_ms(true);
-        let stage0: Vec<u64> = st.counters.batch_stage_ns.iter().map(|c| c.load(Relaxed)).collect();
+        let stage0: Vec<u64> = st
+            .counters
+            .batch_stage_ns
+            .iter()
+            .map(|c| c.load(Relaxed))
+            .collect();
         let mut at = 0;
         for n in plan {
             let ch = &prompt[at..at + n];
             at += n;
             let tc = Instant::now();
-            g.decode(ch, threads, &mut logits, None).unwrap_or_else(|e| die(&e));
+            g.decode(ch, threads, &mut logits, None)
+                .unwrap_or_else(|e| die(&e));
             if let Some(e) = st.take_error() {
                 die(&format!("prefill: {e}"));
             }
@@ -845,7 +1059,13 @@ fn prefill(a: &Args) {
         let c1 = st.stats();
         // FP-9: where the pass went, from clocks inside the ops (thread 0 wall; no node-by-node mode needed)
         let (pms, pcalls) = qwen4exp::graph::pf_phase_ms(false);
-        let stage: Vec<f64> = st.counters.batch_stage_ns.iter().zip(&stage0).map(|(c, s0)| (c.load(Relaxed) - s0) as f64 / 1e6).collect();
+        let stage: Vec<f64> = st
+            .counters
+            .batch_stage_ns
+            .iter()
+            .zip(&stage0)
+            .map(|(c, s0)| (c.load(Relaxed) - s0) as f64 / 1e6)
+            .collect();
         let expert_ms: f64 = stage.iter().sum();
         let phase = json!({"attention_tiles_ms": pms[0], "dense_pack_ms": pms[1], "dense_mm_ms": pms[2],
             "expert_plan_quant_ms": stage[0], "expert_gate_up_ms": stage[1], "expert_swiglu_ms": stage[2], "expert_down_ms": stage[3],
@@ -857,7 +1077,8 @@ fn prefill(a: &Args) {
         match &first {
             None => {
                 if let Some(p) = a.0.get("save-state") {
-                    g.save_file(Path::new(p), &logits).unwrap_or_else(|e| die(&e));
+                    g.save_file(Path::new(p), &logits)
+                        .unwrap_or_else(|e| die(&e));
                 }
                 if let Some(p) = a.0.get("save-logits") {
                     let mut w = LogitsWriter::new(Path::new(p));
@@ -868,7 +1089,11 @@ fn prefill(a: &Args) {
             Some(f) => {
                 // SAFETY: f32 slices compared as bytes.
                 let same = unsafe {
-                    std::slice::from_raw_parts(f.as_ptr() as *const u8, f.len() * 4) == std::slice::from_raw_parts(logits.as_ptr() as *const u8, logits.len() * 4)
+                    std::slice::from_raw_parts(f.as_ptr() as *const u8, f.len() * 4)
+                        == std::slice::from_raw_parts(
+                            logits.as_ptr() as *const u8,
+                            logits.len() * 4,
+                        )
                 };
                 deterministic &= same;
             }
@@ -936,7 +1161,11 @@ fn bench_expert(a: &Args) {
     let mut rows_out = Vec::new();
     for w in [W::Iq2S, W::Iq3Xxs, W::Iq4Nl] {
         let down = w == W::Iq4Nl;
-        let (k, rows) = if down { (640usize, 2560usize) } else { (2560usize, 640usize) };
+        let (k, rows) = if down {
+            (640usize, 2560usize)
+        } else {
+            (2560usize, 640usize)
+        };
         let rb = w.row_bytes(k);
         let mut m: Vec<u8> = (0..rows * rb).map(|_| rnd() as u8).collect();
         let bb = w.block().1;
@@ -944,22 +1173,38 @@ fn bench_expert(a: &Args) {
             let h: u16 = 0x2000 + (b as u16 % 512);
             m[b * bb..b * bb + 2].copy_from_slice(&h.to_le_bytes());
         }
-        let at = if down { kernels_sys::ActType::Q8_0 } else { kernels_sys::ActType::Q8K };
+        let at = if down {
+            kernels_sys::ActType::Q8_0
+        } else {
+            kernels_sys::ActType::Q8K
+        };
         let ab = at.bytes(k);
         let mut acts = vec![0u8; np * ab];
         for t in 0..np {
-            let f: Vec<f32> = (0..k).map(|_| ((rnd() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0).collect();
+            let f: Vec<f32> = (0..k)
+                .map(|_| ((rnd() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0)
+                .collect();
             kernels_sys::quantize_act(at, &f, &mut acts[t * ab..(t + 1) * ab]);
         }
         if let Some(ty) = w.r4() {
-            assert!(unsafe { ffi::ggml_cpu_expert_r4_slice_to_r4(ty, m.as_mut_ptr(), k as i64, rows as i64) });
+            assert!(unsafe {
+                ffi::ggml_cpu_expert_r4_slice_to_r4(ty, m.as_mut_ptr(), k as i64, rows as i64)
+            });
         }
         let (mut old, mut new) = (vec![0f32; np * rows], vec![0f32; np * rows]);
         let (mut t_old, mut t_new) = (f64::MAX, f64::MAX);
         let ng = np.div_ceil(8);
         let (mut xc, mut xd) = (vec![0i8; ng * k * 8], vec![0f32; ng * (k / 32) * 8]);
         const TR: usize = 32;
-        let mut scratch = vec![0u32; unsafe { ffi::pf_expert_iq2s_scratch(2560, TR as i64).max(ffi::pf_expert_iq3_scratch(2560, TR as i64)).max(ffi::pf_expert_iq4nl_scratch(640, TR as i64)) }.div_ceil(4)];
+        let mut scratch = vec![
+            0u32;
+            unsafe {
+                ffi::pf_expert_iq2s_scratch(2560, TR as i64)
+                    .max(ffi::pf_expert_iq3_scratch(2560, TR as i64))
+                    .max(ffi::pf_expert_iq4nl_scratch(640, TR as i64))
+            }
+            .div_ceil(4)
+        ];
         for _ in 0..reps {
             // today's path, in the stream op's loop order (chunk-major)
             let t0 = Instant::now();
@@ -968,12 +1213,29 @@ fn bench_expert(a: &Args) {
                     for r0 in (0..rows).step_by(16) {
                         for g in (0..np).step_by(4) {
                             if g + 4 <= np {
-                                let s4: [*mut f32; 4] = std::array::from_fn(|t| old.as_mut_ptr().add((g + t) * rows + r0));
-                                let y4: [*const u8; 4] = std::array::from_fn(|t| acts.as_ptr().add((g + t) * ab));
-                                ffi::ggml_cpu_expert_r4_gemm4(ty, k as i64, s4.as_ptr(), m.as_ptr().add(r0 * rb), y4.as_ptr(), 16);
+                                let s4: [*mut f32; 4] = std::array::from_fn(|t| {
+                                    old.as_mut_ptr().add((g + t) * rows + r0)
+                                });
+                                let y4: [*const u8; 4] =
+                                    std::array::from_fn(|t| acts.as_ptr().add((g + t) * ab));
+                                ffi::ggml_cpu_expert_r4_gemm4(
+                                    ty,
+                                    k as i64,
+                                    s4.as_ptr(),
+                                    m.as_ptr().add(r0 * rb),
+                                    y4.as_ptr(),
+                                    16,
+                                );
                             } else {
                                 for t in g..np {
-                                    ffi::ggml_cpu_expert_r4_gemv(ty, k as i64, old.as_mut_ptr().add(t * rows + r0), m.as_ptr().add(r0 * rb), acts.as_ptr().add(t * ab), 16);
+                                    ffi::ggml_cpu_expert_r4_gemv(
+                                        ty,
+                                        k as i64,
+                                        old.as_mut_ptr().add(t * rows + r0),
+                                        m.as_ptr().add(r0 * rb),
+                                        acts.as_ptr().add(t * ab),
+                                        16,
+                                    );
                                 }
                             }
                         }
@@ -981,7 +1243,15 @@ fn bench_expert(a: &Args) {
                 } else {
                     for r0 in (0..rows).step_by(32) {
                         for t in 0..np {
-                            ffi::gemv_vecdot(w, m.as_ptr(), k, r0, r0 + 32, acts.as_ptr().add(t * ab), old.as_mut_ptr().add(t * rows + r0));
+                            ffi::gemv_vecdot(
+                                w,
+                                m.as_ptr(),
+                                k,
+                                r0,
+                                r0 + 32,
+                                acts.as_ptr().add(t * ab),
+                                old.as_mut_ptr().add(t * rows + r0),
+                            );
                         }
                     }
                 }
@@ -992,11 +1262,29 @@ fn bench_expert(a: &Args) {
             unsafe {
                 for g in 0..ng {
                     let n = (np - g * 8).min(8);
-                    let vy: [*const u8; 8] = std::array::from_fn(|t| if t < n { acts.as_ptr().add((g * 8 + t) * ab) } else { std::ptr::null() });
+                    let vy: [*const u8; 8] = std::array::from_fn(|t| {
+                        if t < n {
+                            acts.as_ptr().add((g * 8 + t) * ab)
+                        } else {
+                            std::ptr::null()
+                        }
+                    });
                     if down {
-                        ffi::pf_expert_pack_x8_q8_0(k as i64, n as i32, vy.as_ptr(), xc.as_mut_ptr().add(g * k * 8), xd.as_mut_ptr().add(g * (k / 32) * 8));
+                        ffi::pf_expert_pack_x8_q8_0(
+                            k as i64,
+                            n as i32,
+                            vy.as_ptr(),
+                            xc.as_mut_ptr().add(g * k * 8),
+                            xd.as_mut_ptr().add(g * (k / 32) * 8),
+                        );
                     } else {
-                        ffi::pf_expert_pack_x8(k as i64, n as i32, vy.as_ptr(), xc.as_mut_ptr().add(g * k * 8), xd.as_mut_ptr().add(g * (k / 256) * 8));
+                        ffi::pf_expert_pack_x8(
+                            k as i64,
+                            n as i32,
+                            vy.as_ptr(),
+                            xc.as_mut_ptr().add(g * k * 8),
+                            xd.as_mut_ptr().add(g * (k / 256) * 8),
+                        );
                     }
                 }
                 let f = match w {
@@ -1009,18 +1297,33 @@ fn bench_expert(a: &Args) {
                     for t in 0..np {
                         s[t] = new.as_mut_ptr().add(t * rows + r0);
                     }
-                    f(k as i64, m.as_ptr().add(r0 * rb), TR as i64, xc.as_ptr(), xd.as_ptr(), ng as i64, s.as_ptr(), scratch.as_mut_ptr() as *mut c_void);
+                    f(
+                        k as i64,
+                        m.as_ptr().add(r0 * rb),
+                        TR as i64,
+                        xc.as_ptr(),
+                        xd.as_ptr(),
+                        ng as i64,
+                        s.as_ptr(),
+                        scratch.as_mut_ptr() as *mut c_void,
+                    );
                 }
             }
             t_new = t_new.min(t0.elapsed().as_secs_f64());
         }
-        let same = old.iter().zip(&new).all(|(a, b)| a.to_bits() == b.to_bits());
+        let same = old
+            .iter()
+            .zip(&new)
+            .all(|(a, b)| a.to_bits() == b.to_bits());
         let gmac = (k * rows * np) as f64 / 1e9;
         println!("{w:?} K {k} rows {rows} pairs {np}: today {:.2} ms ({:.1} GMAC/s)  tiles {:.2} ms ({:.1} GMAC/s)  x{:.2}  bitwise {same}",
             t_old * 1e3, gmac / t_old, t_new * 1e3, gmac / t_new, t_old / t_new);
         rows_out.push(json!({"type": format!("{w:?}"), "k": k, "rows": rows, "pairs": np, "ms_today": t_old * 1e3, "ms_tiles": t_new * 1e3, "bitwise": same}));
     }
-    println!("{}", json!({"kind": "flash-m3-bench-expert", "threads": 1, "rows": rows_out}));
+    println!(
+        "{}",
+        json!({"kind": "flash-m3-bench-expert", "threads": 1, "rows": rows_out})
+    );
 }
 
 fn read_fgd(p: &Path) -> Vec<f32> {
@@ -1028,7 +1331,10 @@ fn read_fgd(p: &Path) -> Vec<f32> {
     if b.len() < 40 || &b[..4] != b"FGD1" || i32::from_le_bytes(b[4..8].try_into().unwrap()) != 0 {
         die(&format!("{}: not an F32 FGD1 dump", p.display()));
     }
-    b[40..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+    b[40..]
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
 }
 
 /// Learned-lookahead training data (PROGRESS-M3 "Slotstream comparison"): teacher-forced decode over a text, dumping
@@ -1036,28 +1342,63 @@ fn read_fgd(p: &Path) -> Vec<f32> {
 fn export(a: &Args) {
     use qwen4exp::graph::Dump;
     let home = PathBuf::from(std::env::var("HOME").unwrap());
-    let model_dir = PathBuf::from(a.s("model-dir", &home.join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS").to_string_lossy()));
+    let model_dir = PathBuf::from(
+        a.s(
+            "model-dir",
+            &home
+                .join(".local/share/ai-stack/models/llm/Qwen3.8-Flash-Next/UD-IQ3_XXS")
+                .to_string_lossy(),
+        ),
+    );
     let n_tok: usize = a.n("n-tokens", 0);
     let prefix: usize = a.n("prefix", 64);
-    let text = std::fs::read_to_string(a.s("text", "")).unwrap_or_else(|e| die(&format!("--text: {e}")));
+    let text =
+        std::fs::read_to_string(a.s("text", "")).unwrap_or_else(|e| die(&format!("--text: {e}")));
     let threads: usize = a.n("threads", 8);
     let cache_gib: f64 = a.n("cache-gib", 21.0);
-    let n_ctx: u32 = a.n("n-ctx", (((n_tok + 64) as u32).div_ceil(256) * 256).max(4096));
+    let n_ctx: u32 = a.n(
+        "n-ctx",
+        (((n_tok + 64) as u32).div_ceil(256) * 256).max(4096),
+    );
     let s = Shards::open(&model_dir).unwrap_or_else(|e| die(&e));
-    let tk = tokenizer::Tokenizer::from_gguf(&s.paths[0]).unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
-    let all: Vec<i32> = tk.encode(&text, false, false).into_iter().map(|t| t as i32).collect();
+    let tk = tokenizer::Tokenizer::from_gguf(&s.paths[0])
+        .unwrap_or_else(|e| die(&format!("tokenizer: {e}")));
+    let all: Vec<i32> = tk
+        .encode(&text, false, false)
+        .into_iter()
+        .map(|t| t as i32)
+        .collect();
     if n_tok <= prefix + 1 || all.len() < n_tok {
-        die(&format!("--n-tokens {n_tok} (> --prefix {prefix}): the text has {} tokens", all.len()));
+        die(&format!(
+            "--n-tokens {n_tok} (> --prefix {prefix}): the text has {} tokens",
+            all.len()
+        ));
     }
     let d = Dense::load(&s, DenseMode::VecDot).unwrap_or_else(|e| die(&e));
     let gm = GraphModel::new(&s, &d, false).unwrap_or_else(|e| die(&e));
-    let sidecar = PathBuf::from(a.s("sidecar", &qwen4exp::sidecar::default_path().to_string_lossy()));
-    let cfg = StreamConfig { cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize, qd: 32, io_cpu: a.0.get("io-cpu").and_then(|v| v.parse().ok()), prefault: true };
+    let sidecar = PathBuf::from(a.s(
+        "sidecar",
+        &qwen4exp::sidecar::default_path().to_string_lossy(),
+    ));
+    let cfg = StreamConfig {
+        cache_bytes: (cache_gib * (1u64 << 30) as f64) as usize,
+        qd: 32,
+        io_cpu: a.0.get("io-cpu").and_then(|v| v.parse().ok()),
+        prefault: true,
+    };
     let mut st = make_stream(a, &s, &sidecar, &cfg);
     if !a.has("route-trace") {
         die("export needs --route-trace F.csv (the routes are the labels)");
     }
-    let opts = FgOptions { fixed_attn: attn_mode(a), shexp_first: 1, batch_min_tokens: 17, profile: 0, rs_view: 1, executor: 0, fuse: 0 };
+    let opts = FgOptions {
+        fixed_attn: attn_mode(a),
+        shexp_first: 1,
+        batch_min_tokens: 17,
+        profile: 0,
+        rs_view: 1,
+        executor: 0,
+        fuse: 0,
+    };
     let mut g = GraphCtx::new(&gm, n_ctx);
     g.set_options(&opts);
     let ud = &*st as *const Stream as *mut std::ffi::c_void;
@@ -1065,48 +1406,70 @@ fn export(a: &Args) {
     unsafe { g.set_expert_fn(Some(Stream::callback()), ud) };
     let mut logits = vec![0f32; N_VOCAB];
     let t0 = Instant::now();
-    g.decode(&all[..prefix], threads, &mut logits, None).unwrap_or_else(|e| die(&e));
+    g.decode(&all[..prefix], threads, &mut logits, None)
+        .unwrap_or_else(|e| die(&e));
     if let Some(e) = st.take_error() {
         die(&format!("prefill: {e}"));
     }
     let outp = a.s("out", "");
     let dir = format!("{outp}.dumpdir");
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(&e.to_string()));
-    let dump = Dump { dir: dir.clone(), names: vec!["h_nextn".into(), "model.input_embed".into()] };
-    let mut w = std::io::BufWriter::new(std::fs::File::create(&outp).unwrap_or_else(|e| die(&format!("--out {outp}: {e}"))));
+    let dump = Dump {
+        dir: dir.clone(),
+        names: vec!["h_nextn".into(), "model.input_embed".into()],
+    };
+    let mut w = std::io::BufWriter::new(
+        std::fs::File::create(&outp).unwrap_or_else(|e| die(&format!("--out {outp}: {e}"))),
+    );
     w.write_all(b"LAE1").unwrap();
     for v in [2560u32, 10240u32] {
         w.write_all(&v.to_le_bytes()).unwrap();
     }
     for i in prefix..n_tok {
-        g.decode(&all[i..i + 1], threads, &mut logits, Some(&dump)).unwrap_or_else(|e| die(&e));
+        g.decode(&all[i..i + 1], threads, &mut logits, Some(&dump))
+            .unwrap_or_else(|e| die(&e));
         if let Some(e) = st.take_error() {
             die(&format!("step {i}: {e}"));
         }
         let h = read_fgd(&Path::new(&dir).join("h_nextn.bin"));
         let e = read_fgd(&Path::new(&dir).join("model.input_embed.bin"));
         if h.len() != 10240 || e.len() != 2560 {
-            die(&format!("step {i}: dump sizes h {} embd {}", h.len(), e.len()));
+            die(&format!(
+                "step {i}: dump sizes h {} embd {}",
+                h.len(),
+                e.len()
+            ));
         }
         w.write_all(&(i as i32).to_le_bytes()).unwrap();
         for x in e.iter().chain(h.iter()) {
             w.write_all(&x.to_le_bytes()).unwrap();
         }
         if (i - prefix) % 500 == 0 {
-            eprintln!("flash-m3 export: step {i}/{n_tok}, {:.0} s", t0.elapsed().as_secs_f64());
+            eprintln!(
+                "flash-m3 export: step {i}/{n_tok}, {:.0} s",
+                t0.elapsed().as_secs_f64()
+            );
         }
     }
     drop(w);
     std::fs::remove_dir_all(&dir).ok();
     drop(g);
     finish_stream(a, &mut st);
-    println!("{}", json!({"kind": "flash-m3-export", "out": outp, "steps": n_tok - prefix, "prefix": prefix, "text_tokens": all.len(),
-                         "seconds": t0.elapsed().as_secs_f64(), "route_trace": a.0.get("route-trace")}));
+    println!(
+        "{}",
+        json!({"kind": "flash-m3-export", "out": outp, "steps": n_tok - prefix, "prefix": prefix, "text_tokens": all.len(),
+                         "seconds": t0.elapsed().as_secs_f64(), "route_trace": a.0.get("route-trace")})
+    );
 }
 
 /// FD-1: the executor trace table + IO stamps -> JSON (per token: work / graph-barrier wait per kind, sorted by work+wait;
 /// fused-barrier spin; fused / fallback counts; read queue wait and device latency; expert-unit spin per thread).
-fn trace_json(text: &str, stamps: &[qwen4exp::io::ReadStamp], unit_wait_ms_per_thread: f64, tokens: usize) -> serde_json::Value {
+fn trace_json(
+    text: &str,
+    stamps: &[qwen4exp::io::ReadStamp],
+    unit_wait_ms_per_thread: f64,
+    tokens: usize,
+) -> serde_json::Value {
     let mut kinds = Vec::new();
     let mut tot = serde_json::Map::new();
     let mut fused = Vec::new();
@@ -1131,13 +1494,33 @@ fn trace_json(text: &str, stamps: &[qwen4exp::io::ReadStamp], unit_wait_ms_per_t
         }
     }
     kinds.sort_by(|a, b| (b.2 + b.3).partial_cmp(&(a.2 + a.3)).unwrap());
-    let (sw, sb): (f64, f64) = kinds.iter().fold((0.0, 0.0), |(x, y), k| (x + k.2, y + k.3));
-    let mut q: Vec<f64> = stamps.iter().map(|s| (s.submit_ns.saturating_sub(s.push_ns)) as f64 / 1e6).collect();
-    let mut d: Vec<f64> = stamps.iter().map(|s| (s.done_ns.saturating_sub(s.submit_ns)) as f64 / 1e6).collect();
+    let (sw, sb): (f64, f64) = kinds
+        .iter()
+        .fold((0.0, 0.0), |(x, y), k| (x + k.2, y + k.3));
+    let mut q: Vec<f64> = stamps
+        .iter()
+        .map(|s| (s.submit_ns.saturating_sub(s.push_ns)) as f64 / 1e6)
+        .collect();
+    let mut d: Vec<f64> = stamps
+        .iter()
+        .map(|s| (s.done_ns.saturating_sub(s.submit_ns)) as f64 / 1e6)
+        .collect();
     q.sort_by(|a, b| a.partial_cmp(b).unwrap());
     d.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let pct = |v: &[f64], p: f64| if v.is_empty() { 0.0 } else { v[((v.len() - 1) as f64 * p) as usize] };
-    let mean = |v: &[f64]| if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
+    let pct = |v: &[f64], p: f64| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v[((v.len() - 1) as f64 * p) as usize]
+        }
+    };
+    let mean = |v: &[f64]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f64>() / v.len() as f64
+        }
+    };
     json!({
         "tokens": ntok,
         "work_ms_per_token": sw / ntok, "graph_barrier_wait_ms_per_token": sb / ntok,

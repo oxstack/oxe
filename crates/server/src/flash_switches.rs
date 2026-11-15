@@ -17,7 +17,12 @@ pub struct FlashSwitches {
 
 impl Default for FlashSwitches {
     fn default() -> Self {
-        FlashSwitches { attn_tile: true, dense_gemm: true, expert_tile: true, warmup: false }
+        FlashSwitches {
+            attn_tile: true,
+            dense_gemm: true,
+            expert_tile: true,
+            warmup: false,
+        }
     }
 }
 

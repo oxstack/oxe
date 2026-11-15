@@ -2,8 +2,8 @@
 //! norms, linears through a [`Linears`] backend (CPU f32 reference, CPU Q8 emulation of sd.cpp, or
 //! oxn NPU in `npu.rs`).
 
-use crate::config::KleinSpec;
 use crate::attn_gqa::attention_gqa;
+use crate::config::KleinSpec;
 use crate::cpu::{self, rms_norm_rows, rope_neox, rope_tables, silu};
 use crate::prompt::Encoded;
 use crate::weights::{Kind, TeWeights};
@@ -15,7 +15,14 @@ use std::time::Instant;
 /// share an input (q/k/v, gate/up) so an accelerator writes the activation once.
 pub trait Linears: Sync {
     fn name(&self) -> String;
-    fn project(&self, layer: usize, kinds: &[Kind], x: &[f32], n: usize, outs: &mut [Vec<f32>]) -> Result<(), String>;
+    fn project(
+        &self,
+        layer: usize,
+        kinds: &[Kind],
+        x: &[f32],
+        n: usize,
+        outs: &mut [Vec<f32>],
+    ) -> Result<(), String>;
     /// Backend counters for the JSON summary.
     fn summary(&self) -> serde_json::Value {
         serde_json::Value::Null
@@ -39,9 +46,23 @@ pub struct CpuLinears<'w, 'a> {
 
 impl Linears for CpuLinears<'_, '_> {
     fn name(&self) -> String {
-        format!("cpu-{}", if self.mode == CpuMode::F32 { "f32" } else { "q8" })
+        format!(
+            "cpu-{}",
+            if self.mode == CpuMode::F32 {
+                "f32"
+            } else {
+                "q8"
+            }
+        )
     }
-    fn project(&self, layer: usize, kinds: &[Kind], x: &[f32], n: usize, outs: &mut [Vec<f32>]) -> Result<(), String> {
+    fn project(
+        &self,
+        layer: usize,
+        kinds: &[Kind],
+        x: &[f32],
+        n: usize,
+        outs: &mut [Vec<f32>],
+    ) -> Result<(), String> {
         for (i, &kd) in kinds.iter().enumerate() {
             let m = self.w.layers[layer].mat(kd);
             outs[i].resize(n * m.o(), 0.0);
@@ -83,9 +104,17 @@ impl<'w, 'a> Encoder<'w, 'a> {
     pub fn new(w: &'w TeWeights<'a>, spec: KleinSpec, threads: usize) -> Result<Self, String> {
         spec.check(&w.cfg)?;
         if w.layers.len() < spec.layers_needed() {
-            return Err(format!("encoder: {} blocks loaded, the spec needs {}", w.layers.len(), spec.layers_needed()));
+            return Err(format!(
+                "encoder: {} blocks loaded, the spec needs {}",
+                w.layers.len(),
+                spec.layers_needed()
+            ));
         }
-        Ok(Encoder { w, spec, threads: threads.max(1) })
+        Ok(Encoder {
+            w,
+            spec,
+            threads: threads.max(1),
+        })
     }
 
     /// `[n][out_layers.len() * hidden]` (layer-major within a token row), `n = e.tokens.len()`.
@@ -96,14 +125,22 @@ impl<'w, 'a> Encoder<'w, 'a> {
             return Err("encoder: empty input or first token masked".into());
         }
         let t_all = Instant::now();
-        let mut tm = Timings { layers: self.spec.layers_needed(), ..Default::default() };
+        let mut tm = Timings {
+            layers: self.spec.layers_needed(),
+            ..Default::default()
+        };
         let t0 = Instant::now();
         let mut x = vec![0f32; n * hdim];
         for (t, &id) in e.tokens.iter().enumerate() {
             if id as usize >= c.vocab {
-                return Err(format!("encoder: token id {id} outside the vocabulary ({})", c.vocab));
+                return Err(format!(
+                    "encoder: token id {id} outside the vocabulary ({})",
+                    c.vocab
+                ));
             }
-            self.w.embd.read_row(id as usize, &mut x[t * hdim..(t + 1) * hdim])?;
+            self.w
+                .embd
+                .read_row(id as usize, &mut x[t * hdim..(t + 1) * hdim])?;
         }
         tm.embed_s = t0.elapsed().as_secs_f64();
         let (cos, sin) = rope_tables(n, hd, c.rope_theta);
@@ -137,7 +174,18 @@ impl<'w, 'a> Encoder<'w, 'a> {
             tm.norm_rope_s += t.elapsed().as_secs_f64();
             let t = Instant::now();
             // GQA-grouped attention: bitwise the reference `cpu::attention` (tests_v013), K/V read once per group
-            attention_gqa(&qkv[0], &qkv[1], &qkv[2], &e.mask, n, c.n_heads, c.n_kv_heads, hd, &mut att, self.threads);
+            attention_gqa(
+                &qkv[0],
+                &qkv[1],
+                &qkv[2],
+                &e.mask,
+                n,
+                c.n_heads,
+                c.n_kv_heads,
+                hd,
+                &mut att,
+                self.threads,
+            );
             tm.attn_s += t.elapsed().as_secs_f64();
             let t = Instant::now();
             lin.project(l, &[Kind::O], &att, n, &mut one)?;
@@ -153,7 +201,9 @@ impl<'w, 'a> Encoder<'w, 'a> {
             tm.linear_s += t.elapsed().as_secs_f64();
             {
                 let (g, u) = gu.split_at_mut(1);
-                g[0].iter_mut().zip(&u[0]).for_each(|(a, b)| *a = silu(*a) * b);
+                g[0].iter_mut()
+                    .zip(&u[0])
+                    .for_each(|(a, b)| *a = silu(*a) * b);
             }
             let t = Instant::now();
             lin.project(l, &[Kind::Down], &gu[0], n, &mut one)?;
@@ -161,7 +211,8 @@ impl<'w, 'a> Encoder<'w, 'a> {
             x.iter_mut().zip(&one[0]).for_each(|(a, b)| *a += b);
             if let Some(slot) = self.spec.out_layers.iter().position(|&o| o == l + 1) {
                 for t in 0..n {
-                    out[t * ctx + slot * hdim..t * ctx + (slot + 1) * hdim].copy_from_slice(&x[t * hdim..(t + 1) * hdim]);
+                    out[t * ctx + slot * hdim..t * ctx + (slot + 1) * hdim]
+                        .copy_from_slice(&x[t * hdim..(t + 1) * hdim]);
                 }
             }
             if x.iter().any(|v| !v.is_finite()) {

@@ -4,17 +4,19 @@
 use crate::desc::ModelDesc;
 use crate::engine::{Engine, EngineConfig};
 use crate::plan::{PhaseKind, Plan};
+#[allow(unused_imports)]
+use crate::testkit::*;
 use crate::weights::{Backing, Layout, LoadOptions, Verify, WeightStore};
 use gguf::{GgmlType, Header, TensorInfo, Value};
 use kernels_sys::{quantize_act, vec_dot_generic, QType};
 use serde_json::Value as J;
 use std::path::PathBuf;
 use std::time::Duration;
-#[allow(unused_imports)]
-use crate::testkit::*;
 
 fn fixture(name: &str) -> J {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(format!("{name}.json"));
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(format!("{name}.json"));
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 
@@ -34,7 +36,12 @@ fn to_value(v: &J) -> Value {
 fn header(fx: &J) -> Header {
     Header {
         version: fx["gguf_version"].as_u64().unwrap() as u32,
-        metadata: fx["metadata"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), to_value(v))).collect(),
+        metadata: fx["metadata"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), to_value(v)))
+            .collect(),
         tensors: fx["tensors"]
             .as_array()
             .unwrap()
@@ -42,7 +49,12 @@ fn header(fx: &J) -> Header {
             .map(|t| TensorInfo {
                 name: t[0].as_str().unwrap().into(),
                 ty: GgmlType::from_name(t[1].as_str().unwrap()).unwrap(),
-                shape: t[2].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect(),
+                shape: t[2]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap())
+                    .collect(),
                 offset: t[3].as_u64().unwrap(),
             })
             .collect(),
@@ -55,15 +67,29 @@ fn check_budget(key: &str) {
     let fx = fixture(key);
     let h = header(&fx);
     let desc = ModelDesc::from_header(&h).unwrap();
-    assert_eq!(desc.n_layer, fx["layers"]["target"].as_u64().unwrap() as usize);
-    assert_eq!(desc.n_recurrent(), fx["layers"]["recurrent"].as_u64().unwrap() as usize);
+    assert_eq!(
+        desc.n_layer,
+        fx["layers"]["target"].as_u64().unwrap() as usize
+    );
+    assert_eq!(
+        desc.n_recurrent(),
+        fx["layers"]["recurrent"].as_u64().unwrap() as usize
+    );
     let n_kv = 2048;
     let plan = Plan::build(&h, &desc, 8, n_kv).unwrap();
     let b = plan.budget(&h.tensors);
     // weights: exactly model_inspect.py's active bytes per token
-    assert_eq!(b.weights(), fx["decode"]["active_bytes_per_token"].as_u64().unwrap(), "{key} weight bytes/token");
+    assert_eq!(
+        b.weights(),
+        fx["decode"]["active_bytes_per_token"].as_u64().unwrap(),
+        "{key} weight bytes/token"
+    );
     // recurrent state: read + write of model_inspect's state bytes
-    assert_eq!(b.state_rw, 2 * fx["recurrent_state_bytes"].as_u64().unwrap(), "{key} state");
+    assert_eq!(
+        b.state_rw,
+        2 * fx["recurrent_state_bytes"].as_u64().unwrap(),
+        "{key} state"
+    );
     // KV: model_inspect's f16 bytes per token of context x n_kv, plus one position written
     let kvpt = fx["kv_bytes_per_token_f16"].as_u64().unwrap();
     assert_eq!(b.kv_read, kvpt * n_kv as u64);
@@ -101,12 +127,18 @@ fn barrier_budget_and_partitions() {
     assert_eq!((desc.n_rot, desc.rope_sections), (64, [11, 11, 10, 0]));
     for n in [1, 2, 4, 6, 8, 12] {
         let plan = Plan::build(&h, &desc, n, 4096).unwrap();
-        plan.check_coverage().unwrap_or_else(|e| panic!("{n} threads: {e}"));
+        plan.check_coverage()
+            .unwrap_or_else(|e| panic!("{n} threads: {e}"));
         // 30 x 5 + 10 x 6 + 1 (head join) = 211, independent of the thread count
         assert_eq!(plan.barriers_per_token(), 30 * 5 + 10 * 6 + 1);
     }
     let plan = Plan::build(&h, &desc, 8, 2048).unwrap();
-    let per_layer = |l: usize| plan.phases.iter().filter(|p| p.layer == l && p.barrier_after).count();
+    let per_layer = |l: usize| {
+        plan.phases
+            .iter()
+            .filter(|p| p.layer == l && p.barrier_after)
+            .count()
+    };
     assert_eq!(per_layer(0), 5); // delta-net: mix, out, router, gate/up, down
     assert_eq!(per_layer(3), 6); // attention: qkv, core, out, router, gate/up, down
     assert_eq!(plan.phases.last().unwrap().kind, PhaseKind::Head);
@@ -126,7 +158,10 @@ fn kernel_set_covers_both_models() {
 fn real_models_first_row_group_repack_matches() {
     let home = PathBuf::from(std::env::var("HOME").unwrap());
     let mut seen = std::collections::HashSet::new();
-    for f in ["Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf", "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf"] {
+    for f in [
+        "Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf",
+        "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf",
+    ] {
         let p = home.join(".local/share/ai-stack/models/llm").join(f);
         if !p.is_file() {
             eprintln!("skip: no {f}");
@@ -134,7 +169,9 @@ fn real_models_first_row_group_repack_matches() {
         }
         let g = gguf::Gguf::open(&p).unwrap();
         for t in &g.header.tensors {
-            let Some(q) = crate::desc::qtype(t.ty) else { continue };
+            let Some(q) = crate::desc::qtype(t.ty) else {
+                continue;
+            };
             if t.shape.len() < 2 || !seen.insert(q) {
                 continue;
             }
@@ -144,7 +181,9 @@ fn real_models_first_row_group_repack_matches() {
             let src = &g.tensor_data(t)[..n];
             let mut dst = vec![0u8; n];
             kernels_sys::repack(q, src, &mut dst, rows, k);
-            let x: Vec<f32> = (0..k).map(|i| ((i * 13 % 37) as f32 - 18.0) / 18.0).collect();
+            let x: Vec<f32> = (0..k)
+                .map(|i| ((i * 13 % 37) as f32 - 18.0) / 18.0)
+                .collect();
             let mut a = vec![0u8; q.act().bytes(k)];
             quantize_act(q.act(), &x, &mut a);
             let mut out = vec![0f32; rows];
@@ -152,7 +191,13 @@ fn real_models_first_row_group_repack_matches() {
             for r in 0..rows {
                 let want = vec_dot_generic(q, k, &src[r * q.row_bytes(k)..], &a);
                 assert!(want.is_finite());
-                assert!((out[r] - want).abs() <= 1e-4 * want.abs().max(1.0), "{} {} row {r}: {} vs {want}", t.name, q.name(), out[r]);
+                assert!(
+                    (out[r] - want).abs() <= 1e-4 * want.abs().max(1.0),
+                    "{} {} row {r}: {} vs {want}",
+                    t.name,
+                    q.name(),
+                    out[r]
+                );
             }
             eprintln!("{f}: {} ({}): first {rows} rows OK", t.name, q.name());
         }
@@ -173,7 +218,16 @@ fn mini_opts(dir: &std::path::Path) -> LoadOptions {
     let cache = dir.join("cache");
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::set_permissions(&cache, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    LoadOptions { backing: Backing::File, verify: Verify::Full, threads: 2, cache_dir: Some(cache), progress: false, thp_collapse: false, mlock: false, sha_from_env: true }
+    LoadOptions {
+        backing: Backing::File,
+        verify: Verify::Full,
+        threads: 2,
+        cache_dir: Some(cache),
+        progress: false,
+        thp_collapse: false,
+        mlock: false,
+        sha_from_env: true,
+    }
 }
 
 /// The weight cache: built once (arena == reference repack, byte for byte), hit on the
@@ -201,11 +255,21 @@ fn mini_gguf_weight_cache() {
             Layout::Packed(q) => {
                 let eb = r.expert_bytes();
                 for e in 0..r.n_expert {
-                    kernels_sys::repack(q, &src[e * eb..(e + 1) * eb], &mut want[e * eb..(e + 1) * eb], r.rows, r.k);
+                    kernels_sys::repack(
+                        q,
+                        &src[e * eb..(e + 1) * eb],
+                        &mut want[e * eb..(e + 1) * eb],
+                        r.rows,
+                        r.k,
+                    );
                 }
             }
         }
-        assert!(got == &want[..], "{}: arena differs from the reference repack", t.name);
+        assert!(
+            got == &want[..],
+            "{}: arena differs from the reference repack",
+            t.name
+        );
     }
     let cache_path = ws.info.cache_path.clone();
     let data_off = ws.data_off as u64;
@@ -221,7 +285,10 @@ fn mini_gguf_weight_cache() {
     // corrupt one byte in the data region: the full verification must reject it and rebuild
     {
         use std::io::{Seek, SeekFrom, Write};
-        let mut f = std::fs::OpenOptions::new().write(true).open(&cache_path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&cache_path)
+            .unwrap();
         f.seek(SeekFrom::Start(data_off + 100)).unwrap();
         f.write_all(&[0xA5]).unwrap();
     }
@@ -242,43 +309,77 @@ fn test_cpus(n: usize) -> Vec<usize> {
     static AVAIL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     // first use in the process: a test thread asks for its cpus before its first pool pins it
-    let avail = *AVAIL.get_or_init(|| std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1));
+    let avail = *AVAIL.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(1)
+    });
     let base = NEXT.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
     (0..n).map(|i| avail - 1 - (base + i) % avail).collect()
 }
 
-fn run_mini(path: &std::path::Path, opt: &LoadOptions, n: usize, steps: usize) -> (Vec<u32>, Vec<Vec<f32>>, u64) {
+fn run_mini(
+    path: &std::path::Path,
+    opt: &LoadOptions,
+    n: usize,
+    steps: usize,
+) -> (Vec<u32>, Vec<Vec<f32>>, u64) {
     run_mini_attn(path, opt, n, steps, false)
 }
 
-fn run_mini_attn(path: &std::path::Path, opt: &LoadOptions, n: usize, steps: usize, legacy: bool) -> (Vec<u32>, Vec<Vec<f32>>, u64) {
+fn run_mini_attn(
+    path: &std::path::Path,
+    opt: &LoadOptions,
+    n: usize,
+    steps: usize,
+    legacy: bool,
+) -> (Vec<u32>, Vec<Vec<f32>>, u64) {
     // Pool pins its calling thread to worker 0. Isolate each run so the next
     // thread-count arm inherits the test runner's full CPU affinity, not CPU 0.
-    std::thread::scope(|scope| scope.spawn(move || {
-        let g = gguf::Gguf::open(path).unwrap();
-        let desc = ModelDesc::from_header(&g.header).unwrap();
-        let plan = Plan::build(&g.header, &desc, n, 512).unwrap();
-        plan.check_coverage().unwrap();
-        let ws = WeightStore::load(g, &plan, opt).unwrap();
-        let cpus = test_cpus(n); // disjoint cores (moe-prefill 8db5bc2) + scoped thread (0b16801)
-        let pool = sched::Pool::new(&cpus, Duration::from_micros(100)).unwrap();
-        let mut eng = Engine::new(&plan, &ws, EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false }).unwrap();
-        eng.set_attn_legacy(legacy);
-        eng.set_attn_tiled_min_kv(0); // the mini runs are short: always tiled (unless legacy)
-        let mut ids = Vec::new();
-        let mut logits = Vec::new();
-        let b0 = pool.barrier_episodes();
-        let mut tok = 1u32;
-        for s in 0..steps {
-            // a fixed prompt for the first half, then greedy
-            let next = eng.step(&pool, tok);
-            tok = if s < steps / 2 { (s as u32 * 7 + 3) % 64 } else { next };
-            ids.push(next);
-            logits.push(eng.logits().to_vec());
-        }
-        let barriers = (pool.barrier_episodes() - b0) / steps as u64;
-        (ids, logits, barriers)
-    }).join().unwrap())
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let g = gguf::Gguf::open(path).unwrap();
+                let desc = ModelDesc::from_header(&g.header).unwrap();
+                let plan = Plan::build(&g.header, &desc, n, 512).unwrap();
+                plan.check_coverage().unwrap();
+                let ws = WeightStore::load(g, &plan, opt).unwrap();
+                let cpus = test_cpus(n); // disjoint cores (moe-prefill 8db5bc2) + scoped thread (0b16801)
+                let pool = sched::Pool::new(&cpus, Duration::from_micros(100)).unwrap();
+                let mut eng = Engine::new(
+                    &plan,
+                    &ws,
+                    EngineConfig {
+                        n_ctx: 512,
+                        logits: true,
+                        trace: false,
+                        profile: false,
+                    },
+                )
+                .unwrap();
+                eng.set_attn_legacy(legacy);
+                eng.set_attn_tiled_min_kv(0); // the mini runs are short: always tiled (unless legacy)
+                let mut ids = Vec::new();
+                let mut logits = Vec::new();
+                let b0 = pool.barrier_episodes();
+                let mut tok = 1u32;
+                for s in 0..steps {
+                    // a fixed prompt for the first half, then greedy
+                    let next = eng.step(&pool, tok);
+                    tok = if s < steps / 2 {
+                        (s as u32 * 7 + 3) % 64
+                    } else {
+                        next
+                    };
+                    ids.push(next);
+                    logits.push(eng.logits().to_vec());
+                }
+                let barriers = (pool.barrier_episodes() - b0) / steps as u64;
+                (ids, logits, barriers)
+            })
+            .join()
+            .unwrap()
+    })
 }
 
 /// End-to-end decode of the mini model: every thread count gives bit-identical logits and
@@ -331,7 +432,10 @@ fn mini_gguf_tiled_attention_equals_legacy() {
         assert_eq!(ids, ids0, "{n} threads: ids differ");
         for (s, (a, b)) in lg.iter().zip(&lg0).enumerate() {
             let same = a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
-            assert!(same, "{n} threads: logits of step {s} differ from the legacy path");
+            assert!(
+                same,
+                "{n} threads: logits of step {s} differ from the legacy path"
+            );
         }
     }
     std::fs::remove_dir_all(&dir).ok();
@@ -349,7 +453,12 @@ fn mini_gguf_anon_chunked_load_is_bit_identical() {
     anon.backing = Backing::Anon;
     let (ids, lg, _) = run_mini_attn(&path, &anon, 2, 120, false);
     assert_eq!(ids, ids0);
-    assert!(lg.iter().zip(&lg0).all(|(a, b)| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())), "anon arena logits differ");
+    assert!(
+        lg.iter()
+            .zip(&lg0)
+            .all(|(a, b)| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())),
+        "anon arena logits differ"
+    );
     let mut locked = anon.clone();
     locked.mlock = true;
     let g = gguf::Gguf::open(&path).unwrap();
@@ -368,8 +477,14 @@ fn mini_gguf_anon_chunked_load_is_bit_identical() {
 fn prefill_group_by_size_thresholds() {
     use crate::engine::group_by_size;
     assert_eq!([0, 24, 99].map(|n| group_by_size(n, 100, 0)), [1, 1, 1]);
-    assert_eq!([100, 600, 1 << 20].map(|n| group_by_size(n, 100, 0)), [2, 2, 2]);
-    assert_eq!([99, 100, 1023, 1024, 5000].map(|n| group_by_size(n, 100, 1024)), [1, 2, 2, 4, 4]);
+    assert_eq!(
+        [100, 600, 1 << 20].map(|n| group_by_size(n, 100, 0)),
+        [2, 2, 2]
+    );
+    assert_eq!(
+        [99, 100, 1023, 1024, 5000].map(|n| group_by_size(n, 100, 1024)),
+        [1, 2, 2, 4, 4]
+    );
     assert_eq!(group_by_size(50, 0, 0), 2);
     assert_eq!(group_by_size(50, 300, 40), 4);
 }
@@ -391,7 +506,10 @@ fn mini_gguf_decode_attn_pad_and_stats_are_bit_identical() {
         let (ids, lg, _) = run_mini_attn(&path, &opt, n, 300, false);
         assert_eq!(ids, ids0, "{n} threads: ids differ with the padded scratch");
         for (s, (a, b)) in lg.iter().zip(&lg0).enumerate() {
-            assert!(a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()), "{n} threads: logits of step {s} differ");
+            assert!(
+                a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                "{n} threads: logits of step {s} differ"
+            );
         }
     }
     std::env::remove_var("OXE_DEC_ATTN_PAD");
@@ -411,7 +529,17 @@ fn mini_gguf_snapshot_restore_replays_exactly() {
     let plan = Plan::build(&g.header, &desc, 2, 512).unwrap();
     let ws = WeightStore::load(g, &plan, &opt).unwrap();
     let pool = sched::DetachedPool::new(&test_cpus(2), Duration::from_micros(50)).unwrap();
-    let eng = Engine::new(&plan, &ws, EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false }).unwrap();
+    let eng = Engine::new(
+        &plan,
+        &ws,
+        EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: false,
+            profile: false,
+        },
+    )
+    .unwrap();
     let toks: Vec<u32> = (0..10).map(|i| (i * 11 + 5) % 64).collect();
     let mut want = Vec::new();
     let mut snap = None;
@@ -428,13 +556,23 @@ fn mini_gguf_snapshot_restore_replays_exactly() {
     assert_eq!(eng.pos(), 4);
     for (i, &t) in toks.iter().enumerate().skip(4) {
         eng.step(&pool, t);
-        assert!(eng.logits().iter().zip(&want[i]).all(|(a, b)| a.to_bits() == b.to_bits()), "step {i} differs after restore");
+        assert!(
+            eng.logits()
+                .iter()
+                .zip(&want[i])
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "step {i} differs after restore"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Batched prefill on the mini model.
-fn mini_engine_parts(path: &std::path::Path, opt: &LoadOptions, n: usize) -> (Plan, WeightStore, sched::Pool) {
+fn mini_engine_parts(
+    path: &std::path::Path,
+    opt: &LoadOptions,
+    n: usize,
+) -> (Plan, WeightStore, sched::Pool) {
     let g = gguf::Gguf::open(path).unwrap();
     let desc = ModelDesc::from_header(&g.header).unwrap();
     let plan = Plan::build(&g.header, &desc, n, 512).unwrap();
@@ -466,7 +604,12 @@ fn mini_gguf_small_prefill_equals_decode() {
     std::env::set_var("OXE_MODEL_SHA256", "0".repeat(64));
     let opt = mini_opts(&dir);
     let (plan, ws, pool) = mini_engine_parts(&path, &opt, 3);
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let dec = Engine::new(&plan, &ws, cfg.clone()).unwrap();
     let pf = Engine::new(&plan, &ws, cfg).unwrap();
     let toks: Vec<u32> = vec![5, 17, 33, 2, 60, 9];
@@ -476,10 +619,18 @@ fn mini_gguf_small_prefill_equals_decode() {
         for &t in &toks[i..i + len] {
             dec.step(&pool, t);
         }
-        let am = pf.prefill(&pool, &toks[i..i + len], crate::engine::UBATCH).unwrap();
+        let am = pf
+            .prefill(&pool, &toks[i..i + len], crate::engine::UBATCH)
+            .unwrap();
         i += len;
-        assert!(same_bits(dec.logits(), pf.logits()), "prefill of {len} tokens: logits differ from decode");
-        assert!(same_state(&dec.dump_state(), &pf.dump_state()), "prefill of {len} tokens: state differs from decode");
+        assert!(
+            same_bits(dec.logits(), pf.logits()),
+            "prefill of {len} tokens: logits differ from decode"
+        );
+        assert!(
+            same_state(&dec.dump_state(), &pf.dump_state()),
+            "prefill of {len} tokens: state differs from decode"
+        );
         let mut best = 0;
         for (j, &v) in pf.logits().iter().enumerate() {
             if v > pf.logits()[best] {
@@ -502,7 +653,17 @@ fn mini_gguf_prefill_is_thread_count_invariant() {
     let mut want: Option<(Vec<f32>, crate::engine::StateDump, Vec<Vec<f32>>)> = None;
     for n in [1usize, 2, 3, 4] {
         let (plan, ws, pool) = mini_engine_parts(&path, &opt, n);
-        let eng = Engine::new(&plan, &ws, EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false }).unwrap();
+        let eng = Engine::new(
+            &plan,
+            &ws,
+            EngineConfig {
+                n_ctx: 512,
+                logits: true,
+                trace: false,
+                profile: false,
+            },
+        )
+        .unwrap();
         // ubatches of 9: 9 + 9 + 5 tokens (4-row groups + remainders, p0 > 0)
         let mut next = eng.prefill(&pool, &toks, 9).unwrap();
         assert_eq!(eng.pos(), toks.len());
@@ -540,7 +701,17 @@ fn mini_gguf_tiled_prefill_equals_legacy() {
     let mut want: Option<(Vec<f32>, crate::engine::StateDump, Vec<Vec<f32>>)> = None;
     for (n, legacy) in [(2usize, true), (1, false), (3, false)] {
         let (plan, ws, pool) = mini_engine_parts(&path, &opt, n);
-        let mut eng = Engine::new(&plan, &ws, EngineConfig { n_ctx: 1024, logits: true, trace: false, profile: false }).unwrap();
+        let mut eng = Engine::new(
+            &plan,
+            &ws,
+            EngineConfig {
+                n_ctx: 1024,
+                logits: true,
+                trace: false,
+                profile: false,
+            },
+        )
+        .unwrap();
         eng.set_attn_legacy(legacy);
         eng.set_attn_tiled_min_kv(0);
         let mut next = eng.prefill(&pool, &toks, 256).unwrap();
@@ -554,10 +725,19 @@ fn mini_gguf_tiled_prefill_equals_legacy() {
         match &want {
             None => want = Some((lg, st, dec)),
             Some((l1, s1, d1)) => {
-                assert!(same_bits(&lg, l1), "{n} threads: prefill logits differ from legacy");
-                assert!(same_state(&st, s1), "{n} threads: prefill state differs from legacy");
+                assert!(
+                    same_bits(&lg, l1),
+                    "{n} threads: prefill logits differ from legacy"
+                );
+                assert!(
+                    same_state(&st, s1),
+                    "{n} threads: prefill state differs from legacy"
+                );
                 for (i, (a, b)) in dec.iter().zip(d1).enumerate() {
-                    assert!(same_bits(a, b), "{n} threads: decode row {i} after prefill differs from legacy");
+                    assert!(
+                        same_bits(a, b),
+                        "{n} threads: decode row {i} after prefill differs from legacy"
+                    );
                 }
             }
         }
@@ -578,14 +758,58 @@ fn mini_gguf_prefill_kernel_switches_are_bit_identical() {
     let toks: Vec<u32> = (0..700).map(|i| (i * 13 + 7) % 64).collect();
     let ext: Vec<u32> = (0..37).map(|i| (i * 29 + 3) % 64).collect();
     let mut want: Option<(Vec<f32>, crate::engine::StateDump, Vec<Vec<f32>>)> = None;
-    for (n, mask, profile) in [(2usize, 0u32, false), (2, 1 << 30, false), (2, 1 << 29, false), (3, 1 << 28, false), (2, 4095 | 1 << 29, false), (3, 4095 | 1 << 28 | 1 << 30, false), (3, 511 | 1 << 30, false), (2, 1, false), (3, 2, false), (2, 4, false), (3, 8, false), (2, 16, false), (3, 24, false), (2, 32, false), (3, 38, false), (2, 64, false), (3, 128, false), (2, 256, false), (3, 256 | 16, false), (2, 512, false), (3, 512 | 128 | 64, false), (2, 1024, false), (3, 1024 | 512, false), (2, 2048, false), (3, 2048 | 512, false), (2, 4095, true), (1, 4095, false)] {
+    for (n, mask, profile) in [
+        (2usize, 0u32, false),
+        (2, 1 << 30, false),
+        (2, 1 << 29, false),
+        (3, 1 << 28, false),
+        (2, 4095 | 1 << 29, false),
+        (3, 4095 | 1 << 28 | 1 << 30, false),
+        (3, 511 | 1 << 30, false),
+        (2, 1, false),
+        (3, 2, false),
+        (2, 4, false),
+        (3, 8, false),
+        (2, 16, false),
+        (3, 24, false),
+        (2, 32, false),
+        (3, 38, false),
+        (2, 64, false),
+        (3, 128, false),
+        (2, 256, false),
+        (3, 256 | 16, false),
+        (2, 512, false),
+        (3, 512 | 128 | 64, false),
+        (2, 1024, false),
+        (3, 1024 | 512, false),
+        (2, 2048, false),
+        (3, 2048 | 512, false),
+        (2, 4095, true),
+        (1, 4095, false),
+    ] {
         let (plan, ws, pool) = mini_engine_parts(&path, &opt, n);
         // bit 30 of the test's mask: V^T rows 32 elements off the n_ctx stride (OXE_KV_VPAD; decode too)
         crate::engine::set_kv_vpad(if mask & (1 << 30) != 0 { 32 } else { 0 });
         // bits 29 / 28 of the test's mask: 2 / 4 llama.cpp ubatches per pass (OXE_PF_GROUP)
-        let group = if mask & (1 << 29) != 0 { 2 } else if mask & (1 << 28) != 0 { 4 } else { 1 };
+        let group = if mask & (1 << 29) != 0 {
+            2
+        } else if mask & (1 << 28) != 0 {
+            4
+        } else {
+            1
+        };
         let mask = mask & 0xffff;
-        let mut eng = Engine::new(&plan, &ws, EngineConfig { n_ctx: 1024, logits: true, trace: false, profile }).unwrap();
+        let mut eng = Engine::new(
+            &plan,
+            &ws,
+            EngineConfig {
+                n_ctx: 1024,
+                logits: true,
+                trace: false,
+                profile,
+            },
+        )
+        .unwrap();
         crate::engine::set_kv_vpad(0);
         eng.set_attn_tiled_min_kv(0);
         crate::engine::set_pf_tiles(mask);
@@ -609,10 +833,19 @@ fn mini_gguf_prefill_kernel_switches_are_bit_identical() {
         match &want {
             None => want = Some((lg, st, dec)),
             Some((l1, s1, d1)) => {
-                assert!(same_bits(&lg, l1), "mask {mask}, {n} threads: prefill logits differ");
-                assert!(same_state(&st, s1), "mask {mask}, {n} threads: prefill state differs");
+                assert!(
+                    same_bits(&lg, l1),
+                    "mask {mask}, {n} threads: prefill logits differ"
+                );
+                assert!(
+                    same_state(&st, s1),
+                    "mask {mask}, {n} threads: prefill state differs"
+                );
                 for (i, (a, b)) in dec.iter().zip(d1).enumerate() {
-                    assert!(same_bits(a, b), "mask {mask}, {n} threads: decode row {i} after prefill differs");
+                    assert!(
+                        same_bits(a, b),
+                        "mask {mask}, {n} threads: decode row {i} after prefill differs"
+                    );
                 }
             }
         }
@@ -630,15 +863,36 @@ fn f92_unaligned_group_is_bit_identical() {
     std::env::set_var("OXE_MODEL_SHA256", "0".repeat(64));
     let opt = mini_opts(&dir);
     let mut fails = Vec::new();
-    for &(pre, len) in &[(37usize, 600usize), (300, 600), (129, 300), (300, 300), (511, 400)] {
+    for &(pre, len) in &[
+        (37usize, 600usize),
+        (300, 600),
+        (129, 300),
+        (300, 300),
+        (511, 400),
+    ] {
         let a: Vec<u32> = (0..pre as u32).map(|i| (i * 13 + 7) % 64).collect();
         let b: Vec<u32> = (0..len as u32).map(|i| (i * 29 + 3) % 64).collect();
-        for &(n, mask, vpad) in &[(2usize, 1021u32, 0usize), (3, 1021, 32), (2, 4095, 32), (3, 4095, 0)] {
+        for &(n, mask, vpad) in &[
+            (2usize, 1021u32, 0usize),
+            (3, 1021, 32),
+            (2, 4095, 32),
+            (3, 4095, 0),
+        ] {
             let mut want: Option<(Vec<f32>, crate::engine::StateDump, Vec<Vec<f32>>)> = None;
             for group in [1usize, 2, 4] {
                 let (plan, ws, pool) = mini_engine_parts(&path, &opt, n);
                 crate::engine::set_kv_vpad(vpad);
-                let eng = Engine::new(&plan, &ws, EngineConfig { n_ctx: 1024, logits: true, trace: false, profile: false }).unwrap();
+                let eng = Engine::new(
+                    &plan,
+                    &ws,
+                    EngineConfig {
+                        n_ctx: 1024,
+                        logits: true,
+                        trace: false,
+                        profile: false,
+                    },
+                )
+                .unwrap();
                 crate::engine::set_kv_vpad(0);
                 let mut eng = eng;
                 eng.set_attn_tiled_min_kv(0);
@@ -663,7 +917,9 @@ fn f92_unaligned_group_is_bit_identical() {
                 match &want {
                     None => want = Some((lg, st, dec)),
                     Some((l1, s1, d1)) => {
-                        let tag = format!("pre {pre} len {len} threads {n} mask {mask} vpad {vpad} group {group}");
+                        let tag = format!(
+                            "pre {pre} len {len} threads {n} mask {mask} vpad {vpad} group {group}"
+                        );
                         if !same_bits(&lg, l1) {
                             fails.push(format!("{tag}: logits"));
                         }
@@ -679,7 +935,11 @@ fn f92_unaligned_group_is_bit_identical() {
         }
     }
     std::fs::remove_dir_all(&dir).ok();
-    assert!(fails.is_empty(), "unaligned grouping is not bitwise:\n{}", fails.join("\n"));
+    assert!(
+        fails.is_empty(),
+        "unaligned grouping is not bitwise:\n{}",
+        fails.join("\n")
+    );
 }
 
 /// Not a check: writes the mini model to `$OXE_MINI_OUT` so the CLI can be exercised model-free
@@ -703,7 +963,12 @@ fn mini_gguf_reset_park_restore_with_v_pad() {
     let opt = mini_opts(&dir);
     let a: Vec<u32> = (0..700).map(|i| (i * 13 + 7) % 64).collect();
     let b: Vec<u32> = (0..300).map(|i| (i * 29 + 3) % 64).collect();
-    let cfg = EngineConfig { n_ctx: 1024, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 1024,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let decode = |eng: &Engine, pool: &sched::Pool, n: usize| -> Vec<Vec<f32>> {
         let mut tok = 5u32;
         (0..n)
@@ -729,32 +994,50 @@ fn mini_gguf_reset_park_restore_with_v_pad() {
         eng.prefill(&pool, &a, 256).unwrap();
         eng.reset();
         eng.prefill(&pool, &b, 256).unwrap();
-        assert!(same_state(&eng.dump_state(), &st0), "vpad {vpad}: state after reset + prefill differs from a fresh engine");
+        assert!(
+            same_state(&eng.dump_state(), &st0),
+            "vpad {vpad}: state after reset + prefill differs from a fresh engine"
+        );
         let snap = eng.save_recurrent();
         let got = decode(&eng, &pool, 8);
         for (i, (x, y)) in got.iter().zip(&want).enumerate() {
-            assert!(same_bits(x, y), "vpad {vpad}: decode row {i} after reset differs");
+            assert!(
+                same_bits(x, y),
+                "vpad {vpad}: decode row {i} after reset differs"
+            );
         }
         // recurrent restore to the end of the prompt, replay
         eng.restore_recurrent(&snap);
         let again = decode(&eng, &pool, 8);
         for (i, (x, y)) in again.iter().zip(&want).enumerate() {
-            assert!(same_bits(x, y), "vpad {vpad}: decode row {i} after restore_recurrent differs");
+            assert!(
+                same_bits(x, y),
+                "vpad {vpad}: decode row {i} after restore_recurrent differs"
+            );
         }
         // park / restore across layouts: the state written with V pad 0 loads into this layout
         eng.reset();
         eng.read_state(&mut &parked[..], b.len()).unwrap();
-        assert!(same_state(&eng.dump_state(), &st0), "vpad {vpad}: state read back differs");
+        assert!(
+            same_state(&eng.dump_state(), &st0),
+            "vpad {vpad}: state read back differs"
+        );
         let loaded = decode(&eng, &pool, 8);
         for (i, (x, y)) in loaded.iter().zip(&want).enumerate() {
-            assert!(same_bits(x, y), "vpad {vpad}: decode row {i} after read_state differs");
+            assert!(
+                same_bits(x, y),
+                "vpad {vpad}: decode row {i} after read_state differs"
+            );
         }
         // and this layout's own written state is byte-identical to the pad-0 one
         eng.reset();
         eng.read_state(&mut &parked[..], b.len()).unwrap();
         let mut again_parked = Vec::new();
         eng.write_state(&mut again_parked).unwrap();
-        assert!(again_parked == parked, "vpad {vpad}: written state bytes differ between layouts");
+        assert!(
+            again_parked == parked,
+            "vpad {vpad}: written state bytes differ between layouts"
+        );
     }
     crate::engine::set_kv_vpad(crate::engine::KV_VPAD_DEFAULT);
     std::fs::remove_dir_all(&dir).ok();
@@ -771,13 +1054,34 @@ fn mini_gguf_prefill_state_only_and_small_team() {
     let head: Vec<u32> = (0..300).map(|i| (i * 13 + 7) % 64).collect();
     let small: Vec<u32> = (0..23).map(|i| (i * 29 + 3) % 64).collect();
     let mut want: Option<(crate::engine::StateDump, Vec<Vec<f32>>)> = None;
-    for (state_only, other_team, mask) in [(false, false, 0u32), (true, false, 0), (true, true, 0), (true, true, 512 | 8), (false, true, 1023), (true, true, 4095)] {
+    for (state_only, other_team, mask) in [
+        (false, false, 0u32),
+        (true, false, 0),
+        (true, true, 0),
+        (true, true, 512 | 8),
+        (false, true, 1023),
+        (true, true, 4095),
+    ] {
         let (plan, ws, pool) = mini_engine_parts(&path, &opt, 2);
         let big = sched::Pool::new(&test_cpus(3), Duration::from_micros(100)).unwrap();
-        let eng = Engine::new(&plan, &ws, EngineConfig { n_ctx: 1024, logits: true, trace: false, profile: false }).unwrap();
+        let eng = Engine::new(
+            &plan,
+            &ws,
+            EngineConfig {
+                n_ctx: 1024,
+                logits: true,
+                trace: false,
+                profile: false,
+            },
+        )
+        .unwrap();
         crate::engine::set_pf_tiles(mask);
         // the long segment on the "prefill team", the short one on the decode team (or the same)
-        let (t_long, t_short): (&sched::Pool, &sched::Pool) = if other_team { (&big, &pool) } else { (&pool, &pool) };
+        let (t_long, t_short): (&sched::Pool, &sched::Pool) = if other_team {
+            (&big, &pool)
+        } else {
+            (&pool, &pool)
+        };
         if state_only {
             eng.prefill_state_only(t_long, &head, 256);
             eng.prefill_state_only(t_short, &small, 256);
@@ -796,7 +1100,10 @@ fn mini_gguf_prefill_state_only_and_small_team() {
         match &want {
             None => want = Some((st, dec)),
             Some((s1, d1)) => {
-                assert!(same_state(&st, s1), "state_only {state_only} other_team {other_team} mask {mask}: state differs");
+                assert!(
+                    same_state(&st, s1),
+                    "state_only {state_only} other_team {other_team} mask {mask}: state differs"
+                );
                 for (i, (a, b)) in dec.iter().zip(d1).enumerate() {
                     assert!(same_bits(a, b), "state_only {state_only} other_team {other_team} mask {mask}: decode row {i} differs");
                 }
@@ -817,7 +1124,12 @@ fn mini_gguf_prefill_hidden_states() {
     let mut first: Option<(Vec<f32>, Vec<f32>)> = None;
     for n in [1usize, 3] {
         let (plan, ws, pool) = mini_engine_parts(&path, &opt, n);
-        let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: false,
+            profile: false,
+        };
         let a = Engine::new(&plan, &ws, cfg.clone()).unwrap();
         let b = Engine::new(&plan, &ws, cfg).unwrap();
         let mut h = Vec::new();
@@ -825,7 +1137,10 @@ fn mini_gguf_prefill_hidden_states() {
         b.prefill(&pool, &toks, 6).unwrap();
         assert_eq!(h.len(), toks.len() * plan.desc.n_embd);
         assert!(h.iter().all(|v| v.is_finite()));
-        assert!(same_state(&a.dump_state(), &b.dump_state()), "hidden mode changed the state");
+        assert!(
+            same_state(&a.dump_state(), &b.dump_state()),
+            "hidden mode changed the state"
+        );
         let lg = a.logits().to_vec();
         match &first {
             None => first = Some((h, lg)),
@@ -840,7 +1155,17 @@ fn mini_gguf_prefill_hidden_states() {
 
 // ------------------------------------------------------------------ M3.1: lanes and MTP
 
-fn mtp_setup(tag: &str, nthreads: usize) -> (PathBuf, PathBuf, Plan, WeightStore, crate::mtp::MtpWeights, sched::Pool) {
+fn mtp_setup(
+    tag: &str,
+    nthreads: usize,
+) -> (
+    PathBuf,
+    PathBuf,
+    Plan,
+    WeightStore,
+    crate::mtp::MtpWeights,
+    sched::Pool,
+) {
     let dir = std::env::temp_dir().join(format!("oxe-mini-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("mini-mtp.gguf");
@@ -868,7 +1193,12 @@ fn bits_eq(a: &[f32], b: &[f32]) -> bool {
 fn mini_verify_lanes_are_batch_invariant_with_rollback() {
     for nt in [1usize, 2, 3] {
         let (dir, _path, plan, ws, mw, pool) = mtp_setup(&format!("lanes{nt}"), nt);
-        let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: false,
+            profile: false,
+        };
         let seq: Vec<u32> = (0..60).map(|i| (i * 13 + 7) % 64).collect();
         // reference: plain one-token steps
         let r = Engine::new(&plan, &ws, cfg.clone()).unwrap();
@@ -880,7 +1210,17 @@ fn mini_verify_lanes_are_batch_invariant_with_rollback() {
             want_h.push(r.hidden(0).to_vec());
         }
         drop(r);
-        let mut e = Engine::with_options(&plan, &ws, cfg.clone(), crate::engine::EngineOptions { verify_lanes: 4, mtp: Some(&mw), kv_type: None }).unwrap();
+        let mut e = Engine::with_options(
+            &plan,
+            &ws,
+            cfg.clone(),
+            crate::engine::EngineOptions {
+                verify_lanes: 4,
+                mtp: Some(&mw),
+                kv_type: None,
+            },
+        )
+        .unwrap();
         e.set_attn_tiled_min_kv(0); // MTP / verify lanes tiled, the plain reference per-head
         let mut p = 0usize;
         let mut it = 0u32;
@@ -888,15 +1228,22 @@ fn mini_verify_lanes_are_batch_invariant_with_rollback() {
         while p < seq.len() {
             let n = (1 + (it as usize * 7) % 4).min(seq.len() - p);
             let m = 1 + (it as usize * 5 + 3) % n; // tokens kept
-            // lanes < m carry the true tokens; the rest random garbage
+                                                   // lanes < m carry the true tokens; the rest random garbage
             let mut toks: Vec<u32> = seq[p..p + n].to_vec();
             for (i, t) in toks.iter_mut().enumerate().skip(m) {
                 *t = (it * 31 + i as u32 * 17 + 1) % 64;
             }
             let g = e.verify(&pool, &toks);
             for ln in 0..m {
-                assert!(bits_eq(e.logits_lane(ln), &want[p + ln]), "{nt} threads: lane {ln} at pos {} differs", p + ln);
-                assert!(bits_eq(e.hidden(ln), &want_h[p + ln]), "{nt} threads: h of lane {ln} differs");
+                assert!(
+                    bits_eq(e.logits_lane(ln), &want[p + ln]),
+                    "{nt} threads: lane {ln} at pos {} differs",
+                    p + ln
+                );
+                assert!(
+                    bits_eq(e.hidden(ln), &want_h[p + ln]),
+                    "{nt} threads: h of lane {ln} differs"
+                );
                 let lg = e.logits_lane(ln);
                 let mut best = 0;
                 for (j, &v) in lg.iter().enumerate() {
@@ -917,7 +1264,10 @@ fn mini_verify_lanes_are_batch_invariant_with_rollback() {
             p += m;
             it += 1;
         }
-        assert!(commits[1] > 0 && commits[2] > 0 && commits[3] > 0, "{commits:?}");
+        assert!(
+            commits[1] > 0 && commits[2] > 0 && commits[3] > 0,
+            "{commits:?}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
@@ -929,7 +1279,12 @@ fn mini_verify_lanes_are_batch_invariant_with_rollback() {
 fn mini_decode_fused_delta_net_is_bit_identical() {
     for nt in [1usize, 2, 3] {
         let (dir, _path, plan, ws, mw, pool) = mtp_setup(&format!("fuseddn{nt}"), nt);
-        let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: false,
+            profile: false,
+        };
         let seq: Vec<u32> = (0..48).map(|i| (i * 11 + 5) % 64).collect();
         // reference: switch off, plain one-token steps
         let mut r = Engine::new(&plan, &ws, cfg.clone()).unwrap();
@@ -948,12 +1303,28 @@ fn mini_decode_fused_delta_net_is_bit_identical() {
         assert!(f.dec_fused_dn());
         for (i, &t) in seq.iter().enumerate() {
             f.step(&pool, t);
-            assert!(bits_eq(f.logits(), &want[i]), "{nt} threads: fused step logits differ at {i}");
-            assert!(bits_eq(f.hidden(0), &want_h[i]), "{nt} threads: fused step h differs at {i}");
+            assert!(
+                bits_eq(f.logits(), &want[i]),
+                "{nt} threads: fused step logits differ at {i}"
+            );
+            assert!(
+                bits_eq(f.hidden(0), &want_h[i]),
+                "{nt} threads: fused step h differs at {i}"
+            );
         }
         drop(f);
         // switch on, MTP verify lanes with rejected (random) tails rolled back
-        let mut e = Engine::with_options(&plan, &ws, cfg.clone(), crate::engine::EngineOptions { verify_lanes: 4, mtp: Some(&mw), kv_type: None }).unwrap();
+        let mut e = Engine::with_options(
+            &plan,
+            &ws,
+            cfg.clone(),
+            crate::engine::EngineOptions {
+                verify_lanes: 4,
+                mtp: Some(&mw),
+                kv_type: None,
+            },
+        )
+        .unwrap();
         e.set_dec_fused_dn(true);
         let (mut p, mut it) = (0usize, 0u32);
         let mut commits = [0usize; 5];
@@ -966,8 +1337,15 @@ fn mini_decode_fused_delta_net_is_bit_identical() {
             }
             e.verify(&pool, &toks);
             for ln in 0..m {
-                assert!(bits_eq(e.logits_lane(ln), &want[p + ln]), "{nt} threads: fused lane {ln} at pos {} differs", p + ln);
-                assert!(bits_eq(e.hidden(ln), &want_h[p + ln]), "{nt} threads: fused h of lane {ln} differs");
+                assert!(
+                    bits_eq(e.logits_lane(ln), &want[p + ln]),
+                    "{nt} threads: fused lane {ln} at pos {} differs",
+                    p + ln
+                );
+                assert!(
+                    bits_eq(e.hidden(ln), &want_h[p + ln]),
+                    "{nt} threads: fused h of lane {ln} differs"
+                );
             }
             if it % 3 == 0 && n > m {
                 e.commit(n);
@@ -993,8 +1371,23 @@ fn mini_decode_profile_is_bit_identical_and_counts() {
     let (dir, _path, plan, ws, _mw, pool) = mtp_setup("prof", nt);
     let seq: Vec<u32> = (0..24).map(|i| (i * 7 + 2) % 64).collect();
     let mk = |profile: bool| {
-        let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile };
-        Engine::with_options(&plan, &ws, cfg, crate::engine::EngineOptions { verify_lanes: 4, mtp: None, kv_type: None }).unwrap()
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: false,
+            profile,
+        };
+        Engine::with_options(
+            &plan,
+            &ws,
+            cfg,
+            crate::engine::EngineOptions {
+                verify_lanes: 4,
+                mtp: None,
+                kv_type: None,
+            },
+        )
+        .unwrap()
     };
     let (a, b) = (mk(false), mk(true));
     let mut p = 0;
@@ -1004,7 +1397,10 @@ fn mini_decode_profile_is_bit_identical_and_counts() {
         a.verify(&pool, toks);
         b.verify(&pool, toks);
         for ln in 0..n {
-            assert!(bits_eq(a.logits_lane(ln), b.logits_lane(ln)), "profile changed lane {ln} at {p}");
+            assert!(
+                bits_eq(a.logits_lane(ln), b.logits_lane(ln)),
+                "profile changed lane {ln} at {p}"
+            );
         }
         a.commit(n);
         b.commit(n);
@@ -1015,7 +1411,13 @@ fn mini_decode_profile_is_bit_identical_and_counts() {
     assert_eq!(pr.len(), nt);
     assert_eq!(pr[0].tokens, runs);
     let sum = |f: &dyn Fn(&crate::engine::Prof) -> u64| pr.iter().map(f).sum::<u64>();
-    for k in [PhaseKind::RecMix, PhaseKind::AttnCore, PhaseKind::MoeGateUp, PhaseKind::MoeDown, PhaseKind::Head] {
+    for k in [
+        PhaseKind::RecMix,
+        PhaseKind::AttnCore,
+        PhaseKind::MoeGateUp,
+        PhaseKind::MoeDown,
+        PhaseKind::Head,
+    ] {
         let i = k.index();
         assert!(sum(&|q| q.phase_work[i]) > 0, "{k:?} has no work");
         assert!(sum(&|q| q.phase_bytes[i]) > 0, "{k:?} has no bytes");
@@ -1032,7 +1434,12 @@ fn mini_decode_profile_is_bit_identical_and_counts() {
 #[test]
 fn mini_mtp_greedy_is_identical_to_plain() {
     let (dir, _path, plan, ws, mw, pool) = mtp_setup("mtpgreedy", 2);
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let prompt: Vec<u32> = vec![3, 17, 42, 5, 9, 33, 1];
     let n_gen = 48;
     let r = Engine::new(&plan, &ws, cfg.clone()).unwrap();
@@ -1049,7 +1456,17 @@ fn mini_mtp_greedy_is_identical_to_plain() {
     }
     drop(r);
     for depth in 1..=3 {
-        let mut e = Engine::with_options(&plan, &ws, cfg.clone(), crate::engine::EngineOptions { verify_lanes: depth + 1, mtp: Some(&mw), kv_type: None }).unwrap();
+        let mut e = Engine::with_options(
+            &plan,
+            &ws,
+            cfg.clone(),
+            crate::engine::EngineOptions {
+                verify_lanes: depth + 1,
+                mtp: Some(&mw),
+                kv_type: None,
+            },
+        )
+        .unwrap();
         e.set_attn_tiled_min_kv(0); // MTP / verify lanes tiled, the plain reference per-head
         let mut d = crate::mtp::MtpDriver::new(&e, depth).unwrap();
         // the random mini MTP never guesses right: substitute the true greedy token at most
@@ -1067,7 +1484,13 @@ fn mini_mtp_greedy_is_identical_to_plain() {
         };
         d.draft_override = Some(mk(want_ids.clone()));
         let x0 = d.prefill(&e, &pool, &prompt);
-        assert!(bits_eq(e.logits_lane((prompt.len() - 1) % (depth + 1)), &want_rows[0]), "depth {depth}: prefill logits differ");
+        assert!(
+            bits_eq(
+                e.logits_lane((prompt.len() - 1) % (depth + 1)),
+                &want_rows[0]
+            ),
+            "depth {depth}: prefill logits differ"
+        );
         let mut ids = vec![x0];
         let mut out = Vec::new();
         let mut x = x0;
@@ -1077,7 +1500,10 @@ fn mini_mtp_greedy_is_identical_to_plain() {
             for (i, &t) in out.iter().enumerate() {
                 let row = p + i + 1 - prompt.len(); // logits after position p+i
                 if row < want_rows.len() {
-                    assert!(bits_eq(e.logits_lane(i), &want_rows[row]), "depth {depth}: logits at row {row} differ");
+                    assert!(
+                        bits_eq(e.logits_lane(i), &want_rows[row]),
+                        "depth {depth}: logits at row {row} differ"
+                    );
                 }
                 ids.push(t);
             }
@@ -1087,7 +1513,10 @@ fn mini_mtp_greedy_is_identical_to_plain() {
         assert_eq!(ids, want_ids, "depth {depth}: ids differ");
         eprintln!("mini mtp depth {depth}: {:?}", d.stats);
         assert!(d.stats.steps > 0 && d.stats.drafted >= d.stats.steps);
-        assert!(d.stats.accepted_at[depth - 1] > 0 && d.stats.accepted < d.stats.drafted, "depth {depth}: acceptance paths not exercised");
+        assert!(
+            d.stats.accepted_at[depth - 1] > 0 && d.stats.accepted < d.stats.drafted,
+            "depth {depth}: acceptance paths not exercised"
+        );
         // rewind: the MTP-on decode stopped after keeping only one token of a step must
         // continue exactly like the plain decode
         e.reset();
@@ -1119,7 +1548,12 @@ fn mini_mtp_greedy_is_identical_to_plain() {
 #[test]
 fn mini_mtp_restricted_draft_head() {
     let (dir, path, plan, ws, mw_full, pool) = mtp_setup("draftvocab", 2);
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let prompt: Vec<u32> = vec![3, 17, 42, 5, 9, 33, 1];
     let n_gen = 40;
     let r = Engine::new(&plan, &ws, cfg.clone()).unwrap();
@@ -1134,7 +1568,17 @@ fn mini_mtp_restricted_draft_head() {
     }
     drop(r);
     let run = |mw: &crate::mtp::MtpWeights| {
-        let e = Engine::with_options(&plan, &ws, cfg.clone(), crate::engine::EngineOptions { verify_lanes: 3, mtp: Some(mw), kv_type: None }).unwrap();
+        let e = Engine::with_options(
+            &plan,
+            &ws,
+            cfg.clone(),
+            crate::engine::EngineOptions {
+                verify_lanes: 3,
+                mtp: Some(mw),
+                kv_type: None,
+            },
+        )
+        .unwrap();
         let mut d = crate::mtp::MtpDriver::new(&e, 2).unwrap();
         let drafted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let dr2 = drafted.clone();
@@ -1160,11 +1604,19 @@ fn mini_mtp_restricted_draft_head() {
     // (a) every id
     let opt = mini_opts(&dir);
     let mut mw_all = crate::mtp::MtpWeights::load(&path, &plan, &opt).unwrap();
-    mw_all.set_draft_vocab(&path, &(0..n_vocab).collect::<Vec<_>>()).unwrap();
+    mw_all
+        .set_draft_vocab(&path, &(0..n_vocab).collect::<Vec<_>>())
+        .unwrap();
     let (ids_all, st_all, dr_all) = run(&mw_all);
     assert_eq!(ids_all, want);
-    assert_eq!(dr_all, dr_full, "a full draft vocabulary must draft exactly what the full head drafts");
-    assert_eq!((st_all.drafted, st_all.accepted), (st_full.drafted, st_full.accepted));
+    assert_eq!(
+        dr_all, dr_full,
+        "a full draft vocabulary must draft exactly what the full head drafts"
+    );
+    assert_eq!(
+        (st_all.drafted, st_all.accepted),
+        (st_full.drafted, st_full.accepted)
+    );
     // (b) a small vocabulary (every 3rd id, unsorted input with duplicates and an out-of-range id)
     let mut small: Vec<u32> = (0..n_vocab).filter(|i| i % 3 == 0).rev().collect();
     small.push(small[0]);
@@ -1172,8 +1624,14 @@ fn mini_mtp_restricted_draft_head() {
     let mut mw_small = crate::mtp::MtpWeights::load(&path, &plan, &opt).unwrap();
     mw_small.set_draft_vocab(&path, &small).unwrap();
     let (ids_small, _, dr_small) = run(&mw_small);
-    assert_eq!(ids_small, want, "a restricted draft head must not change the output");
-    assert!(!dr_small.is_empty() && dr_small.iter().all(|t| t % 3 == 0 && *t < n_vocab), "drafts outside the vocabulary");
+    assert_eq!(
+        ids_small, want,
+        "a restricted draft head must not change the output"
+    );
+    assert!(
+        !dr_small.is_empty() && dr_small.iter().all(|t| t % 3 == 0 && *t < n_vocab),
+        "drafts outside the vocabulary"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1183,7 +1641,12 @@ fn mini_mtp_restricted_draft_head() {
 #[test]
 fn mini_mtp_with_batched_prefill_is_identical_to_plain() {
     let (dir, _path, plan, ws, mw, pool) = mtp_setup("mtpprefill", 2);
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let p1: Vec<u32> = (0..23).map(|i| (i * 11 + 3) % 64).collect();
     let p2: Vec<u32> = (0..17).map(|i| (i * 5 + 1) % 64).collect();
     let n_gen = 20;
@@ -1208,7 +1671,10 @@ fn mini_mtp_with_batched_prefill_is_identical_to_plain() {
     let a = Engine::new(&plan, &ws, cfg.clone()).unwrap();
     let mut h = Vec::new();
     a.prefill_nextn(&pool, &p1, 8, &mut h).unwrap();
-    assert!(bits_eq(a.logits(), &want_rows[0]), "prefill_nextn logits differ from prefill");
+    assert!(
+        bits_eq(a.logits(), &want_rows[0]),
+        "prefill_nextn logits differ from prefill"
+    );
     assert_eq!(h.len(), p1.len() * plan.desc.n_embd);
     drop(a);
     // position -> reference token (to force right drafts)
@@ -1222,24 +1688,47 @@ fn mini_mtp_with_batched_prefill_is_identical_to_plain() {
         pos += n_gen;
     }
     for depth in 1..=3 {
-        let mut e = Engine::with_options(&plan, &ws, cfg.clone(), crate::engine::EngineOptions { verify_lanes: depth + 1, mtp: Some(&mw), kv_type: None }).unwrap();
+        let mut e = Engine::with_options(
+            &plan,
+            &ws,
+            cfg.clone(),
+            crate::engine::EngineOptions {
+                verify_lanes: depth + 1,
+                mtp: Some(&mw),
+                kv_type: None,
+            },
+        )
+        .unwrap();
         e.set_attn_tiled_min_kv(0); // MTP / verify lanes tiled, the plain reference per-head
         let mut d = crate::mtp::MtpDriver::new(&e, depth).unwrap();
         let at = at.clone();
-        d.draft_override = Some(Box::new(move |p, dr| if p % 5 == 0 { dr ^ 1 } else { at.get(&p).copied().unwrap_or(dr) }));
+        d.draft_override = Some(Box::new(move |p, dr| {
+            if p % 5 == 0 {
+                dr ^ 1
+            } else {
+                at.get(&p).copied().unwrap_or(dr)
+            }
+        }));
         let mut ids = Vec::new();
         let mut out = Vec::new();
         for (pi, p) in [&p1, &p2].iter().enumerate() {
             let base = pi * n_gen;
             let mut x = d.prefill_batched(&e, &pool, &pool, p, 8);
-            assert!(bits_eq(e.logits(), &want_rows[base]), "depth {depth}: prompt {pi} logits differ");
+            assert!(
+                bits_eq(e.logits(), &want_rows[base]),
+                "depth {depth}: prompt {pi} logits differ"
+            );
             let mut got = vec![x];
             while got.len() < n_gen {
                 let start = got.len();
                 d.step(&e, &pool, x, &mut out);
                 let keep = out.len().min(n_gen - start);
                 for i in 0..keep {
-                    assert!(bits_eq(e.logits_lane(i), &want_rows[base + start + i]), "depth {depth}: row {} of prompt {pi} differs", start + i);
+                    assert!(
+                        bits_eq(e.logits_lane(i), &want_rows[base + start + i]),
+                        "depth {depth}: row {} of prompt {pi} differs",
+                        start + i
+                    );
                     got.push(out[i]);
                 }
                 if keep < out.len() {
@@ -1253,7 +1742,10 @@ fn mini_mtp_with_batched_prefill_is_identical_to_plain() {
         }
         assert_eq!(ids, want_ids, "depth {depth}: ids differ");
         assert!(d.stats.accepted > 0, "depth {depth}: no acceptance");
-        assert!(same_state(&e.dump_state(), &want_state), "depth {depth}: final state differs");
+        assert!(
+            same_state(&e.dump_state(), &want_state),
+            "depth {depth}: final state differs"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1264,8 +1756,23 @@ use crate::engine::{EngineOptions, KvType, PvMode};
 
 /// An engine with KV type `kv` (logits on, no MTP, one verify lane).
 fn kv_engine<'a>(plan: &'a Plan, ws: &'a WeightStore, n_ctx: usize, kv: KvType) -> Engine<'a> {
-    let cfg = EngineConfig { n_ctx, logits: true, trace: false, profile: false };
-    Engine::with_options(plan, ws, cfg, EngineOptions { verify_lanes: 0, mtp: None, kv_type: Some(kv) }).unwrap()
+    let cfg = EngineConfig {
+        n_ctx,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
+    Engine::with_options(
+        plan,
+        ws,
+        cfg,
+        EngineOptions {
+            verify_lanes: 0,
+            mtp: None,
+            kv_type: Some(kv),
+        },
+    )
+    .unwrap()
 }
 
 /// Straightforward f32 attention of one query head over K / V rows [position][dim].
@@ -1327,7 +1834,15 @@ fn mini_int8_kv_decode_matches_f32_reference() {
     let steps = 300;
     let mut base = 0f32; // the f16 cache's max relative gap to the f32 reference
     let mut f16_rows: Vec<Vec<f32>> = Vec::new();
-    let arms = [(KvType::F16, true), (KvType::K8, true), (KvType::V8, true), (KvType::KV8, true), (KvType::K8, false), (KvType::V8, false), (KvType::KV8, false)];
+    let arms = [
+        (KvType::F16, true),
+        (KvType::K8, true),
+        (KvType::V8, true),
+        (KvType::KV8, true),
+        (KvType::K8, false),
+        (KvType::V8, false),
+        (KvType::KV8, false),
+    ];
     for (kv, fused) in arms {
         let mut e = kv_engine(&plan, &ws, 512, kv);
         let mut r = kv_engine(&plan, &ws, 512, kv);
@@ -1339,7 +1854,10 @@ fn mini_int8_kv_decode_matches_f32_reference() {
         assert_eq!(e.kv_type(), kv);
         if kv != KvType::F16 {
             e.set_attn_tiled_min_kv(4096);
-            assert!(e.barriers_per_token() == r.barriers_per_token(), "int8 KV must take the tiled attention at every context");
+            assert!(
+                e.barriers_per_token() == r.barriers_per_token(),
+                "int8 KV must take the tiled attention at every context"
+            );
         }
         let (mut worst, mut worst16, mut flips) = (0f32, 0f32, 0);
         let mut tok = 1u32;
@@ -1347,15 +1865,28 @@ fn mini_int8_kv_decode_matches_f32_reference() {
             let ge = e.step(&pool, tok);
             let gr = r.step(&pool, tok);
             let (a, b) = (e.logits(), r.logits());
-            assert!(a.iter().all(|v| v.is_finite()), "{kv:?}: non-finite logits at step {s}");
+            assert!(
+                a.iter().all(|v| v.is_finite()),
+                "{kv:?}: non-finite logits at step {s}"
+            );
             let sc = b.iter().fold(1f32, |m, x| m.max(x.abs()));
-            let diff = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max) / sc;
+            let diff = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0f32, f32::max)
+                / sc;
             worst = worst.max(diff);
             assert_eq!(ge as usize, argmax(a));
             if kv == KvType::F16 {
                 f16_rows.push(a.to_vec());
             } else {
-                let d16 = a.iter().zip(&f16_rows[s]).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max) / sc;
+                let d16 = a
+                    .iter()
+                    .zip(&f16_rows[s])
+                    .map(|(x, y)| (x - y).abs())
+                    .fold(0f32, f32::max)
+                    / sc;
                 worst16 = worst16.max(d16);
                 assert!(diff <= 2.0 * base + 1e-3, "{kv:?} step {s}: logits differ from the f32 reference by {diff} (f16 cache: {base})");
             }
@@ -1365,14 +1896,24 @@ fn mini_int8_kv_decode_matches_f32_reference() {
                 flips += 1;
             }
             // the f16 run's greedy continuation drives every type (same tokens, comparable rows)
-            tok = if s < steps / 2 { (s as u32 * 7 + 3) % 64 } else { argmax(&f16_rows[s]) as u32 };
+            tok = if s < steps / 2 {
+                (s as u32 * 7 + 3) % 64
+            } else {
+                argmax(&f16_rows[s]) as u32
+            };
         }
-        assert!(kv_all(&e, n_att) == kv_all(&r, n_att), "{kv:?}: reference engine stored other KV bytes");
+        assert!(
+            kv_all(&e, n_att) == kv_all(&r, n_att),
+            "{kv:?}: reference engine stored other KV bytes"
+        );
         if kv == KvType::F16 {
             base = worst;
         }
         eprintln!("KV {kv:?} fused={fused}: max relative logit diff vs f32 reference {worst:.2e} (near-tie flips {flips}), vs the f16 cache {worst16:.2e}");
-        assert!(flips <= 1, "{kv:?}: {flips} greedy flips against the reference");
+        assert!(
+            flips <= 1,
+            "{kv:?}: {flips} greedy flips against the reference"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1399,7 +1940,9 @@ fn mini_int8_kv_write_is_batch_invariant() {
         }
         v
     };
-    let same_rows = |a: &[Vec<f32>], b: &[Vec<f32>]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_bits(x, y));
+    let same_rows = |a: &[Vec<f32>], b: &[Vec<f32>]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_bits(x, y))
+    };
     // token by token, both types
     let mut dec_runs = Vec::new();
     for kv in [KvType::F16, KvType::KV8] {
@@ -1421,11 +1964,25 @@ fn mini_int8_kv_write_is_batch_invariant() {
         k += 1;
     }
     assert_eq!(x, *want_x);
-    assert!(kv_all(&pf, n_att) == *want_kv, "small prefills: int8 KV bytes differ from decode");
-    assert!(same_state(&pf.dump_state(), want_rec), "small prefills: recurrent state differs from decode");
-    assert!(same_rows(&tail(&pf, x), want_tail), "small prefills: decode after differs");
+    assert!(
+        kv_all(&pf, n_att) == *want_kv,
+        "small prefills: int8 KV bytes differ from decode"
+    );
+    assert!(
+        same_state(&pf.dump_state(), want_rec),
+        "small prefills: recurrent state differs from decode"
+    );
+    assert!(
+        same_rows(&tail(&pf, x), want_tail),
+        "small prefills: decode after differs"
+    );
     // ubatch 7 / 64 / 256 (+ decode as a fourth batching)
-    let mut runs = vec![(0usize, dec_runs[0].0.clone(), dec_runs[1].0.clone(), dec_runs[1].3.clone())];
+    let mut runs = vec![(
+        0usize,
+        dec_runs[0].0.clone(),
+        dec_runs[1].0.clone(),
+        dec_runs[1].3.clone(),
+    )];
     for ub in [7usize, 64, 256] {
         let a = kv_engine(&plan, &ws, 1024, KvType::F16);
         a.prefill(&pool, &toks, ub).unwrap();
@@ -1453,8 +2010,18 @@ fn mini_int8_kv_write_is_batch_invariant() {
         for j in i + 1..runs.len() {
             if runs[i].1 == runs[j].1 {
                 pairs += 1;
-                assert!(runs[i].2 == runs[j].2, "ubatch {} vs {}: same f16 cache, different int8 bytes", runs[i].0, runs[j].0);
-                assert!(same_rows(&runs[i].3, &runs[j].3), "ubatch {} vs {}: same KV, different decode", runs[i].0, runs[j].0);
+                assert!(
+                    runs[i].2 == runs[j].2,
+                    "ubatch {} vs {}: same f16 cache, different int8 bytes",
+                    runs[i].0,
+                    runs[j].0
+                );
+                assert!(
+                    same_rows(&runs[i].3, &runs[j].3),
+                    "ubatch {} vs {}: same KV, different decode",
+                    runs[i].0,
+                    runs[j].0
+                );
             }
         }
     }
@@ -1489,14 +2056,26 @@ fn mini_int8_kv_snapshot_and_mtp_rollback_replay() {
         assert_eq!(eng.pos(), 14);
         for (i, &t) in toks.iter().enumerate().skip(14) {
             eng.step(&pool, t);
-            assert!(same_bits(eng.logits(), &want[i]), "kv8: step {i} differs after restore");
+            assert!(
+                same_bits(eng.logits(), &want[i]),
+                "kv8: step {i} differs after restore"
+            );
         }
         std::fs::remove_dir_all(&dir).ok();
     }
     let (dir, _path, plan, ws, mw, pool) = mtp_setup("kv8mtp", 2);
     let n_att = plan.desc.n_attention();
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
-    let opts = |lanes: usize| EngineOptions { verify_lanes: lanes, mtp: Some(&mw), kv_type: Some(kv) };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
+    let opts = |lanes: usize| EngineOptions {
+        verify_lanes: lanes,
+        mtp: Some(&mw),
+        kv_type: Some(kv),
+    };
     // verify lanes with rollback
     {
         let seq: Vec<u32> = (0..60).map(|i| (i * 13 + 7) % 64).collect();
@@ -1519,7 +2098,11 @@ fn mini_int8_kv_snapshot_and_mtp_rollback_replay() {
             }
             e.verify(&pool, &toks);
             for ln in 0..m {
-                assert!(same_bits(e.logits_lane(ln), &want[p + ln]), "kv8: lane {ln} at pos {} differs", p + ln);
+                assert!(
+                    same_bits(e.logits_lane(ln), &want[p + ln]),
+                    "kv8: lane {ln} at pos {} differs",
+                    p + ln
+                );
             }
             if it % 3 == 0 && n > m {
                 e.commit(n);
@@ -1532,7 +2115,10 @@ fn mini_int8_kv_snapshot_and_mtp_rollback_replay() {
             it += 1;
         }
         assert!(partial > 0);
-        assert!(kv_all(&e, n_att) == want_kv, "kv8: KV bytes after verify / rollback differ from plain steps");
+        assert!(
+            kv_all(&e, n_att) == want_kv,
+            "kv8: KV bytes after verify / rollback differ from plain steps"
+        );
     }
     // MTP greedy (depth 2) with forced acceptances and rewinds
     {
@@ -1574,7 +2160,10 @@ fn mini_int8_kv_snapshot_and_mtp_rollback_replay() {
             for i in 0..out.len() {
                 let row = p + i + 1 - plen;
                 if row < want_rows.len() {
-                    assert!(same_bits(e.logits_lane(i), &want_rows[row]), "kv8 mtp: logits at row {row} differ");
+                    assert!(
+                        same_bits(e.logits_lane(i), &want_rows[row]),
+                        "kv8 mtp: logits at row {row} differ"
+                    );
                 }
             }
             if out.len() > 1 && ids.len() % 3 == 0 {
@@ -1587,7 +2176,10 @@ fn mini_int8_kv_snapshot_and_mtp_rollback_replay() {
         }
         ids.truncate(n_gen);
         assert_eq!(ids, want_ids, "kv8 mtp: ids differ");
-        assert!(d.stats.accepted > 0 && rewound > 0, "kv8 mtp: acceptance / rewind not exercised");
+        assert!(
+            d.stats.accepted > 0 && rewound > 0,
+            "kv8 mtp: acceptance / rewind not exercised"
+        );
     }
     // batched prefill + MTP seeding
     {
@@ -1611,7 +2203,10 @@ fn mini_int8_kv_snapshot_and_mtp_rollback_replay() {
             x = *out.last().unwrap();
         }
         ids.truncate(20);
-        assert_eq!(ids, want, "kv8: batched prefill + MTP ids differ from plain");
+        assert_eq!(
+            ids, want,
+            "kv8: batched prefill + MTP ids differ from plain"
+        );
     }
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1623,7 +2218,13 @@ fn mini_int8_kv_is_thread_count_invariant() {
     std::env::set_var("OXE_MODEL_SHA256", "0".repeat(64));
     let opt = mini_opts(&dir);
     let toks: Vec<u32> = (0..300).map(|i| (i * 13 + 7) % 64).collect();
-    let mut want: Option<(Vec<u32>, Vec<Vec<f32>>, Vec<(Vec<u8>, Vec<u8>)>, Vec<f32>, Vec<(Vec<u8>, Vec<u8>)>)> = None;
+    let mut want: Option<(
+        Vec<u32>,
+        Vec<Vec<f32>>,
+        Vec<(Vec<u8>, Vec<u8>)>,
+        Vec<f32>,
+        Vec<(Vec<u8>, Vec<u8>)>,
+    )> = None;
     for n in [1usize, 2, 3] {
         let (plan, ws, pool) = mini_engine_parts(&path, &opt, n);
         let n_att = plan.desc.n_attention();
@@ -1648,10 +2249,16 @@ fn mini_int8_kv_is_thread_count_invariant() {
             Some((i1, r1, k1, l1, pk1)) => {
                 assert_eq!(&ids, i1, "{n} threads: kv8 decode ids differ");
                 for (s, (a, b)) in rows.iter().zip(r1).enumerate() {
-                    assert!(same_bits(a, b), "{n} threads: kv8 decode logits of step {s} differ");
+                    assert!(
+                        same_bits(a, b),
+                        "{n} threads: kv8 decode logits of step {s} differ"
+                    );
                 }
                 assert!(&dkv == k1, "{n} threads: kv8 decode KV bytes differ");
-                assert!(same_bits(&plg, l1), "{n} threads: kv8 prefill logits differ");
+                assert!(
+                    same_bits(&plg, l1),
+                    "{n} threads: kv8 prefill logits differ"
+                );
                 assert!(&pkv == pk1, "{n} threads: kv8 prefill KV bytes differ");
             }
         }
@@ -1668,8 +2275,15 @@ fn mini_int8_kv_state_layout_and_round_trip() {
     let opt = mini_opts(&dir);
     let (plan, ws, pool) = mini_engine_parts(&path, &opt, 2);
     let n_att = plan.desc.n_attention();
-    let layouts: Vec<String> = [KvType::F16, KvType::K8, KvType::V8, KvType::KV8].iter().map(|&t| kv_engine(&plan, &ws, 512, t).state_layout()).collect();
-    assert!(layouts[0].ends_with(" f16kv"), "f16 layout changed: {}", layouts[0]);
+    let layouts: Vec<String> = [KvType::F16, KvType::K8, KvType::V8, KvType::KV8]
+        .iter()
+        .map(|&t| kv_engine(&plan, &ws, 512, t).state_layout())
+        .collect();
+    assert!(
+        layouts[0].ends_with(" f16kv"),
+        "f16 layout changed: {}",
+        layouts[0]
+    );
     assert!(layouts[3].contains("kv=kv8"), "{}", layouts[3]);
     for i in 0..4 {
         for j in i + 1..4 {
@@ -1684,19 +2298,31 @@ fn mini_int8_kv_state_layout_and_round_trip() {
         a.write_state(&mut buf).unwrap();
         // a different context size reads it (positions only), after unrelated decode
         let b = kv_engine(&plan, &ws, 1024, kv);
-        for t in [9u32, 8, 7, 6, 5, 4, 3, 2, 1, 0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41] {
+        for t in [
+            9u32, 8, 7, 6, 5, 4, 3, 2, 1, 0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+            24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+        ] {
             b.step(&pool, t);
         }
         assert_eq!(a.state_layout(), b.state_layout());
         b.read_state(&mut &buf[..], toks.len()).unwrap();
         assert_eq!(b.pos(), toks.len());
-        assert!(kv_all(&a, n_att) == kv_all(&b, n_att), "{kv:?}: KV bytes differ after read_state");
-        assert!(same_state(&a.dump_state(), &b.dump_state()), "{kv:?}: state differs after read_state");
+        assert!(
+            kv_all(&a, n_att) == kv_all(&b, n_att),
+            "{kv:?}: KV bytes differ after read_state"
+        );
+        assert!(
+            same_state(&a.dump_state(), &b.dump_state()),
+            "{kv:?}: state differs after read_state"
+        );
         let (mut xa, mut xb) = (x, x);
         for s in 0..20 {
             xa = a.step(&pool, xa);
             xb = b.step(&pool, xb);
-            assert!(same_bits(a.logits(), b.logits()), "{kv:?}: decode step {s} after read_state differs");
+            assert!(
+                same_bits(a.logits(), b.logits()),
+                "{kv:?}: decode step {s} after read_state differs"
+            );
         }
     }
     std::fs::remove_dir_all(&dir).ok();
@@ -1704,10 +2330,14 @@ fn mini_int8_kv_state_layout_and_round_trip() {
 
 /// Deterministic pseudo-random f32 in [-1, 1).
 fn lcg_f32(n: usize, seed: u64) -> Vec<f32> {
-    let mut x = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut x = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     (0..n)
         .map(|_| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((x >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
         })
         .collect()
@@ -1716,9 +2346,18 @@ fn lcg_f32(n: usize, seed: u64) -> Vec<f32> {
 fn q8_rows(n_rows: usize, hd: usize, stride: usize, seed: u64, scale: f32) -> Vec<u8> {
     let mut out = vec![0u8; n_rows * stride];
     for r in 0..n_rows {
-        let x: Vec<f32> = lcg_f32(hd, seed + r as u64).iter().map(|v| v * scale * (1.0 + r as f32 * 0.37)).collect();
+        let x: Vec<f32> = lcg_f32(hd, seed + r as u64)
+            .iter()
+            .map(|v| v * scale * (1.0 + r as f32 * 0.37))
+            .collect();
         // SAFETY: hd floats into hd/32 blocks.
-        unsafe { kernels_sys::ffi::quantize_row_q8_0(x.as_ptr(), out[r * stride..].as_mut_ptr(), hd as i64) };
+        unsafe {
+            kernels_sys::ffi::quantize_row_q8_0(
+                x.as_ptr(),
+                out[r * stride..].as_mut_ptr(),
+                hd as i64,
+            )
+        };
     }
     out
 }
@@ -1727,7 +2366,12 @@ fn q8_rows(n_rows: usize, hd: usize, stride: usize, seed: u64, scale: f32) -> Ve
 /// with row / column tails (7 x 5, 1 x 1, 4 x 9), padded strides and head dims 128 / 256.
 #[test]
 fn kv8_dot_q8_tile_is_ggml_vec_dot_q8_0_bitwise() {
-    for (hd, nx, ny, pad) in [(256usize, 7usize, 5usize, 0usize), (128, 1, 1, 6), (256, 4, 9, 34), (128, 13, 64, 0)] {
+    for (hd, nx, ny, pad) in [
+        (256usize, 7usize, 5usize, 0usize),
+        (128, 1, 1, 6),
+        (256, 4, 9, 34),
+        (128, 13, 64, 0),
+    ] {
         let rb = hd / 32 * 34;
         let (xs, ys) = (rb + pad, rb + 2 * pad);
         let x = q8_rows(nx, hd, xs, 11, 3.0);
@@ -1735,14 +2379,42 @@ fn kv8_dot_q8_tile_is_ggml_vec_dot_q8_0_bitwise() {
         let (ox, oy) = (1usize, nx + 3);
         let mut out = vec![f32::NAN; ny * oy];
         // SAFETY: nx rows / ny columns as built; out has (ny-1)*oy + nx elements.
-        unsafe { kernels_sys::ffi::oxe_dot_q8_tile(hd as i32, x.as_ptr(), xs as i64, nx as i32, y.as_ptr(), ys as i64, ny as i32, out.as_mut_ptr(), ox as i64, oy as i64) };
+        unsafe {
+            kernels_sys::ffi::oxe_dot_q8_tile(
+                hd as i32,
+                x.as_ptr(),
+                xs as i64,
+                nx as i32,
+                y.as_ptr(),
+                ys as i64,
+                ny as i32,
+                out.as_mut_ptr(),
+                ox as i64,
+                oy as i64,
+            )
+        };
         for r in 0..nx {
             for c in 0..ny {
                 let mut want = 0f32;
                 // SAFETY: one row and one column of hd values.
-                unsafe { kernels_sys::ffi::ggml_vec_dot_q8_0_q8_0_generic(hd as i32, &mut want, 0, x[r * xs..].as_ptr(), 0, y[c * ys..].as_ptr(), 0, 1) };
+                unsafe {
+                    kernels_sys::ffi::ggml_vec_dot_q8_0_q8_0_generic(
+                        hd as i32,
+                        &mut want,
+                        0,
+                        x[r * xs..].as_ptr(),
+                        0,
+                        y[c * ys..].as_ptr(),
+                        0,
+                        1,
+                    )
+                };
                 let got = out[r * ox + c * oy];
-                assert_eq!(got.to_bits(), want.to_bits(), "hd {hd} {nx}x{ny}: ({r}, {c}) {got} vs ggml {want}");
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "hd {hd} {nx}x{ny}: ({r}, {c}) {got} vs ggml {want}"
+                );
             }
         }
     }
@@ -1753,7 +2425,12 @@ fn kv8_dot_q8_tile_is_ggml_vec_dot_q8_0_bitwise() {
 /// f64 sum; odd column counts, a chunk not starting at 0.
 #[test]
 fn kv8_pv_q8_matches_scalar_reference() {
-    for (hd, ncol, p0, p1) in [(256usize, 5usize, 37usize, 200usize), (128, 8, 0, 256), (128, 1, 250, 251), (256, 64, 0, 64)] {
+    for (hd, ncol, p0, p1) in [
+        (256usize, 5usize, 37usize, 200usize),
+        (128, 8, 0, 256),
+        (128, 1, 250, 251),
+        (256, 64, 0, 64),
+    ] {
         let rb = hd / 32 * 34;
         let v = q8_rows(p1, hd, rb, 5, 2.0);
         let ps = p1 + 13;
@@ -1769,7 +2446,20 @@ fn kv8_pv_q8_matches_scalar_reference() {
         let mut out = vec![f32::NAN; ncol * hd];
         let mut pscr = vec![0f32; (p1 - p0) * ncol.div_ceil(4) * 4];
         // SAFETY: rows < p1; probabilities readable on [p0, p1) of every column; buffers sized.
-        unsafe { kernels_sys::ffi::oxe_pv_q8(hd as i32, v.as_ptr(), rb as i64, p0 as i32, p1 as i32, prob.as_ptr(), ps as i64, ncol as i32, out.as_mut_ptr(), pscr.as_mut_ptr()) };
+        unsafe {
+            kernels_sys::ffi::oxe_pv_q8(
+                hd as i32,
+                v.as_ptr(),
+                rb as i64,
+                p0 as i32,
+                p1 as i32,
+                prob.as_ptr(),
+                ps as i64,
+                ncol as i32,
+                out.as_mut_ptr(),
+                pscr.as_mut_ptr(),
+            )
+        };
         // exact f16 -> f32, decoded by hand (finite values only)
         let h2f = |h: u16| -> f32 {
             let s = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
@@ -1797,11 +2487,18 @@ fn kv8_pv_q8_matches_scalar_reference() {
                     abs64 += (x as f64 * pr as f64).abs();
                 }
                 let got = out[c * hd + dd];
-                assert_eq!(got.to_bits(), acc.to_bits(), "hd {hd} ncol {ncol} [{p0},{p1}): ({c}, {dd}) {got} vs {acc}");
+                assert_eq!(
+                    got.to_bits(),
+                    acc.to_bits(),
+                    "hd {hd} ncol {ncol} [{p0},{p1}): ({c}, {dd}) {got} vs {acc}"
+                );
                 // f32 summation error bound: n * eps * sum |terms| (relative to |result| it is unbounded
                 // under cancellation, which random-sign V values produce)
                 let n = (p1 - p0) as f64;
-                assert!((got as f64 - acc64).abs() <= n * f32::EPSILON as f64 * abs64 + 1e-12, "f32 sum outside its error bound");
+                assert!(
+                    (got as f64 - acc64).abs() <= n * f32::EPSILON as f64 * abs64 + 1e-12,
+                    "f32 sum outside its error bound"
+                );
             }
         }
     }
@@ -1810,7 +2507,13 @@ fn kv8_pv_q8_matches_scalar_reference() {
 /// Random Q8_0 V rows, f16 probabilities (>= 0, some +0, magnitudes over four decades) and one
 /// call of each V . p kernel: (reference, fast, int16, int8) outputs.
 #[allow(clippy::type_complexity)]
-fn pv_kernels(hd: usize, ncol: usize, p0: usize, p1: usize, seed: u64) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+fn pv_kernels(
+    hd: usize,
+    ncol: usize,
+    p0: usize,
+    p1: usize,
+    seed: u64,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
     let rb = hd / 32 * 34;
     let v = q8_rows(p1, hd, rb, seed, 2.0);
     let ps = p1 + 13;
@@ -1824,23 +2527,68 @@ fn pv_kernels(hd: usize, ncol: usize, p0: usize, p1: usize, seed: u64) -> (Vec<f
     }
     let np = p1 - p0;
     // SAFETY: a pure size computation.
-    let ib = unsafe { kernels_sys::ffi::oxe_pv_q8_int_scratch(hd as i32, np as i32, ncol as i32) } as usize;
+    let ib = unsafe { kernels_sys::ffi::oxe_pv_q8_int_scratch(hd as i32, np as i32, ncol as i32) }
+        as usize;
     let mut scr = vec![0f32; (2 * np * ncol.div_ceil(4) * 4).max(ib / 4 + 1)];
     const CANARY: f32 = -77.25;
     let mut outs: Vec<Vec<f32>> = Vec::new();
     for k in 0..4 {
         let mut out = vec![f32::NAN; ncol * hd + 8];
         out[ncol * hd..].fill(CANARY);
-        let (hd_, rb_, a, b, ps_, nc) = (hd as i32, rb as i64, p0 as i32, p1 as i32, ps as i64, ncol as i32);
+        let (hd_, rb_, a, b, ps_, nc) = (
+            hd as i32,
+            rb as i64,
+            p0 as i32,
+            p1 as i32,
+            ps as i64,
+            ncol as i32,
+        );
         // SAFETY: rows < p1; probabilities readable on [p0, p1) of every column; buffers sized.
         unsafe {
             match k {
-                0 => kernels_sys::ffi::oxe_pv_q8(hd_, v.as_ptr(), rb_, a, b, prob.as_ptr(), ps_, nc, out.as_mut_ptr(), scr.as_mut_ptr()),
-                1 => kernels_sys::ffi::oxe_pv_q8_fast(hd_, v.as_ptr(), rb_, a, b, prob.as_ptr(), ps_, nc, out.as_mut_ptr(), scr.as_mut_ptr()),
-                _ => kernels_sys::ffi::oxe_pv_q8_int(hd_, v.as_ptr(), rb_, a, b, prob.as_ptr(), ps_, nc, out.as_mut_ptr(), scr.as_mut_ptr() as *mut core::ffi::c_void, if k == 2 { 16 } else { 8 }),
+                0 => kernels_sys::ffi::oxe_pv_q8(
+                    hd_,
+                    v.as_ptr(),
+                    rb_,
+                    a,
+                    b,
+                    prob.as_ptr(),
+                    ps_,
+                    nc,
+                    out.as_mut_ptr(),
+                    scr.as_mut_ptr(),
+                ),
+                1 => kernels_sys::ffi::oxe_pv_q8_fast(
+                    hd_,
+                    v.as_ptr(),
+                    rb_,
+                    a,
+                    b,
+                    prob.as_ptr(),
+                    ps_,
+                    nc,
+                    out.as_mut_ptr(),
+                    scr.as_mut_ptr(),
+                ),
+                _ => kernels_sys::ffi::oxe_pv_q8_int(
+                    hd_,
+                    v.as_ptr(),
+                    rb_,
+                    a,
+                    b,
+                    prob.as_ptr(),
+                    ps_,
+                    nc,
+                    out.as_mut_ptr(),
+                    scr.as_mut_ptr() as *mut core::ffi::c_void,
+                    if k == 2 { 16 } else { 8 },
+                ),
             }
         }
-        assert!(out[ncol * hd..].iter().all(|x| *x == CANARY), "kernel {k} wrote past its {ncol} columns");
+        assert!(
+            out[ncol * hd..].iter().all(|x| *x == CANARY),
+            "kernel {k} wrote past its {ncol} columns"
+        );
         out.truncate(ncol * hd);
         outs.push(out);
     }
@@ -1850,8 +2598,18 @@ fn pv_kernels(hd: usize, ncol: usize, p0: usize, p1: usize, seed: u64) -> (Vec<f
     (outs.pop().unwrap(), fast, i16o, i8o)
 }
 
-const PV_SHAPES: [(usize, usize, usize, usize); 10] =
-    [(256, 5, 37, 200), (128, 8, 0, 256), (128, 1, 250, 251), (256, 64, 0, 64), (256, 8, 0, 256), (64, 12, 3, 100), (256, 3, 0, 255), (32, 9, 7, 16), (256, 4, 0, 256), (256, 16, 256, 512)];
+const PV_SHAPES: [(usize, usize, usize, usize); 10] = [
+    (256, 5, 37, 200),
+    (128, 8, 0, 256),
+    (128, 1, 250, 251),
+    (256, 64, 0, 64),
+    (256, 8, 0, 256),
+    (64, 12, 3, 100),
+    (256, 3, 0, 255),
+    (32, 9, 7, 16),
+    (256, 4, 0, 256),
+    (256, 16, 256, 512),
+];
 
 /// OD-4d: oxe_pv_q8_fast == oxe_pv_q8 bit for bit (every output, odd column counts on both tile
 /// widths, chunks not starting at 0 or not a multiple of 8, head dims 32..256).
@@ -1860,7 +2618,11 @@ fn kv8_pv_q8_fast_matches_reference_bitwise() {
     for (i, (hd, ncol, p0, p1)) in PV_SHAPES.into_iter().enumerate() {
         let (want, fast, _, _) = pv_kernels(hd, ncol, p0, p1, 5 + i as u64);
         for (j, (a, b)) in fast.iter().zip(&want).enumerate() {
-            assert_eq!(a.to_bits(), b.to_bits(), "hd {hd} ncol {ncol} [{p0},{p1}): output {j} {a} vs reference {b}");
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "hd {hd} ncol {ncol} [{p0},{p1}): output {j} {a} vs reference {b}"
+            );
         }
     }
 }
@@ -1873,21 +2635,52 @@ fn kv8_pv_q8_int_within_stated_error() {
     for (i, (hd, ncol, p0, p1)) in PV_SHAPES.into_iter().enumerate() {
         let (want, _, i16o, i8o) = pv_kernels(hd, ncol, p0, p1, 5 + i as u64);
         let nrm: f64 = want.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-        let err = |o: &[f32]| o.iter().zip(&want).map(|(a, b)| (*a as f64 - *b as f64).powi(2)).sum::<f64>().sqrt() / nrm;
+        let err = |o: &[f32]| {
+            o.iter()
+                .zip(&want)
+                .map(|(a, b)| (*a as f64 - *b as f64).powi(2))
+                .sum::<f64>()
+                .sqrt()
+                / nrm
+        };
         let (e16, e8) = (err(&i16o), err(&i8o));
-        assert!(e16 < 1.5e-3, "hd {hd} ncol {ncol} [{p0},{p1}): int16 relative error {e16}");
-        assert!(e8 < 3e-2, "hd {hd} ncol {ncol} [{p0},{p1}): int8 relative error {e8}");
+        assert!(
+            e16 < 1.5e-3,
+            "hd {hd} ncol {ncol} [{p0},{p1}): int16 relative error {e16}"
+        );
+        assert!(
+            e8 < 3e-2,
+            "hd {hd} ncol {ncol} [{p0},{p1}): int8 relative error {e8}"
+        );
     }
     let (hd, ncol, np) = (64usize, 3usize, 40usize);
     let v = q8_rows(np, hd, hd / 32 * 34, 3, 1.0);
     let prob = vec![0u16; ncol * np];
     // SAFETY: a pure size computation; then rows < np, zero probabilities, sized buffers.
-    let ib = unsafe { kernels_sys::ffi::oxe_pv_q8_int_scratch(hd as i32, np as i32, ncol as i32) } as usize;
+    let ib = unsafe { kernels_sys::ffi::oxe_pv_q8_int_scratch(hd as i32, np as i32, ncol as i32) }
+        as usize;
     let mut scr = vec![0f32; ib / 4 + 1];
     for bits in [16, 8] {
         let mut out = vec![f32::NAN; ncol * hd];
-        unsafe { kernels_sys::ffi::oxe_pv_q8_int(hd as i32, v.as_ptr(), (hd / 32 * 34) as i64, 0, np as i32, prob.as_ptr(), np as i64, ncol as i32, out.as_mut_ptr(), scr.as_mut_ptr() as *mut core::ffi::c_void, bits) };
-        assert!(out.iter().all(|x| x.to_bits() == 0), "bits {bits}: zero probabilities must give +0");
+        unsafe {
+            kernels_sys::ffi::oxe_pv_q8_int(
+                hd as i32,
+                v.as_ptr(),
+                (hd / 32 * 34) as i64,
+                0,
+                np as i32,
+                prob.as_ptr(),
+                np as i64,
+                ncol as i32,
+                out.as_mut_ptr(),
+                scr.as_mut_ptr() as *mut core::ffi::c_void,
+                bits,
+            )
+        };
+        assert!(
+            out.iter().all(|x| x.to_bits() == 0),
+            "bits {bits}: zero probabilities must give +0"
+        );
     }
 }
 
@@ -1918,13 +2711,19 @@ fn mini_int8_kv_pv_modes() {
     let want = run(PvMode::Ref, 2);
     let fast = run(PvMode::Fast, 2);
     for (i, (a, b)) in fast.iter().zip(&want).enumerate() {
-        assert!(same_bits(a, b), "fast V . p: logits row {i} differ from the reference kernel");
+        assert!(
+            same_bits(a, b),
+            "fast V . p: logits row {i} differ from the reference kernel"
+        );
     }
     for (mode, tol) in [(PvMode::I16, 5e-2f32), (PvMode::I8, 5e-2)] {
         let a = run(mode, 1);
         let b = run(mode, 3);
         for (i, (x, y)) in a.iter().zip(&b).enumerate() {
-            assert!(same_bits(x, y), "{mode:?}: logits row {i} depend on the thread count");
+            assert!(
+                same_bits(x, y),
+                "{mode:?}: logits row {i} depend on the thread count"
+            );
         }
         let mut worst = 0f32;
         for (x, w) in a.iter().zip(&want) {
@@ -1962,9 +2761,15 @@ fn mini_int8_kv_fused_and_first_version_thread_invariant() {
             match &want {
                 None => want = Some((lg, rows)),
                 Some((l1, r1)) => {
-                    assert!(same_bits(&lg, l1), "fused={fused}, {n} threads: prefill logits differ");
+                    assert!(
+                        same_bits(&lg, l1),
+                        "fused={fused}, {n} threads: prefill logits differ"
+                    );
                     for (i, (a, b)) in rows.iter().zip(r1).enumerate() {
-                        assert!(same_bits(a, b), "fused={fused}, {n} threads: decode row {i} differs");
+                        assert!(
+                            same_bits(a, b),
+                            "fused={fused}, {n} threads: decode row {i} differs"
+                        );
                     }
                 }
             }
@@ -1982,11 +2787,19 @@ fn mini_int8_kv_fused_and_first_version_thread_invariant() {
 fn mini_verify_lane_kernels_are_bit_identical() {
     use crate::engine::{VL_DN_FROM, VL_HEAD, VL_MV, VL_Q6K_ONE};
     for ty in kernels_sys::QType::ALL {
-        assert!(kernels_sys::gemv_lanes_has(ty), "{ty:?}: no lane GEMV in this build (the test would pass on the fallback)");
+        assert!(
+            kernels_sys::gemv_lanes_has(ty),
+            "{ty:?}: no lane GEMV in this build (the test would pass on the fallback)"
+        );
     }
     for nt in [1usize, 2, 3] {
         let (dir, _path, plan, ws, mw, pool) = mtp_setup(&format!("vlk{nt}"), nt);
-        let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: false,
+            profile: false,
+        };
         let seq: Vec<u32> = (0..72).map(|i| (i * 11 + 5) % 64).collect();
         let mut r = Engine::new(&plan, &ws, cfg.clone()).unwrap();
         r.set_verify_lane_kernels(0);
@@ -2003,13 +2816,29 @@ fn mini_verify_lane_kernels_are_bit_identical() {
         f.set_verify_lane_kernels(VL_Q6K_ONE);
         for (i, &t) in seq.iter().enumerate() {
             f.step(&pool, t);
-            assert!(bits_eq(f.logits(), &want[i]), "{nt} threads: one-lane Q6_K step logits differ at {i}");
-            assert!(bits_eq(f.hidden(0), &want_h[i]), "{nt} threads: one-lane Q6_K step h differs at {i}");
+            assert!(
+                bits_eq(f.logits(), &want[i]),
+                "{nt} threads: one-lane Q6_K step logits differ at {i}"
+            );
+            assert!(
+                bits_eq(f.hidden(0), &want_h[i]),
+                "{nt} threads: one-lane Q6_K step h differs at {i}"
+            );
         }
         drop(f);
         for mask in [VL_MV, VL_HEAD, VL_MV | VL_HEAD, VL_Q6K_ONE, VL_DN_FROM, 15] {
             // 1-4 lanes on an MTP engine, rejected (random) tails rolled back
-            let mut e = Engine::with_options(&plan, &ws, cfg.clone(), crate::engine::EngineOptions { verify_lanes: 4, mtp: Some(&mw), kv_type: None }).unwrap();
+            let mut e = Engine::with_options(
+                &plan,
+                &ws,
+                cfg.clone(),
+                crate::engine::EngineOptions {
+                    verify_lanes: 4,
+                    mtp: Some(&mw),
+                    kv_type: None,
+                },
+            )
+            .unwrap();
             e.set_verify_lane_kernels(mask);
             e.set_dec_fused_dn(mask == 15); // the fused 4-row step out of place too
             assert_eq!(e.verify_lane_kernels(), mask);
@@ -2024,8 +2853,15 @@ fn mini_verify_lane_kernels_are_bit_identical() {
                 }
                 let g = e.verify(&pool, &toks);
                 for ln in 0..m {
-                    assert!(bits_eq(e.logits_lane(ln), &want[p + ln]), "{nt} threads, mask {mask}: lane {ln} at pos {} differs", p + ln);
-                    assert!(bits_eq(e.hidden(ln), &want_h[p + ln]), "{nt} threads, mask {mask}: h of lane {ln} differs");
+                    assert!(
+                        bits_eq(e.logits_lane(ln), &want[p + ln]),
+                        "{nt} threads, mask {mask}: lane {ln} at pos {} differs",
+                        p + ln
+                    );
+                    assert!(
+                        bits_eq(e.hidden(ln), &want_h[p + ln]),
+                        "{nt} threads, mask {mask}: h of lane {ln} differs"
+                    );
                     let lg = e.logits_lane(ln);
                     let mut best = 0;
                     for (j, &v) in lg.iter().enumerate() {
@@ -2033,7 +2869,10 @@ fn mini_verify_lane_kernels_are_bit_identical() {
                             best = j;
                         }
                     }
-                    assert_eq!(g[ln] as usize, best, "{nt} threads, mask {mask}: argmax of lane {ln}");
+                    assert_eq!(
+                        g[ln] as usize, best,
+                        "{nt} threads, mask {mask}: argmax of lane {ln}"
+                    );
                 }
                 if it % 3 == 0 && n > m {
                     e.commit(n);
@@ -2045,10 +2884,23 @@ fn mini_verify_lane_kernels_are_bit_identical() {
                 p += m;
                 it += 1;
             }
-            assert!(commits[1] > 0 && commits[2] > 0 && commits[3] > 0, "{commits:?}");
+            assert!(
+                commits[1] > 0 && commits[2] > 0 && commits[3] > 0,
+                "{commits:?}"
+            );
             drop(e);
             // 5 and 6 lanes (lane groups 4 + 1 and 4 + 2), all committed
-            let mut e = Engine::with_options(&plan, &ws, cfg.clone(), crate::engine::EngineOptions { verify_lanes: 6, mtp: None, kv_type: None }).unwrap();
+            let mut e = Engine::with_options(
+                &plan,
+                &ws,
+                cfg.clone(),
+                crate::engine::EngineOptions {
+                    verify_lanes: 6,
+                    mtp: None,
+                    kv_type: None,
+                },
+            )
+            .unwrap();
             e.set_verify_lane_kernels(mask);
             let mut p = 0usize;
             let mut it = 0usize;
@@ -2056,8 +2908,15 @@ fn mini_verify_lane_kernels_are_bit_identical() {
                 let n = (5 + it % 2).min(seq.len() - p);
                 e.verify(&pool, &seq[p..p + n]);
                 for ln in 0..n {
-                    assert!(bits_eq(e.logits_lane(ln), &want[p + ln]), "{nt} threads, mask {mask}: {n} lanes, lane {ln} at pos {} differs", p + ln);
-                    assert!(bits_eq(e.hidden(ln), &want_h[p + ln]), "{nt} threads, mask {mask}: {n} lanes, h of lane {ln} differs");
+                    assert!(
+                        bits_eq(e.logits_lane(ln), &want[p + ln]),
+                        "{nt} threads, mask {mask}: {n} lanes, lane {ln} at pos {} differs",
+                        p + ln
+                    );
+                    assert!(
+                        bits_eq(e.hidden(ln), &want_h[p + ln]),
+                        "{nt} threads, mask {mask}: {n} lanes, h of lane {ln} differs"
+                    );
                 }
                 e.commit(n);
                 p += n;
@@ -2075,7 +2934,12 @@ fn mini_verify_lane_kernels_are_bit_identical() {
 #[test]
 fn mini_mtp_switching_depth_mid_reply_is_identical_to_plain() {
     let (dir, _path, plan, ws, mw, pool) = mtp_setup("mtpswitch", 2);
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let prompt: Vec<u32> = vec![3, 17, 42, 5, 9, 33, 1];
     let plen = prompt.len();
     let n_gen = 48;
@@ -2093,7 +2957,17 @@ fn mini_mtp_switching_depth_mid_reply_is_identical_to_plain() {
     }
     drop(r);
     for with_rewind in [false, true] {
-        let mut e = Engine::with_options(&plan, &ws, cfg.clone(), crate::engine::EngineOptions { verify_lanes: 3, mtp: Some(&mw), kv_type: None }).unwrap();
+        let mut e = Engine::with_options(
+            &plan,
+            &ws,
+            cfg.clone(),
+            crate::engine::EngineOptions {
+                verify_lanes: 3,
+                mtp: Some(&mw),
+                kv_type: None,
+            },
+        )
+        .unwrap();
         e.set_attn_tiled_min_kv(0); // MTP / verify lanes tiled, the plain reference per-head
         let mut d = crate::mtp::MtpDriver::new(&e, 2).unwrap();
         // same test hook as mini_mtp_greedy_is_identical_to_plain: true tokens at most positions,
@@ -2108,7 +2982,10 @@ fn mini_mtp_switching_depth_mid_reply_is_identical_to_plain() {
             }
         }));
         let mut x = d.prefill(&e, &pool, &prompt);
-        assert!(bits_eq(e.logits_lane((plen - 1) % 3), &want_rows[0]), "rewind {with_rewind}: prefill logits differ");
+        assert!(
+            bits_eq(e.logits_lane((plen - 1) % 3), &want_rows[0]),
+            "rewind {with_rewind}: prefill logits differ"
+        );
         let mut ids = vec![x];
         let mut out = Vec::new();
         let mut rewound = false;
@@ -2121,7 +2998,10 @@ fn mini_mtp_switching_depth_mid_reply_is_identical_to_plain() {
                 plain += 1;
                 let row = p + 1 - plen; // logits after position p
                 if row < want_rows.len() {
-                    assert!(bits_eq(e.logits_lane(0), &want_rows[row]), "rewind {with_rewind}: plain step at pos {p}: logits differ");
+                    assert!(
+                        bits_eq(e.logits_lane(0), &want_rows[row]),
+                        "rewind {with_rewind}: plain step at pos {p}: logits differ"
+                    );
                 }
             } else {
                 d.depth = if (20..32).contains(&off) { 1 } else { 2 };
@@ -2129,7 +3009,11 @@ fn mini_mtp_switching_depth_mid_reply_is_identical_to_plain() {
                 for i in 0..out.len() {
                     let row = p + i + 1 - plen; // logits after position p+i
                     if row < want_rows.len() {
-                        assert!(bits_eq(e.logits_lane(i), &want_rows[row]), "rewind {with_rewind}: depth {} at pos {p}: logits at row {row} differ", d.depth);
+                        assert!(
+                            bits_eq(e.logits_lane(i), &want_rows[row]),
+                            "rewind {with_rewind}: depth {} at pos {p}: logits at row {row} differ",
+                            d.depth
+                        );
                     }
                 }
                 if with_rewind && !rewound && out.len() > 1 {
@@ -2143,8 +3027,15 @@ fn mini_mtp_switching_depth_mid_reply_is_identical_to_plain() {
         }
         ids.truncate(n_gen);
         assert_eq!(ids, want_ids, "rewind {with_rewind}: ids differ");
-        assert!(plain > 0 && d.stats.plain_steps > 0, "rewind {with_rewind}: no plain step exercised");
-        assert!(d.stats.steps > 0 && d.stats.accepted > 0, "rewind {with_rewind}: acceptance not exercised: {:?}", d.stats);
+        assert!(
+            plain > 0 && d.stats.plain_steps > 0,
+            "rewind {with_rewind}: no plain step exercised"
+        );
+        assert!(
+            d.stats.steps > 0 && d.stats.accepted > 0,
+            "rewind {with_rewind}: acceptance not exercised: {:?}",
+            d.stats
+        );
         assert!(!with_rewind || rewound, "no rewind exercised");
     }
     std::fs::remove_dir_all(&dir).ok();
@@ -2165,7 +3056,11 @@ fn mtp_sidecar_head_sha_ignores_model_sha_env() {
     let cache = dir.join("cache");
     let env_sha = "1".repeat(64);
     let file_name = |m: &crate::mtp::MtpWeights| -> String {
-        std::path::Path::new(&m.store.info.cache_path).file_name().unwrap().to_string_lossy().into_owned()
+        std::path::Path::new(&m.store.info.cache_path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
     };
     let mut opt = mini_opts(&dir);
     opt.sha_from_env = false;
@@ -2173,47 +3068,82 @@ fn mtp_sidecar_head_sha_ignores_model_sha_env() {
     assert_ne!(real, env_sha);
     let m = crate::mtp::MtpWeights::load(&copy, &plan, &opt).unwrap();
     let name = file_name(&m);
-    assert!(!name.starts_with(&env_sha), "cache file {name} is named by OXE_MODEL_SHA256");
-    assert!(name.starts_with(&real), "cache file {name} is not named by the real sha {real}");
+    assert!(
+        !name.starts_with(&env_sha),
+        "cache file {name} is named by OXE_MODEL_SHA256"
+    );
+    assert!(
+        name.starts_with(&real),
+        "cache file {name} is not named by the real sha {real}"
+    );
     drop(m);
     opt.sha_from_env = true;
     let m = crate::mtp::MtpWeights::load(&copy, &plan, &opt).unwrap();
     let name = file_name(&m);
-    assert!(name.starts_with(&env_sha), "cache file {name} is not named by OXE_MODEL_SHA256");
+    assert!(
+        name.starts_with(&env_sha),
+        "cache file {name} is not named by OXE_MODEL_SHA256"
+    );
     drop(m);
     std::fs::remove_dir_all(&dir).ok();
 }
 
-mod longctx;
 mod fprec;
+mod longctx;
 
-fn run_mini_fused(path: &std::path::Path, opt: &LoadOptions, n: usize, steps: usize, fused: bool, ch: usize) -> (Vec<u32>, Vec<Vec<f32>>, u64) {
-    std::thread::scope(|scope| scope.spawn(move || {
-        let g = gguf::Gguf::open(path).unwrap();
-        let desc = ModelDesc::from_header(&g.header).unwrap();
-        let plan = Plan::build(&g.header, &desc, n, 512).unwrap();
-        let ws = WeightStore::load(g, &plan, opt).unwrap();
-        let cpus = test_cpus(n);
-        let pool = sched::Pool::new(&cpus, Duration::from_micros(100)).unwrap();
-        let mut eng = Engine::new(&plan, &ws, EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false }).unwrap();
-        eng.set_attn_tiled_min_kv(0);
-        eng.set_attn_fused(fused);
-        eng.set_attn_fused_min_kv(0, 0); // v0.1.3: fused has its own cutoffs now (0 = always, as before at tiled-min 0)
-        eng.set_attn_fused_chunk(ch);
-        assert_eq!(eng.attn_fused(), fused);
-        let mut ids = Vec::new();
-        let mut logits = Vec::new();
-        let b0 = pool.barrier_episodes();
-        let mut tok = 1u32;
-        for s in 0..steps {
-            let next = eng.step(&pool, tok);
-            tok = if s < steps / 2 { (s as u32 * 7 + 3) % 64 } else { next };
-            ids.push(next);
-            logits.push(eng.logits().to_vec());
-        }
-        let barriers = (pool.barrier_episodes() - b0) / steps as u64;
-        (ids, logits, barriers)
-    }).join().unwrap())
+fn run_mini_fused(
+    path: &std::path::Path,
+    opt: &LoadOptions,
+    n: usize,
+    steps: usize,
+    fused: bool,
+    ch: usize,
+) -> (Vec<u32>, Vec<Vec<f32>>, u64) {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let g = gguf::Gguf::open(path).unwrap();
+                let desc = ModelDesc::from_header(&g.header).unwrap();
+                let plan = Plan::build(&g.header, &desc, n, 512).unwrap();
+                let ws = WeightStore::load(g, &plan, opt).unwrap();
+                let cpus = test_cpus(n);
+                let pool = sched::Pool::new(&cpus, Duration::from_micros(100)).unwrap();
+                let mut eng = Engine::new(
+                    &plan,
+                    &ws,
+                    EngineConfig {
+                        n_ctx: 512,
+                        logits: true,
+                        trace: false,
+                        profile: false,
+                    },
+                )
+                .unwrap();
+                eng.set_attn_tiled_min_kv(0);
+                eng.set_attn_fused(fused);
+                eng.set_attn_fused_min_kv(0, 0); // v0.1.3: fused has its own cutoffs now (0 = always, as before at tiled-min 0)
+                eng.set_attn_fused_chunk(ch);
+                assert_eq!(eng.attn_fused(), fused);
+                let mut ids = Vec::new();
+                let mut logits = Vec::new();
+                let b0 = pool.barrier_episodes();
+                let mut tok = 1u32;
+                for s in 0..steps {
+                    let next = eng.step(&pool, tok);
+                    tok = if s < steps / 2 {
+                        (s as u32 * 7 + 3) % 64
+                    } else {
+                        next
+                    };
+                    ids.push(next);
+                    logits.push(eng.logits().to_vec());
+                }
+                let barriers = (pool.barrier_episodes() - b0) / steps as u64;
+                (ids, logits, barriers)
+            })
+            .join()
+            .unwrap()
+    })
 }
 
 /// O-70: decode through the fused attention (300 steps: n_kv 1 -> 300, chunks of 128 so the run
@@ -2228,24 +3158,37 @@ fn mini_gguf_fused_attention_thread_invariant_and_close_to_tiled() {
     let steps = 300;
     let (_, lg_t, b_t) = run_mini_fused(&path, &opt, 2, steps, false, 128);
     let (ids1, lg1, b1) = run_mini_fused(&path, &opt, 1, steps, true, 128);
-    assert_eq!(b1 + 1, b_t, "fused: one barrier fewer per attention layer (mini: one layer)");
+    assert_eq!(
+        b1 + 1,
+        b_t,
+        "fused: one barrier fewer per attention layer (mini: one layer)"
+    );
     for n in [3usize, 4] {
         let (ids, lg, b) = run_mini_fused(&path, &opt, n, steps, true, 128);
         assert_eq!(b, b1);
         assert_eq!(ids, ids1, "{n} threads: ids differ");
         for (s, (a, b)) in lg.iter().zip(&lg1).enumerate() {
-            assert!(bits_eq(a, b), "{n} threads: fused logits of step {s} differ from 1 thread");
+            assert!(
+                bits_eq(a, b),
+                "{n} threads: fused logits of step {s} differ from 1 thread"
+            );
         }
     }
     let mut worst = 0f64;
     for (a, b) in lg1.iter().zip(&lg_t).take(steps / 2) {
         assert!(a.iter().all(|v| v.is_finite()));
         let scale = b.iter().fold(0f32, |m, v| m.max(v.abs())) as f64;
-        let d = a.iter().zip(b).fold(0f64, |m, (x, y)| m.max((x - y).abs() as f64));
+        let d = a
+            .iter()
+            .zip(b)
+            .fold(0f64, |m, (x, y)| m.max((x - y).abs() as f64));
         worst = worst.max(d / scale.max(1e-30));
     }
     println!("fused vs tiled, teacher-forced steps: max |dlogit| / max |logit| = {worst:.3e}");
-    assert!(worst < 3e-2, "fused logits too far from the tiled path: {worst:.3e}");
+    assert!(
+        worst < 3e-2,
+        "fused logits too far from the tiled path: {worst:.3e}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -2256,7 +3199,12 @@ fn mini_gguf_fused_attention_thread_invariant_and_close_to_tiled() {
 fn mini_fused_verify_lanes_are_batch_invariant_with_rollback() {
     for nt in [1usize, 2, 3] {
         let (dir, _path, plan, ws, mw, pool) = mtp_setup(&format!("flanes{nt}"), nt);
-        let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: false,
+            profile: false,
+        };
         let seq: Vec<u32> = (0..300).map(|i| (i * 13 + 7) % 64).collect();
         let mut r = Engine::new(&plan, &ws, cfg.clone()).unwrap();
         r.set_attn_tiled_min_kv(0);
@@ -2269,7 +3217,17 @@ fn mini_fused_verify_lanes_are_batch_invariant_with_rollback() {
             want.push(r.logits().to_vec());
         }
         drop(r);
-        let mut e = Engine::with_options(&plan, &ws, cfg.clone(), crate::engine::EngineOptions { verify_lanes: 4, mtp: Some(&mw), kv_type: None }).unwrap();
+        let mut e = Engine::with_options(
+            &plan,
+            &ws,
+            cfg.clone(),
+            crate::engine::EngineOptions {
+                verify_lanes: 4,
+                mtp: Some(&mw),
+                kv_type: None,
+            },
+        )
+        .unwrap();
         e.set_attn_tiled_min_kv(0);
         e.set_attn_fused(true);
         e.set_attn_fused_min_kv(0, 0); // v0.1.3: fused has its own cutoffs now (0 = always, as before at tiled-min 0)
@@ -2285,7 +3243,11 @@ fn mini_fused_verify_lanes_are_batch_invariant_with_rollback() {
             }
             e.verify(&pool, &toks);
             for ln in 0..m {
-                assert!(bits_eq(e.logits_lane(ln), &want[p + ln]), "{nt} threads: lane {ln} at pos {} differs", p + ln);
+                assert!(
+                    bits_eq(e.logits_lane(ln), &want[p + ln]),
+                    "{nt} threads: lane {ln} at pos {} differs",
+                    p + ln
+                );
             }
             e.commit(m);
             p += m;
@@ -2307,131 +3269,307 @@ fn mini_f32_reference_batch_step_and_thread_invariant() {
     let mut reference_rows = Vec::new();
     for n in [1, 2] {
         let (plan, ws, pool) = mini_engine_parts(&path, &opt, n);
-        let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: false,
+            profile: false,
+        };
         let mut batch = Engine::new(&plan, &ws, cfg.clone()).unwrap();
         let mut single_token = Engine::new(&plan, &ws, cfg).unwrap();
         for e in [&mut batch, &mut single_token] {
-            e.enable_f32_reference(gguf::Gguf::open(&path).unwrap(), &ws.info.model_sha256).unwrap();
+            e.enable_f32_reference(gguf::Gguf::open(&path).unwrap(), &ws.info.model_sha256)
+                .unwrap();
         }
         batch.prefill(&pool, &toks, 64).unwrap();
-        for &t in &toks { single_token.step(&pool, t); }
-        assert!(batch.logits().iter().all(|x| x.is_finite()));
-        let quantized = Engine::new(&plan, &ws, EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false }).unwrap();
-        quantized.prefill(&pool, &toks, 64).unwrap();
-        assert!(!same_bits(batch.logits(), quantized.logits()), "fixture must distinguish f32 from activation-quantized math");
-        assert_eq!(batch.write_state(&mut Vec::new()).unwrap_err().kind(), std::io::ErrorKind::Unsupported);
-        assert_eq!(batch.read_state(&mut &[][..], 0).unwrap_err().kind(), std::io::ErrorKind::Unsupported);
-        assert!(same_bits(batch.logits(), single_token.logits()), "f32 prefix differs at {n} threads");
-        for t in [13, 7, 29] {
-            batch.step(&pool, t); single_token.step(&pool, t);
-            assert!(same_bits(batch.logits(), single_token.logits()), "f32 continuation differs");
+        for &t in &toks {
+            single_token.step(&pool, t);
         }
-        if n == 1 { reference_rows = batch.logits().to_vec(); }
-        else { assert!(same_bits(batch.logits(), &reference_rows), "f32 thread count changes logits"); }
+        assert!(batch.logits().iter().all(|x| x.is_finite()));
+        let quantized = Engine::new(
+            &plan,
+            &ws,
+            EngineConfig {
+                n_ctx: 512,
+                logits: true,
+                trace: false,
+                profile: false,
+            },
+        )
+        .unwrap();
+        quantized.prefill(&pool, &toks, 64).unwrap();
+        assert!(
+            !same_bits(batch.logits(), quantized.logits()),
+            "fixture must distinguish f32 from activation-quantized math"
+        );
+        assert_eq!(
+            batch.write_state(&mut Vec::new()).unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            batch.read_state(&mut &[][..], 0).unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        assert!(
+            same_bits(batch.logits(), single_token.logits()),
+            "f32 prefix differs at {n} threads"
+        );
+        for t in [13, 7, 29] {
+            batch.step(&pool, t);
+            single_token.step(&pool, t);
+            assert!(
+                same_bits(batch.logits(), single_token.logits()),
+                "f32 continuation differs"
+            );
+        }
+        if n == 1 {
+            reference_rows = batch.logits().to_vec();
+        } else {
+            assert!(
+                same_bits(batch.logits(), &reference_rows),
+                "f32 thread count changes logits"
+            );
+        }
     }
     std::fs::remove_dir_all(dir).ok();
 }
 
-#[cfg(feature="npu-prefill")]
+#[cfg(feature = "npu-prefill")]
 #[test]
-fn original_recurrent_float_rows_use_open_file_and_residual_stride(){
-    let(dir,path)=mini_paths("rec-f32");
-    std::env::set_var("OXE_MODEL_SHA256","0".repeat(64));
-    let opt=mini_opts(&dir);let(plan,ws,_pool)=mini_engine_parts(&path,&opt,2);
-    let g=gguf::Gguf::open(&path).unwrap();
-    let rows=crate::cpu_recurrent::Rows::new(&g,&plan,&ws,1).unwrap();
-    let crate::plan::Mixer::Recurrent{qkv,..}=plan.layers[0].mixer else{panic!("recurrent fixture");};
-    let w=ws.get(qkv);assert!(rows.contains(w.ptr));assert!(rows.count()>=3);
+fn original_recurrent_float_rows_use_open_file_and_residual_stride() {
+    let (dir, path) = mini_paths("rec-f32");
+    std::env::set_var("OXE_MODEL_SHA256", "0".repeat(64));
+    let opt = mini_opts(&dir);
+    let (plan, ws, _pool) = mini_engine_parts(&path, &opt, 2);
+    let g = gguf::Gguf::open(&path).unwrap();
+    let rows = crate::cpu_recurrent::Rows::new(&g, &plan, &ws, 1).unwrap();
+    let crate::plan::Mixer::Recurrent { qkv, .. } = plan.layers[0].mixer else {
+        panic!("recurrent fixture");
+    };
+    let w = ws.get(qkv);
+    assert!(rows.contains(w.ptr));
+    assert!(rows.count() >= 3);
     assert!(!rows.contains(ws.get(plan.layers[1].gate_shexp).ptr));
-    let source=crate::npu_rows::GgufRows::new(&g.header.tensors[qkv],g.tensor_data(&g.header.tensors[qkv])).unwrap();
-    let(n,c0,c1,os)=(3,7,13,19);let x:Vec<f32>=(0..n*w.k).map(|i|((i*7%103)as f32-51.)/127.).collect();
-    let mut out=vec![0.125;n*os];let before=out.clone();let mut row=vec![0.;w.k];
-    let mut expected=out.clone();
-    for c in c0..c1{oxn::linear::WeightRows::read_row(&source,c,&mut row).unwrap();for t in 0..n{
-        expected[t*os+c-c0]+=(row.iter().zip(&x[t*w.k..(t+1)*w.k]).map(|(&a,&b)|a as f64*b as f64).sum::<f64>())as f32;
-    }}
+    let source = crate::npu_rows::GgufRows::new(
+        &g.header.tensors[qkv],
+        g.tensor_data(&g.header.tensors[qkv]),
+    )
+    .unwrap();
+    let (n, c0, c1, os) = (3, 7, 13, 19);
+    let x: Vec<f32> = (0..n * w.k)
+        .map(|i| ((i * 7 % 103) as f32 - 51.) / 127.)
+        .collect();
+    let mut out = vec![0.125; n * os];
+    let before = out.clone();
+    let mut row = vec![0.; w.k];
+    let mut expected = out.clone();
+    for c in c0..c1 {
+        oxn::linear::WeightRows::read_row(&source, c, &mut row).unwrap();
+        for t in 0..n {
+            expected[t * os + c - c0] += (row
+                .iter()
+                .zip(&x[t * w.k..(t + 1) * w.k])
+                .map(|(&a, &b)| a as f64 * b as f64)
+                .sum::<f64>()) as f32;
+        }
+    }
     // Replace the path with a different inode. The helper must keep the same
     // open source file, not silently reopen a path after its identity check.
-    std::fs::rename(&path,dir.join("source-original.gguf")).unwrap();std::fs::write(&path,b"different file").unwrap();
-    unsafe{assert!(rows.project(w.ptr,n,c0,c1,x.as_ptr(),out.as_mut_ptr(),os,out.as_ptr()));}
-    for i in 0..out.len(){if i%os<c1-c0{assert!((out[i]-expected[i]).abs()<2e-6,"{i}");}else{assert_eq!(out[i],before[i]);}}
+    std::fs::rename(&path, dir.join("source-original.gguf")).unwrap();
+    std::fs::write(&path, b"different file").unwrap();
+    unsafe {
+        assert!(rows.project(
+            w.ptr,
+            n,
+            c0,
+            c1,
+            x.as_ptr(),
+            out.as_mut_ptr(),
+            os,
+            out.as_ptr()
+        ));
+    }
+    for i in 0..out.len() {
+        if i % os < c1 - c0 {
+            assert!((out[i] - expected[i]).abs() < 2e-6, "{i}");
+        } else {
+            assert_eq!(out[i], before[i]);
+        }
+    }
     std::fs::remove_dir_all(dir).ok();
 }
-
 
 /// Shared branch scheduling must preserve all arithmetic/state, including a
 /// partial tile and continuation. The injected post-write failure is discarded
 /// before commit; both serial and overlap use identical whole-projection fallback.
-#[cfg(feature="npu-prefill")]
+#[cfg(feature = "npu-prefill")]
 #[test]
-fn mini_npu_shared_overlap_is_bitwise_and_fault_stable(){
-    use oxn::{Backend,Buf,GemmArgs,GemmStats};
-    struct B{emu:oxn::emu::Emu,fail:bool}
-    impl Backend for B{
-        fn name(&self)->&'static str{"model-free-overlap"}
-        fn sessions(&self)->usize{1}
-        fn vtcm_bytes(&self)->u32{8<<20}
-        fn alloc(&mut self,s:usize,n:usize)->Result<Buf,String>{self.emu.alloc(s,n)}
-        fn gemm(&mut self,s:usize,a:&GemmArgs)->Result<GemmStats,String>{
-            let r=self.emu.gemm(s,a)?;
+fn mini_npu_shared_overlap_is_bitwise_and_fault_stable() {
+    use oxn::{Backend, Buf, GemmArgs, GemmStats};
+    struct B {
+        emu: oxn::emu::Emu,
+        fail: bool,
+    }
+    impl Backend for B {
+        fn name(&self) -> &'static str {
+            "model-free-overlap"
+        }
+        fn sessions(&self) -> usize {
+            1
+        }
+        fn vtcm_bytes(&self) -> u32 {
+            8 << 20
+        }
+        fn alloc(&mut self, s: usize, n: usize) -> Result<Buf, String> {
+            self.emu.alloc(s, n)
+        }
+        fn gemm(&mut self, s: usize, a: &GemmArgs) -> Result<GemmStats, String> {
+            let r = self.emu.gemm(s, a)?;
             // Give another existing worker time to acquire an expert unit.
             std::thread::sleep(Duration::from_micros(100));
-            if self.fail{Err("injected post-write overlap failure".into())}else{Ok(r)}
+            if self.fail {
+                Err("injected post-write overlap failure".into())
+            } else {
+                Ok(r)
+            }
         }
     }
-    let(dir,path)=mini_paths("npu-overlap");
+    let (dir, path) = mini_paths("npu-overlap");
     // This fixture's random shared weights otherwise overflow binary16 after
     // SwiGLU. Scale only those synthetic tensors, not any real model weights.
-    let source=gguf::Gguf::open(&path).unwrap();let mut bytes=std::fs::read(&path).unwrap();
-    for t in &source.header.tensors{
-        if !t.name.contains("_shexp.weight"){continue;}
-        let(block,scale)=if t.ty==GgmlType::Q6_K{(210,208)}else if t.ty==GgmlType::Q8_0{(34,0)}else{continue;};
-        let start=(source.header.data_offset+t.offset)as usize;
-        for b in bytes[start..start+t.bytes()as usize].chunks_mut(block){
-            let h=u16::from_le_bytes(b[scale..scale+2].try_into().unwrap());
-            b[scale..scale+2].copy_from_slice(&oxn::tiles::f32_to_half(oxn::tiles::half_to_f32(h)/256.).to_le_bytes());
+    let source = gguf::Gguf::open(&path).unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    for t in &source.header.tensors {
+        if !t.name.contains("_shexp.weight") {
+            continue;
+        }
+        let (block, scale) = if t.ty == GgmlType::Q6_K {
+            (210, 208)
+        } else if t.ty == GgmlType::Q8_0 {
+            (34, 0)
+        } else {
+            continue;
+        };
+        let start = (source.header.data_offset + t.offset) as usize;
+        for b in bytes[start..start + t.bytes() as usize].chunks_mut(block) {
+            let h = u16::from_le_bytes(b[scale..scale + 2].try_into().unwrap());
+            b[scale..scale + 2].copy_from_slice(
+                &oxn::tiles::f32_to_half(oxn::tiles::half_to_f32(h) / 256.).to_le_bytes(),
+            );
         }
     }
-    drop(source);std::fs::write(&path,bytes).unwrap();
-    std::env::set_var("OXE_MODEL_SHA256","0".repeat(64));
-    let opt=mini_opts(&dir);let mut witnessed=0;
-    for nth in [1,2,4]{
-        let(plan,ws,pool)=mini_engine_parts(&path,&opt,nth);
-        for fail in [false,true]{for n in [3,32,33,65,127]{
-            let mut engines=Vec::new();
-            for overlap in [false,true]{
-                let mut e=Engine::new(&plan,&ws,EngineConfig{n_ctx:512,logits:true,trace:false,profile:false}).unwrap();
-                let backend=Box::new(B{emu:oxn::emu::Emu::new(8<<20,1),fail});
-                e.enable_npu_prefill(&gguf::Gguf::open(&path).unwrap(),&ws.info.model_sha256,backend,
-                    crate::npu_prefill::Config{weight_budget:128<<20,pack_threads:1,overlap_shared:overlap,..Default::default()},pool.cpus()).unwrap();
-                engines.push(e);
+    drop(source);
+    std::fs::write(&path, bytes).unwrap();
+    std::env::set_var("OXE_MODEL_SHA256", "0".repeat(64));
+    let opt = mini_opts(&dir);
+    let mut witnessed = 0;
+    for nth in [1, 2, 4] {
+        let (plan, ws, pool) = mini_engine_parts(&path, &opt, nth);
+        for fail in [false, true] {
+            for n in [3, 32, 33, 65, 127] {
+                let mut engines = Vec::new();
+                for overlap in [false, true] {
+                    let mut e = Engine::new(
+                        &plan,
+                        &ws,
+                        EngineConfig {
+                            n_ctx: 512,
+                            logits: true,
+                            trace: false,
+                            profile: false,
+                        },
+                    )
+                    .unwrap();
+                    let backend = Box::new(B {
+                        emu: oxn::emu::Emu::new(8 << 20, 1),
+                        fail,
+                    });
+                    e.enable_npu_prefill(
+                        &gguf::Gguf::open(&path).unwrap(),
+                        &ws.info.model_sha256,
+                        backend,
+                        crate::npu_prefill::Config {
+                            weight_budget: 128 << 20,
+                            pack_threads: 1,
+                            overlap_shared: overlap,
+                            ..Default::default()
+                        },
+                        pool.cpus(),
+                    )
+                    .unwrap();
+                    engines.push(e);
+                }
+                let tokens: Vec<u32> = (0..n).map(|i| ((i * 17 + 5) % 64) as u32).collect();
+                for e in &engines {
+                    e.prefill(&pool, &tokens, 128).unwrap();
+                }
+                assert!(
+                    same_bits(engines[0].logits(), engines[1].logits()),
+                    "prefix logits n{n} t{nth} fail{fail}"
+                );
+                assert!(
+                    same_state(&engines[0].dump_state(), &engines[1].dump_state()),
+                    "prefix state n{n} t{nth} fail{fail}"
+                );
+                let before = engines[1].npu_prefill_stats().unwrap();
+                if nth > 1 {
+                    witnessed += before.expert_units_started_during_shared;
+                }
+                if n >= 32 {
+                    assert!(before.overlap_shared);
+                    assert_eq!(
+                        before.shared_chain_units,
+                        (plan.layers.len() - 1) as u64,
+                        "final shared FFN crops to one output row"
+                    );
+                    if fail {
+                        assert!(before.first_error.is_some());
+                    } else {
+                        assert!(before.calls > 0);
+                        assert!(
+                            before.first_error.is_none(),
+                            "unexpected overflow/fallback in overlap fixture"
+                        );
+                    }
+                } else {
+                    assert_eq!(before.calls, 0);
+                    assert_eq!(before.shared_chain_units, 0);
+                }
+                for t in [13, 7, 29] {
+                    engines[0].step(&pool, t);
+                    engines[1].step(&pool, t);
+                    assert!(
+                        same_bits(engines[0].logits(), engines[1].logits()),
+                        "decode n{n} t{nth} fail{fail}"
+                    );
+                }
+                assert_eq!(
+                    engines[1].npu_prefill_stats().unwrap().calls,
+                    before.calls,
+                    "no decode NPU calls"
+                );
+                assert!(same_state(
+                    &engines[0].dump_state(),
+                    &engines[1].dump_state()
+                ));
             }
-            let tokens:Vec<u32>=(0..n).map(|i|((i*17+5)%64)as u32).collect();
-            for e in &engines{e.prefill(&pool,&tokens,128).unwrap();}
-            assert!(same_bits(engines[0].logits(),engines[1].logits()),"prefix logits n{n} t{nth} fail{fail}");
-            assert!(same_state(&engines[0].dump_state(),&engines[1].dump_state()),"prefix state n{n} t{nth} fail{fail}");
-            let before=engines[1].npu_prefill_stats().unwrap();
-            if nth>1{witnessed+=before.expert_units_started_during_shared;}
-            if n>=32{
-                assert!(before.overlap_shared);assert_eq!(before.shared_chain_units,(plan.layers.len()-1)as u64,"final shared FFN crops to one output row");
-                if fail{assert!(before.first_error.is_some());}else{assert!(before.calls>0);assert!(before.first_error.is_none(),"unexpected overflow/fallback in overlap fixture");}
-            }else{assert_eq!(before.calls,0);assert_eq!(before.shared_chain_units,0);}
-            for t in [13,7,29]{
-                engines[0].step(&pool,t);engines[1].step(&pool,t);
-                assert!(same_bits(engines[0].logits(),engines[1].logits()),"decode n{n} t{nth} fail{fail}");
-            }
-            assert_eq!(engines[1].npu_prefill_stats().unwrap().calls,before.calls,"no decode NPU calls");
-            assert!(same_state(&engines[0].dump_state(),&engines[1].dump_state()));
-        }}
+        }
     }
-    assert!(witnessed>0,"must witness actual expert progress during a shared branch");
+    assert!(
+        witnessed > 0,
+        "must witness actual expert progress during a shared branch"
+    );
     std::fs::remove_dir_all(dir).ok();
 }
 
 /// One O-117 fused-decode run on the mini model per sample set (prefix 200, 250 teacher-forced
 /// positions; control: the tiled batched prefill in ubatches of 64 vs the tiled decode);
 /// `degrade` scales the fused attention output by (1 + degrade) on both engines.
-fn fused_ref_mini(tag: &str, sample_sets: &[Vec<usize>], degrade: f32) -> Vec<crate::fused_ref::Report> {
+fn fused_ref_mini(
+    tag: &str,
+    sample_sets: &[Vec<usize>],
+    degrade: f32,
+) -> Vec<crate::fused_ref::Report> {
     use crate::fused_ref::{run_fused_decode, Control};
     let (dir, path) = mini_paths(tag);
     std::env::set_var("OXE_MODEL_SHA256", "0".repeat(64));
@@ -2441,7 +3579,12 @@ fn fused_ref_mini(tag: &str, sample_sets: &[Vec<usize>], degrade: f32) -> Vec<cr
     let plan = Plan::build(&g.header, &desc, 2, 512).unwrap();
     let ws = WeightStore::load(g, &plan, &opt).unwrap();
     let pool = sched::Pool::new(&test_cpus(2), Duration::from_micros(100)).unwrap();
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let prefix: Vec<u32> = (0..200u32).map(|i| (i * 13 + 7) % 64).collect();
     let cont: Vec<u32> = (0..250u32).map(|i| (i * 29 + 5) % 64).collect();
     let mut st = Vec::new();
@@ -2461,8 +3604,20 @@ fn fused_ref_mini(tag: &str, sample_sets: &[Vec<usize>], degrade: f32) -> Vec<cr
                 e.reset();
                 e.read_state(&mut &st[..], prefix.len()).unwrap();
             };
-            let r = run_fused_decode(&mut a, &mut b, &pool, &mut load, &cont, Control::Ubatch(64), samples, &mut |_| {});
-            assert_eq!((r.rows.len(), r.control_rows.len(), r.rows[0].position), (cont.len(), cont.len(), prefix.len()));
+            let r = run_fused_decode(
+                &mut a,
+                &mut b,
+                &pool,
+                &mut load,
+                &cont,
+                Control::Ubatch(64),
+                samples,
+                &mut |_| {},
+            );
+            assert_eq!(
+                (r.rows.len(), r.control_rows.len(), r.rows[0].position),
+                (cont.len(), cont.len(), prefix.len())
+            );
             r
         })
         .collect();
@@ -2493,31 +3648,67 @@ fn mini_fused_ref_fork_is_transparent_and_current_fused_passes_c() {
     assert_eq!((few[0], *few.last().unwrap()), (0, 249));
     let all: Vec<usize> = (0..250).collect();
     let r = fused_ref_mini("fusedref", &[few, mid, all], 0.0);
-    assert!(r.iter().all(|x| x.refs.iter().all(|f| f.fork_replay_exact)), "a fork did not replay exactly");
+    assert!(
+        r.iter().all(|x| x.refs.iter().all(|f| f.fork_replay_exact)),
+        "a fork did not replay exactly"
+    );
     for x in &r[1..] {
-        for (p, q) in r[0].rows.iter().zip(&x.rows).chain(r[0].control_rows.iter().zip(&x.control_rows)) {
-            assert!(p.kld.to_bits() == q.kld.to_bits() && p.top1 == q.top1 && p.inc_top1 == q.inc_top1, "forking changed position {}", p.position);
+        for (p, q) in r[0]
+            .rows
+            .iter()
+            .zip(&x.rows)
+            .chain(r[0].control_rows.iter().zip(&x.control_rows))
+        {
+            assert!(
+                p.kld.to_bits() == q.kld.to_bits() && p.top1 == q.top1 && p.inc_top1 == q.inc_top1,
+                "forking changed position {}",
+                p.position
+            );
         }
     }
     for f in &r[2].refs {
         assert!(f.inc_rms.is_finite() && f.cand_rms.is_finite() && f.ref_absmax > 0.0);
-        assert!(f.inc_rms / (f.ref_absmax as f64) < 3e-2 && f.cand_rms / (f.ref_absmax as f64) < 3e-2, "position {} far from the reference", f.position);
+        assert!(
+            f.inc_rms / (f.ref_absmax as f64) < 3e-2 && f.cand_rms / (f.ref_absmax as f64) < 3e-2,
+            "position {} far from the reference",
+            f.position
+        );
         assert!(f.inc_attn.1 > 0.0 && f.cand_attn.1 > 0.0);
     }
-    let gate = Gate { min_positions: 250, ..Gate::default() };
+    let gate = Gate {
+        min_positions: 250,
+        ..Gate::default()
+    };
     let v = r[1].verdict(&gate);
     print_verdict("mini fused-decode, 200 samples", &v);
-    assert_eq!((v.ref_samples, v.cand.rows, v.control.rows), (200, 250, 250));
-    assert!(v.same_positions && v.scope_met && v.path_ok && v.fork_replay_exact, "{v:?}");
-    assert!(v.pass_c && v.pass_c_p50 && v.pass_c_p90 && v.pass_c_jumps && v.pass_c_attn, "{v:?}");
+    assert_eq!(
+        (v.ref_samples, v.cand.rows, v.control.rows),
+        (200, 250, 250)
+    );
+    assert!(
+        v.same_positions && v.scope_met && v.path_ok && v.fork_replay_exact,
+        "{v:?}"
+    );
+    assert!(
+        v.pass_c && v.pass_c_p50 && v.pass_c_p90 && v.pass_c_jumps && v.pass_c_attn,
+        "{v:?}"
+    );
     // the dynamic floors are the measured control's
-    assert_eq!(v.kld_max.to_bits(), (gate.kld_factor * v.control.mean).to_bits());
+    assert_eq!(
+        v.kld_max.to_bits(),
+        (gate.kld_factor * v.control.mean).to_bits()
+    );
     assert_eq!(v.top1_min.to_bits(), (v.control.top1 - 0.005).to_bits());
     assert!(v.control.mean.is_finite() && v.control.top1 > 0.5);
     let arms: Vec<&str> = r[1].arms.iter().map(|a| a.role).collect();
     assert_eq!(arms, ["incumbent", "candidate", "reference", "control"]);
     let ctl = r[1].arms.iter().find(|a| a.role == "control").unwrap();
-    assert!(ctl.pf.rows == 250 && ctl.pf.max_rows == 64 && ctl.pf.units_fa2 + ctl.pf.units_fa2x + ctl.pf.units_ref == 0, "{ctl:?}");
+    assert!(
+        ctl.pf.rows == 250
+            && ctl.pf.max_rows == 64
+            && ctl.pf.units_fa2 + ctl.pf.units_fa2x + ctl.pf.units_ref == 0,
+        "{ctl:?}"
+    );
     print_verdict("mini fused-decode, every position", &r[2].verdict(&gate));
     // 20 samples do not meet the scope (>= 200); the default gate also needs >= 1000 rows
     let s = r[0].verdict(&gate);
@@ -2538,7 +3729,12 @@ fn mini_fused_ref_decode_kld_direction_is_cand_to_tiled() {
     let plan = Plan::build(&g.header, &desc, 2, 512).unwrap();
     let ws = WeightStore::load(g, &plan, &opt).unwrap();
     let pool = sched::Pool::new(&test_cpus(2), Duration::from_micros(100)).unwrap();
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let prefix: Vec<u32> = (0..200u32).map(|i| (i * 13 + 7) % 64).collect();
     let cont: Vec<u32> = (0..60u32).map(|i| (i * 29 + 5) % 64).collect();
     let mut a = Engine::new(&plan, &ws, cfg.clone()).unwrap();
@@ -2551,12 +3747,29 @@ fn mini_fused_ref_decode_kld_direction_is_cand_to_tiled() {
     // a visibly different candidate, so both directions are non-zero and differ
     b.set_fused_degrade(5e-2);
     let mut want = Vec::new();
-    let (rows, _) = run_decode(&mut a, &mut b, &pool, &cont, &[], &mut |_, la, lb| want.push((kld(lb, la), kld(la, lb))), &mut |_, _| {});
+    let (rows, _) = run_decode(
+        &mut a,
+        &mut b,
+        &pool,
+        &cont,
+        &[],
+        &mut |_, la, lb| want.push((kld(lb, la), kld(la, lb))),
+        &mut |_, _| {},
+    );
     assert_eq!(rows.len(), cont.len());
     for (r, (fwd, _)) in rows.iter().zip(&want) {
-        assert_eq!(r.kld.to_bits(), fwd.to_bits(), "row {} is not KL(P_cand || P_tiled)", r.index);
+        assert_eq!(
+            r.kld.to_bits(),
+            fwd.to_bits(),
+            "row {} is not KL(P_cand || P_tiled)",
+            r.index
+        );
     }
-    assert!(want.iter().any(|(f, r)| *f > 0.0 && f.to_bits() != r.to_bits()), "the fixture cannot tell the two directions apart");
+    assert!(
+        want.iter()
+            .any(|(f, r)| *f > 0.0 && f.to_bits() != r.to_bits()),
+        "the fixture cannot tell the two directions apart"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -2566,10 +3779,16 @@ fn mini_fused_ref_decode_kld_direction_is_cand_to_tiled() {
 fn mini_fused_ref_degraded_fused_fails_the_reference_gate() {
     use crate::fused_ref::{sample_positions, Gate};
     let r = fused_ref_mini("fusedrefbad", &[sample_positions(250, 200)], 1e-2);
-    let v = r[0].verdict(&Gate { min_positions: 250, ..Gate::default() });
+    let v = r[0].verdict(&Gate {
+        min_positions: 250,
+        ..Gate::default()
+    });
     print_verdict("mini fused-decode degraded 1e-2", &v);
     assert!(v.scope_met && v.fork_replay_exact && v.path_ok);
-    assert!(!v.pass_c_attn && !v.pass_c_p50 && !v.pass_c && !v.passed, "{v:?}");
+    assert!(
+        !v.pass_c_attn && !v.pass_c_p50 && !v.pass_c && !v.passed,
+        "{v:?}"
+    );
     assert!(v.cand_attn_rel_l2 > 10.0 * v.inc_attn_rel_l2);
 }
 
@@ -2580,7 +3799,9 @@ fn fused_ref_attention_reference_matches_f32_and_sees_off_by_one() {
     let (n, hd) = (3000usize, 64usize);
     let mut s = 12345u64;
     let mut rnd = || {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5
     };
     let q: Vec<f32> = (0..hd).map(|_| 4.0 * rnd()).collect();
@@ -2596,8 +3817,14 @@ fn fused_ref_attention_reference_matches_f32_and_sees_off_by_one() {
     let d = |x: &[f32], y: &[f32]| x.iter().zip(y).fold(0f32, |m, (p, q)| m.max((p - q).abs()));
     let (gap, off) = (d(&a, &b), d(&a, &c));
     assert!(gap < 1e-5, "f64-accumulated vs f32 reference: {gap}");
-    assert!(off > 100.0 * gap.max(1e-7), "off-by-one context not visible: {off} vs {gap}");
-    assert_eq!(crate::fused_ref::sample_positions(5, 0), Vec::<usize>::new());
+    assert!(
+        off > 100.0 * gap.max(1e-7),
+        "off-by-one context not visible: {off} vs {gap}"
+    );
+    assert_eq!(
+        crate::fused_ref::sample_positions(5, 0),
+        Vec::<usize>::new()
+    );
     assert_eq!(crate::fused_ref::sample_positions(5, 1), vec![0]);
     assert_eq!(crate::fused_ref::sample_positions(3, 10), vec![0, 1, 2]);
 }
@@ -2622,10 +3849,15 @@ fn mini_dec_pb_attn_out_is_bit_identical() {
     assert_eq!(AttnOut::Pb(64).name(), "pb64");
     for nt in [1usize, 3] {
         let (dir, _path, plan, ws, mw, pool) = mtp_setup(&format!("decpb{nt}"), nt);
-        let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: false,
+            profile: false,
+        };
         let prompt: Vec<u32> = vec![3, 17, 42, 5, 9, 33, 1];
         let n_gen = 300; // kv_len crosses 32-, 256- and 4-boundaries up to 307
-        // plain greedy, MTP off: ids, logit rows, hidden states, final state bytes
+                         // plain greedy, MTP off: ids, logit rows, hidden states, final state bytes
         let plain = |k: AttnOut| {
             let mut e = Engine::new(&plan, &ws, cfg.clone()).unwrap();
             e.set_attn_tiled_min_kv(0);
@@ -2635,7 +3867,11 @@ fn mini_dec_pb_attn_out_is_bit_identical() {
             for &t in &prompt {
                 next = e.step(&pool, t);
             }
-            let (mut ids, mut rows, mut hs) = (vec![next], vec![e.logits().to_vec()], vec![e.hidden(0).to_vec()]);
+            let (mut ids, mut rows, mut hs) = (
+                vec![next],
+                vec![e.logits().to_vec()],
+                vec![e.hidden(0).to_vec()],
+            );
             for _ in 1..n_gen {
                 next = e.step(&pool, next);
                 ids.push(next);
@@ -2651,8 +3887,14 @@ fn mini_dec_pb_attn_out_is_bit_identical() {
             let (ids, rows, hs, st) = plain(k);
             assert_eq!(ids, want_ids, "{nt} threads {k:?}: plain ids differ");
             for i in 0..rows.len() {
-                assert!(bits_eq(&rows[i], &want_rows[i]), "{nt} threads {k:?}: plain logits row {i} differ");
-                assert!(bits_eq(&hs[i], &want_h[i]), "{nt} threads {k:?}: plain hidden {i} differs");
+                assert!(
+                    bits_eq(&rows[i], &want_rows[i]),
+                    "{nt} threads {k:?}: plain logits row {i} differ"
+                );
+                assert!(
+                    bits_eq(&hs[i], &want_h[i]),
+                    "{nt} threads {k:?}: plain hidden {i} differs"
+                );
             }
             assert!(st == want_st, "{nt} threads {k:?}: written state differs");
         }
@@ -2661,7 +3903,17 @@ fn mini_dec_pb_attn_out_is_bit_identical() {
         for depth in [1usize, 3] {
             let mut got: Vec<(Vec<u32>, Vec<u8>)> = Vec::new();
             for k in [AttnOut::Legacy, AttnOut::Pb(32), AttnOut::Pb(256)] {
-                let mut e = Engine::with_options(&plan, &ws, cfg.clone(), EngineOptions { verify_lanes: depth + 1, mtp: Some(&mw), kv_type: None }).unwrap();
+                let mut e = Engine::with_options(
+                    &plan,
+                    &ws,
+                    cfg.clone(),
+                    EngineOptions {
+                        verify_lanes: depth + 1,
+                        mtp: Some(&mw),
+                        kv_type: None,
+                    },
+                )
+                .unwrap();
                 e.set_attn_tiled_min_kv(0);
                 e.set_attn_out(k);
                 let mut d = crate::mtp::MtpDriver::new(&e, depth).unwrap();
@@ -2689,20 +3941,39 @@ fn mini_dec_pb_attn_out_is_bit_identical() {
                     x = *out.last().unwrap();
                 }
                 ids.truncate(n_gen);
-                assert_eq!(ids, want_ids, "{nt} threads depth {depth} {k:?}: MTP ids differ from plain legacy");
-                assert!(d.stats.accepted_at[depth - 1] > 0, "depth {depth}: full acceptance not exercised");
+                assert_eq!(
+                    ids, want_ids,
+                    "{nt} threads depth {depth} {k:?}: MTP ids differ from plain legacy"
+                );
+                assert!(
+                    d.stats.accepted_at[depth - 1] > 0,
+                    "depth {depth}: full acceptance not exercised"
+                );
                 let mut st = Vec::new();
                 e.write_state(&mut st).unwrap();
                 got.push((ids, st));
             }
             for g in &got[1..] {
-                assert!(g.1 == got[0].1, "{nt} threads depth {depth}: MTP engine state differs between legacy and pb");
+                assert!(
+                    g.1 == got[0].1,
+                    "{nt} threads depth {depth}: MTP engine state differs between legacy and pb"
+                );
             }
         }
         // verify runs of 1-4 lanes with rejected tails rolled back, lane for lane
         let seq: Vec<u32> = (0..96).map(|i| (i * 11 + 5) % 64).collect();
         let mk = |k: AttnOut| {
-            let mut e = Engine::with_options(&plan, &ws, cfg.clone(), EngineOptions { verify_lanes: 4, mtp: None, kv_type: None }).unwrap();
+            let mut e = Engine::with_options(
+                &plan,
+                &ws,
+                cfg.clone(),
+                EngineOptions {
+                    verify_lanes: 4,
+                    mtp: None,
+                    kv_type: None,
+                },
+            )
+            .unwrap();
             e.set_attn_tiled_min_kv(0);
             e.set_attn_out(k);
             e
@@ -2719,8 +3990,14 @@ fn mini_dec_pb_attn_out_is_bit_identical() {
             let (ga, gb) = (a.verify(&pool, &toks), b.verify(&pool, &toks));
             assert_eq!(ga[..n], gb[..n], "{nt} threads: verify ids differ at {p}");
             for ln in 0..n {
-                assert!(bits_eq(a.logits_lane(ln), b.logits_lane(ln)), "{nt} threads: verify lane {ln} logits differ at {p}");
-                assert!(bits_eq(a.hidden(ln), b.hidden(ln)), "{nt} threads: verify lane {ln} hidden differs at {p}");
+                assert!(
+                    bits_eq(a.logits_lane(ln), b.logits_lane(ln)),
+                    "{nt} threads: verify lane {ln} logits differ at {p}"
+                );
+                assert!(
+                    bits_eq(a.hidden(ln), b.hidden(ln)),
+                    "{nt} threads: verify lane {ln} hidden differs at {p}"
+                );
             }
             a.commit(m);
             b.commit(m);
@@ -2749,7 +4026,10 @@ fn mini_gguf_all_experts_used() {
     mini_model_used(&bad, 9);
     let g = gguf::Gguf::open(&bad).unwrap();
     let err = ModelDesc::from_header(&g.header).unwrap_err();
-    assert!(err.contains("expert_used_count 9") && err.contains("expert_count 8"), "{err}");
+    assert!(
+        err.contains("expert_used_count 9") && err.contains("expert_count 8"),
+        "{err}"
+    );
 
     let path = dir.join("k8.gguf");
     mini_model_used(&path, 8);
@@ -2759,7 +4039,17 @@ fn mini_gguf_all_experts_used() {
     assert_eq!((plan.desc.n_expert, plan.desc.n_expert_used), (8, 8));
 
     // routing by definition: top-8 of 8 = a permutation, weights = probs[ids] / sum (== probs)
-    let tr = Engine::new(&plan, &ws, EngineConfig { n_ctx: 512, logits: true, trace: true, profile: false }).unwrap();
+    let tr = Engine::new(
+        &plan,
+        &ws,
+        EngineConfig {
+            n_ctx: 512,
+            logits: true,
+            trace: true,
+            profile: false,
+        },
+    )
+    .unwrap();
     for t in [5u32, 17, 33] {
         tr.step(&pool, t);
         assert!(tr.logits().iter().all(|v| v.is_finite()));
@@ -2770,24 +4060,44 @@ fn mini_gguf_all_experts_used() {
             let w = &m[&format!("ffn_moe_weights_norm-{l}")];
             let mut seen: Vec<usize> = ids.iter().map(|&i| i as usize).collect();
             seen.sort();
-            assert_eq!(seen, (0..8).collect::<Vec<_>>(), "layer {l}: every expert routed");
-            assert!(ids.windows(2).all(|p| probs[p[0] as usize] >= probs[p[1] as usize]), "layer {l}: descending");
+            assert_eq!(
+                seen,
+                (0..8).collect::<Vec<_>>(),
+                "layer {l}: every expert routed"
+            );
+            assert!(
+                ids.windows(2)
+                    .all(|p| probs[p[0] as usize] >= probs[p[1] as usize]),
+                "layer {l}: descending"
+            );
             let s: f32 = probs.iter().sum();
             for (j, &i) in ids.iter().enumerate() {
-                assert!((w[j] - probs[i as usize] / s).abs() <= 1e-6, "layer {l}: weight {j}");
+                assert!(
+                    (w[j] - probs[i as usize] / s).abs() <= 1e-6,
+                    "layer {l}: weight {j}"
+                );
             }
         }
     }
 
     // small prefill == decode, bitwise (the k = 2 model's invariant)
-    let cfg = EngineConfig { n_ctx: 512, logits: true, trace: false, profile: false };
+    let cfg = EngineConfig {
+        n_ctx: 512,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
     let dec = Engine::new(&plan, &ws, cfg.clone()).unwrap();
     let pf = Engine::new(&plan, &ws, cfg.clone()).unwrap();
     for &t in &[5u32, 17, 33] {
         dec.step(&pool, t);
     }
-    pf.prefill(&pool, &[5, 17, 33], crate::engine::UBATCH).unwrap();
-    assert!(same_bits(dec.logits(), pf.logits()), "prefill of 3 tokens differs from decode");
+    pf.prefill(&pool, &[5, 17, 33], crate::engine::UBATCH)
+        .unwrap();
+    assert!(
+        same_bits(dec.logits(), pf.logits()),
+        "prefill of 3 tokens differs from decode"
+    );
     assert!(same_state(&dec.dump_state(), &pf.dump_state()));
 
     // batched prefill (MUL_MAT_ID over all experts) thread-count invariant

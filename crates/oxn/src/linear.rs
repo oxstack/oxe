@@ -230,13 +230,22 @@ pub struct NpuCtx {
 impl NpuCtx {
     pub fn new(mut backend: Box<dyn Backend>, cfg: NpuConfig) -> Result<NpuCtx, String> {
         if cfg.kc_max != 0 && cfg.kc_max < 32 {
-            return Err(format!("npu: kc_max {} is below 32 (0 = no K chunking)", cfg.kc_max));
+            return Err(format!(
+                "npu: kc_max {} is below 32 (0 = no K chunking)",
+                cfg.kc_max
+            ));
         }
         if !cfg.ycol {
-            return Err("npu: ycol must be true (the output parts of a linear are column-major tile runs)".into());
+            return Err(
+                "npu: ycol must be true (the output parts of a linear are column-major tile runs)"
+                    .into(),
+            );
         }
         if cfg.max_blob_bytes > WEIGHT_BYTES {
-            return Err(format!("npu: max_blob_bytes {} is more than a weight buffer ({WEIGHT_BYTES})", cfg.max_blob_bytes));
+            return Err(format!(
+                "npu: max_blob_bytes {} is more than a weight buffer ({WEIGHT_BYTES})",
+                cfg.max_blob_bytes
+            ));
         }
         let n = backend.sessions();
         if n == 0 {
@@ -247,9 +256,19 @@ impl NpuCtx {
             let a0 = backend.alloc(s, ACT_BYTES)?;
             let a1 = backend.alloc(s, ACT_BYTES)?;
             let out = backend.alloc(s, OUT_BYTES)?;
-            sess.push(Session { act: [a0, a1], out, weights: Vec::new(), weight_bytes: 0 });
+            sess.push(Session {
+                act: [a0, a1],
+                out,
+                weights: Vec::new(),
+                weight_bytes: 0,
+            });
         }
-        let stats = NpuStats { sessions: n, weights: cfg.weights, kc_max: cfg.kc_max, ..Default::default() };
+        let stats = NpuStats {
+            sessions: n,
+            weights: cfg.weights,
+            kc_max: cfg.kc_max,
+            ..Default::default()
+        };
         Ok(NpuCtx {
             backend: Mutex::new(backend),
             cfg,
@@ -300,12 +319,22 @@ impl NpuCtx {
     /// Blobs: one per (K chunk, output part); the parts cover the output tiles in order, each with the largest
     /// whole-tile count whose blob fits `max_blob_bytes`. Each blob is reserved in a weight buffer first, then
     /// packed in place by `pack_threads` workers (strips taken from a shared counter); no temporary copy is made.
-    pub fn add_linear(&mut self, name: &str, q8: &[u8], o: usize, k: usize, perm: Option<&[u32]>) -> Result<Option<NpuLinear>, String> {
+    pub fn add_linear(
+        &mut self,
+        name: &str,
+        q8: &[u8],
+        o: usize,
+        k: usize,
+        perm: Option<&[u32]>,
+    ) -> Result<Option<NpuLinear>, String> {
         if o == 0 || k == 0 || o % 32 != 0 || k % 32 != 0 {
             return self.stay_on_cpu();
         }
         if Some(q8.len()) != o.checked_mul(k / 32).and_then(|n| n.checked_mul(34)) {
-            return Err(format!("npu: {name}: Q8_0 length {} for a {o}x{k} linear", q8.len()));
+            return Err(format!(
+                "npu: {name}: Q8_0 length {} for a {o}x{k} linear",
+                q8.len()
+            ));
         }
         if let Some(p) = perm {
             if p.len() != o {
@@ -326,7 +355,11 @@ impl NpuCtx {
     /// Place mixed-format logical rows as fp16 tiles. Unsupported shapes remain
     /// on the CPU. A read/conversion failure is an error, never a placed tensor.
     /// On error callers must discard this context (reserved buffers remain owned).
-    pub fn add_linear_rows(&mut self, name: &str, rows: &dyn WeightRows) -> Result<Option<NpuLinear>, String> {
+    pub fn add_linear_rows(
+        &mut self,
+        name: &str,
+        rows: &dyn WeightRows,
+    ) -> Result<Option<NpuLinear>, String> {
         if self.cfg.weights != WFmt::Fp16 {
             return Err("npu: logical row packing requires fp16 weights".into());
         }
@@ -339,18 +372,27 @@ impl NpuCtx {
         })
     }
 
-    fn place_linear(&mut self, name: &str, o: usize, k: usize,
+    fn place_linear(
+        &mut self,
+        name: &str,
+        o: usize,
+        k: usize,
         mut pack: impl FnMut(&mut [u8], usize, usize, usize, usize, &[usize]) -> Result<usize, String>,
     ) -> Result<Option<NpuLinear>, String> {
-        if self.packing_failed { return Err("npu: discard context after packing failure".into()); }
+        if self.packing_failed {
+            return Err("npu: discard context after packing failure".into());
+        }
         let fmt = self.cfg.weights;
-        k.checked_mul(o).and_then(|n| n.checked_mul(2))
+        k.checked_mul(o)
+            .and_then(|n| n.checked_mul(2))
             .ok_or_else(|| format!("npu: {name}: weight shape overflow"))?;
         let kc = self.kc_for(k);
         let nchunks = k / kc;
         let strip = fmt.strip_bytes(kc);
         let ntile_o = o / 32;
-        let bytes = nchunks.checked_mul(ntile_o).and_then(|n| n.checked_mul(strip))
+        let bytes = nchunks
+            .checked_mul(ntile_o)
+            .and_then(|n| n.checked_mul(strip))
             .ok_or_else(|| format!("npu: {name}: packed shape overflow"))?;
         let max_blob = self.max_blob_bytes();
         if strip > max_blob {
@@ -369,7 +411,10 @@ impl NpuCtx {
         };
         let nt_max = (max_blob / strip).min(ntile_o);
         // output parts: (first output tile, tiles), in order
-        let parts: Vec<(usize, usize)> = (0..ntile_o).step_by(nt_max).map(|ot0| (ot0, nt_max.min(ntile_o - ot0))).collect();
+        let parts: Vec<(usize, usize)> = (0..ntile_o)
+            .step_by(nt_max)
+            .map(|ot0| (ot0, nt_max.min(ntile_o - ot0)))
+            .collect();
         let threads = self.pack_threads();
         self.packing_failed = true; // cleared only after all allocations and workers succeed
         let t_pack = Instant::now();
@@ -382,7 +427,10 @@ impl NpuCtx {
                 for &(ot0, nt) in &parts {
                     let len = nt * strip;
                     // first fit over this session's weight buffers, else a new buffer
-                    let fit = s.weights.iter().position(|w| align_up(w.used) + len <= w.buf.len);
+                    let fit = s
+                        .weights
+                        .iter()
+                        .position(|w| align_up(w.used) + len <= w.buf.len);
                     let (wi, off) = match fit {
                         Some(i) => (i, align_up(s.weights[i].used)),
                         None => {
@@ -399,7 +447,10 @@ impl NpuCtx {
                     let dst = unsafe { std::slice::from_raw_parts_mut(w.buf.ptr.add(off), len) };
                     let packed_workers = match pack(dst, kc, c, ot0, threads, &self.pack_cpus) {
                         Ok(n) => n,
-                        Err(e) => { self.packing_failed = true; return Err(e); }
+                        Err(e) => {
+                            self.packing_failed = true;
+                            return Err(e);
+                        }
                     };
                     workers_used = workers_used.max(packed_workers);
                     blobs.push(NpuBlob {
@@ -424,9 +475,19 @@ impl NpuCtx {
         st.pack_s += t_pack.elapsed().as_secs_f64();
         st.pack_threads = st.pack_threads.max(workers_used);
         if st.linears == 1 && !self.pack_cpus.is_empty() {
-            eprintln!("oxi: npu pack: workers {workers_used}, verified CPU masks {:?}", &self.pack_cpus[..workers_used]);
+            eprintln!(
+                "oxi: npu pack: workers {workers_used}, verified CPU masks {:?}",
+                &self.pack_cpus[..workers_used]
+            );
         }
-        Ok(Some(NpuLinear { name: name.to_string(), o, k, kc, session, blobs }))
+        Ok(Some(NpuLinear {
+            name: name.to_string(),
+            o,
+            k,
+            kc,
+            session,
+            blobs,
+        }))
     }
 
     fn stay_on_cpu(&self) -> Result<Option<NpuLinear>, String> {
@@ -437,7 +498,11 @@ impl NpuCtx {
     /// Resolve 0 from the explicit pool CPU list, before consulting the inherited caller mask.
     fn pack_threads(&self) -> usize {
         if !self.pack_cpus.is_empty() {
-            return if self.cfg.pack_threads == 0 { self.pack_cpus.len() } else { self.cfg.pack_threads.min(self.pack_cpus.len()) };
+            return if self.cfg.pack_threads == 0 {
+                self.pack_cpus.len()
+            } else {
+                self.cfg.pack_threads.min(self.pack_cpus.len())
+            };
         }
         match self.cfg.pack_threads {
             0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
@@ -447,9 +512,22 @@ impl NpuCtx {
 
     /// Activation view of `n` tokens x `k` channels in buffer `id` of `session`, with K chunks of `kc`.
     /// The layout's bytes are zeroed first (padding rows stay zero).
-    pub fn act(&self, session: usize, id: usize, n: usize, k: usize, kc: usize) -> Result<NpuAct, String> {
-        let s = self.sess.get(session).ok_or_else(|| format!("npu: no session {session}"))?;
-        let buf = *s.act.get(id).ok_or_else(|| format!("npu: no activation buffer {id}"))?;
+    pub fn act(
+        &self,
+        session: usize,
+        id: usize,
+        n: usize,
+        k: usize,
+        kc: usize,
+    ) -> Result<NpuAct, String> {
+        let s = self
+            .sess
+            .get(session)
+            .ok_or_else(|| format!("npu: no session {session}"))?;
+        let buf = *s
+            .act
+            .get(id)
+            .ok_or_else(|| format!("npu: no activation buffer {id}"))?;
         if n == 0 || k == 0 || k % 32 != 0 || kc == 0 || kc % 32 != 0 || k % kc != 0 {
             return Err(format!("npu: bad activation shape n {n}, k {k}, kc {kc}"));
         }
@@ -463,24 +541,47 @@ impl NpuCtx {
         }
         // SAFETY: lay.bytes() <= buf.len, and no run reads this buffer while the caller owns the view.
         unsafe { ptr::write_bytes(buf.ptr, 0, lay.bytes()) };
-        Ok(NpuAct { ptr: buf.ptr as *mut u16, lay, buf_off: 0, slot: buf.slot, session })
+        Ok(NpuAct {
+            ptr: buf.ptr as *mut u16,
+            lay,
+            buf_off: 0,
+            slot: buf.slot,
+            session,
+        })
     }
 
     /// Y = X W^T for `lin`: one backend GEMM per blob on `lin.session` (each writes its output tiles of its K chunk),
     /// partial sums left for `NpuOut::row`. `x` must have been made for the same session.
     pub fn run(&self, lin: &NpuLinear, x: &NpuAct) -> Result<NpuOut, String> {
-        if self.packing_failed { return Err("npu: discard context after packing failure".into()); }
+        if self.packing_failed {
+            return Err("npu: discard context after packing failure".into());
+        }
         if x.session != lin.session {
-            return Err(format!("npu: activation of session {} used by a linear of session {}", x.session, lin.session));
+            return Err(format!(
+                "npu: activation of session {} used by a linear of session {}",
+                x.session, lin.session
+            ));
         }
         if x.lay.k != lin.k || x.lay.kc != lin.kc {
-            return Err(format!("npu: activation k {} kc {} does not match the linear (k {}, kc {})", x.lay.k, x.lay.kc, lin.k, lin.kc));
+            return Err(format!(
+                "npu: activation k {} kc {} does not match the linear (k {}, kc {})",
+                x.lay.k, x.lay.kc, lin.k, lin.kc
+            ));
         }
         let out = self.sess[lin.session].out;
         let nchunks = lin.k / lin.kc;
-        let lay = OutLayout { t_pad: x.lay.t_pad, o: lin.o, nchunks, ycol: true };
+        let lay = OutLayout {
+            t_pad: x.lay.t_pad,
+            o: lin.o,
+            nchunks,
+            ycol: true,
+        };
         if lay.bytes() > out.len {
-            return Err(format!("npu: output of {} MiB does not fit the {} MiB buffer", lay.bytes() >> 20, out.len >> 20));
+            return Err(format!(
+                "npu: output of {} MiB does not fit the {} MiB buffer",
+                lay.bytes() >> 20,
+                out.len >> 20
+            ));
         }
         let flags = self.cfg.weights.gemm_flag() | GF_YCOL;
         // one row tile of Y is t_pad/32 tiles of 2048 bytes; with column-major tiles, output tile ot0 starts after ot0 such columns
@@ -504,7 +605,13 @@ impl NpuCtx {
                     o: 32 * b.nt,
                     flags,
                     r: 0,
-                    c: pick_c(be.vtcm_bytes() as usize, x.lay.t_pad, lin.kc, 32 * b.nt as usize, self.cfg.weights),
+                    c: pick_c(
+                        be.vtcm_bytes() as usize,
+                        x.lay.t_pad,
+                        lin.kc,
+                        32 * b.nt as usize,
+                        self.cfg.weights,
+                    ),
                 };
                 let s = be.gemm(lin.session, &a)?;
                 calls += 1;
@@ -522,14 +629,23 @@ impl NpuCtx {
         st.pcycles += pc;
         st.hmx_pcycles += hmx;
         st.deq_cycles += deq;
-        Ok(NpuOut { ptr: out.ptr as *const u16, lay })
+        Ok(NpuOut {
+            ptr: out.ptr as *const u16,
+            lay,
+        })
     }
 
     /// Accuracy audit of one delivered token: `x` is the exact f32 input row of the token (length k), `y(n)` the
     /// delivered output n of that token, for every n in `n_list`. For each n the reference is the f64 sum
     /// sum_k x[k] * w(n, k) with the weights read back from the blobs (`wfmt::weight_row`), and the K-chunk partial
     /// sums. Accumulates per linear name; does nothing unless `NpuConfig::audit` is on.
-    pub fn audit_rows(&self, lin: &NpuLinear, x: &[f32], y: &dyn Fn(usize) -> f32, n_list: &[usize]) {
+    pub fn audit_rows(
+        &self,
+        lin: &NpuLinear,
+        x: &[f32],
+        y: &dyn Fn(usize) -> f32,
+        n_list: &[usize],
+    ) {
         if !self.cfg.audit || n_list.is_empty() {
             return;
         }
@@ -537,7 +653,10 @@ impl NpuCtx {
         let (fmt, kc) = (self.cfg.weights, lin.kc);
         let nchunks = lin.k / kc;
         let max_x = x.iter().fold(0f64, |m, &v| m.max((v as f64).abs()));
-        let mut acc = AuditAcc { max_x, ..Default::default() };
+        let mut acc = AuditAcc {
+            max_x,
+            ..Default::default()
+        };
         let mut wrow = vec![0f32; kc];
         for &n in n_list {
             assert!(n < lin.o, "audit: row {n} of {}", lin.o);
@@ -547,7 +666,10 @@ impl NpuCtx {
                 let b = lin
                     .blobs
                     .iter()
-                    .find(|b| b.chunk as usize == c && (b.ot0 as usize..(b.ot0 + b.nt) as usize).contains(&t))
+                    .find(|b| {
+                        b.chunk as usize == c
+                            && (b.ot0 as usize..(b.ot0 + b.nt) as usize).contains(&t)
+                    })
                     .expect("audit: blob of the row");
                 // SAFETY: the blob holds output tiles ot0..ot0+nt of chunk c, and t is one of them.
                 unsafe { wfmt::weight_row(fmt, b.ptr, kc, b.ot0 as usize, n, &mut wrow) };
@@ -621,7 +743,8 @@ impl NpuCtx {
             }
             stats.allocated_bytes = stats.allocated_bytes.saturating_add(session.out.len);
             for weight in &session.weights {
-                stats.weight_capacity_bytes = stats.weight_capacity_bytes.saturating_add(weight.buf.len);
+                stats.weight_capacity_bytes =
+                    stats.weight_capacity_bytes.saturating_add(weight.buf.len);
                 stats.allocated_bytes = stats.allocated_bytes.saturating_add(weight.buf.len);
             }
         }
@@ -724,8 +847,16 @@ fn fp16_step(v: f64) -> f64 {
 /// One f32 row per worker, reused for all strips. Output strips have disjoint
 /// owners. Every worker is joined even after a source error or panic.
 #[allow(clippy::too_many_arguments)]
-fn pack_rows_blob(dst: &mut [u8], rows: &dyn WeightRows, k: usize, kc: usize,
-    chunk: usize, ot0: usize, threads: usize, cpus: &[usize]) -> Result<usize, String> {
+fn pack_rows_blob(
+    dst: &mut [u8],
+    rows: &dyn WeightRows,
+    k: usize,
+    kc: usize,
+    chunk: usize,
+    ot0: usize,
+    threads: usize,
+    cpus: &[usize],
+) -> Result<usize, String> {
     let strip = WFmt::Fp16.strip_bytes(kc);
     let strips: Vec<Mutex<&mut [u8]>> = dst.chunks_mut(strip).map(Mutex::new).collect();
     let next = AtomicUsize::new(0);
@@ -733,7 +864,9 @@ fn pack_rows_blob(dst: &mut [u8], rows: &dyn WeightRows, k: usize, kc: usize,
         let mut row = vec![0f32; k];
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
-            if i >= strips.len() { return Ok(()); }
+            if i >= strips.len() {
+                return Ok(());
+            }
             let mut dst = strips[i].lock().map_err(|_| "npu: row strip poisoned")?;
             for nl in 0..32 {
                 rows.read_row((ot0 + i) * 32 + nl, &mut row)?;
@@ -754,19 +887,27 @@ fn pack_rows_blob(dst: &mut [u8], rows: &dyn WeightRows, k: usize, kc: usize,
         }
     };
     let n = threads.clamp(1, strips.len().max(1));
-    if n == 1 && cpus.is_empty() { worker()?; return Ok(1); }
+    if n == 1 && cpus.is_empty() {
+        worker()?;
+        return Ok(1);
+    }
     std::thread::scope(|scope| {
-        let handles = (0..n).map(|i| {
-            let worker = &worker;
-            scope.spawn(move || {
-                if !cpus.is_empty() {
-                    let cpu = cpus[i % cpus.len()];
-                    sched::pin_current_thread(cpu).map_err(|e| format!("npu pack: pin CPU {cpu}: {e}"))?;
-                    if sched::allowed_cpus() != 1 { return Err(format!("npu pack: CPU {cpu} affinity was not applied")); }
-                }
-                worker()
+        let handles = (0..n)
+            .map(|i| {
+                let worker = &worker;
+                scope.spawn(move || {
+                    if !cpus.is_empty() {
+                        let cpu = cpus[i % cpus.len()];
+                        sched::pin_current_thread(cpu)
+                            .map_err(|e| format!("npu pack: pin CPU {cpu}: {e}"))?;
+                        if sched::allowed_cpus() != 1 {
+                            return Err(format!("npu pack: CPU {cpu} affinity was not applied"));
+                        }
+                    }
+                    worker()
+                })
             })
-        }).collect();
+            .collect();
         join_pack_workers(handles)?;
         Ok(n)
     })
@@ -776,7 +917,19 @@ fn pack_rows_blob(dst: &mut [u8], rows: &dyn WeightRows, k: usize, kc: usize,
 /// `dst.len() / strip` strips, with up to `threads` workers. Workers take strips from a shared counter; strip i
 /// is `dst`'s i-th `strip`-byte piece (output tile ot0 + i), behind its own mutex, so each strip has exactly one writer.
 #[allow(clippy::too_many_arguments)]
-fn pack_blob(dst: &mut [u8], fmt: WFmt, q8: &[u8], o: usize, k: usize, kc: usize, perm: Option<&[u32]>, chunk: usize, ot0: usize, threads: usize, cpus: &[usize]) -> Result<usize, String> {
+fn pack_blob(
+    dst: &mut [u8],
+    fmt: WFmt,
+    q8: &[u8],
+    o: usize,
+    k: usize,
+    kc: usize,
+    perm: Option<&[u32]>,
+    chunk: usize,
+    ot0: usize,
+    threads: usize,
+    cpus: &[usize],
+) -> Result<usize, String> {
     let strip = fmt.strip_bytes(kc);
     let strips: Vec<Mutex<&mut [u8]>> = dst.chunks_mut(strip).map(Mutex::new).collect();
     let n_strips = strips.len();
@@ -795,20 +948,25 @@ fn pack_blob(dst: &mut [u8], fmt: WFmt, q8: &[u8], o: usize, k: usize, kc: usize
         Ok(1)
     } else {
         std::thread::scope(|s| {
-            let handles: Vec<_> = (0..n).map(|i| {
-                let worker = &worker;
-                s.spawn(move || {
-                    if !cpus.is_empty() {
-                        let cpu = cpus[i % cpus.len()];
-                        sched::pin_current_thread(cpu).map_err(|e| format!("npu pack: pin CPU {cpu}: {e}"))?;
-                        if sched::allowed_cpus() != 1 {
-                            return Err(format!("npu pack: CPU {cpu} affinity was not applied"));
+            let handles: Vec<_> = (0..n)
+                .map(|i| {
+                    let worker = &worker;
+                    s.spawn(move || {
+                        if !cpus.is_empty() {
+                            let cpu = cpus[i % cpus.len()];
+                            sched::pin_current_thread(cpu)
+                                .map_err(|e| format!("npu pack: pin CPU {cpu}: {e}"))?;
+                            if sched::allowed_cpus() != 1 {
+                                return Err(format!(
+                                    "npu pack: CPU {cpu} affinity was not applied"
+                                ));
+                            }
                         }
-                    }
-                    worker();
-                    Ok::<(), String>(())
+                        worker();
+                        Ok::<(), String>(())
+                    })
                 })
-            }).collect();
+                .collect();
             join_pack_workers(handles)?;
             Ok(n)
         })
@@ -817,10 +975,14 @@ fn pack_blob(dst: &mut [u8], fmt: WFmt, q8: &[u8], o: usize, k: usize, kc: usize
 
 /// Drain every scoped worker before returning an error. Early return would leave a
 /// later panic to `thread::scope`, which re-panics instead of returning our error.
-fn join_pack_workers<'scope>(handles: Vec<std::thread::ScopedJoinHandle<'scope, Result<(), String>>>) -> Result<(), String> {
+fn join_pack_workers<'scope>(
+    handles: Vec<std::thread::ScopedJoinHandle<'scope, Result<(), String>>>,
+) -> Result<(), String> {
     let mut first_error = None;
     for handle in handles {
-        let result = handle.join().unwrap_or_else(|_| Err("npu pack: worker panicked".to_string()));
+        let result = handle
+            .join()
+            .unwrap_or_else(|_| Err("npu pack: worker panicked".to_string()));
         if let Err(error) = result {
             if first_error.is_none() {
                 first_error = Some(error);
@@ -851,7 +1013,13 @@ impl NpuAct {
     /// # Safety
     /// No run may read this activation while the write happens, and `k0`/`row.len()` are multiples of 32.
     pub unsafe fn put(&self, t: usize, k0: usize, row: &[f32]) {
-        tiles::write_act_row(self.ptr.add(self.buf_off as usize / 2), &self.lay, t, k0, row)
+        tiles::write_act_row(
+            self.ptr.add(self.buf_off as usize / 2),
+            &self.lay,
+            t,
+            k0,
+            row,
+        )
     }
 
     /// Write one whole 32-token tile, byte-identical to 32 `put` calls.
@@ -859,8 +1027,15 @@ impl NpuAct {
     /// # Safety
     /// As `put`: no device read races, columns are multiples of32 and rows are
     /// exactly32*len elements. Padding tokens must be supplied as zeros.
-    pub unsafe fn put_tile_rows(&self, rt:usize, k0:usize, len:usize, rows:&[f32]) {
-        tiles::write_act_tile_rows(self.ptr.add(self.buf_off as usize/2), &self.lay, rt, k0, len, rows)
+    pub unsafe fn put_tile_rows(&self, rt: usize, k0: usize, len: usize, rows: &[f32]) {
+        tiles::write_act_tile_rows(
+            self.ptr.add(self.buf_off as usize / 2),
+            &self.lay,
+            rt,
+            k0,
+            len,
+            rows,
+        )
     }
 }
 
@@ -958,12 +1133,30 @@ mod tests {
         p
     }
 
-    fn emu_cfg(budget_bytes: usize, pack_threads: usize, weights: WFmt, max_blob_bytes: usize) -> NpuConfig {
-        NpuConfig { budget_bytes, kc_max: 64, ycol: true, pack_threads, cpu_rows_pct: 0, weights, max_blob_bytes, audit: false }
+    fn emu_cfg(
+        budget_bytes: usize,
+        pack_threads: usize,
+        weights: WFmt,
+        max_blob_bytes: usize,
+    ) -> NpuConfig {
+        NpuConfig {
+            budget_bytes,
+            kc_max: 64,
+            ycol: true,
+            pack_threads,
+            cpu_rows_pct: 0,
+            weights,
+            max_blob_bytes,
+            audit: false,
+        }
     }
 
     fn emu_ctx(budget_bytes: usize, pack_threads: usize) -> NpuCtx {
-        NpuCtx::new(Box::new(Emu::new(8 << 20, 1)), emu_cfg(budget_bytes, pack_threads, WFmt::W8, 0)).expect("npu context")
+        NpuCtx::new(
+            Box::new(Emu::new(8 << 20, 1)),
+            emu_cfg(budget_bytes, pack_threads, WFmt::W8, 0),
+        )
+        .expect("npu context")
     }
 
     /// The bytes of a placed blob, read through its pointer.
@@ -985,26 +1178,42 @@ mod tests {
             let mut ctx = emu_ctx(1 << 30, threads);
             assert_eq!(ctx.stats().allocated_bytes, 2 * ACT_BYTES + OUT_BYTES);
             assert_eq!(ctx.stats().weight_capacity_bytes, 0);
-            let lin = ctx.add_linear("t", &q8, o, k, Some(&perm[..])).expect("add_linear").expect("placed on the accelerator");
+            let lin = ctx
+                .add_linear("t", &q8, o, k, Some(&perm[..]))
+                .expect("add_linear")
+                .expect("placed on the accelerator");
             assert_eq!((lin.kc, lin.blobs.len()), (64, 4));
             for c in 0..4 {
                 let b = &lin.blobs[c];
                 assert_eq!((b.chunk as usize, b.ot0 as usize, b.nt as usize), (c, 0, 3));
-                assert_eq!(blob_bytes(b, blob), want[c * blob..(c + 1) * blob], "pack_threads {threads}, chunk {c}");
+                assert_eq!(
+                    blob_bytes(b, blob),
+                    want[c * blob..(c + 1) * blob],
+                    "pack_threads {threads}, chunk {c}"
+                );
             }
             assert_eq!(ctx.stats().cpu_linears, 0);
-            assert_eq!(ctx.stats().allocated_bytes, 2 * ACT_BYTES + OUT_BYTES + WEIGHT_BYTES);
+            assert_eq!(
+                ctx.stats().allocated_bytes,
+                2 * ACT_BYTES + OUT_BYTES + WEIGHT_BYTES
+            );
             assert_eq!(ctx.stats().weight_capacity_bytes, WEIGHT_BYTES);
             assert!(ctx.stats().weights_bytes < ctx.stats().weight_capacity_bytes);
             ctx.reset_step_stats();
-            assert_eq!(ctx.stats().allocated_bytes, 2 * ACT_BYTES + OUT_BYTES + WEIGHT_BYTES);
+            assert_eq!(
+                ctx.stats().allocated_bytes,
+                2 * ACT_BYTES + OUT_BYTES + WEIGHT_BYTES
+            );
         }
     }
 
     #[test]
     fn pack_workers_escape_pool_caller_mask_without_changing_it() {
         let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
-        let allowed = status.lines().find_map(|l| l.strip_prefix("Cpus_allowed_list:")).unwrap();
+        let allowed = status
+            .lines()
+            .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+            .unwrap();
         let cpus = sched::parse_cpu_list(allowed.trim()).unwrap();
         if cpus.len() < 2 {
             eprintln!("pack affinity regression needs two allowed CPUs");
@@ -1012,23 +1221,60 @@ mod tests {
         }
         let pool = sched::Pool::new(&cpus[..2], std::time::Duration::ZERO).unwrap();
         let pinned_status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
-        let pinned = pinned_status.lines().find_map(|l| l.strip_prefix("Cpus_allowed_list:")).unwrap().trim().to_owned();
+        let pinned = pinned_status
+            .lines()
+            .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+            .unwrap()
+            .trim()
+            .to_owned();
         assert_eq!(pinned, cpus[0].to_string());
         assert_eq!(sched::allowed_cpus(), 1, "pool caller must start pinned");
-        let mut ctx = NpuCtx::new(Box::new(Emu::new(8 << 20, 1)), emu_cfg(1 << 30, 0, WFmt::Fp16, 0))
-            .unwrap().with_pack_cpus(pool.cpus());
-        assert_eq!(ctx.pack_threads(), 2, "auto packing uses pool CPUs, not the one-CPU caller mask");
+        let mut ctx = NpuCtx::new(
+            Box::new(Emu::new(8 << 20, 1)),
+            emu_cfg(1 << 30, 0, WFmt::Fp16, 0),
+        )
+        .unwrap()
+        .with_pack_cpus(pool.cpus());
+        assert_eq!(
+            ctx.pack_threads(),
+            2,
+            "auto packing uses pool CPUs, not the one-CPU caller mask"
+        );
         let mut rng = Rng(0x255a_aa55_1234_abcd);
         let q8 = random_q8(&mut rng, 96, 64);
-        let lin = ctx.add_linear("affinity", &q8, 96, 64, None).unwrap().unwrap();
+        let lin = ctx
+            .add_linear("affinity", &q8, 96, 64, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(ctx.stats().pack_threads, 2);
-        assert_eq!(sched::allowed_cpus(), 1, "packing must preserve the caller's CPU0 role");
+        assert_eq!(
+            sched::allowed_cpus(),
+            1,
+            "packing must preserve the caller's CPU0 role"
+        );
         let after = std::fs::read_to_string("/proc/thread-self/status").unwrap();
-        assert_eq!(after.lines().find_map(|l|l.strip_prefix("Cpus_allowed_list:")).unwrap().trim(), pinned);
+        assert_eq!(
+            after
+                .lines()
+                .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+                .unwrap()
+                .trim(),
+            pinned
+        );
         let sb = WFmt::Fp16.strip_bytes(64);
         let mut want = vec![0; sb * 3];
         for ot in 0..3 {
-            wfmt::pack_strip(WFmt::Fp16, &mut want[ot * sb..(ot + 1) * sb], &q8, 96, 64, 64, None, 0, ot);
+            wfmt::pack_strip(
+                WFmt::Fp16,
+                &mut want[ot * sb..(ot + 1) * sb],
+                &q8,
+                96,
+                64,
+                64,
+                None,
+                0,
+                ot,
+            );
         }
         assert_eq!(blob_bytes(&lin.blobs[0], want.len()), want);
     }
@@ -1038,8 +1284,12 @@ mod tests {
         let finished = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|scope| {
             let early = scope.spawn(|| Err("pin failed first".to_string()));
-            let panic = scope.spawn(|| -> Result<(), String> { panic!("packing assertion fixture") });
-            let late = scope.spawn(|| { finished.store(true, Ordering::SeqCst); Ok(()) });
+            let panic =
+                scope.spawn(|| -> Result<(), String> { panic!("packing assertion fixture") });
+            let late = scope.spawn(|| {
+                finished.store(true, Ordering::SeqCst);
+                Ok(())
+            });
             let result = join_pack_workers(vec![early, panic, late]);
             assert_eq!(result, Err("pin failed first".into()));
             assert!(finished.load(Ordering::SeqCst));
@@ -1055,36 +1305,68 @@ mod tests {
         for fmt in [WFmt::W8, WFmt::Fp16] {
             let sb = fmt.strip_bytes(64);
             // two strips per blob: parts of 2 and 1 output tiles
-            let mut ctx = NpuCtx::new(Box::new(Emu::new(8 << 20, 1)), emu_cfg(1 << 30, 3, fmt, 2 * sb)).expect("npu context");
-            let lin = ctx.add_linear("t", &q8, o, k, Some(&perm[..])).expect("add_linear").expect("placed");
+            let mut ctx = NpuCtx::new(
+                Box::new(Emu::new(8 << 20, 1)),
+                emu_cfg(1 << 30, 3, fmt, 2 * sb),
+            )
+            .expect("npu context");
+            let lin = ctx
+                .add_linear("t", &q8, o, k, Some(&perm[..]))
+                .expect("add_linear")
+                .expect("placed");
             assert_eq!(lin.blobs.len(), 4 * 2, "4 chunks x 2 parts");
             // reference: the whole linear, strip by strip (chunk-major, then output tile)
             let mut want = vec![0u8; 4 * 3 * sb];
             for c in 0..4 {
                 for ot in 0..3 {
                     let off = (c * 3 + ot) * sb;
-                    wfmt::pack_strip(fmt, &mut want[off..off + sb], &q8, o, k, 64, Some(&perm[..]), c, ot);
+                    wfmt::pack_strip(
+                        fmt,
+                        &mut want[off..off + sb],
+                        &q8,
+                        o,
+                        k,
+                        64,
+                        Some(&perm[..]),
+                        c,
+                        ot,
+                    );
                 }
             }
             for b in &lin.blobs {
                 let off = (b.chunk as usize * 3 + b.ot0 as usize) * sb;
                 let len = b.nt as usize * sb;
-                assert_eq!(blob_bytes(b, len), want[off..off + len], "{fmt:?} chunk {} ot0 {}", b.chunk, b.ot0);
+                assert_eq!(
+                    blob_bytes(b, len),
+                    want[off..off + len],
+                    "{fmt:?} chunk {} ot0 {}",
+                    b.chunk,
+                    b.ot0
+                );
             }
             assert_eq!(ctx.stats().parts, 2);
             assert_eq!(ctx.stats().blobs, 8);
         }
     }
 
-    struct Q8Rows<'a> { raw: &'a [u8], o: usize, k: usize, perm: &'a [u32] }
+    struct Q8Rows<'a> {
+        raw: &'a [u8],
+        o: usize,
+        k: usize,
+        perm: &'a [u32],
+    }
     impl WeightRows for Q8Rows<'_> {
-        fn shape(&self) -> (usize, usize) { (self.o, self.k) }
+        fn shape(&self) -> (usize, usize) {
+            (self.o, self.k)
+        }
         fn read_row(&self, row: usize, dst: &mut [f32]) -> Result<(), String> {
             let src = self.perm[row] as usize;
             for (i, out) in dst.chunks_mut(32).enumerate() {
                 let b = &self.raw[(src * (self.k / 32) + i) * 34..][..34];
                 let d = tiles::half_to_f32(u16::from_le_bytes([b[0], b[1]]));
-                for (v, q) in out.iter_mut().zip(&b[2..]) { *v = d * (*q as i8) as f32; }
+                for (v, q) in out.iter_mut().zip(&b[2..]) {
+                    *v = d * (*q as i8) as f32;
+                }
             }
             Ok(())
         }
@@ -1096,7 +1378,12 @@ mod tests {
         let mut rng = Rng(0xaabb_ccdd_1122_3344);
         let q8 = random_q8(&mut rng, o, k);
         let perm = random_perm(&mut rng, o);
-        let rows = Q8Rows { raw: &q8, o, k, perm: &perm };
+        let rows = Q8Rows {
+            raw: &q8,
+            o,
+            k,
+            perm: &perm,
+        };
         let sb = WFmt::Fp16.strip_bytes(64);
         for workers in [1, 3] {
             let cfg = emu_cfg(1 << 30, workers, WFmt::Fp16, 2 * sb);
@@ -1105,8 +1392,16 @@ mod tests {
             for b in &lin.blobs {
                 let mut want = vec![0; b.nt as usize * sb];
                 for i in 0..b.nt as usize {
-                    wfmt::pack_fp16_strip(&mut want[i * sb..(i + 1) * sb], &q8, o, k, 64,
-                        Some(&perm), b.chunk as usize, b.ot0 as usize + i);
+                    wfmt::pack_fp16_strip(
+                        &mut want[i * sb..(i + 1) * sb],
+                        &q8,
+                        o,
+                        k,
+                        64,
+                        Some(&perm),
+                        b.chunk as usize,
+                        b.ot0 as usize + i,
+                    );
                 }
                 assert_eq!(blob_bytes(b, want.len()), want);
             }
@@ -1114,26 +1409,85 @@ mod tests {
         }
     }
 
-    struct BadRows { shape: (usize, usize), value: f32, fail: bool }
+    struct BadRows {
+        shape: (usize, usize),
+        value: f32,
+        fail: bool,
+    }
     impl WeightRows for BadRows {
-        fn shape(&self) -> (usize, usize) { self.shape }
+        fn shape(&self) -> (usize, usize) {
+            self.shape
+        }
         fn read_row(&self, _: usize, dst: &mut [f32]) -> Result<(), String> {
-            if self.fail { return Err("source row failure".into()); }
-            dst.fill(self.value); Ok(())
+            if self.fail {
+                return Err("source row failure".into());
+            }
+            dst.fill(self.value);
+            Ok(())
         }
     }
 
     #[test]
     fn logical_rows_fail_closed_on_source_nonfinite_and_shape_overflow() {
-        for (value, fail) in [(0.0, true), (f32::NAN, false), (f32::INFINITY, false), (65536.0, false)] {
-            let mut ctx = NpuCtx::new(Box::new(Emu::new(8 << 20, 1)), emu_cfg(1 << 30, 3, WFmt::Fp16, 0)).unwrap();
-            assert!(ctx.add_linear_rows("bad", &BadRows { shape: (96, 64), value, fail }).is_err());
+        for (value, fail) in [
+            (0.0, true),
+            (f32::NAN, false),
+            (f32::INFINITY, false),
+            (65536.0, false),
+        ] {
+            let mut ctx = NpuCtx::new(
+                Box::new(Emu::new(8 << 20, 1)),
+                emu_cfg(1 << 30, 3, WFmt::Fp16, 0),
+            )
+            .unwrap();
+            assert!(ctx
+                .add_linear_rows(
+                    "bad",
+                    &BadRows {
+                        shape: (96, 64),
+                        value,
+                        fail
+                    }
+                )
+                .is_err());
             assert_eq!(ctx.stats().linears, 0);
-            assert!(ctx.add_linear_rows("after-error", &BadRows { shape: (32, 64), value: 0.0, fail: false }).is_err());
+            assert!(ctx
+                .add_linear_rows(
+                    "after-error",
+                    &BadRows {
+                        shape: (32, 64),
+                        value: 0.0,
+                        fail: false
+                    }
+                )
+                .is_err());
         }
-        let mut ctx = NpuCtx::new(Box::new(Emu::new(8 << 20, 1)), emu_cfg(1 << 30, 1, WFmt::Fp16, 0)).unwrap();
-        assert!(ctx.add_linear_rows("overflow", &BadRows { shape: (usize::MAX - 31, 64), value: 0.0, fail: false }).is_err());
-        assert!(ctx.add_linear_rows("unaligned", &BadRows { shape: (33, 64), value: 0.0, fail: false }).unwrap().is_none());
+        let mut ctx = NpuCtx::new(
+            Box::new(Emu::new(8 << 20, 1)),
+            emu_cfg(1 << 30, 1, WFmt::Fp16, 0),
+        )
+        .unwrap();
+        assert!(ctx
+            .add_linear_rows(
+                "overflow",
+                &BadRows {
+                    shape: (usize::MAX - 31, 64),
+                    value: 0.0,
+                    fail: false
+                }
+            )
+            .is_err());
+        assert!(ctx
+            .add_linear_rows(
+                "unaligned",
+                &BadRows {
+                    shape: (33, 64),
+                    value: 0.0,
+                    fail: false
+                }
+            )
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1141,7 +1495,11 @@ mod tests {
         let (o, k) = (64usize, 256usize);
         let mut rng = Rng(0x7777_1111_2222_3333);
         let q8 = random_q8(&mut rng, o, k);
-        let mut ctx = NpuCtx::new(Box::new(Emu::new(8 << 20, 1)), emu_cfg(1 << 30, 1, WFmt::Fp16, 1024)).expect("npu context");
+        let mut ctx = NpuCtx::new(
+            Box::new(Emu::new(8 << 20, 1)),
+            emu_cfg(1 << 30, 1, WFmt::Fp16, 1024),
+        )
+        .expect("npu context");
         assert!(ctx.add_linear("t", &q8, o, k, None).is_err());
     }
 
@@ -1151,14 +1509,20 @@ mod tests {
         let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
         let q8 = random_q8(&mut rng, o, k);
         let mut ctx = emu_ctx(0, 2);
-        assert!(ctx.add_linear("t", &q8, o, k, None).expect("add_linear").is_none());
+        assert!(ctx
+            .add_linear("t", &q8, o, k, None)
+            .expect("add_linear")
+            .is_none());
         let s = ctx.stats();
         assert_eq!((s.linears, s.cpu_linears, s.weights_bytes), (0, 1, 0));
     }
 
     #[test]
     fn ycol_false_is_rejected() {
-        let cfg = NpuConfig { ycol: false, ..emu_cfg(1 << 30, 1, WFmt::W8, 0) };
+        let cfg = NpuConfig {
+            ycol: false,
+            ..emu_cfg(1 << 30, 1, WFmt::W8, 0)
+        };
         assert!(NpuCtx::new(Box::new(Emu::new(8 << 20, 1)), cfg).is_err());
     }
 

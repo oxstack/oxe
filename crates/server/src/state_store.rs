@@ -87,23 +87,46 @@ const PIN_SECS: u64 = 600;
 
 /// Environment knobs that select an arithmetic path of the oxe engine.
 pub(crate) const ARITH_KNOBS: &[&str] = &[
-    "OXE_ATTN", "OXE_ATTN_TILED_MIN_KV", "OXE_DEC_ATTN_PAD", "OXE_DEC_FUSED_DN", "OXE_KV_VPAD", "OXE_PF_ATTN_PB", "OXE_PF_GROUP", "OXE_PF_GROUP_T",
-    "OXE_PF_GROUP_UNALIGNED", "OXE_PF_MMID_MIN", "OXE_PF_TILES", "OXE_SMALL_PREFILL", "OXE_VL", "OXE_KV", "OXE_KV_TYPE",
+    "OXE_ATTN",
+    "OXE_ATTN_TILED_MIN_KV",
+    "OXE_DEC_ATTN_PAD",
+    "OXE_DEC_FUSED_DN",
+    "OXE_KV_VPAD",
+    "OXE_PF_ATTN_PB",
+    "OXE_PF_GROUP",
+    "OXE_PF_GROUP_T",
+    "OXE_PF_GROUP_UNALIGNED",
+    "OXE_PF_MMID_MIN",
+    "OXE_PF_TILES",
+    "OXE_SMALL_PREFILL",
+    "OXE_VL",
+    "OXE_KV",
+    "OXE_KV_TYPE",
     // P2 review: the knobs the first list missed (`--pf-group-t1/-t2` set the first two)
-    "OXE_PF_GROUP_T1", "OXE_PF_GROUP_T2", "OXE_KV8_FUSED", "OXE_KV8_PV",
+    "OXE_PF_GROUP_T1",
+    "OXE_PF_GROUP_T2",
+    "OXE_KV8_FUSED",
+    "OXE_KV8_PV",
     // v0.1.3 (lane A, PREFILL-LONG): the prefill attention path and the fused-attention cutoffs.
     // An engine that picks fa2 by itself (auto at 256K, no variable set) must key on its actual
     // path too: OxeEngine::arith_id appends ` pf_attn=fa2` from `Engine::pf_attn_fa2()`
-    "OXE_PF_ATTN", "OXE_ATTN_FUSED_MIN_KV", "OXE_ATTN_FUSED_1LANE_MIN_KV",
+    "OXE_PF_ATTN",
+    "OXE_ATTN_FUSED_MIN_KV",
+    "OXE_ATTN_FUSED_1LANE_MIN_KV",
     // v0.1.3 APPEND-PREFILL: the fa2x kernel's f16 chain length and chunk (arith_id also appends
     // ` pf_attn=fa2x.f<fold>.c<ch>` from the engine's effective parameters)
-    "OXE_PF_FA2X_FOLD", "OXE_PF_FA2X_CH",
+    "OXE_PF_FA2X_FOLD",
+    "OXE_PF_FA2X_CH",
     // v0.1.3 PREFILL-POLICY: what `auto` resolves to (arith_id also appends the resolved kernel
     // and `.k<cut>` when the cutoff is not PFA_MIN_KV)
-    "OXE_PF_ATTN_AUTO_MIN_KV", "OXE_PF_ATTN_AUTO_KERNEL",
+    "OXE_PF_ATTN_AUTO_MIN_KV",
+    "OXE_PF_ATTN_AUTO_KERNEL",
     // v0.1.4 PFG: the pfg kernel's folds, chunk, unit size and micro-kernel (arith_id also appends
     // ` pf_attn=pfg.<tag>` from the engine's effective parameters)
-    "OXE_PF_PFG_FOLD", "OXE_PF_PFG_CH", "OXE_PF_PFG_TB", "OXE_PF_PFG_MK",
+    "OXE_PF_PFG_FOLD",
+    "OXE_PF_PFG_CH",
+    "OXE_PF_PFG_TB",
+    "OXE_PF_PFG_MK",
     // NOT here (v0.1.4 DEC-PB): OXE_ATTN_OUT / --attn-out (legacy | pb). The two V^T . p kernels
     // are bit-identical (kernels-sys dec_pb_*, model mini_dec_pb_attn_out_is_bit_identical), so
     // the state identity must stay the same and states move freely between them.
@@ -117,7 +140,11 @@ pub fn arith_env() -> String {
 /// [`arith_env`] over a given reader (tests: no process-wide environment change, which the
 /// engines of parallel tests would read at construction).
 pub(crate) fn arith_env_with(get: impl Fn(&str) -> Option<String>) -> String {
-    ARITH_KNOBS.iter().filter_map(|k| get(k).map(|v| format!("{k}={v}"))).collect::<Vec<_>>().join(",")
+    ARITH_KNOBS
+        .iter()
+        .filter_map(|k| get(k).map(|v| format!("{k}={v}")))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The kernel path (moved to `model::engine` next to the golden-state test that keys on it).
@@ -127,7 +154,11 @@ pub use model::engine::kernel_path;
 fn ident_field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     let start = text.find(&format!("{key}="))? + key.len() + 1;
     let rest = &text[start..];
-    let end = if key == "state" { rest.find(" epoch=")? } else { rest.find(' ').unwrap_or(rest.len()) };
+    let end = if key == "state" {
+        rest.find(" epoch=")?
+    } else {
+        rest.find(' ').unwrap_or(rest.len())
+    };
     Some(&rest[..end])
 }
 
@@ -141,8 +172,12 @@ pub(crate) fn stale_identity(other: &Json, mine: &Identity) -> bool {
     if other.get("numerics_epoch") != Some(&json!(NUMERICS_EPOCH)) {
         return true;
     }
-    let Some(text) = other.get("identity").and_then(Json::as_str) else { return true };
-    ["state", "block"].iter().any(|k| ident_field(text, k).is_none() || ident_field(text, k) != ident_field(&mine.text, k))
+    let Some(text) = other.get("identity").and_then(Json::as_str) else {
+        return true;
+    };
+    ["state", "block"].iter().any(|k| {
+        ident_field(text, k).is_none() || ident_field(text, k) != ident_field(&mine.text, k)
+    })
 }
 
 /// Re-prefill cost of p tokens in ms (design sec. 4, [E]).
@@ -152,7 +187,10 @@ pub fn cost_ms(p: usize) -> f64 {
 }
 
 pub fn now_s() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[derive(Clone, Debug)]
@@ -167,12 +205,24 @@ pub struct Identity {
 impl Identity {
     /// `model`: the GGUF sha256 (or a file id), `state_id`: Engine::state_id, `arith`:
     /// Engine::arith_id; `build`: the binary's sha (in the identity only when `strict_build`).
-    pub fn new(model: &str, state_id: &str, ubatch: usize, arith: &str, build: &str, strict_build: bool) -> Identity {
+    pub fn new(
+        model: &str,
+        state_id: &str,
+        ubatch: usize,
+        arith: &str,
+        build: &str,
+        strict_build: bool,
+    ) -> Identity {
         let mut text = format!("model={model} state={state_id} epoch={NUMERICS_EPOCH} ubatch={ubatch} block={BLOCK} rope=gguf arith=[{arith}]");
         if strict_build {
             text.push_str(&format!(" build={build}"));
         }
-        Identity { hash: sha256_hex(text.as_bytes()), text, model: model.to_string(), build: build.to_string() }
+        Identity {
+            hash: sha256_hex(text.as_bytes()),
+            text,
+            model: model.to_string(),
+            build: build.to_string(),
+        }
     }
     pub fn model_key(&self) -> &str {
         &self.hash[..16]
@@ -258,11 +308,23 @@ impl Manifest {
         })
     }
     fn from_json(v: &Json, id_hash: &str) -> Option<Manifest> {
-        if v.get("version")?.as_u64()? != VERSION as u64 || v.get("identity_hash")?.as_str()? != id_hash {
+        if v.get("version")?.as_u64()? != VERSION as u64
+            || v.get("identity_hash")?.as_str()? != id_hash
+        {
             return None;
         }
         let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit());
-        let blocks = v.get("blocks")?.as_array()?.iter().map(|b| Some((b.get(0)?.as_str()?.to_string(), b.get(1)?.as_str()?.to_string()))).collect::<Option<Vec<_>>>()?;
+        let blocks = v
+            .get("blocks")?
+            .as_array()?
+            .iter()
+            .map(|b| {
+                Some((
+                    b.get(0)?.as_str()?.to_string(),
+                    b.get(1)?.as_str()?.to_string(),
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
         let snaps = v
             .get("snaps")?
             .as_array()?
@@ -278,7 +340,11 @@ impl Manifest {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
-        if !blocks.iter().all(|(h, c)| hex(h, 64) && hex(c, 16)) || !snaps.iter().all(|s| hex(&s.key, 64) && hex(&s.c, 16) && s.pos / BLOCK <= blocks.len()) {
+        if !blocks.iter().all(|(h, c)| hex(h, 64) && hex(c, 16))
+            || !snaps
+                .iter()
+                .all(|s| hex(&s.key, 64) && hex(&s.c, 16) && s.pos / BLOCK <= blocks.len())
+        {
             return None;
         }
         let sid = v.get("sid")?.as_str()?.to_string();
@@ -288,7 +354,12 @@ impl Manifest {
         let hint = v.get("hint").and_then(Json::as_str).map(str::to_string);
         // owners: the recorded ones (32 hex each), else (an older manifest) its hint
         let mut owners: Vec<String> = match v.get("owners").and_then(Json::as_array) {
-            Some(a) => a.iter().filter_map(Json::as_str).filter(|h| hex(h, 32) || *h == ANON_OWNER).map(str::to_string).collect(),
+            Some(a) => a
+                .iter()
+                .filter_map(Json::as_str)
+                .filter(|h| hex(h, 32) || *h == ANON_OWNER)
+                .map(str::to_string)
+                .collect(),
             None => Vec::new(),
         };
         if owners.is_empty() {
@@ -319,7 +390,10 @@ pub const ANON_OWNER: &str = "-";
 /// absorbs (in that order, the creator first; one without owners counts as its hint, else
 /// anonymous), then the request's own (its hint hash, or [`ANON_OWNER`] without a hint).
 /// `request`: None = no request identity to add (a commit merging recorded owners).
-pub fn merge_owners<'a>(from: impl Iterator<Item = &'a Manifest>, request: Option<Option<String>>) -> Vec<String> {
+pub fn merge_owners<'a>(
+    from: impl Iterator<Item = &'a Manifest>,
+    request: Option<Option<String>>,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |o: String| {
         if !out.contains(&o) {
@@ -404,7 +478,10 @@ fn mkdir(p: &Path) -> Result<(), String> {
 
 pub(crate) fn fsync_dir(p: &Path) {
     #[cfg(test)]
-    DIR_SYNCS.lock().unwrap_or_else(|e| e.into_inner()).push(p.to_path_buf());
+    DIR_SYNCS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(p.to_path_buf());
     if let Ok(f) = fs::File::open(p) {
         let _ = f.sync_all();
     }
@@ -463,10 +540,20 @@ fn atomic_stream(
     use std::io::{Seek, SeekFrom};
     let pending = dir.join(format!("{tmp}.pending"));
     let r = (|| -> Result<(PathBuf, u64, u64), String> {
-        let f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&pending).map_err(io)?;
+        let f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&pending)
+            .map_err(io)?;
         let mut w = BufWriter::with_capacity(4 << 20, f);
         w.write_all(&vec![0u8; hdr_len as usize]).map_err(io)?;
-        let mut sw = Sum { w: &mut w, c: Check64::default() };
+        let mut sw = Sum {
+            w: &mut w,
+            c: Check64::default(),
+        };
         write(&mut sw)?;
         let (len, sum) = (sw.c.len, sw.c.finish());
         let mut f = w.into_inner().map_err(|e| e.into_error().to_string())?;
@@ -482,7 +569,12 @@ fn atomic_stream(
         f.sync_all().map_err(io)?;
         // SAFETY: valid fd; advisory (drop the written pages: no state in the page cache).
         unsafe {
-            libc::posix_fadvise(std::os::fd::AsRawFd::as_raw_fd(&f), 0, 0, libc::POSIX_FADV_DONTNEED);
+            libc::posix_fadvise(
+                std::os::fd::AsRawFd::as_raw_fd(&f),
+                0,
+                0,
+                libc::POSIX_FADV_DONTNEED,
+            );
         }
         k.step()?;
         let path = dir.join(final_name(sum));
@@ -500,8 +592,21 @@ fn atomic_stream(
 /// [`atomic_stream`] of a small plain file at `path` (manifests, identity.json).
 fn atomic_write(k: &Kill, path: &Path, data: &[u8]) -> Result<(), String> {
     let dir = path.parent().ok_or("no parent")?;
-    let name = path.file_name().and_then(|n| n.to_str()).ok_or("bad name")?.to_string();
-    atomic_stream(k, dir, &name, 0, &|_, _| Vec::new(), &|_| name.clone(), &mut |w| w.write_all(data).map_err(io)).map(|_| ())
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("bad name")?
+        .to_string();
+    atomic_stream(
+        k,
+        dir,
+        &name,
+        0,
+        &|_, _| Vec::new(),
+        &|_| name.clone(),
+        &mut |w| w.write_all(data).map_err(io),
+    )
+    .map(|_| ())
 }
 
 /// Writer that checksums what passes through.
@@ -542,7 +647,11 @@ impl Read for Checked<'_> {
 }
 
 fn version_of(magic: &[u8; 8]) -> u32 {
-    if magic == MAGIC_SNAP { SNAP_VERSION } else { VERSION }
+    if magic == MAGIC_SNAP {
+        SNAP_VERSION
+    } else {
+        VERSION
+    }
 }
 
 fn header(magic: &[u8; 8], id_hash: &str, pos: u64, len: u64, sum: u64) -> Vec<u8> {
@@ -558,12 +667,22 @@ fn header(magic: &[u8; 8], id_hash: &str, pos: u64, len: u64, sum: u64) -> Vec<u
 
 /// Open a state file, check its header against (magic, identity, position) and its length;
 /// returns the reader positioned at the payload, the payload length and checksum.
-fn open_checked(path: &Path, magic: &[u8; 8], id_hash: &str, pos: u64) -> Result<(BufReader<fs::File>, u64, u64), String> {
-    let f = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path).map_err(io)?;
+fn open_checked(
+    path: &Path,
+    magic: &[u8; 8],
+    id_hash: &str,
+    pos: u64,
+) -> Result<(BufReader<fs::File>, u64, u64), String> {
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(io)?;
     let file_len = f.metadata().map_err(io)?.len();
     let mut r = BufReader::with_capacity(4 << 20, f);
     let mut h = vec![0u8; HDR as usize];
-    r.read_exact(&mut h).map_err(|_| "truncated header".to_string())?;
+    r.read_exact(&mut h)
+        .map_err(|_| "truncated header".to_string())?;
     let u64at = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
     if &h[..8] != magic || u32::from_le_bytes(h[8..12].try_into().unwrap()) != version_of(magic) {
         return Err("bad magic or version".into());
@@ -576,7 +695,9 @@ fn open_checked(path: &Path, magic: &[u8; 8], id_hash: &str, pos: u64) -> Result
     }
     let (len, sum) = (u64at(84), u64at(92));
     if file_len != HDR + len {
-        return Err(format!("length {file_len} != header {HDR} + payload {len} (truncated?)"));
+        return Err(format!(
+            "length {file_len} != header {HDR} + payload {len} (truncated?)"
+        ));
     }
     Ok((r, len, sum))
 }
@@ -584,12 +705,20 @@ fn open_checked(path: &Path, magic: &[u8; 8], id_hash: &str, pos: u64) -> Result
 impl StateStore {
     /// Open the store of identity `ident` under `root` (created 0700). `root` must lie inside the
     /// user's home (the encrypted home, design sec. 6) unless `allow_anywhere` (tests).
-    pub fn open(root: &Path, ident: Identity, budget: u64, ttl_secs: u64, allow_anywhere: bool) -> Result<StateStore, String> {
+    pub fn open(
+        root: &Path,
+        ident: Identity,
+        budget: u64,
+        ttl_secs: u64,
+        allow_anywhere: bool,
+    ) -> Result<StateStore, String> {
         if !root.is_absolute() {
             return Err("state cache: the directory must be absolute".into());
         }
         if !allow_anywhere {
-            let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("state cache: HOME is not set")?;
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or("state cache: HOME is not set")?;
             let home = fs::canonicalize(&home).map_err(io)?;
             let mut probe = root.to_path_buf();
             let base = loop {
@@ -599,7 +728,10 @@ impl StateStore {
                 probe = probe.parent().ok_or("state cache: bad path")?.to_path_buf();
             };
             if !base.starts_with(&home) {
-                return Err(format!("state cache: {} is outside the home directory; refused", root.display()));
+                return Err(format!(
+                    "state cache: {} is outside the home directory; refused",
+                    root.display()
+                ));
             }
         }
         mkdir(root)?;
@@ -609,7 +741,11 @@ impl StateStore {
         }
         let idj = json!({"version": VERSION, "identity": ident.text, "identity_hash": ident.hash, "model": ident.model, "numerics_epoch": NUMERICS_EPOCH, "build": ident.build});
         let idp = dir.join("identity.json");
-        if fs::read(&idp).ok().and_then(|b| serde_json::from_slice::<Json>(&b).ok()) != Some(idj.clone()) {
+        if fs::read(&idp)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Json>(&b).ok())
+            != Some(idj.clone())
+        {
             atomic_write(&Kill::default(), &idp, idj.to_string().as_bytes())?;
         }
         let mut st = StateStore {
@@ -655,15 +791,22 @@ impl StateStore {
     }
 
     fn load_manifests(&mut self) {
-        let Ok(rd) = fs::read_dir(self.dir.join("sessions")) else { return };
+        let Ok(rd) = fs::read_dir(self.dir.join("sessions")) else {
+            return;
+        };
         for de in rd.flatten() {
             let p = de.path();
             if p.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
             // bounded (Codex P2/P3 review): a manifest is a few KiB; anything over 8 MiB is not ours
-            let small = fs::symlink_metadata(&p).is_ok_and(|m| m.is_file() && m.len() <= MAX_MANIFEST_BYTES);
-            let m = small.then(|| fs::read(&p).ok()).flatten().and_then(|b| serde_json::from_slice::<Json>(&b).ok()).and_then(|v| Manifest::from_json(&v, &self.ident.hash));
+            let small = fs::symlink_metadata(&p)
+                .is_ok_and(|m| m.is_file() && m.len() <= MAX_MANIFEST_BYTES);
+            let m = small
+                .then(|| fs::read(&p).ok())
+                .flatten()
+                .and_then(|b| serde_json::from_slice::<Json>(&b).ok())
+                .and_then(|v| Manifest::from_json(&v, &self.ident.hash));
             match m {
                 Some(m) if p.file_stem().and_then(|s| s.to_str()) == Some(m.sid.as_str()) => {
                     self.manifests.insert(m.sid.clone(), m);
@@ -692,19 +835,30 @@ impl StateStore {
     /// age them out (v0.1.3 integration decision). Returns the bytes freed (logged).
     pub fn orphan_sweep(&mut self) -> u64 {
         let mut freed = 0;
-        let Ok(rd) = fs::read_dir(&self.root) else { return 0 };
+        let Ok(rd) = fs::read_dir(&self.root) else {
+            return 0;
+        };
         for de in rd.flatten() {
             let p = de.path();
             if p == self.dir || !de.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
-            let id = fs::read(p.join("identity.json")).ok().and_then(|b| serde_json::from_slice::<Json>(&b).ok());
-            let same_model = id.as_ref().and_then(|v| v.get("model")).and_then(Json::as_str) == Some(self.ident.model.as_str());
+            let id = fs::read(p.join("identity.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Json>(&b).ok());
+            let same_model = id
+                .as_ref()
+                .and_then(|v| v.get("model"))
+                .and_then(Json::as_str)
+                == Some(self.ident.model.as_str());
             if same_model && id.as_ref().is_some_and(|v| stale_identity(v, &self.ident)) {
                 let b = dir_bytes(&p);
                 if fs::remove_dir_all(&p).is_ok() {
                     freed += b;
-                    eprintln!("oxe-server: state cache: removed an older identity of this model ({} MiB)", b >> 20);
+                    eprintln!(
+                        "oxe-server: state cache: removed an older identity of this model ({} MiB)",
+                        b >> 20
+                    );
                 }
             }
         }
@@ -720,8 +874,14 @@ impl StateStore {
     pub fn usage(&self) -> Json {
         let mut models = serde_json::Map::new();
         if let Ok(rd) = fs::read_dir(&self.root) {
-            for de in rd.flatten().filter(|d| d.file_type().is_ok_and(|t| t.is_dir())) {
-                models.insert(de.file_name().to_string_lossy().into_owned(), json!(dir_bytes(&de.path())));
+            for de in rd
+                .flatten()
+                .filter(|d| d.file_type().is_ok_and(|t| t.is_dir()))
+            {
+                models.insert(
+                    de.file_name().to_string_lossy().into_owned(),
+                    json!(dir_bytes(&de.path())),
+                );
             }
         }
         let now = now_s();
@@ -739,7 +899,12 @@ impl StateStore {
     }
 
     fn session_bytes(&self, m: &Manifest) -> u64 {
-        let blocks: u64 = m.blocks.iter().filter_map(|(h, c)| fs::metadata(self.block_path(h, c)).ok()).map(|md| md.len()).sum();
+        let blocks: u64 = m
+            .blocks
+            .iter()
+            .filter_map(|(h, c)| fs::metadata(self.block_path(h, c)).ok())
+            .map(|md| md.len())
+            .sum();
         blocks + m.snaps.iter().map(|s| s.bytes).sum::<u64>()
     }
 
@@ -752,9 +917,18 @@ impl StateStore {
         let hs = chain(&self.ident.hash, &prompt[..limit]);
         let mut best: Option<(usize, &Manifest, &SnapRef)> = None;
         for m in self.manifests.values() {
-            let matched = m.blocks.iter().zip(&hs).take_while(|((h, _), x)| h == *x).count();
+            let matched = m
+                .blocks
+                .iter()
+                .zip(&hs)
+                .take_while(|((h, _), x)| h == *x)
+                .count();
             for s in &m.snaps {
-                if s.pos > limit || s.pos <= beat || s.pos / BLOCK > matched || best.is_some_and(|b| b.0 >= s.pos) {
+                if s.pos > limit
+                    || s.pos <= beat
+                    || s.pos / BLOCK > matched
+                    || best.is_some_and(|b| b.0 >= s.pos)
+                {
                     continue;
                 }
                 if snap_key(&self.ident.hash, &hs, prompt, s.pos) == s.key {
@@ -762,7 +936,11 @@ impl StateStore {
                 }
             }
         }
-        best.map(|(pos, m, s)| Plan { sid: m.sid.clone(), blocks: m.blocks[..pos / BLOCK].to_vec(), snap: s.clone() })
+        best.map(|(pos, m, s)| Plan {
+            sid: m.sid.clone(),
+            blocks: m.blocks[..pos / BLOCK].to_vec(),
+            snap: s.clone(),
+        })
     }
 
     /// Load `plan` into the engine (reset first). On error the bad file and every manifest entry
@@ -774,15 +952,32 @@ impl StateStore {
     /// The deepest snapshot of the newest session (of the sessions with hint hash `hint` when
     /// one is given and has any): the preload's choice (P2b).
     pub fn newest_plan(&self, hint: Option<&str>) -> Option<Plan> {
-        let pick = |f: &dyn Fn(&Manifest) -> bool| self.manifests.values().filter(|m| f(m) && !m.snaps.is_empty()).max_by_key(|m| (m.atime, m.n_tokens, m.sid.clone())).cloned();
-        let m = hint.and_then(|h| pick(&|m: &Manifest| m.hint.as_deref() == Some(h))).or_else(|| pick(&|_| true))?;
+        let pick = |f: &dyn Fn(&Manifest) -> bool| {
+            self.manifests
+                .values()
+                .filter(|m| f(m) && !m.snaps.is_empty())
+                .max_by_key(|m| (m.atime, m.n_tokens, m.sid.clone()))
+                .cloned()
+        };
+        let m = hint
+            .and_then(|h| pick(&|m: &Manifest| m.hint.as_deref() == Some(h)))
+            .or_else(|| pick(&|_| true))?;
         let snap = m.snaps.iter().max_by_key(|s| s.pos)?.clone();
-        Some(Plan { sid: m.sid.clone(), blocks: m.blocks[..snap.pos / BLOCK].to_vec(), snap })
+        Some(Plan {
+            sid: m.sid.clone(),
+            blocks: m.blocks[..snap.pos / BLOCK].to_vec(),
+            snap,
+        })
     }
 
     /// [`StateStore::load`] that stops between blocks when `cancel` rises (Err "cancelled"; the
     /// engine state is then undefined: the caller resets it). Each block is ~5 ms at 5.5 MiB.
-    pub fn load_cancellable<E: Engine>(&mut self, eng: &mut E, plan: &Plan, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<f64, String> {
+    pub fn load_cancellable<E: Engine>(
+        &mut self,
+        eng: &mut E,
+        plan: &Plan,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<f64, String> {
         let t0 = std::time::Instant::now();
         eng.reset();
         let id = self.ident.hash.clone();
@@ -797,7 +992,11 @@ impl StateStore {
                 if len != (BLOCK * eng.kv_row_bytes()) as u64 {
                     return Err("block payload of another size".into());
                 }
-                let mut cr = Checked { r: &mut r, left: len, c: Check64::default() };
+                let mut cr = Checked {
+                    r: &mut r,
+                    left: len,
+                    c: Check64::default(),
+                };
                 eng.kv_rows_load(a, a + BLOCK, &mut cr).map_err(|e| e.0)?;
                 if cr.left != 0 || cr.c.finish() != sum || format!("{sum:016x}") != *c {
                     return Err("block checksum mismatch".into());
@@ -814,7 +1013,11 @@ impl StateStore {
         let p = self.snap_path(&s.key, &s.c);
         let r = (|| -> Result<(), String> {
             let (mut r, len, sum) = open_checked(&p, MAGIC_SNAP, &id, s.pos as u64)?;
-            let mut cr = Checked { r: &mut r, left: len, c: Check64::default() };
+            let mut cr = Checked {
+                r: &mut r,
+                left: len,
+                c: Check64::default(),
+            };
             let mut u = [0u8; 8];
             cr.read_exact(&mut u).map_err(io)?;
             let kvb = u64::from_le_bytes(u);
@@ -888,7 +1091,9 @@ impl StateStore {
     fn free_space_ok(&self) -> bool {
         // SAFETY: statvfs on a valid C path into a zeroed struct.
         unsafe {
-            let Ok(c) = std::ffi::CString::new(self.dir.as_os_str().as_encoded_bytes()) else { return false };
+            let Ok(c) = std::ffi::CString::new(self.dir.as_os_str().as_encoded_bytes()) else {
+                return false;
+            };
             let mut s: libc::statvfs = std::mem::zeroed();
             if libc::statvfs(c.as_ptr(), &mut s) != 0 {
                 return true;
@@ -907,7 +1112,10 @@ impl StateStore {
             return Err("disk free below the floor: write skipped".into());
         }
         if !self.mem_ok() {
-            return Err(format!("MemAvailable below the save floor ({} MiB): write skipped", self.min_mem_bytes >> 20));
+            return Err(format!(
+                "MemAvailable below the save floor ({} MiB): write skipped",
+                self.min_mem_bytes >> 20
+            ));
         }
         Ok(())
     }
@@ -915,7 +1123,13 @@ impl StateStore {
     /// Write block `i` of the live state (positions [256i, 256i+256)) unless present; returns its c.
     /// `buf` holds the one block (5.5 MiB at Ornith's row size): its checksum names the file, so a
     /// block already on disk (the shared prefix) is never written twice.
-    pub fn write_block<E: Engine>(&mut self, eng: &mut E, h: &str, i: usize, buf: &mut Vec<u8>) -> Result<String, String> {
+    pub fn write_block<E: Engine>(
+        &mut self,
+        eng: &mut E,
+        h: &str,
+        i: usize,
+        buf: &mut Vec<u8>,
+    ) -> Result<String, String> {
         let a = i * BLOCK;
         buf.clear();
         eng.kv_rows_save(a, a + BLOCK, buf).map_err(|e| e.0)?;
@@ -935,7 +1149,15 @@ impl StateStore {
         let id = self.ident.hash.clone();
         let name = format!("{h}.{c}.kv");
         let data: &[u8] = buf;
-        atomic_stream(&self.kill, &sub, &format!("{h}.w.kv"), HDR, &|len, sum| header(MAGIC_BLOCK, &id, a as u64, len, sum), &|_| name.clone(), &mut |w| w.write_all(data).map_err(io))?;
+        atomic_stream(
+            &self.kill,
+            &sub,
+            &format!("{h}.w.kv"),
+            HDR,
+            &|len, sum| header(MAGIC_BLOCK, &id, a as u64, len, sum),
+            &|_| name.clone(),
+            &mut |w| w.write_all(data).map_err(io),
+        )?;
         self.stats.blocks_written += 1;
         self.stats.bytes_written += HDR + buf.len() as u64;
         Ok(c)
@@ -946,14 +1168,27 @@ impl StateStore {
     /// None, written straight from the engine's buffers). Streamed: the file is written through a
     /// 4 MiB buffer and checksummed on the way (P2b, M2: no 63-190 MiB snapshot buffer, so the
     /// shutdown write fits under memory pressure). Returns (c, file bytes).
-    pub fn write_snap<E: Engine>(&mut self, eng: &mut E, key: &str, pos: usize, snap: Option<&E::Snapshot>) -> Result<(String, u64), String> {
+    pub fn write_snap<E: Engine>(
+        &mut self,
+        eng: &mut E,
+        key: &str,
+        pos: usize,
+        snap: Option<&E::Snapshot>,
+    ) -> Result<(String, u64), String> {
         self.write_snap_c(eng, key, pos, snap, None)
     }
 
     /// [`StateStore::write_snap`] that gives up inside the file when `cancel` rises (v0.1.3: a request
     /// that arrives during a snapshot write waits for at most one 4 MiB buffer, not the whole file);
     /// the half-written `.pending` is removed and nothing is published.
-    pub fn write_snap_c<E: Engine>(&mut self, eng: &mut E, key: &str, pos: usize, snap: Option<&E::Snapshot>, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<(String, u64), String> {
+    pub fn write_snap_c<E: Engine>(
+        &mut self,
+        eng: &mut E,
+        key: &str,
+        pos: usize,
+        snap: Option<&E::Snapshot>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<(String, u64), String> {
         self.write_snap_until(eng, key, pos, snap, cancel, None)
     }
 
@@ -961,7 +1196,15 @@ impl StateStore {
     /// (audit v0.1.2 N2: the shutdown snapshot had no bound inside the file; the controller's
     /// unload grace then had to end it with SIGKILL). Same cut: the `.pending` is removed and
     /// nothing is published.
-    pub fn write_snap_until<E: Engine>(&mut self, eng: &mut E, key: &str, pos: usize, snap: Option<&E::Snapshot>, cancel: Option<&std::sync::atomic::AtomicBool>, deadline: Option<std::time::Instant>) -> Result<(String, u64), String> {
+    pub fn write_snap_until<E: Engine>(
+        &mut self,
+        eng: &mut E,
+        key: &str,
+        pos: usize,
+        snap: Option<&E::Snapshot>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(String, u64), String> {
         self.write_allowed()?;
         let id = self.ident.hash.clone();
         let dir = self.dir.join("snaps");
@@ -973,7 +1216,11 @@ impl StateStore {
             &|len, sum| header(MAGIC_SNAP, &id, pos as u64, len, sum),
             &|sum| format!("{key}.{sum:016x}.st"),
             &mut |w| {
-                let mut cw = Cancellable { w, cancel, deadline };
+                let mut cw = Cancellable {
+                    w,
+                    cancel,
+                    deadline,
+                };
                 snap_payload(eng, pos, snap, &mut cw)
             },
         )?;
@@ -985,17 +1232,30 @@ impl StateStore {
 
     /// v0.1.3 off-lock write: block `i` of the live state copied to RAM (checksum hex, payload; no
     /// payload when that exact file is on disk already).
-    pub fn stage_block<E: Engine>(&self, eng: &mut E, h: &str, i: usize) -> Result<(String, Option<Vec<u8>>), String> {
+    pub fn stage_block<E: Engine>(
+        &self,
+        eng: &mut E,
+        h: &str,
+        i: usize,
+    ) -> Result<(String, Option<Vec<u8>>), String> {
         let a = i * BLOCK;
         let mut buf = Vec::with_capacity(BLOCK * eng.kv_row_bytes());
         eng.kv_rows_save(a, a + BLOCK, &mut buf).map_err(|e| e.0)?;
         let c = format!("{:016x}", check64(&buf));
-        Ok(if self.block_path(h, &c).exists() { (c, None) } else { (c, Some(buf)) })
+        Ok(if self.block_path(h, &c).exists() {
+            (c, None)
+        } else {
+            (c, Some(buf))
+        })
     }
 
     /// v0.1.3 off-lock write: the live state's snapshot payload at `pos` (= the engine position)
     /// copied to RAM: (checksum hex, payload), the bytes [`StateStore::write_snap`] would stream.
-    pub fn stage_snap<E: Engine>(&self, eng: &mut E, pos: usize) -> Result<(String, Vec<u8>), String> {
+    pub fn stage_snap<E: Engine>(
+        &self,
+        eng: &mut E,
+        pos: usize,
+    ) -> Result<(String, Vec<u8>), String> {
         let mut buf = Vec::new();
         snap_payload(eng, pos, None, &mut buf)?;
         Ok((format!("{:016x}", check64(&buf)), buf))
@@ -1029,16 +1289,33 @@ impl StateStore {
             .manifests
             .values()
             .filter(|o| o.sid != sid)
-            .map(|o| o.blocks.iter().zip(&m.blocks).take_while(|(a, b)| a.0 == b.0).count())
+            .map(|o| {
+                o.blocks
+                    .iter()
+                    .zip(&m.blocks)
+                    .take_while(|(a, b)| a.0 == b.0)
+                    .count()
+            })
             .max()
             .unwrap_or(0);
-        Some(SessionMatch { id_hash: self.ident.hash.clone(), blocks: m.blocks.iter().map(|b| b.0.clone()).collect(), head: (head.pos, head.key.clone()), shared, hint: m.hint.clone() })
+        Some(SessionMatch {
+            id_hash: self.ident.hash.clone(),
+            blocks: m.blocks.iter().map(|b| b.0.clone()).collect(),
+            head: (head.pos, head.key.clone()),
+            shared,
+            hint: m.hint.clone(),
+        })
     }
 
     /// v0.2.0 EG5: the stored sessions the request hint with this hint hash owns (alone or with
     /// others; `Manifest::owners`), in id order.
     pub fn sessions_with_hint(&self, h: &str) -> Vec<String> {
-        let mut v: Vec<String> = self.manifests.values().filter(|m| m.owners.iter().any(|o| o == h) || m.hint.as_deref() == Some(h)).map(|m| m.sid.clone()).collect();
+        let mut v: Vec<String> = self
+            .manifests
+            .values()
+            .filter(|m| m.owners.iter().any(|o| o == h) || m.hint.as_deref() == Some(h))
+            .map(|m| m.sid.clone())
+            .collect();
         v.sort();
         v
     }
@@ -1047,7 +1324,9 @@ impl StateStore {
     /// (the manifest is rewritten; its `hint` moves to the earliest remaining owner) and return
     /// true; false when `h` is its sole owner (the caller purges the session) or it is unknown.
     pub fn release_owner(&mut self, sid: &str, h: &str) -> Result<bool, String> {
-        let Some(m) = self.manifests.get(sid) else { return Ok(false) };
+        let Some(m) = self.manifests.get(sid) else {
+            return Ok(false);
+        };
         let rest: Vec<String> = m.owners.iter().filter(|o| *o != h).cloned().collect();
         if rest.is_empty() {
             return Ok(false);
@@ -1063,7 +1342,9 @@ impl StateStore {
 
     /// Is any manifest still naming this hint hash?
     pub fn hint_in_use(&self, h: &str) -> bool {
-        self.manifests.values().any(|m| m.hint.as_deref() == Some(h))
+        self.manifests
+            .values()
+            .any(|m| m.hint.as_deref() == Some(h))
     }
 
     /// Set a new budget and evict down to it at once; returns the bytes freed.
@@ -1097,7 +1378,9 @@ impl StateStore {
                 }
                 if scope == "all" {
                     if let Ok(rd) = fs::read_dir(&self.root) {
-                        for d in rd.flatten().filter(|d| d.path() != self.dir && d.file_type().is_ok_and(|t| t.is_dir())) {
+                        for d in rd.flatten().filter(|d| {
+                            d.path() != self.dir && d.file_type().is_ok_and(|t| t.is_dir())
+                        }) {
                             // only directories in this store's format (identity.json present)
                             if d.path().join("identity.json").is_file() {
                                 let _ = fs::remove_dir_all(d.path());
@@ -1123,14 +1406,24 @@ impl StateStore {
         // audit v0.1.2 N3: a last use in the future (the wall clock stepped back) would read as age
         // 0 until the clock caught up, pinning the session against TTL and budget eviction; it is
         // last used "now" instead and ages normally from here (persisted, so a restart agrees)
-        let future: Vec<String> = self.manifests.values().filter(|m| m.atime > now).map(|m| m.sid.clone()).collect();
+        let future: Vec<String> = self
+            .manifests
+            .values()
+            .filter(|m| m.atime > now)
+            .map(|m| m.sid.clone())
+            .collect();
         for sid in future {
             if let Some(m) = self.manifests.get_mut(&sid) {
                 m.atime = now;
             }
             let _ = self.write_manifest(&self.manifests[&sid]);
         }
-        let expired: Vec<String> = self.manifests.values().filter(|m| now.saturating_sub(m.atime) > self.ttl_secs && Some(m.sid.as_str()) != keep).map(|m| m.sid.clone()).collect();
+        let expired: Vec<String> = self
+            .manifests
+            .values()
+            .filter(|m| now.saturating_sub(m.atime) > self.ttl_secs && Some(m.sid.as_str()) != keep)
+            .map(|m| m.sid.clone())
+            .collect();
         for s in &expired {
             self.remove_session(s);
         }
@@ -1141,7 +1434,11 @@ impl StateStore {
         }
         let mut used = self.used_bytes();
         if used > self.budget {
-            let mut tiers = vec![Tier { dir: self.dir.clone(), id_hash: self.ident.hash.clone(), manifests: std::mem::take(&mut self.manifests) }];
+            let mut tiers = vec![Tier {
+                dir: self.dir.clone(),
+                id_hash: self.ident.hash.clone(),
+                manifests: std::mem::take(&mut self.manifests),
+            }];
             if self.global_budget {
                 for mut t in foreign_tiers(&self.root, &self.dir) {
                     for m in t.manifests.values_mut().filter(|m| m.atime > now) {
@@ -1149,7 +1446,12 @@ impl StateStore {
                         let _ = write_manifest_in(&t.dir, &t.id_hash, m, &self.kill);
                     }
                     // their TTL too: an older epoch's sessions are nobody else's to expire
-                    let gone: Vec<String> = t.manifests.values().filter(|m| now.saturating_sub(m.atime) > self.ttl_secs).map(|m| m.sid.clone()).collect();
+                    let gone: Vec<String> = t
+                        .manifests
+                        .values()
+                        .filter(|m| now.saturating_sub(m.atime) > self.ttl_secs)
+                        .map(|m| m.sid.clone())
+                        .collect();
                     for s in &gone {
                         remove_manifest_in(&t.dir, &mut t.manifests, s, &self.kill);
                     }
@@ -1160,7 +1462,9 @@ impl StateStore {
                 }
                 used = self.used_bytes();
             }
-            let pinned = |ti: usize, m: &Manifest| (ti == 0 && Some(m.sid.as_str()) == keep) || now.saturating_sub(m.atime) < PIN_SECS;
+            let pinned = |ti: usize, m: &Manifest| {
+                (ti == 0 && Some(m.sid.as_str()) == keep) || now.saturating_sub(m.atime) < PIN_SECS
+            };
             // v0.1.3 store-depth: one value order over optional snapshots and whole sessions (the
             // v0.1.2 order thinned EVERY unpinned session, a deep recent one too, before any shallow
             // old session went). Each step drops the item that loses the least re-prefill per byte
@@ -1179,9 +1483,23 @@ impl StateStore {
                         let own = t.own_bytes(m, &refc).max(1) as f64;
                         let mut cands = vec![(cost_ms(m.n_tokens) * rec / own.min(need), None)];
                         let head = m.snaps.iter().map(|x| x.pos).max().unwrap_or(0);
-                        for x in m.snaps.iter().filter(|x| x.pos != head && x.class != "anchor" && x.class != "cut") {
-                            let below = m.snaps.iter().map(|y| y.pos).filter(|&p| p < x.pos).max().unwrap_or(0);
-                            cands.push(((cost_ms(x.pos) - cost_ms(below)) * rec / (x.bytes.max(1) as f64).min(need), Some(x.pos)));
+                        for x in m
+                            .snaps
+                            .iter()
+                            .filter(|x| x.pos != head && x.class != "anchor" && x.class != "cut")
+                        {
+                            let below = m
+                                .snaps
+                                .iter()
+                                .map(|y| y.pos)
+                                .filter(|&p| p < x.pos)
+                                .max()
+                                .unwrap_or(0);
+                            cands.push((
+                                (cost_ms(x.pos) - cost_ms(below)) * rec
+                                    / (x.bytes.max(1) as f64).min(need),
+                                Some(x.pos),
+                            ));
                         }
                         for (v, pos) in cands {
                             if best.as_ref().is_none_or(|b| v < b.0) {
@@ -1212,7 +1530,6 @@ impl StateStore {
         self.stats.evicted_bytes += freed;
         freed
     }
-
 }
 
 fn block_path_in(dir: &Path, h: &str, c: &str) -> PathBuf {
@@ -1224,7 +1541,11 @@ fn snap_path_in(dir: &Path, key: &str, c: &str) -> PathBuf {
 }
 
 fn write_manifest_in(dir: &Path, id_hash: &str, m: &Manifest, k: &Kill) -> Result<(), String> {
-    atomic_write(k, &dir.join("sessions").join(format!("{}.json", m.sid)), m.to_json(id_hash).to_string().as_bytes())
+    atomic_write(
+        k,
+        &dir.join("sessions").join(format!("{}.json", m.sid)),
+        m.to_json(id_hash).to_string().as_bytes(),
+    )
 }
 
 /// Drop session `sid` of the store at `dir`: its manifest, and its echo file (`echo/<hint hash>.jsonl`,
@@ -1238,7 +1559,12 @@ fn remove_manifest_in(dir: &Path, manifests: &mut HashMap<String, Manifest>, sid
         fsync_dir(&dir.join("sessions"));
     }
     if let Some(h) = gone.and_then(|m| m.hint) {
-        if hex_name(&h, 32) && !manifests.values().any(|m| m.hint.as_deref() == Some(h.as_str())) && rm(k, &dir.join("echo").join(format!("{h}.jsonl"))) {
+        if hex_name(&h, 32)
+            && !manifests
+                .values()
+                .any(|m| m.hint.as_deref() == Some(h.as_str()))
+            && rm(k, &dir.join("echo").join(format!("{h}.jsonl")))
+        {
             fsync_dir(&dir.join("echo"));
         }
     }
@@ -1246,7 +1572,12 @@ fn remove_manifest_in(dir: &Path, manifests: &mut HashMap<String, Manifest>, sid
 
 /// Delete `.pending` files and blocks / snapshots no manifest of `manifests` references, in the store
 /// at `dir`; files in `inflight` (an off-lock write on its way) are kept. Returns the bytes freed.
-fn sweep_dir(dir: &Path, manifests: &HashMap<String, Manifest>, kill: &Kill, inflight: &std::sync::Mutex<HashSet<PathBuf>>) -> u64 {
+fn sweep_dir(
+    dir: &Path,
+    manifests: &HashMap<String, Manifest>,
+    kill: &Kill,
+    inflight: &std::sync::Mutex<HashSet<PathBuf>>,
+) -> u64 {
     let mut want: HashSet<PathBuf> = HashSet::new();
     for m in manifests.values() {
         for (h, c) in &m.blocks {
@@ -1260,7 +1591,8 @@ fn sweep_dir(dir: &Path, manifests: &HashMap<String, Manifest>, kill: &Kill, inf
     let mut freed = 0;
     let mut visit = |p: PathBuf| {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let ours = name.ends_with(".pending") || ((name.ends_with(".kv") || name.ends_with(".st")) && !want.contains(&p));
+        let ours = name.ends_with(".pending")
+            || ((name.ends_with(".kv") || name.ends_with(".st")) && !want.contains(&p));
         if ours && !busy.contains(&p) {
             if let Ok(md) = fs::symlink_metadata(&p) {
                 if md.is_file() && rm(kill, &p) {
@@ -1280,11 +1612,15 @@ fn sweep_dir(dir: &Path, manifests: &HashMap<String, Manifest>, kill: &Kill, inf
         rd.flatten().for_each(|d| visit(d.path()));
     }
     if let Ok(rd) = fs::read_dir(dir.join("sessions")) {
-        rd.flatten().filter(|d| d.path().to_string_lossy().ends_with(".pending")).for_each(|d| visit(d.path()));
+        rd.flatten()
+            .filter(|d| d.path().to_string_lossy().ends_with(".pending"))
+            .for_each(|d| visit(d.path()));
     }
     // audit v0.1.2 N5: an `identity.json.pending` left by a kill during open's identity write
     if let Ok(rd) = fs::read_dir(dir) {
-        rd.flatten().filter(|d| d.path().to_string_lossy().ends_with(".pending")).for_each(|d| visit(d.path()));
+        rd.flatten()
+            .filter(|d| d.path().to_string_lossy().ends_with(".pending"))
+            .for_each(|d| visit(d.path()));
     }
     freed
 }
@@ -1314,7 +1650,12 @@ impl Tier {
 
     /// bytes only this session holds (its blocks no other session of this identity names, its snapshots)
     fn own_bytes(&self, m: &Manifest, refc: &HashMap<(String, String), usize>) -> u64 {
-        m.blocks.iter().filter(|b| refc.get(*b).copied().unwrap_or(0) <= 1).filter_map(|(h, c)| fs::metadata(block_path_in(&self.dir, h, c)).ok()).map(|x| x.len()).sum::<u64>()
+        m.blocks
+            .iter()
+            .filter(|b| refc.get(*b).copied().unwrap_or(0) <= 1)
+            .filter_map(|(h, c)| fs::metadata(block_path_in(&self.dir, h, c)).ok())
+            .map(|x| x.len())
+            .sum::<u64>()
             + m.snaps.iter().map(|s| s.bytes).sum::<u64>()
     }
 }
@@ -1329,8 +1670,17 @@ fn foreign_tiers(root: &Path, own: &Path) -> Vec<Tier> {
         if p == own || !de.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
-        let idh = fs::read(p.join("identity.json")).ok().and_then(|b| serde_json::from_slice::<Json>(&b).ok()).and_then(|j| j.get("identity_hash").and_then(Json::as_str).map(str::to_string));
-        let Some(idh) = idh.filter(|h| hex_name(h, 64)) else { continue };
+        let idh = fs::read(p.join("identity.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Json>(&b).ok())
+            .and_then(|j| {
+                j.get("identity_hash")
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+            });
+        let Some(idh) = idh.filter(|h| hex_name(h, 64)) else {
+            continue;
+        };
         let mut manifests = HashMap::new();
         if let Ok(rd2) = fs::read_dir(p.join("sessions")) {
             for d in rd2.flatten() {
@@ -1338,24 +1688,41 @@ fn foreign_tiers(root: &Path, own: &Path) -> Vec<Tier> {
                 if mp.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
                 }
-                let small = fs::symlink_metadata(&mp).is_ok_and(|m| m.is_file() && m.len() <= MAX_MANIFEST_BYTES);
-                let m = small.then(|| fs::read(&mp).ok()).flatten().and_then(|b| serde_json::from_slice::<Json>(&b).ok()).and_then(|j| Manifest::from_json(&j, &idh));
-                if let Some(m) = m.filter(|m| mp.file_stem().and_then(|s| s.to_str()) == Some(m.sid.as_str())) {
+                let small = fs::symlink_metadata(&mp)
+                    .is_ok_and(|m| m.is_file() && m.len() <= MAX_MANIFEST_BYTES);
+                let m = small
+                    .then(|| fs::read(&mp).ok())
+                    .flatten()
+                    .and_then(|b| serde_json::from_slice::<Json>(&b).ok())
+                    .and_then(|j| Manifest::from_json(&j, &idh));
+                if let Some(m) =
+                    m.filter(|m| mp.file_stem().and_then(|s| s.to_str()) == Some(m.sid.as_str()))
+                {
                     manifests.insert(m.sid.clone(), m);
                 }
             }
         }
-        v.push(Tier { dir: p, id_hash: idh, manifests });
+        v.push(Tier {
+            dir: p,
+            id_hash: idh,
+            manifests,
+        });
     }
     v
 }
 
 /// The snapshot payload at `pos` (the bytes after the file header): u64 KV bytes, the KV rows of the
 /// partial block from the live state, then the checkpoint's non-KV state (`snap`, or the live one).
-fn snap_payload<E: Engine>(eng: &mut E, pos: usize, snap: Option<&E::Snapshot>, w: &mut dyn Write) -> Result<(), String> {
+fn snap_payload<E: Engine>(
+    eng: &mut E,
+    pos: usize,
+    snap: Option<&E::Snapshot>,
+    w: &mut dyn Write,
+) -> Result<(), String> {
     let a = pos / BLOCK * BLOCK;
     let rb = eng.kv_row_bytes();
-    w.write_all(&(((pos - a) * rb) as u64).to_le_bytes()).map_err(io)?;
+    w.write_all(&(((pos - a) * rb) as u64).to_le_bytes())
+        .map_err(io)?;
     if pos > a {
         eng.kv_rows_save(a, pos, w).map_err(|e| e.0)?;
     }
@@ -1375,10 +1742,16 @@ struct Cancellable<'a, 'b> {
 
 impl Write for Cancellable<'_, '_> {
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        if self.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+        if self
+            .cancel
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        {
             return Err(std::io::Error::other("cancelled by a request"));
         }
-        if self.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+        if self
+            .deadline
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
             return Err(std::io::Error::other("past the shutdown deadline"));
         }
         self.w.write(b)
@@ -1419,8 +1792,21 @@ impl Staged {
     /// Register the files of this write in the store's `inflight` set (sweeps keep them until
     /// [`Staged::release`]).
     #[allow(clippy::too_many_arguments)]
-    pub fn new(st: &StateStore, blocks: Vec<(String, usize, String, Option<Vec<u8>>)>, head_key: String, head_c: String, head_payload: Vec<u8>, manifest: Manifest, absorbed: Vec<String>, n: usize, epoch: u64) -> Staged {
-        let tag = format!("s{}", STAGE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    pub fn new(
+        st: &StateStore,
+        blocks: Vec<(String, usize, String, Option<Vec<u8>>)>,
+        head_key: String,
+        head_c: String,
+        head_payload: Vec<u8>,
+        manifest: Manifest,
+        absorbed: Vec<String>,
+        n: usize,
+        epoch: u64,
+    ) -> Staged {
+        let tag = format!(
+            "s{}",
+            STAGE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         let mut paths = Vec::new();
         for (h, _, c, data) in &blocks {
             if data.is_some() {
@@ -1430,9 +1816,31 @@ impl Staged {
             }
         }
         paths.push(snap_path_in(&st.dir, &head_key, &head_c));
-        paths.push(st.dir.join("snaps").join(format!("{head_key}.{tag}.st.pending")));
-        st.inflight.lock().unwrap_or_else(|p| p.into_inner()).extend(paths.iter().cloned());
-        Staged { dir: st.dir.clone(), id_hash: st.ident.hash.clone(), blocks, head_key, head_c, head_payload, manifest, absorbed, n, epoch, delay_ms: st.stage_delay_ms, inflight: st.inflight.clone(), paths, tag }
+        paths.push(
+            st.dir
+                .join("snaps")
+                .join(format!("{head_key}.{tag}.st.pending")),
+        );
+        st.inflight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(paths.iter().cloned());
+        Staged {
+            dir: st.dir.clone(),
+            id_hash: st.ident.hash.clone(),
+            blocks,
+            head_key,
+            head_c,
+            head_payload,
+            manifest,
+            absorbed,
+            n,
+            epoch,
+            delay_ms: st.stage_delay_ms,
+            inflight: st.inflight.clone(),
+            paths,
+            tag,
+        }
     }
 
     /// Write the staged blocks and the head snapshot (atomic: `.pending`, fsync, rename, directory
@@ -1452,7 +1860,15 @@ impl Staged {
             }
             let a = (i * BLOCK) as u64;
             let name = format!("{h}.{c}.kv");
-            let (_, len, sum) = atomic_stream(&k, &sub, &format!("{h}.{}.kv", self.tag), HDR, &|len, sum| header(MAGIC_BLOCK, &self.id_hash, a, len, sum), &|_| name.clone(), &mut |w| w.write_all(data).map_err(io))?;
+            let (_, len, sum) = atomic_stream(
+                &k,
+                &sub,
+                &format!("{h}.{}.kv", self.tag),
+                HDR,
+                &|len, sum| header(MAGIC_BLOCK, &self.id_hash, a, len, sum),
+                &|_| name.clone(),
+                &mut |w| w.write_all(data).map_err(io),
+            )?;
             if format!("{sum:016x}") != *c {
                 return Err("staged block changed on its way to disk".into());
             }
@@ -1460,7 +1876,15 @@ impl Staged {
         }
         let pos = self.n as u64;
         let name = format!("{}.{}.st", self.head_key, self.head_c);
-        let (_, len, sum) = atomic_stream(&k, &self.dir.join("snaps"), &format!("{}.{}.st", self.head_key, self.tag), HDR, &|len, sum| header(MAGIC_SNAP, &self.id_hash, pos, len, sum), &|_| name.clone(), &mut |w| w.write_all(&self.head_payload).map_err(io))?;
+        let (_, len, sum) = atomic_stream(
+            &k,
+            &self.dir.join("snaps"),
+            &format!("{}.{}.st", self.head_key, self.tag),
+            HDR,
+            &|len, sum| header(MAGIC_SNAP, &self.id_hash, pos, len, sum),
+            &|_| name.clone(),
+            &mut |w| w.write_all(&self.head_payload).map_err(io),
+        )?;
         if format!("{sum:016x}") != self.head_c {
             return Err("staged snapshot changed on its way to disk".into());
         }
@@ -1496,7 +1920,11 @@ impl SessionMatch {
         let hs = chain(&self.id_hash, tokens);
         let (hp, hk) = (&self.head.0, &self.head.1);
         let k = hp / BLOCK;
-        if tokens.len() >= *hp && hs.len() >= k && hs[..k] == self.blocks[..k.min(self.blocks.len())] && snap_key(&self.id_hash, &hs, tokens, *hp) == *hk {
+        if tokens.len() >= *hp
+            && hs.len() >= k
+            && hs[..k] == self.blocks[..k.min(self.blocks.len())]
+            && snap_key(&self.id_hash, &hs, tokens, *hp) == *hk
+        {
             return true;
         }
         let kt = hs.len();
@@ -1547,7 +1975,13 @@ pub fn thin_max(mut pos: Vec<(usize, bool)>, n: usize, max: usize) -> Vec<usize>
             continue;
         }
         let back = n.saturating_sub(p);
-        let step = if back <= 16 << 10 { 0 } else if back <= 64 << 10 { 8 << 10 } else { 32 << 10 };
+        let step = if back <= 16 << 10 {
+            0
+        } else if back <= 64 << 10 {
+            8 << 10
+        } else {
+            32 << 10
+        };
         if last_kept == usize::MAX || last_kept.saturating_sub(p) >= step {
             out.push(p);
             last_kept = p;
@@ -1555,7 +1989,12 @@ pub fn thin_max(mut pos: Vec<(usize, bool)>, n: usize, max: usize) -> Vec<usize>
     }
     out.sort_unstable_by(|a, b| b.cmp(a));
     out.dedup();
-    let newest: Vec<usize> = out.iter().copied().filter(|p| !must.contains(p)).take(2).collect();
+    let newest: Vec<usize> = out
+        .iter()
+        .copied()
+        .filter(|p| !must.contains(p))
+        .take(2)
+        .collect();
     while out.len() > max {
         let mut best: Option<(usize, usize)> = None;
         for i in 0..out.len() {

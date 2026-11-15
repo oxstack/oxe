@@ -15,7 +15,8 @@ use crate::model::{N_EXPERT, N_LAYER, TOP_K};
 
 pub const N_DIST: usize = 3;
 const HDR: usize = 24;
-pub const LAT_BYTES: usize = HDR + 4 * N_LAYER + 2 * N_LAYER * N_EXPERT + N_LAYER * N_DIST * N_EXPERT * N_EXPERT;
+pub const LAT_BYTES: usize =
+    HDR + 4 * N_LAYER + 2 * N_LAYER * N_EXPERT + N_LAYER * N_DIST * N_EXPERT * N_EXPERT;
 /// most candidates one layer may speculate (`--la-max` is clamped to it)
 pub const MAX_SPEC: usize = 8;
 
@@ -42,7 +43,17 @@ pub struct LaStats {
 
 impl Default for LaStats {
     fn default() -> LaStats {
-        LaStats { scored: 0, above_thr: 0, issued: 0, no_slot: 0, skipped_pressure_layers: 0, skipped_pressure_reads: 0, max_in_flight: 0, score_ns: 0, issued_per_layer: [0; N_LAYER] }
+        LaStats {
+            scored: 0,
+            above_thr: 0,
+            issued: 0,
+            no_slot: 0,
+            skipped_pressure_layers: 0,
+            skipped_pressure_reads: 0,
+            max_in_flight: 0,
+            score_ns: 0,
+            issued_per_layer: [0; N_LAYER],
+        }
     }
 }
 
@@ -79,7 +90,10 @@ impl Lookahead {
             return Err(format!("lookahead table: version {ver}, {nl} layers, {ne} experts, {nd} distances (want 2, {N_LAYER}, {N_EXPERT}, {N_DIST})"));
         }
         if b.len() != LAT_BYTES {
-            return Err(format!("lookahead table: {} bytes, want {LAT_BYTES}", b.len()));
+            return Err(format!(
+                "lookahead table: {} bytes, want {LAT_BYTES}",
+                b.len()
+            ));
         }
         let scale = rd_u32(b, 20) as i32;
         if scale <= 0 {
@@ -88,7 +102,9 @@ impl Lookahead {
         let mut o = HDR;
         let thr: Vec<i32> = (0..N_LAYER).map(|i| rd_u32(b, o + 4 * i) as i32).collect();
         o += 4 * N_LAYER;
-        let bias: Vec<i16> = (0..N_LAYER * N_EXPERT).map(|i| i16::from_le_bytes([b[o + 2 * i], b[o + 2 * i + 1]])).collect();
+        let bias: Vec<i16> = (0..N_LAYER * N_EXPERT)
+            .map(|i| i16::from_le_bytes([b[o + 2 * i], b[o + 2 * i + 1]]))
+            .collect();
         o += 2 * N_LAYER * N_EXPERT;
         let tab: Vec<i8> = b[o..].iter().map(|&x| x as i8).collect();
         Ok(Lookahead {
@@ -107,7 +123,8 @@ impl Lookahead {
     }
 
     pub fn load(path: &std::path::Path, max: usize) -> Result<Lookahead, String> {
-        let b = std::fs::read(path).map_err(|e| format!("lookahead table {}: {e}", path.display()))?;
+        let b =
+            std::fs::read(path).map_err(|e| format!("lookahead table {}: {e}", path.display()))?;
         Lookahead::from_bytes(&b, max)
     }
 
@@ -116,7 +133,12 @@ impl Lookahead {
     }
 
     /// Scores of target layer `t` from `src[d-1]` = the experts routed at layer t-d (None = no such layer / not seen).
-    pub fn score(&mut self, t: usize, src: [Option<&[u16; TOP_K]>; N_DIST], out: &mut [i32; N_EXPERT]) {
+    pub fn score(
+        &mut self,
+        t: usize,
+        src: [Option<&[u16; TOP_K]>; N_DIST],
+        out: &mut [i32; N_EXPERT],
+    ) {
         // 30 rows of i8 into i16: |sum| <= 30 * 128 = 3840, no overflow
         let acc = &mut self.acc[..N_EXPERT];
         acc.fill(0);
@@ -124,7 +146,8 @@ impl Lookahead {
             let Some(s) = s else { continue };
             let base = (t * N_DIST + d) * N_EXPERT * N_EXPERT;
             for &e in s.iter() {
-                let row = &self.tab[base + e as usize * N_EXPERT..base + (e as usize + 1) * N_EXPERT];
+                let row =
+                    &self.tab[base + e as usize * N_EXPERT..base + (e as usize + 1) * N_EXPERT];
                 for (a, &r) in acc.iter_mut().zip(row) {
                     *a += r as i16;
                 }
@@ -138,7 +161,14 @@ impl Lookahead {
 
     /// The best `max` experts with score >= thr[t] that `skip` does not exclude: score descending, then id ascending.
     /// Returns (how many are written to `out`, how many experts were at or above the threshold before `skip`).
-    pub fn pick(&self, t: usize, scores: &[i32; N_EXPERT], max: usize, skip: impl Fn(usize) -> bool, out: &mut [(u16, i32); MAX_SPEC]) -> (usize, usize) {
+    pub fn pick(
+        &self,
+        t: usize,
+        scores: &[i32; N_EXPERT],
+        max: usize,
+        skip: impl Fn(usize) -> bool,
+        out: &mut [(u16, i32); MAX_SPEC],
+    ) -> (usize, usize) {
         let thr = self.thr[t];
         let max = max.min(MAX_SPEC);
         let (mut n, mut above) = (0usize, 0usize);
@@ -201,7 +231,11 @@ impl Lookahead {
                 on[d - 1] = true;
             }
         }
-        let src = [on[0].then_some(&rows[0]), on[1].then_some(&rows[1]), on[2].then_some(&rows[2])];
+        let src = [
+            on[0].then_some(&rows[0]),
+            on[1].then_some(&rows[1]),
+            on[2].then_some(&rows[2]),
+        ];
         self.score(t, src, out);
     }
 }
@@ -243,7 +277,11 @@ pub fn check_vectors(la: &mut Lookahead, v: &[u8]) -> Result<(usize, usize), Str
         if n_out > MAX_SPEC || o + 6 * n_out > v.len() {
             return Err(format!("vectors: bad n_out {n_out} in vector {i}"));
         }
-        let src = [on[0].then_some(&rows[0]), on[1].then_some(&rows[1]), on[2].then_some(&rows[2])];
+        let src = [
+            on[0].then_some(&rows[0]),
+            on[1].then_some(&rows[1]),
+            on[2].then_some(&rows[2]),
+        ];
         la.score(t, src, &mut scores);
         let mut got = [(0u16, 0i32); MAX_SPEC];
         let (k, _) = la.pick(t, &scores, MAX_SPEC, |_| false, &mut got);
@@ -282,7 +320,11 @@ mod tests {
         };
         for t in 0..N_LAYER {
             // a few layers never speculate
-            let thr: i32 = if t % 11 == 5 { i32::MAX } else { 40 + (rnd() % 60) as i32 };
+            let thr: i32 = if t % 11 == 5 {
+                i32::MAX
+            } else {
+                40 + (rnd() % 60) as i32
+            };
             b.extend_from_slice(&thr.to_le_bytes());
         }
         for _ in 0..N_LAYER * N_EXPERT {
@@ -318,7 +360,11 @@ mod tests {
                 }
             }
             let on = [t >= 1, t >= 2 && case % 7 != 0, t >= 3];
-            let src = [on[0].then_some(&rows[0]), on[1].then_some(&rows[1]), on[2].then_some(&rows[2])];
+            let src = [
+                on[0].then_some(&rows[0]),
+                on[1].then_some(&rows[1]),
+                on[2].then_some(&rows[2]),
+            ];
             let mut got = [0i32; N_EXPERT];
             la.score(t, src, &mut got);
             // naive: straight from the file bytes
@@ -329,7 +375,9 @@ mod tests {
                 for d in 0..N_DIST {
                     if on[d] {
                         for &src_e in &rows[d] {
-                            s += bytes[tab_off + ((t * N_DIST + d) * N_EXPERT + src_e as usize) * N_EXPERT + e] as i8 as i32;
+                            s += bytes[tab_off
+                                + ((t * N_DIST + d) * N_EXPERT + src_e as usize) * N_EXPERT
+                                + e] as i8 as i32;
                         }
                     }
                 }
@@ -340,7 +388,10 @@ mod tests {
             let mut out = [(0u16, 0i32); MAX_SPEC];
             for max in [1usize, 2, 8] {
                 let (n, above) = la.pick(t, &got, max, skip, &mut out);
-                let mut all: Vec<(u16, i32)> = (0..N_EXPERT).filter(|&e| got[e] >= la.thr(t) && la.thr(t) != i32::MAX).map(|e| (e as u16, got[e])).collect();
+                let mut all: Vec<(u16, i32)> = (0..N_EXPERT)
+                    .filter(|&e| got[e] >= la.thr(t) && la.thr(t) != i32::MAX)
+                    .map(|e| (e as u16, got[e]))
+                    .collect();
                 assert_eq!(above, all.len());
                 all.retain(|&(e, _)| !skip(e as usize));
                 all.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -349,14 +400,21 @@ mod tests {
                 some_pick += n;
             }
         }
-        assert!(some_pick > 100, "the random table should select something ({some_pick})");
+        assert!(
+            some_pick > 100,
+            "the random table should select something ({some_pick})"
+        );
     }
 
     #[test]
     fn note_tracks_one_token() {
         let bytes = table(7);
         let mut la = Lookahead::from_bytes(&bytes, 2).unwrap();
-        let ids = |l: usize| -> Vec<i32> { (0..TOP_K as i32).map(|j| (l as i32 * 13 + j * 7) % 512).collect() };
+        let ids = |l: usize| -> Vec<i32> {
+            (0..TOP_K as i32)
+                .map(|j| (l as i32 * 13 + j * 7) % 512)
+                .collect()
+        };
         let mut a = [0i32; N_EXPERT];
         let mut b = [0i32; N_EXPERT];
         for l in 0..N_LAYER {
@@ -364,8 +422,20 @@ mod tests {
             assert_eq!(t, (l + 1 < N_LAYER).then_some(l + 1));
             let Some(t) = t else { continue };
             la.score_noted(t, &mut a);
-            let rows: Vec<[u16; TOP_K]> = (1..=N_DIST).map(|d| if t >= d { std::array::from_fn(|j| ids(t - d)[j] as u16) } else { [0; TOP_K] }).collect();
-            let src = [(t >= 1).then_some(&rows[0]), (t >= 2).then_some(&rows[1]), (t >= 3).then_some(&rows[2])];
+            let rows: Vec<[u16; TOP_K]> = (1..=N_DIST)
+                .map(|d| {
+                    if t >= d {
+                        std::array::from_fn(|j| ids(t - d)[j] as u16)
+                    } else {
+                        [0; TOP_K]
+                    }
+                })
+                .collect();
+            let src = [
+                (t >= 1).then_some(&rows[0]),
+                (t >= 2).then_some(&rows[1]),
+                (t >= 3).then_some(&rows[2]),
+            ];
             la.score(t, src, &mut b);
             assert_eq!(a, b, "layer {l}");
         }

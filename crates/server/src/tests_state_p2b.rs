@@ -25,14 +25,31 @@ pub(crate) fn worker(dir: &Path) -> Worker<StubEngine> {
 
 pub(crate) fn toks(n: usize, seed: usize) -> Vec<u32> {
     // a shared first block (the "system prompt"), then per-seed tokens
-    (0..n).map(|k| if k < BLOCK { (k % 250) as u32 + 1 } else { ((k * 7 + seed * 13) % 250) as u32 + 1 }).collect()
+    (0..n)
+        .map(|k| {
+            if k < BLOCK {
+                (k % 250) as u32 + 1
+            } else {
+                ((k * 7 + seed * 13) % 250) as u32 + 1
+            }
+        })
+        .collect()
 }
 
 fn params(session: &str) -> GenParams {
-    GenParams { n_predict: 3, first_user: Some(BLOCK - 10), session: Some(session.into()), ..Default::default() }
+    GenParams {
+        n_predict: 3,
+        first_user: Some(BLOCK - 10),
+        session: Some(session.into()),
+        ..Default::default()
+    }
 }
 
-pub(crate) fn gen(w: &mut Worker<StubEngine>, prompt: &[u32], p: &GenParams) -> crate::generate::GenResult {
+pub(crate) fn gen(
+    w: &mut Worker<StubEngine>,
+    prompt: &[u32],
+    p: &GenParams,
+) -> crate::generate::GenResult {
     let tok = synth_tokenizer();
     w.generate(&tok, prompt, p, &mut |_| true).unwrap()
 }
@@ -43,11 +60,18 @@ fn assert_consistent(dir: &Path) -> usize {
     let plans: Vec<_> = s
         .manifests
         .values()
-        .flat_map(|m| m.snaps.iter().map(move |x| crate::state_store::Plan { sid: m.sid.clone(), blocks: m.blocks[..x.pos / BLOCK].to_vec(), snap: x.clone() }))
+        .flat_map(|m| {
+            m.snaps.iter().map(move |x| crate::state_store::Plan {
+                sid: m.sid.clone(),
+                blocks: m.blocks[..x.pos / BLOCK].to_vec(),
+                snap: x.clone(),
+            })
+        })
         .collect();
     let mut e = StubEngine::new(1 << 16, 300, 0, vec![]);
     for p in &plans {
-        s.load(&mut e, p).unwrap_or_else(|err| panic!("manifest {} snapshot at {}: {err}", p.sid, p.snap.pos));
+        s.load(&mut e, p)
+            .unwrap_or_else(|err| panic!("manifest {} snapshot at {}: {err}", p.sid, p.snap.pos));
     }
     assert_eq!(s.stats.load_errors, 0);
     plans.len()
@@ -68,14 +92,25 @@ fn m1_long_prefill_persists_progress_every_n_tokens() {
     assert_eq!(s.manifests.len(), 1, "one lineage, one manifest");
     let m = s.manifests.values().next().unwrap();
     let head = m.snaps.iter().map(|x| x.pos).max().unwrap();
-    assert!(head + 1024 >= prompt.len() - 1 && head < prompt.len(), "progress head at {head} of {}", prompt.len());
-    assert!(m.snaps.len() >= 3, "older progress heads stay as resume points (thinned): {:?}", m.snaps.iter().map(|x| x.pos).collect::<Vec<_>>());
+    assert!(
+        head + 1024 >= prompt.len() - 1 && head < prompt.len(),
+        "progress head at {head} of {}",
+        prompt.len()
+    );
+    assert!(
+        m.snaps.len() >= 3,
+        "older progress heads stay as resume points (thinned): {:?}",
+        m.snaps.iter().map(|x| x.pos).collect::<Vec<_>>()
+    );
     assert_eq!(m.hint.as_deref(), Some(hint_hash("s1").as_str()));
     drop(w);
     // "kill" + restart: the same prompt resumes from the last progress head
     let mut w2 = worker(&dir);
     let r = gen(&mut w2, &prompt, &params("s1"));
-    assert_eq!(r.timings.cache_n, head, "resumed at the last progress point");
+    assert_eq!(
+        r.timings.cache_n, head,
+        "resumed at the last progress point"
+    );
     assert_eq!(r.timings.resume_src, "disk");
     assert_eq!(w2.engine.tokens[..head], prompt[..head]);
     assert_consistent(&dir);
@@ -104,25 +139,61 @@ fn m2_shutdown_write_is_incremental_bounded_and_floored() {
     let n = w.cache.tokens.len();
     assert_eq!(r.head, Some(n), "{r:?}");
     let new_blocks = w.states.as_ref().unwrap().stats.blocks_written - written0;
-    assert!(new_blocks as usize <= 1024 / BLOCK + 1, "only the tail since the last progress write: {new_blocks} blocks");
+    assert!(
+        new_blocks as usize <= 1024 / BLOCK + 1,
+        "only the tail since the last progress write: {new_blocks} blocks"
+    );
     // v0.1.3 store-depth: the RAM points no post-reply write put on disk go too (deepest first)
-    assert!(r.snaps >= 1, "the prompt-end point is written at shutdown: {r:?}");
-    assert!(r.line().contains(&format!("head at {n} tokens")), "{}", r.line());
+    assert!(
+        r.snaps >= 1,
+        "the prompt-end point is written at shutdown: {r:?}"
+    );
+    assert!(
+        r.line().contains(&format!("head at {n} tokens")),
+        "{}",
+        r.line()
+    );
     // nothing changed: the next shutdown write is a lookup
     let r2 = w.persist(None, PersistMode::Shutdown(t), None);
-    assert_eq!((r2.head, r2.note.as_deref()), (None, Some("already on disk")));
+    assert_eq!(
+        (r2.head, r2.note.as_deref()),
+        (None, Some("already on disk"))
+    );
     // a new turn, then a deadline already passed: nothing written, the previous manifest stays
     let mut p2 = w.cache.tokens.clone();
     p2.extend(toks(700, 9)[BLOCK..].iter());
-    gen(&mut w, &p2, &GenParams { session: Some("s2".into()), ..params("s2") });
-    let r3 = w.persist(None, PersistMode::Shutdown(Instant::now() - Duration::from_millis(1)), None);
-    assert!(r3.head.is_none() && r3.blocks == 0 && r3.note.as_deref().unwrap_or("").starts_with("stopped"), "{r3:?}");
+    gen(
+        &mut w,
+        &p2,
+        &GenParams {
+            session: Some("s2".into()),
+            ..params("s2")
+        },
+    );
+    let r3 = w.persist(
+        None,
+        PersistMode::Shutdown(Instant::now() - Duration::from_millis(1)),
+        None,
+    );
+    assert!(
+        r3.head.is_none()
+            && r3.blocks == 0
+            && r3.note.as_deref().unwrap_or("").starts_with("stopped"),
+        "{r3:?}"
+    );
     // memory floor: MemAvailable below it: skipped and said so, never a big allocation
     let s = w.states.as_mut().unwrap();
     s.min_mem_bytes = 1 << 40;
     s.mem_available = || Some(1 << 20);
-    let r4 = w.persist(None, PersistMode::Shutdown(Instant::now() + Duration::from_secs(5)), None);
-    assert!(r4.head.is_none() && r4.note.as_deref().unwrap_or("").contains("save floor"), "{r4:?}");
+    let r4 = w.persist(
+        None,
+        PersistMode::Shutdown(Instant::now() + Duration::from_secs(5)),
+        None,
+    );
+    assert!(
+        r4.head.is_none() && r4.note.as_deref().unwrap_or("").contains("save floor"),
+        "{r4:?}"
+    );
     assert_consistent(&dir);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -142,13 +213,32 @@ fn n2_snapshot_file_past_its_deadline_is_cut_inside_the_file() {
     let n = w.cache.tokens.len();
     let (st, eng) = (w.states.as_mut().unwrap(), &mut w.engine);
     let snaps = st.dir.join("snaps");
-    let named = |k: &str| files(&snaps, ".st").iter().filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(k)).count();
+    let named = |k: &str| {
+        files(&snaps, ".st")
+            .iter()
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(k))
+            .count()
+    };
     let past = Instant::now() - Duration::from_millis(1);
-    let e = st.write_snap_until(eng, "n2cut", n, None, None, Some(past)).unwrap_err();
+    let e = st
+        .write_snap_until(eng, "n2cut", n, None, None, Some(past))
+        .unwrap_err();
     assert!(e.contains("deadline"), "{e}");
     assert_eq!(named("n2cut"), 0, "nothing published");
-    assert!(files(&snaps, ".pending").is_empty(), "no half-written file left");
-    let (_, bytes) = st.write_snap_until(eng, "n2ok", n, None, None, Some(Instant::now() + Duration::from_secs(60))).unwrap();
+    assert!(
+        files(&snaps, ".pending").is_empty(),
+        "no half-written file left"
+    );
+    let (_, bytes) = st
+        .write_snap_until(
+            eng,
+            "n2ok",
+            n,
+            None,
+            None,
+            Some(Instant::now() + Duration::from_secs(60)),
+        )
+        .unwrap();
     assert!(bytes > 0);
     assert_eq!(named("n2ok"), 1);
     let _ = std::fs::remove_dir_all(&dir);
@@ -178,7 +268,12 @@ fn forks_get_their_own_manifest_and_never_replace_a_siblings_head() {
     let s = w.states.as_ref().unwrap();
     assert_eq!(s.manifests.len(), 2);
     let ma = &s.manifests[ra.sid.as_ref().unwrap()];
-    assert!(ma.snaps.iter().any(|x| x.class == "head" && x.pos == a.len()), "branch A's head is intact");
+    assert!(
+        ma.snaps
+            .iter()
+            .any(|x| x.class == "head" && x.pos == a.len()),
+        "branch A's head is intact"
+    );
     // branch A continues: same manifest, its head moves
     let mut a2 = a.clone();
     a2.extend((0..100).map(|k| k as u32 + 1));
@@ -186,7 +281,13 @@ fn forks_get_their_own_manifest_and_never_replace_a_siblings_head() {
     assert_eq!(ra2.sid, ra.sid, "a branch continues its own manifest");
     let s = w.states.as_ref().unwrap();
     assert_eq!(s.manifests.len(), 2);
-    assert!(s.manifests[rb.sid.as_ref().unwrap()].snaps.iter().any(|x| x.pos == b.len()), "B untouched");
+    assert!(
+        s.manifests[rb.sid.as_ref().unwrap()]
+            .snaps
+            .iter()
+            .any(|x| x.pos == b.len()),
+        "B untouched"
+    );
     // both branches resume from disk after a restart
     drop(w);
     let st = open(&dir, ident("sha256:m", ""), 1 << 40);
@@ -221,7 +322,15 @@ fn kill_at_each_write_step_leaves_a_consistent_store() {
         for k in 0..=total {
             let dir = tmp(&format!("p2b-kill-{k}"));
             let (mut w, t2) = kill_setup(&dir);
-            let turn1 = w.states.as_ref().unwrap().manifests.values().map(|m| m.n_tokens).max().unwrap();
+            let turn1 = w
+                .states
+                .as_ref()
+                .unwrap()
+                .manifests
+                .values()
+                .map(|m| m.n_tokens)
+                .max()
+                .unwrap();
             {
                 let s = w.states.as_mut().unwrap();
                 s.kill.at = Some(s.kill.taken() + k);
@@ -230,14 +339,28 @@ fn kill_at_each_write_step_leaves_a_consistent_store() {
             drop(w);
             // restart: start-up sweeps; every manifest left must load
             let n_snaps = assert_consistent(&dir);
-            assert!(n_snaps > 0, "kill at step {k}: the previous turn's state survives");
-            assert!(files(&dir, ".pending").is_empty(), "kill at step {k}: start-up swept the .pending files");
+            assert!(
+                n_snaps > 0,
+                "kill at step {k}: the previous turn's state survives"
+            );
+            assert!(
+                files(&dir, ".pending").is_empty(),
+                "kill at step {k}: start-up swept the .pending files"
+            );
             let mut w2 = worker(&dir);
             let mut q = t2.clone();
             q.extend([40, 41, 42]);
             let r = gen(&mut w2, &q, &params("k"));
-            assert!(r.timings.cache_n >= turn1, "kill at step {k} ({mode:?}): resumed {} < turn 1 {turn1}", r.timings.cache_n);
-            assert_eq!(w2.engine.tokens[..q.len()], q[..], "the request answered on the right state");
+            assert!(
+                r.timings.cache_n >= turn1,
+                "kill at step {k} ({mode:?}): resumed {} < turn 1 {turn1}",
+                r.timings.cache_n
+            );
+            assert_eq!(
+                w2.engine.tokens[..q.len()],
+                q[..],
+                "the request answered on the right state"
+            );
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -250,7 +373,10 @@ fn kill_setup(dir: &Path) -> (Worker<StubEngine>, Vec<u32>) {
     w.engine.prefill(&t1).unwrap();
     w.cache.appended(&t1);
     w.last_first_user = Some(BLOCK - 10);
-    assert!(w.persist(Some("k"), PersistMode::Reply, None).head.is_some());
+    assert!(w
+        .persist(Some("k"), PersistMode::Reply, None)
+        .head
+        .is_some());
     // turn 2: new blocks, a RAM checkpoint, a new head
     let mut t2 = t1.clone();
     t2.extend(toks(1000, 6)[BLOCK..].iter());
@@ -267,7 +393,16 @@ fn kill_setup(dir: &Path) -> (Worker<StubEngine>, Vec<u32>) {
 pub(crate) async fn chat_h(st: &Arc<State<StubEngine>>, msgs: Json, hint: &str) -> Json {
     let n0 = st.persist_done.load(Ordering::SeqCst);
     let b = crate::tests_state::body(msgs);
-    let r = match handle_session(st.clone(), "POST", "/v1/chat/completions", "", &serde_json::to_vec(&b).unwrap(), Some(hint.into())).await {
+    let r = match handle_session(
+        st.clone(),
+        "POST",
+        "/v1/chat/completions",
+        "",
+        &serde_json::to_vec(&b).unwrap(),
+        Some(hint.into()),
+    )
+    .await
+    {
         Reply::Json(c, j) => {
             assert_eq!(c, 200, "{j}");
             j
@@ -283,7 +418,11 @@ pub(crate) async fn chat_h(st: &Arc<State<StubEngine>>, msgs: Json, hint: &str) 
 }
 
 /// A server whose echo records live on disk next to the state store (as main.rs attaches them).
-pub(crate) fn server_echo(dir: &Path, scripts: Vec<Vec<u32>>, budget: u64) -> Arc<State<StubEngine>> {
+pub(crate) fn server_echo(
+    dir: &Path,
+    scripts: Vec<Vec<u32>>,
+    budget: u64,
+) -> Arc<State<StubEngine>> {
     let st = server(dir, scripts, ident("sha256:m", ""), budget);
     {
         let w = st.worker.lock().unwrap();
@@ -296,7 +435,14 @@ pub(crate) fn server_echo(dir: &Path, scripts: Vec<Vec<u32>>, budget: u64) -> Ar
 }
 
 pub(crate) fn model_dir(st: &State<StubEngine>) -> std::path::PathBuf {
-    st.worker.lock().unwrap().states.as_ref().unwrap().dir.clone()
+    st.worker
+        .lock()
+        .unwrap()
+        .states
+        .as_ref()
+        .unwrap()
+        .dir
+        .clone()
 }
 
 /// Bigger item 2: one echo file naming scheme. A session's echo file is
@@ -307,15 +453,27 @@ async fn echo_files_are_named_by_the_manifest_hint_and_go_with_the_last_manifest
     let tok = synth_tokenizer();
     let dir = tmp("p2b-echo");
     let a = server_echo(&dir, vec![tok.encode("Answer one.", false, true)], 1 << 40);
-    chat_h(&a, json!([{"role":"system","content":sys()},{"role":"user","content":"first question"}]), "conv-1").await;
+    chat_h(
+        &a,
+        json!([{"role":"system","content":sys()},{"role":"user","content":"first question"}]),
+        "conv-1",
+    )
+    .await;
     let md = model_dir(&a);
     let h = hint_hash("conv-1");
-    assert!(md.join("echo").join(format!("{h}.jsonl")).is_file(), "echo file named by the hint hash");
+    assert!(
+        md.join("echo").join(format!("{h}.jsonl")).is_file(),
+        "echo file named by the hint hash"
+    );
     let sid = {
         let w = a.worker.lock().unwrap();
         let s = w.states.as_ref().unwrap();
         let m = s.manifests.values().next().unwrap();
-        assert_eq!(m.hint.as_deref(), Some(h.as_str()), "the manifest's hint field is the echo file stem");
+        assert_eq!(
+            m.hint.as_deref(),
+            Some(h.as_str()),
+            "the manifest's hint field is the echo file stem"
+        );
         m.sid.clone()
     };
     // eviction of the last manifest with that hint takes the echo file along
@@ -328,7 +486,10 @@ async fn echo_files_are_named_by_the_manifest_hint_and_go_with_the_last_manifest
         s.set_budget(1);
         assert!(s.manifests.is_empty());
     }
-    assert!(!md.join("echo").join(format!("{h}.jsonl")).exists(), "the evicted session's echo file is gone");
+    assert!(
+        !md.join("echo").join(format!("{h}.jsonl")).exists(),
+        "the evicted session's echo file is gone"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -347,7 +508,13 @@ async fn preload_restores_the_newest_session_and_yields_to_requests() {
     let head = crate::tests_state::kv(&a).len();
     drop(a);
     let b = server_echo(&dir, vec![tok.encode("Answer two.", false, true)], 1 << 40);
-    let (c, j) = call(&b, "POST", "/state-cache/preload", json!({"session": "conv-p"})).await;
+    let (c, j) = call(
+        &b,
+        "POST",
+        "/state-cache/preload",
+        json!({"session": "conv-p"}),
+    )
+    .await;
     assert_eq!((c, j["status"].as_str()), (202, Some("started")), "{j}");
     let t0 = Instant::now();
     loop {
@@ -361,10 +528,20 @@ async fn preload_restores_the_newest_session_and_yields_to_requests() {
     }
     // PRELOAD-RACE (mono ci-engine, run 33 of 50): "done" was published while the task still held
     // the worker, so a preload right after could see it held. Now "done" means released.
-    assert_eq!(b.work.load(Ordering::SeqCst), 0, "no long holder left once the preload says done");
-    assert!(b.worker.try_lock().is_ok(), "the worker is free once the preload says done");
+    assert_eq!(
+        b.work.load(Ordering::SeqCst),
+        0,
+        "no long holder left once the preload says done"
+    );
+    assert!(
+        b.worker.try_lock().is_ok(),
+        "the worker is free once the preload says done"
+    );
     let (_, j) = call(&b, "POST", "/state-cache/preload", json!({})).await;
-    assert_eq!(j["status"], "live", "a second preload never replaces a loaded state");
+    assert_eq!(
+        j["status"], "live",
+        "a second preload never replaces a loaded state"
+    );
     let m2 = json!([{"role":"system","content":sys()},{"role":"user","content":"first question"},{"role":"assistant","content":"Answer one."},{"role":"user","content":"more"}]);
     let r = chat_h(&b, m2, "conv-p").await;
     assert_eq!(r["timings"]["cache_n"].as_u64().unwrap() as usize, head);
@@ -395,7 +572,14 @@ async fn preload_restores_the_newest_session_and_yields_to_requests() {
         let f = AtomicBool::new(false);
         assert_eq!(w.preload(None, &f).0, "done");
         let other = toks(400, 77);
-        let r = gen(&mut w, &other, &GenParams { n_predict: 2, ..Default::default() });
+        let r = gen(
+            &mut w,
+            &other,
+            &GenParams {
+                n_predict: 2,
+                ..Default::default()
+            },
+        );
         assert_eq!((r.timings.cache_n, r.timings.resume_src), (0, "cold"));
         assert_eq!(w.engine.tokens[..other.len()], other[..]);
     }
@@ -428,11 +612,20 @@ async fn preload_survives_concurrent_status_reads() {
                 })
             })
             .collect();
-        let (c, j) = call(&b, "POST", "/state-cache/preload", json!({"session": "conv-q"})).await;
+        let (c, j) = call(
+            &b,
+            "POST",
+            "/state-cache/preload",
+            json!({"session": "conv-q"}),
+        )
+        .await;
         assert_eq!((c, j["status"].as_str()), (202, Some("started")), "{j}");
         let t0 = Instant::now();
         let status = loop {
-            let s = b.preload_status.lock().unwrap()["status"].as_str().unwrap_or("").to_string();
+            let s = b.preload_status.lock().unwrap()["status"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             if s != "running" {
                 break s;
             }
@@ -443,7 +636,10 @@ async fn preload_survives_concurrent_status_reads() {
         for p in pollers {
             p.await.unwrap();
         }
-        assert_eq!(status, "done", "round {round}: a status read must not cancel a preload");
+        assert_eq!(
+            status, "done",
+            "round {round}: a status read must not cancel a preload"
+        );
         assert_eq!(b.worker.lock().unwrap().engine.n_past(), head);
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -477,7 +673,15 @@ async fn preload_waits_for_a_short_holder_and_yields_to_a_request() {
         held_rx.recv().unwrap();
         let route = {
             let b = b.clone();
-            tokio::spawn(async move { call(&b, "POST", "/state-cache/preload", json!({"session": "conv-s"})).await })
+            tokio::spawn(async move {
+                call(
+                    &b,
+                    "POST",
+                    "/state-cache/preload",
+                    json!({"session": "conv-s"}),
+                )
+                .await
+            })
         };
         // well past the old 200 ms bound, the route is still waiting (no answer yet)
         tokio::time::sleep(Duration::from_millis(400)).await;
@@ -510,9 +714,18 @@ fn futures_block<F: std::future::Future + Send>(f: F) -> F::Output
 where
     F::Output: Send,
 {
-    std::thread::scope(|s| s.spawn(|| tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)).join().unwrap())
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(f)
+        })
+        .join()
+        .unwrap()
+    })
 }
-
 
 /// Codex P2/P3 review: start-up never reads a manifest or an echo file unbounded: an oversized
 /// manifest is dropped unread (a miss, never a guess), an oversized echo file is skipped.
@@ -520,12 +733,19 @@ where
 fn oversized_manifests_and_echo_files_are_not_read() {
     let dir = tmp("p2b-bounded");
     let s = open(&dir, ident("sha256:m", ""), 1 << 40);
-    let big = s.dir.join("sessions").join(format!("{}.json", "a".repeat(32)));
+    let big = s
+        .dir
+        .join("sessions")
+        .join(format!("{}.json", "a".repeat(32)));
     let f = std::fs::File::create(&big).unwrap();
-    f.set_len(crate::state_store::MAX_MANIFEST_BYTES + 1).unwrap();
+    f.set_len(crate::state_store::MAX_MANIFEST_BYTES + 1)
+        .unwrap();
     drop(s);
     let s = open(&dir, ident("sha256:m", ""), 1 << 40);
-    assert!(s.manifests.is_empty() && !big.exists(), "an oversized manifest is refused and removed");
+    assert!(
+        s.manifests.is_empty() && !big.exists(),
+        "an oversized manifest is refused and removed"
+    );
     let echo = s.dir.join("echo");
     let f = std::fs::File::create(echo.join(format!("{}.jsonl", "b".repeat(32)))).unwrap();
     f.set_len(crate::echo::MAX_ECHO_FILE_BYTES + 1).unwrap();
@@ -555,19 +775,44 @@ fn shutdown_dispatch_never_starts_the_unbounded_legacy_writer_with_the_state_cac
     let t0 = Instant::now();
     let deadline = t0 + Duration::from_millis(2500);
     let log = w.shutdown_writes(true, true, t0, deadline, &mut slow);
-    assert_eq!(called.get(), 0, "the legacy writer never starts with the state cache on: {log:?}");
-    assert!(t0.elapsed() < Duration::from_millis(2500), "the whole sequence ends inside the deadline: {:?}", t0.elapsed());
-    assert!(log[0].starts_with("state cache: shutdown write: ") && log[0].contains("head at"), "{log:?}");
-    assert!(log.iter().any(|l| l.starts_with("session cache: not written at shutdown")), "{log:?}");
+    assert_eq!(
+        called.get(),
+        0,
+        "the legacy writer never starts with the state cache on: {log:?}"
+    );
+    assert!(
+        t0.elapsed() < Duration::from_millis(2500),
+        "the whole sequence ends inside the deadline: {:?}",
+        t0.elapsed()
+    );
+    assert!(
+        log[0].starts_with("state cache: shutdown write: ") && log[0].contains("head at"),
+        "{log:?}"
+    );
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("session cache: not written at shutdown")),
+        "{log:?}"
+    );
     // without the state cache: the legacy sequence as before
     let mut w2 = Worker::new(StubEngine::new(1 << 16, 300, 0, vec![]), 8);
     let mut fast = |_: &mut Worker<StubEngine>| {
         called.set(called.get() + 1);
         3
     };
-    let log = w2.shutdown_writes(false, true, Instant::now(), Instant::now() + Duration::from_secs(1), &mut fast);
+    let log = w2.shutdown_writes(
+        false,
+        true,
+        Instant::now(),
+        Instant::now() + Duration::from_secs(1),
+        &mut fast,
+    );
     assert_eq!(called.get(), 1);
-    assert!(log.iter().any(|l| l.starts_with("session cache: wrote 3 sessions")), "{log:?}");
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("session cache: wrote 3 sessions")),
+        "{log:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -604,25 +849,59 @@ fn one_restore_per_request_the_deepest_source() {
             w.engine.prefill(&prompt[..seg]).unwrap();
             w.cache.appended(&prompt[..seg]);
             w.last_first_user = Some(BLOCK - 10);
-            assert_eq!(w.persist(Some("q"), PersistMode::Reply, None).head, Some(seg));
+            assert_eq!(
+                w.persist(Some("q"), PersistMode::Reply, None).head,
+                Some(seg)
+            );
             w.engine.reset();
             w.engine.prefill(&prompt[..leg]).unwrap();
-            let mut ps = crate::prefix_store::PrefixStore::open(&dir.join("legacy-sessions"), "legacy-id".into(), 1 << 30, 64).unwrap();
+            let mut ps = crate::prefix_store::PrefixStore::open(
+                &dir.join("legacy-sessions"),
+                "legacy-id".into(),
+                1 << 30,
+                64,
+            )
+            .unwrap();
             let eng = &mut w.engine;
-            ps.save_stream(&prompt[..leg], &mut |out| eng.save_state(out).map_err(|e| e.0)).unwrap();
+            ps.save_stream(&prompt[..leg], &mut |out| {
+                eng.save_state(out).map_err(|e| e.0)
+            })
+            .unwrap();
         }
         let mut w = worker(&dir);
-        w.sessions = Some(crate::prefix_store::PrefixStore::open(&dir.join("legacy-sessions"), "legacy-id".into(), 1 << 30, 64).unwrap());
+        w.sessions = Some(
+            crate::prefix_store::PrefixStore::open(
+                &dir.join("legacy-sessions"),
+                "legacy-id".into(),
+                1 << 30,
+                64,
+            )
+            .unwrap(),
+        );
         let mut q = prompt.clone();
         q.extend([3, 4, 5]);
         let r = gen(&mut w, &q, &params("q"));
-        let (want_n, want_src, load_call) = if leg > seg { (leg, "session", "load") } else { (seg, "state", "snap") };
-        assert_eq!(r.timings.cache_n, want_n, "seg {seg} leg {leg}: the deeper source serves");
-        assert_eq!((w.cache.last_src, r.timings.resume_src), (want_src, "disk"), "seg {seg} leg {leg}");
+        let (want_n, want_src, load_call) = if leg > seg {
+            (leg, "session", "load")
+        } else {
+            (seg, "state", "snap")
+        };
+        assert_eq!(
+            r.timings.cache_n, want_n,
+            "seg {seg} leg {leg}: the deeper source serves"
+        );
+        assert_eq!(
+            (w.cache.last_src, r.timings.resume_src),
+            (want_src, "disk"),
+            "seg {seg} leg {leg}"
+        );
         assert_eq!(w.restores, 1, "seg {seg} leg {leg}: exactly one restore");
         assert!(w.engine.calls.iter().any(|c| c.0 == load_call));
         let other = if load_call == "load" { "snap" } else { "load" };
-        assert!(!w.engine.calls.iter().any(|c| c.0 == other), "seg {seg} leg {leg}: the other source is never loaded");
+        assert!(
+            !w.engine.calls.iter().any(|c| c.0 == other),
+            "seg {seg} leg {leg}: the other source is never loaded"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -642,11 +921,20 @@ fn restore_plan_prefers_the_deepest_exact_state_and_uses_cost_only_at_equal_dept
     w.last_first_user = Some(BLOCK - 10);
     w.persist(Some("q"), PersistMode::Reply, None);
     let legacy = |w: &mut Worker<StubEngine>, n: usize, name: &str| {
-        let mut ps = crate::prefix_store::PrefixStore::open(&dir.join(name), "legacy-id".into(), 1 << 30, 64).unwrap();
+        let mut ps = crate::prefix_store::PrefixStore::open(
+            &dir.join(name),
+            "legacy-id".into(),
+            1 << 30,
+            64,
+        )
+        .unwrap();
         w.engine.reset();
         w.engine.prefill(&prompt[..n]).unwrap();
         let eng = &mut w.engine;
-        ps.save_stream(&prompt[..n], &mut |out| eng.save_state(out).map_err(|e| e.0)).unwrap();
+        ps.save_stream(&prompt[..n], &mut |out| {
+            eng.save_state(out).map_err(|e| e.0)
+        })
+        .unwrap();
         w.sessions = Some(ps);
     };
     let mut q = prompt.clone();
@@ -667,7 +955,11 @@ fn restore_plan_prefers_the_deepest_exact_state_and_uses_cost_only_at_equal_dept
     assert_eq!(w.plan_restore(&q, 0), vec![State, Session]);
     // the live / RAM state already as deep: nothing on disk is restored over it
     assert!(w.plan_restore(&q, 1200).is_empty());
-    assert_eq!(w.plan_restore(&q, 1150), vec![State, Session], "deeper than RAM: restored, whatever it costs");
+    assert_eq!(
+        w.plan_restore(&q, 1150),
+        vec![State, Session],
+        "deeper than RAM: restored, whatever it costs"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -686,19 +978,45 @@ fn a_disk_state_that_is_not_a_prefix_of_the_request_is_never_restored() {
             w.engine.prefill(&prompt).unwrap();
             w.cache.appended(&prompt);
             w.last_first_user = Some(BLOCK - 10);
-            assert_eq!(w.persist(Some("q"), PersistMode::Reply, None).head, Some(1300));
+            assert_eq!(
+                w.persist(Some("q"), PersistMode::Reply, None).head,
+                Some(1300)
+            );
         }
         let diverge = 700;
         let mut q = prompt[..diverge].to_vec();
         q.extend((0..700).map(|k| 260 + (k % 30) as u32)); // never in the stored tail (1..=250)
         let mut w = worker(&dir);
-        let r = gen(&mut w, &q, &GenParams { n_predict: 3, first_user: Some(BLOCK - 10), session: hint.map(Into::into), ..Default::default() });
-        assert!(r.timings.cache_n <= diverge, "hint {hint:?}: resumed {} past the divergence at {diverge}", r.timings.cache_n);
+        let r = gen(
+            &mut w,
+            &q,
+            &GenParams {
+                n_predict: 3,
+                first_user: Some(BLOCK - 10),
+                session: hint.map(Into::into),
+                ..Default::default()
+            },
+        );
+        assert!(
+            r.timings.cache_n <= diverge,
+            "hint {hint:?}: resumed {} past the divergence at {diverge}",
+            r.timings.cache_n
+        );
         for c in &w.engine.calls {
-            let depth = match c.0 { "snap" => c.1, "load" => c.2, _ => 0 };
-            assert!(depth <= diverge, "hint {hint:?}: {c:?} restored a state past the divergence");
+            let depth = match c.0 {
+                "snap" => c.1,
+                "load" => c.2,
+                _ => 0,
+            };
+            assert!(
+                depth <= diverge,
+                "hint {hint:?}: {c:?} restored a state past the divergence"
+            );
         }
-        assert!(w.engine.tokens.starts_with(&q), "hint {hint:?}: the engine state is the request's own prefix");
+        assert!(
+            w.engine.tokens.starts_with(&q),
+            "hint {hint:?}: the engine state is the request's own prefix"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -715,34 +1033,100 @@ fn thinking_follow_up_after_a_restart_resumes_the_exact_ram_checkpoint() {
     let mut w = worker(&dir);
     w.persist_every = 0;
     let p1 = toks(1300, 21);
-    gen(&mut w, &p1, &GenParams { n_predict: 4, ..params("t") });
+    gen(
+        &mut w,
+        &p1,
+        &GenParams {
+            n_predict: 4,
+            ..params("t")
+        },
+    );
     // the follow-up continues the live state (reply included) with a new user turn
     let turn_end = w.cache.tokens.len();
-    assert_ne!(turn_end % BLOCK, 0, "the turn ends inside a block (partial-block rows in its snapshot)");
+    assert_ne!(
+        turn_end % BLOCK,
+        0,
+        "the turn ends inside a block (partial-block rows in its snapshot)"
+    );
     let mut p2 = w.cache.tokens.clone();
     p2.extend((0..20).map(|k| k as u32 + 30));
-    let ctl = gen(&mut w, &p2, &GenParams { n_predict: 4, ..params("t") });
-    assert_eq!((ctl.timings.resume_src, ctl.timings.cache_n), ("live", p2.len() - 20));
+    let ctl = gen(
+        &mut w,
+        &p2,
+        &GenParams {
+            n_predict: 4,
+            ..params("t")
+        },
+    );
+    assert_eq!(
+        (ctl.timings.resume_src, ctl.timings.cache_n),
+        ("live", p2.len() - 20)
+    );
     let ctl_state = w.engine.tokens.clone();
     // no post-reply write ran (cut by the next request); SIGTERM: the bounded shutdown write
-    let r = w.persist(None, PersistMode::Shutdown(Instant::now() + Duration::from_secs(5)), None);
-    assert!(r.head.is_some() && r.snaps >= 1, "head and the RAM checkpoints: {r:?}");
-    let saved: Vec<usize> = w.states.as_ref().unwrap().manifests.values().flat_map(|m| m.snaps.iter().map(|x| x.pos)).collect();
-    assert!(saved.contains(&turn_end), "a snapshot at the EXACT turn end {turn_end}, not the last block boundary: {saved:?}");
-    assert!(saved.contains(&(p2.len() - 1)), "and at the follow-up's tail: {saved:?}");
+    let r = w.persist(
+        None,
+        PersistMode::Shutdown(Instant::now() + Duration::from_secs(5)),
+        None,
+    );
+    assert!(
+        r.head.is_some() && r.snaps >= 1,
+        "head and the RAM checkpoints: {r:?}"
+    );
+    let saved: Vec<usize> = w
+        .states
+        .as_ref()
+        .unwrap()
+        .manifests
+        .values()
+        .flat_map(|m| m.snaps.iter().map(|x| x.pos))
+        .collect();
+    assert!(
+        saved.contains(&turn_end),
+        "a snapshot at the EXACT turn end {turn_end}, not the last block boundary: {saved:?}"
+    );
+    assert!(
+        saved.contains(&(p2.len() - 1)),
+        "and at the follow-up's tail: {saved:?}"
+    );
     drop(w);
     let mut w2 = worker(&dir);
-    let res = gen(&mut w2, &p2, &GenParams { n_predict: 4, ..params("t") });
-    assert_eq!(res.timings.cache_n, p2.len() - 1, "resumed at the follow-up's tail checkpoint, nothing re-prefilled but the last token");
+    let res = gen(
+        &mut w2,
+        &p2,
+        &GenParams {
+            n_predict: 4,
+            ..params("t")
+        },
+    );
+    assert_eq!(
+        res.timings.cache_n,
+        p2.len() - 1,
+        "resumed at the follow-up's tail checkpoint, nothing re-prefilled but the last token"
+    );
     assert_eq!(res.timings.resume_src, "disk");
     assert_eq!(w2.restores, 1);
-    assert_eq!(w2.engine.tokens[..p2.len()], ctl_state[..p2.len()], "the resumed state is the uninterrupted one");
+    assert_eq!(
+        w2.engine.tokens[..p2.len()],
+        ctl_state[..p2.len()],
+        "the resumed state is the uninterrupted one"
+    );
     // another follow-up of the same turn (an edit / retry of the user message): it resumes at the
     // exact turn end, not at the last 256 boundary
     let mut p3 = p2[..turn_end].to_vec();
     p3.extend((0..20).map(|k| k as u32 + 90));
     let mut w3 = worker(&dir);
-    let r3 = gen(&mut w3, &p3, &GenParams { n_predict: 4, ..params("t") });
-    assert_eq!((r3.timings.cache_n, r3.timings.resume_src), (turn_end, "disk"));
+    let r3 = gen(
+        &mut w3,
+        &p3,
+        &GenParams {
+            n_predict: 4,
+            ..params("t")
+        },
+    );
+    assert_eq!(
+        (r3.timings.cache_n, r3.timings.resume_src),
+        (turn_end, "disk")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

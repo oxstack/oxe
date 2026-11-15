@@ -23,44 +23,44 @@ pub mod state_store;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_echo;
+#[cfg(test)]
+mod tests_flash_prefix;
+#[cfg(test)]
 mod tests_flash_prod;
 #[cfg(test)]
 mod tests_hotfix;
 #[cfg(test)]
-mod tests_flash_prefix;
-#[cfg(test)]
-mod tests_echo;
-#[cfg(test)]
-mod tests_state;
-#[cfg(test)]
-mod tests_state_p2b;
-#[cfg(test)]
-mod tests_oxe_state;
-#[cfg(test)]
-mod tests_state_clear;
-#[cfg(test)]
-mod tests_state_v013;
-#[cfg(test)]
-mod tests_v013_int;
-#[cfg(test)]
 mod tests_lan_share;
-#[cfg(test)]
-mod tests_store_depth;
 #[cfg(test)]
 mod tests_long_append;
 #[cfg(test)]
+mod tests_oxe_state;
+#[cfg(test)]
+mod tests_state;
+#[cfg(test)]
+mod tests_state_clear;
+#[cfg(test)]
+mod tests_state_p2b;
+#[cfg(test)]
+mod tests_state_v013;
+#[cfg(test)]
+mod tests_store_depth;
+#[cfg(test)]
+mod tests_v013_int;
+#[cfg(test)]
 mod tests_v014_session;
+#[cfg(test)]
+mod tests_v020_fair;
 #[cfg(test)]
 mod tests_v020_hints;
 #[cfg(test)]
-mod tests_v020_openai;
-#[cfg(test)]
 mod tests_v020_legacy;
+#[cfg(test)]
+mod tests_v020_openai;
 #[cfg(test)]
 mod tests_v020_rewrite;
 #[cfg(test)]
 mod tests_v020_round1;
-#[cfg(test)]
-mod tests_v020_fair;
 #[cfg(test)]
 mod tests_v020_timings;

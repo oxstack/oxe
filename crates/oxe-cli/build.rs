@@ -2,7 +2,11 @@
 use std::process::Command;
 
 fn main() {
-    let rev = Command::new("git").args(["rev-parse", "--short=12", "HEAD"]).output().ok().filter(|o| o.status.success());
+    let rev = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
     let dirty = Command::new("git")
         .args(["status", "--porcelain", "--untracked-files=no"])
         .output()

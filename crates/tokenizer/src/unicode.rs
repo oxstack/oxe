@@ -82,7 +82,11 @@ pub fn byte_to_cpt_table() -> &'static [char; 256] {
 pub fn cpt_to_byte(c: char) -> Option<u8> {
     static T: OnceLock<std::collections::HashMap<char, u8>> = OnceLock::new();
     let t = T.get_or_init(|| {
-        byte_to_cpt_table().iter().enumerate().map(|(b, &c)| (c, b as u8)).collect()
+        byte_to_cpt_table()
+            .iter()
+            .enumerate()
+            .map(|(b, &c)| (c, b as u8))
+            .collect()
     });
     t.get(&c).copied()
 }
@@ -137,7 +141,10 @@ pub fn split_qwen(cpts: &[u32], marks: bool) -> Vec<usize> {
         // [^\r\n\p{L}\p{N}]?[\p{L}(\p{M})]+
         if !(cpt == '\r' as u32 || cpt == '\n' as u32 || is(fl, NUMBER)) {
             let hit = if marks {
-                is(fl, LETTER) || is(fl, ACCENT_MARK) || is(get_flags(pos + 1), ACCENT_MARK) || is(get_flags(pos + 1), LETTER)
+                is(fl, LETTER)
+                    || is(fl, ACCENT_MARK)
+                    || is(get_flags(pos + 1), ACCENT_MARK)
+                    || is(get_flags(pos + 1), LETTER)
             } else {
                 is(fl, LETTER) || is(get_flags(pos + 1), LETTER)
             };
@@ -160,7 +167,11 @@ pub fn split_qwen(cpts: &[u32], marks: bool) -> Vec<usize> {
 
         // <space>?[^\s\p{L}(\p{M})\p{N}]+[\r\n]*
         let stop = WHITESPACE_F | lm | NUMBER;
-        let mut fl2 = if cpt == ' ' as u32 { get_flags(pos + 1) } else { fl };
+        let mut fl2 = if cpt == ' ' as u32 {
+            get_flags(pos + 1)
+        } else {
+            fl
+        };
         if fl2 & stop == 0 && fl != 0 {
             if cpt == ' ' as u32 {
                 pos += 1;

@@ -58,36 +58,268 @@ const TILE_K: i32 = 256;
 const L2_PANELS: i32 = 64;
 
 fn kernels() -> Vec<KDef> {
-    let k = |name, group, unit, per_inst, needs, kind, note| KDef { name, group, unit, per_inst, needs, kind, note };
+    let k = |name, group, unit, per_inst, needs, kind, note| KDef {
+        name,
+        group,
+        unit,
+        per_inst,
+        needs,
+        kind,
+        note,
+    };
     vec![
-        k("f32_fmla_4s", "register", "FMA", 4.0, &[][..], Kind::Asm(0), "f32 baseline: FMLA Vd.4S"),
-        k("f16_fmla_8h", "register", "FMA", 8.0, &["fp16"][..], Kind::Asm(1), "FMLA Vd.8H, Vn.8H, Vm.8H"),
-        k("f16_fmla_8h_elem", "register", "FMA", 8.0, &["fp16"][..], Kind::Asm(2), "FMLA Vd.8H, Vn.8H, Vm.H[i] (fa2x's form)"),
-        k("f16_ld1r_fmla_8h", "register", "FMA", 8.0, &["fp16"][..], Kind::Asm(3), "1 LD1R per 2 FMLA.8H (pre-broadcast operand)"),
-        k("f16_fmlal", "register", "FMA", 4.0, &["fp16", "fhm"][..], Kind::Asm(4), "FMLAL Vd.4S, Vn.4H, Vm.4H (the fa2x fold)"),
-        k("bf16_bfdot", "register", "FMA", 8.0, &["bf16"][..], Kind::Asm(5), "BFDOT Vd.4S: 8 bf16 MAC"),
-        k("bf16_bfmmla", "register", "FMA", 16.0, &["bf16"][..], Kind::Asm(6), "BFMMLA Vd.4S: 2x4 . 4x2, 16 bf16 MAC"),
-        k("bf16_bfmlalb", "register", "FMA", 4.0, &["bf16"][..], Kind::Asm(7), "BFMLALB Vd.4S: 4 bf16 MAC"),
-        k("i8_sdot", "register", "MAC", 16.0, &["dotprod"][..], Kind::Asm(8), "SDOT Vd.4S: 16 int8 MAC"),
-        k("i8_smmla", "register", "MAC", 32.0, &["i8mm"][..], Kind::Asm(9), "SMMLA Vd.4S: 32 int8 MAC"),
-        k("cvt_f16_to_f32", "convert", "elem", 4.0, &["fp16"][..], Kind::Asm(10), "FCVTL 4H -> 4S"),
-        k("cvt_f32_to_f16", "convert", "elem", 4.0, &["fp16"][..], Kind::Asm(11), "FCVTN 4S -> 4H"),
-        k("cvt_f32_to_bf16", "convert", "elem", 4.0, &["bf16"][..], Kind::Asm(12), "BFCVTN 4S -> 4H"),
-        k("cvt_bf16_to_f32", "convert", "elem", 4.0, &[][..], Kind::Asm(13), "SHLL #16 4H -> 4S"),
-        k("f16_fmla_8h_chain", "latency", "FMA", 8.0, &["fp16"][..], Kind::Asm(14), "ONE dependency chain: 1 / (inst per cycle) = FMLA.8H latency in cycles"),
-        k("f32_exp_ggml", "softmax", "exp", 0.0, &[][..], Kind::Exp, "ggml_v_expf, 4 vectors in flight, L1"),
-        k("tile_f16_8x16_elem_nofold_l1", "tile", "FMA", 0.0, &["fp16"][..], Kind::CTile(0, 1), "8x16 by element, pure f16 chain over k=256 (upper bound of the shape)"),
-        k("tile_f16_8x16_elem_fold8_l1", "tile", "FMA", 0.0, &["fp16"][..], Kind::CTile(1, 1), "fa2x QK shape: fold 8 into f32"),
-        k("tile_f16_8x16_elem_fold32_l1", "tile", "FMA", 0.0, &["fp16"][..], Kind::CTile(2, 1), "pfg-f16 candidate: fold 32"),
-        k("tile_f16_8x16_ld1r_fold32_l1", "tile", "FMA", 0.0, &["fp16"][..], Kind::CTile(3, 1), "pfg-f16 candidate: LD1R pre-broadcast, fold 32"),
-        k("tile_bf16_8x8_bfmmla_l1", "tile", "FMA", 0.0, &["bf16"][..], Kind::CTile(4, 1), "pfg-bf candidate: BFMMLA, f32 accumulation"),
-        k("tile_f16_8x16_elem_fold8_l2", "tile", "FMA", 0.0, &["fp16"][..], Kind::CTile(1, L2_PANELS), "fold 8, 64 B panels (256 KiB) streamed from L2"),
-        k("tile_f16_8x16_elem_fold32_l2", "tile", "FMA", 0.0, &["fp16"][..], Kind::CTile(2, L2_PANELS), "fold 32, B from L2"),
-        k("tile_f16_8x16_ld1r_fold32_l2", "tile", "FMA", 0.0, &["fp16"][..], Kind::CTile(3, L2_PANELS), "LD1R fold 32, B from L2"),
-        k("tile_bf16_8x8_bfmmla_l2", "tile", "FMA", 0.0, &["bf16"][..], Kind::CTile(4, L2_PANELS), "BFMMLA, A panels (256 KiB) from L2"),
-        k("today_dot_f16_tile_l1", "today", "FMA", 0.0, &["fp16"][..], Kind::DotTile, "oxe_dot_f16_tile: 64 K rows x 64 columns x 256 (fa2 / tiled scores)"),
-        k("today_fa2_unit_l2", "today", "FMA", 0.0, &["fp16"][..], Kind::Fa2, "fa2 unit: 64 columns, hd 256, 512 positions (useful QK+PV FMA, softmax included)"),
-        k("today_fa2x_unit_l2", "today", "FMA", 0.0, &["fp16"][..], Kind::Fa2x, "fa2x unit (fold 8, ch 128), same shape"),
+        k(
+            "f32_fmla_4s",
+            "register",
+            "FMA",
+            4.0,
+            &[][..],
+            Kind::Asm(0),
+            "f32 baseline: FMLA Vd.4S",
+        ),
+        k(
+            "f16_fmla_8h",
+            "register",
+            "FMA",
+            8.0,
+            &["fp16"][..],
+            Kind::Asm(1),
+            "FMLA Vd.8H, Vn.8H, Vm.8H",
+        ),
+        k(
+            "f16_fmla_8h_elem",
+            "register",
+            "FMA",
+            8.0,
+            &["fp16"][..],
+            Kind::Asm(2),
+            "FMLA Vd.8H, Vn.8H, Vm.H[i] (fa2x's form)",
+        ),
+        k(
+            "f16_ld1r_fmla_8h",
+            "register",
+            "FMA",
+            8.0,
+            &["fp16"][..],
+            Kind::Asm(3),
+            "1 LD1R per 2 FMLA.8H (pre-broadcast operand)",
+        ),
+        k(
+            "f16_fmlal",
+            "register",
+            "FMA",
+            4.0,
+            &["fp16", "fhm"][..],
+            Kind::Asm(4),
+            "FMLAL Vd.4S, Vn.4H, Vm.4H (the fa2x fold)",
+        ),
+        k(
+            "bf16_bfdot",
+            "register",
+            "FMA",
+            8.0,
+            &["bf16"][..],
+            Kind::Asm(5),
+            "BFDOT Vd.4S: 8 bf16 MAC",
+        ),
+        k(
+            "bf16_bfmmla",
+            "register",
+            "FMA",
+            16.0,
+            &["bf16"][..],
+            Kind::Asm(6),
+            "BFMMLA Vd.4S: 2x4 . 4x2, 16 bf16 MAC",
+        ),
+        k(
+            "bf16_bfmlalb",
+            "register",
+            "FMA",
+            4.0,
+            &["bf16"][..],
+            Kind::Asm(7),
+            "BFMLALB Vd.4S: 4 bf16 MAC",
+        ),
+        k(
+            "i8_sdot",
+            "register",
+            "MAC",
+            16.0,
+            &["dotprod"][..],
+            Kind::Asm(8),
+            "SDOT Vd.4S: 16 int8 MAC",
+        ),
+        k(
+            "i8_smmla",
+            "register",
+            "MAC",
+            32.0,
+            &["i8mm"][..],
+            Kind::Asm(9),
+            "SMMLA Vd.4S: 32 int8 MAC",
+        ),
+        k(
+            "cvt_f16_to_f32",
+            "convert",
+            "elem",
+            4.0,
+            &["fp16"][..],
+            Kind::Asm(10),
+            "FCVTL 4H -> 4S",
+        ),
+        k(
+            "cvt_f32_to_f16",
+            "convert",
+            "elem",
+            4.0,
+            &["fp16"][..],
+            Kind::Asm(11),
+            "FCVTN 4S -> 4H",
+        ),
+        k(
+            "cvt_f32_to_bf16",
+            "convert",
+            "elem",
+            4.0,
+            &["bf16"][..],
+            Kind::Asm(12),
+            "BFCVTN 4S -> 4H",
+        ),
+        k(
+            "cvt_bf16_to_f32",
+            "convert",
+            "elem",
+            4.0,
+            &[][..],
+            Kind::Asm(13),
+            "SHLL #16 4H -> 4S",
+        ),
+        k(
+            "f16_fmla_8h_chain",
+            "latency",
+            "FMA",
+            8.0,
+            &["fp16"][..],
+            Kind::Asm(14),
+            "ONE dependency chain: 1 / (inst per cycle) = FMLA.8H latency in cycles",
+        ),
+        k(
+            "f32_exp_ggml",
+            "softmax",
+            "exp",
+            0.0,
+            &[][..],
+            Kind::Exp,
+            "ggml_v_expf, 4 vectors in flight, L1",
+        ),
+        k(
+            "tile_f16_8x16_elem_nofold_l1",
+            "tile",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::CTile(0, 1),
+            "8x16 by element, pure f16 chain over k=256 (upper bound of the shape)",
+        ),
+        k(
+            "tile_f16_8x16_elem_fold8_l1",
+            "tile",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::CTile(1, 1),
+            "fa2x QK shape: fold 8 into f32",
+        ),
+        k(
+            "tile_f16_8x16_elem_fold32_l1",
+            "tile",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::CTile(2, 1),
+            "pfg-f16 candidate: fold 32",
+        ),
+        k(
+            "tile_f16_8x16_ld1r_fold32_l1",
+            "tile",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::CTile(3, 1),
+            "pfg-f16 candidate: LD1R pre-broadcast, fold 32",
+        ),
+        k(
+            "tile_bf16_8x8_bfmmla_l1",
+            "tile",
+            "FMA",
+            0.0,
+            &["bf16"][..],
+            Kind::CTile(4, 1),
+            "pfg-bf candidate: BFMMLA, f32 accumulation",
+        ),
+        k(
+            "tile_f16_8x16_elem_fold8_l2",
+            "tile",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::CTile(1, L2_PANELS),
+            "fold 8, 64 B panels (256 KiB) streamed from L2",
+        ),
+        k(
+            "tile_f16_8x16_elem_fold32_l2",
+            "tile",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::CTile(2, L2_PANELS),
+            "fold 32, B from L2",
+        ),
+        k(
+            "tile_f16_8x16_ld1r_fold32_l2",
+            "tile",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::CTile(3, L2_PANELS),
+            "LD1R fold 32, B from L2",
+        ),
+        k(
+            "tile_bf16_8x8_bfmmla_l2",
+            "tile",
+            "FMA",
+            0.0,
+            &["bf16"][..],
+            Kind::CTile(4, L2_PANELS),
+            "BFMMLA, A panels (256 KiB) from L2",
+        ),
+        k(
+            "today_dot_f16_tile_l1",
+            "today",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::DotTile,
+            "oxe_dot_f16_tile: 64 K rows x 64 columns x 256 (fa2 / tiled scores)",
+        ),
+        k(
+            "today_fa2_unit_l2",
+            "today",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::Fa2,
+            "fa2 unit: 64 columns, hd 256, 512 positions (useful QK+PV FMA, softmax included)",
+        ),
+        k(
+            "today_fa2x_unit_l2",
+            "today",
+            "FMA",
+            0.0,
+            &["fp16"][..],
+            Kind::Fa2x,
+            "fa2x unit (fold 8, ch 128), same shape",
+        ),
     ]
 }
 
@@ -172,7 +404,9 @@ fn lcg_f16(n: usize, seed: u64, scale: f32) -> Vec<u16> {
     let mut s = seed;
     let v: Vec<f32> = (0..n)
         .map(|_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 33) % 20001) as f32 / 10000.0 - 1.0
         })
         .map(|x| x * scale)
@@ -233,7 +467,9 @@ impl UnitB {
     fn new(x: Option<XParams>) -> UnitB {
         let n_ctx = UNIT_CTX;
         let pos0 = n_ctx - UNIT_COLS / UNIT_GROUP;
-        let useful: f64 = (0..UNIT_COLS).map(|c| 2.0 * HD as f64 * (pos0 + c / UNIT_GROUP + 1) as f64).sum();
+        let useful: f64 = (0..UNIT_COLS)
+            .map(|c| 2.0 * HD as f64 * (pos0 + c / UNIT_GROUP + 1) as f64)
+            .sum();
         UnitB {
             k: lcg_f16(n_ctx * HD, 11, 1.0),
             vt: lcg_f16(HD * n_ctx, 12, 1.0),
@@ -278,10 +514,17 @@ impl Bench for UnitB {
 
 fn make(k: &KDef) -> Box<dyn Bench> {
     match k.kind {
-        Kind::Asm(id) => Box::new(AsmB { id, ops_iter: 24.0 * k.per_inst }),
+        Kind::Asm(id) => Box::new(AsmB {
+            id,
+            ops_iter: 24.0 * k.per_inst,
+        }),
         Kind::Exp => Box::new(ExpB(0.0)),
         Kind::CTile(t, p) => Box::new(CTileB::new(t, p)),
-        Kind::DotTile => Box::new(DotB { k: lcg_f16(DOT_ROWS * HD, 21, 1.0), q: lcg_f16(DOT_COLS * HD, 22, 1.0), out: vec![0.0; DOT_ROWS * DOT_COLS] }),
+        Kind::DotTile => Box::new(DotB {
+            k: lcg_f16(DOT_ROWS * HD, 21, 1.0),
+            q: lcg_f16(DOT_COLS * HD, 22, 1.0),
+            out: vec![0.0; DOT_ROWS * DOT_COLS],
+        }),
         Kind::Fa2 => Box::new(UnitB::new(None)),
         Kind::Fa2x => Box::new(UnitB::new(Some(XParams::default()))),
     }
@@ -291,19 +534,31 @@ fn make(k: &KDef) -> Box<dyn Bench> {
 // system
 
 fn read_trim(p: &str) -> Option<String> {
-    std::fs::read_to_string(p).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(p)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn cur_khz(cpu: usize) -> Option<u64> {
-    read_trim(&format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq")).and_then(|s| s.parse().ok())
+    read_trim(&format!(
+        "/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq"
+    ))
+    .and_then(|s| s.parse().ok())
 }
 
 fn cluster_of(cpu: usize) -> String {
-    read_trim(&format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/related_cpus")).unwrap_or_else(|| "?".into())
+    read_trim(&format!(
+        "/sys/devices/system/cpu/cpu{cpu}/cpufreq/related_cpus"
+    ))
+    .unwrap_or_else(|| "?".into())
 }
 
 fn online_cpus() -> Vec<usize> {
-    read_trim("/sys/devices/system/cpu/online").and_then(|s| sched::parse_cpu_list(&s).ok()).unwrap_or_else(|| (0..std::thread::available_parallelism().map_or(1, |n| n.get())).collect())
+    read_trim("/sys/devices/system/cpu/online")
+        .and_then(|s| sched::parse_cpu_list(&s).ok())
+        .unwrap_or_else(|| {
+            (0..std::thread::available_parallelism().map_or(1, |n| n.get())).collect()
+        })
 }
 
 /// (implementer, parts, model name) from /proc/cpuinfo
@@ -405,7 +660,12 @@ fn run_for(b: &mut dyn Bench, chunk: u64, dur: Duration, cyc: &Cycles, cpu: usiz
         (Some(x0), Some(x1)) if x1 > x0 => Some(x1 - x0),
         _ => None,
     };
-    Sample { secs, ops, cycles, khz: cur_khz(cpu) }
+    Sample {
+        secs,
+        ops,
+        cycles,
+        khz: cur_khz(cpu),
+    }
 }
 
 struct ThreadResult {
@@ -422,7 +682,8 @@ fn measure(k: &'static KDef, cpus: &[usize], cfg: Cfg) -> Result<Vec<ThreadResul
         .map(|&cpu| {
             let bar = bar.clone();
             std::thread::spawn(move || -> Result<ThreadResult, String> {
-                let pinned = sched::pin_current_thread(cpu).map_err(|e| format!("pin cpu {cpu}: {e}"));
+                let pinned =
+                    sched::pin_current_thread(cpu).map_err(|e| format!("pin cpu {cpu}: {e}"));
                 let cyc = Cycles::open();
                 let mut b = make(k);
                 let chunk = calibrate(b.as_mut(), cfg.sample / 10);
@@ -435,7 +696,11 @@ fn measure(k: &'static KDef, cpus: &[usize], cfg: Cfg) -> Result<Vec<ThreadResul
                 }
                 // a pin failure is reported only after every barrier (the other threads wait there)
                 pinned?;
-                Ok(ThreadResult { cpu, samples, cycles_err: (cyc.0 < 0).then_some(-cyc.0) })
+                Ok(ThreadResult {
+                    cpu,
+                    samples,
+                    cycles_err: (cyc.0 < 0).then_some(-cyc.0),
+                })
             })
         })
         .collect();
@@ -461,7 +726,11 @@ fn median(mut v: Vec<f64>) -> Option<f64> {
     }
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = v.len();
-    Some(if n % 2 == 1 { v[n / 2] } else { 0.5 * (v[n / 2 - 1] + v[n / 2]) })
+    Some(if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        0.5 * (v[n / 2 - 1] + v[n / 2])
+    })
 }
 
 fn r3(x: f64) -> f64 {
@@ -475,10 +744,31 @@ fn opt(x: Option<f64>) -> Value {
 /// Per-thread summary: rate (G ops/s), per cycle (PMU) and per cycle at the OS frequency.
 fn thread_json(k: &KDef, r: &ThreadResult) -> (Value, f64, Option<f64>, Option<f64>) {
     let rate = median(r.samples.iter().map(|s| s.rate()).collect()).unwrap_or(0.0);
-    let pmu = median(r.samples.iter().filter_map(|s| s.cycles.map(|c| s.ops / c as f64)).collect());
-    let osf = median(r.samples.iter().filter_map(|s| s.khz.map(|f| s.rate() / (f as f64 * 1e3))).collect());
-    let khz = median(r.samples.iter().filter_map(|s| s.khz.map(|f| f as f64)).collect());
-    let ipc = |x: Option<f64>| if k.per_inst > 0.0 { x.map(|v| v / k.per_inst) } else { None };
+    let pmu = median(
+        r.samples
+            .iter()
+            .filter_map(|s| s.cycles.map(|c| s.ops / c as f64))
+            .collect(),
+    );
+    let osf = median(
+        r.samples
+            .iter()
+            .filter_map(|s| s.khz.map(|f| s.rate() / (f as f64 * 1e3)))
+            .collect(),
+    );
+    let khz = median(
+        r.samples
+            .iter()
+            .filter_map(|s| s.khz.map(|f| f as f64))
+            .collect(),
+    );
+    let ipc = |x: Option<f64>| {
+        if k.per_inst > 0.0 {
+            x.map(|v| v / k.per_inst)
+        } else {
+            None
+        }
+    };
     let v = json!({
         "cpu": r.cpu,
         "cluster": cluster_of(r.cpu),
@@ -527,7 +817,11 @@ fn parse_args(args: Vec<String>) -> Opts {
     let mut o = Opts {
         cores: online_cpus(),
         single: Vec::new(),
-        cfg: Cfg { samples: 5, sample: Duration::from_millis(100), warmup: Duration::from_millis(300) },
+        cfg: Cfg {
+            samples: 5,
+            sample: Duration::from_millis(100),
+            warmup: Duration::from_millis(300),
+        },
         sustain_secs: 0,
         sustain_kernel: "f16_fmla_8h".into(),
         only: Vec::new(),
@@ -537,22 +831,40 @@ fn parse_args(args: Vec<String>) -> Opts {
     };
     let mut single: Option<String> = None;
     let mut it = args.into_iter();
-    let num = |v: Option<String>, what: &str| -> u64 { v.and_then(|s| s.trim().parse().ok()).unwrap_or_else(|| { eprintln!("isa-roof: {what} needs a number"); usage() }) };
+    let num = |v: Option<String>, what: &str| -> u64 {
+        v.and_then(|s| s.trim().parse().ok()).unwrap_or_else(|| {
+            eprintln!("isa-roof: {what} needs a number");
+            usage()
+        })
+    };
     while let Some(a) = it.next() {
         match a.as_str() {
             "--cores" => {
                 let v = it.next().unwrap_or_else(|| usage());
                 if v != "all" {
-                    o.cores = sched::parse_cpu_list(&v).unwrap_or_else(|e| { eprintln!("isa-roof: --cores: {e}"); usage() });
+                    o.cores = sched::parse_cpu_list(&v).unwrap_or_else(|e| {
+                        eprintln!("isa-roof: --cores: {e}");
+                        usage()
+                    });
                 }
             }
             "--single" => single = Some(it.next().unwrap_or_else(|| usage())),
             "--samples" => o.cfg.samples = num(it.next(), "--samples") as usize,
-            "--sample-ms" => o.cfg.sample = Duration::from_millis(num(it.next(), "--sample-ms").max(1)),
+            "--sample-ms" => {
+                o.cfg.sample = Duration::from_millis(num(it.next(), "--sample-ms").max(1))
+            }
             "--warmup-ms" => o.cfg.warmup = Duration::from_millis(num(it.next(), "--warmup-ms")),
             "--sustain-secs" => o.sustain_secs = num(it.next(), "--sustain-secs"),
             "--sustain-kernel" => o.sustain_kernel = it.next().unwrap_or_else(|| usage()),
-            "--only" => o.only = it.next().unwrap_or_else(|| usage()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "--only" => {
+                o.only = it
+                    .next()
+                    .unwrap_or_else(|| usage())
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
             "--max-secs" => o.max_secs = num(it.next(), "--max-secs").clamp(10, 300),
             "--out" => o.out = it.next().unwrap_or_else(|| usage()),
             "--no-all-core" => o.all_core = false,
@@ -562,7 +874,10 @@ fn parse_args(args: Vec<String>) -> Opts {
             }
             "--list" => {
                 for k in kernels() {
-                    println!("{:<32} {:<9} needs {:?}: {}", k.name, k.group, k.needs, k.note);
+                    println!(
+                        "{:<32} {:<9} needs {:?}: {}",
+                        k.name, k.group, k.needs, k.note
+                    );
                 }
                 std::process::exit(0);
             }
@@ -595,7 +910,10 @@ fn parse_args(args: Vec<String>) -> Opts {
                 v
             }
         }
-        s => sched::parse_cpu_list(s).unwrap_or_else(|e| { eprintln!("isa-roof: --single: {e}"); usage() }),
+        s => sched::parse_cpu_list(s).unwrap_or_else(|e| {
+            eprintln!("isa-roof: --single: {e}");
+            usage()
+        }),
     };
     o
 }
@@ -619,37 +937,63 @@ fn main() {
     } else {
         "not a Qualcomm CPU: NOT Oryon numbers; functional test only"
     };
-    let feats: Vec<(&str, bool)> = ["fp16", "fhm", "dotprod", "bf16", "i8mm"].iter().map(|&f| (f, feature(f))).collect();
+    let feats: Vec<(&str, bool)> = ["fp16", "fhm", "dotprod", "bf16", "i8mm"]
+        .iter()
+        .map(|&f| (f, feature(f)))
+        .collect();
     let has = |f: &str| feats.iter().any(|(n, h)| *n == f && *h);
     eprintln!("isa-roof: {label}; implementer {imp} parts {parts:?}; features {feats:?}");
-    eprintln!("isa-roof: cores {:?}, single {:?}, {} samples x {:?} after {:?} warm-up, budget {:?}", o.cores, o.single, o.cfg.samples, o.cfg.sample, o.cfg.warmup, budget);
+    eprintln!(
+        "isa-roof: cores {:?}, single {:?}, {} samples x {:?} after {:?} warm-up, budget {:?}",
+        o.cores, o.single, o.cfg.samples, o.cfg.sample, o.cfg.warmup, budget
+    );
 
     // tile self-tests (functional; fast)
     let mut selftests = serde_json::Map::new();
     let mut self_ok = true;
-    for (kind, name, need, tol) in [(0, "f16_8x16_elem_nofold", "fp16", 3e-2), (1, "f16_8x16_elem_fold8", "fp16", 5e-3), (2, "f16_8x16_elem_fold32", "fp16", 1e-2), (3, "f16_8x16_ld1r_fold32", "fp16", 1e-2), (4, "bf16_8x8_bfmmla", "bf16", 1e-4)] {
+    for (kind, name, need, tol) in [
+        (0, "f16_8x16_elem_nofold", "fp16", 3e-2),
+        (1, "f16_8x16_elem_fold8", "fp16", 5e-3),
+        (2, "f16_8x16_elem_fold32", "fp16", 1e-2),
+        (3, "f16_8x16_ld1r_fold32", "fp16", 1e-2),
+        (4, "bf16_8x8_bfmmla", "bf16", 1e-4),
+    ] {
         if !has(need) {
-            selftests.insert(name.into(), json!({"status": format!("unsupported (no {need})")}));
+            selftests.insert(
+                name.into(),
+                json!({"status": format!("unsupported (no {need})")}),
+            );
             continue;
         }
         // SAFETY: feature detected; plain computation.
         let e = unsafe { ffi::oxe_isa_tile_selftest(kind, TILE_K) };
         let ok = (0.0..=tol).contains(&e);
         self_ok &= ok;
-        selftests.insert(name.into(), json!({"rel_err_vs_f64": e, "tol": tol, "ok": ok}));
-        eprintln!("selftest {name:<24} rel err {e:.2e} (tol {tol:.0e}) {}", if ok { "ok" } else { "FAIL" });
+        selftests.insert(
+            name.into(),
+            json!({"rel_err_vs_f64": e, "tol": tol, "ok": ok}),
+        );
+        eprintln!(
+            "selftest {name:<24} rel err {e:.2e} (tol {tol:.0e}) {}",
+            if ok { "ok" } else { "FAIL" }
+        );
     }
 
     let all: &'static [KDef] = Box::leak(kernels().into_boxed_slice());
     let mut rows = Vec::new();
     let mut table: Vec<String> = Vec::new();
-    let mut by_name: std::collections::HashMap<&str, (Option<f64>, Option<f64>, f64)> = Default::default();
+    let mut by_name: std::collections::HashMap<&str, (Option<f64>, Option<f64>, f64)> =
+        Default::default();
     for k in all.iter().filter(|k| selected(&o, k)) {
         let missing: Vec<&str> = k.needs.iter().copied().filter(|f| !has(f)).collect();
         let mut row = json!({"name": k.name, "group": k.group, "unit": k.unit, "ops_per_inst": k.per_inst, "needs": k.needs, "note": k.note});
         if !missing.is_empty() {
             row["status"] = json!(format!("unsupported (CPU lacks {})", missing.join(", ")));
-            table.push(format!("{:<32} unsupported (no {})", k.name, missing.join(", ")));
+            table.push(format!(
+                "{:<32} unsupported (no {})",
+                k.name,
+                missing.join(", ")
+            ));
             rows.push(row);
             continue;
         }
@@ -672,7 +1016,13 @@ fn main() {
                     if rate > best.2 {
                         *best = (pmu, osf, rate);
                     }
-                    line += &format!(" cpu{cpu}: {:8.2} G{}/s pmu {:>6} os-f {:>6} |", rate / 1e9, k.unit, pmu.map_or("-".into(), |x| format!("{x:.2}")), osf.map_or("-".into(), |x| format!("{x:.2}")));
+                    line += &format!(
+                        " cpu{cpu}: {:8.2} G{}/s pmu {:>6} os-f {:>6} |",
+                        rate / 1e9,
+                        k.unit,
+                        pmu.map_or("-".into(), |x| format!("{x:.2}")),
+                        osf.map_or("-".into(), |x| format!("{x:.2}"))
+                    );
                     singles.push(v);
                 }
                 Err(e) => status = format!("error: {e}"),
@@ -683,7 +1033,9 @@ fn main() {
             match measure(k, &o.cores, o.cfg) {
                 Ok(rs) => {
                     let nsamp = o.cfg.samples;
-                    let totals: Vec<f64> = (0..nsamp).map(|s| rs.iter().map(|r| r.samples[s].rate()).sum()).collect();
+                    let totals: Vec<f64> = (0..nsamp)
+                        .map(|s| rs.iter().map(|r| r.samples[s].rate()).sum())
+                        .collect();
                     let tot = median(totals.clone()).unwrap_or(0.0);
                     let threads: Vec<Value> = rs.iter().map(|r| thread_json(k, r).0).collect();
                     allc = json!({
@@ -706,13 +1058,19 @@ fn main() {
     let mut sustain = Value::Null;
     if o.sustain_secs > 0 {
         let k = all.iter().find(|k| k.name == o.sustain_kernel);
-        let left = budget.saturating_sub(t_start.elapsed()).saturating_sub(Duration::from_secs(5));
+        let left = budget
+            .saturating_sub(t_start.elapsed())
+            .saturating_sub(Duration::from_secs(5));
         let secs = Duration::from_secs(o.sustain_secs).min(left);
         match k {
             Some(k) if k.needs.iter().all(|f| has(f)) && secs >= Duration::from_secs(5) => {
                 let win = Duration::from_secs(5);
                 let n = (secs.as_secs() / 5).max(1) as usize;
-                let cfg = Cfg { samples: n, sample: win, warmup: Duration::from_millis(500) };
+                let cfg = Cfg {
+                    samples: n,
+                    sample: win,
+                    warmup: Duration::from_millis(500),
+                };
                 // measure() demands no minimum; the >= 5 rule is for the kernel table
                 match measure(k, &o.cores, cfg) {
                     Ok(rs) => {
@@ -737,7 +1095,10 @@ fn main() {
                     Err(e) => sustain = json!({"kernel": k.name, "error": e}),
                 }
             }
-            Some(k) => sustain = json!({"kernel": k.name, "status": "skipped (unsupported or no time left)"}),
+            Some(k) => {
+                sustain =
+                    json!({"kernel": k.name, "status": "skipped (unsupported or no time left)"})
+            }
             None => sustain = json!({"kernel": o.sustain_kernel, "status": "unknown kernel"}),
         }
     }
@@ -760,7 +1121,9 @@ fn main() {
     let mut hints = Vec::new();
     if let (Some(f), Some(r)) = (fmla, elem_ratio) {
         if f >= 3.6 && r >= 0.9 {
-            hints.push("FMLA.8h >= 3.6/cycle and by-element at full rate: path A (pfg-f16)".to_string());
+            hints.push(
+                "FMLA.8h >= 3.6/cycle and by-element at full rate: path A (pfg-f16)".to_string(),
+            );
         }
     }
     if let Some(b) = bfm {
@@ -814,7 +1177,11 @@ fn main() {
         eprintln!("isa-roof: write {}: {e}", o.out);
         std::process::exit(1);
     }
-    eprintln!("isa-roof: receipt {} ({:.1} s)", o.out, t_start.elapsed().as_secs_f64());
+    eprintln!(
+        "isa-roof: receipt {} ({:.1} s)",
+        o.out,
+        t_start.elapsed().as_secs_f64()
+    );
     if !self_ok {
         eprintln!("isa-roof: a tile self-test FAILED");
         std::process::exit(1);
@@ -829,7 +1196,11 @@ mod tests {
     /// pass; unsupported kernels are never called. Tiny durations (CI).
     #[test]
     fn every_supported_kernel_runs_and_tiles_match_f64() {
-        let cfg = Cfg { samples: 5, sample: Duration::from_millis(2), warmup: Duration::from_millis(1) };
+        let cfg = Cfg {
+            samples: 5,
+            sample: Duration::from_millis(2),
+            warmup: Duration::from_millis(1),
+        };
         let cpu = online_cpus()[0];
         let ks: &'static [KDef] = Box::leak(kernels().into_boxed_slice());
         let mut ran = 0;
@@ -840,11 +1211,21 @@ mod tests {
             }
             let rs = measure(k, &[cpu], cfg).expect("measure");
             assert_eq!(rs[0].samples.len(), 5);
-            assert!(rs[0].samples.iter().all(|s| s.ops > 0.0 && s.secs > 0.0), "{}", k.name);
+            assert!(
+                rs[0].samples.iter().all(|s| s.ops > 0.0 && s.secs > 0.0),
+                "{}",
+                k.name
+            );
             ran += 1;
         }
         assert!(ran >= 10, "only {ran} kernels ran");
-        for (kind, need, tol) in [(0, "fp16", 3e-2), (1, "fp16", 5e-3), (2, "fp16", 1e-2), (3, "fp16", 1e-2), (4, "bf16", 1e-4)] {
+        for (kind, need, tol) in [
+            (0, "fp16", 3e-2),
+            (1, "fp16", 5e-3),
+            (2, "fp16", 1e-2),
+            (3, "fp16", 1e-2),
+            (4, "bf16", 1e-4),
+        ] {
             if feature(need) {
                 // SAFETY: feature detected.
                 let e = unsafe { ffi::oxe_isa_tile_selftest(kind, TILE_K) };
@@ -858,7 +1239,12 @@ mod tests {
 
     #[test]
     fn args_defaults_and_bounds() {
-        let o = parse_args(vec!["--cores".into(), "0".into(), "--single".into(), "none".into()]);
+        let o = parse_args(vec![
+            "--cores".into(),
+            "0".into(),
+            "--single".into(),
+            "none".into(),
+        ]);
         assert_eq!(o.cores, vec![0]);
         assert!(o.single.is_empty() && o.cfg.samples == 5 && o.max_secs <= 300);
         let o = parse_args(vec!["--max-secs".into(), "9999".into(), "--quick".into()]);

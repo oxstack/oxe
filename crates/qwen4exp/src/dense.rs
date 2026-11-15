@@ -53,8 +53,19 @@ impl Mat {
             W::F32 => ffi::gemv_f32(self.p as *const f32, self.k, r0, r1, x, out),
             W::Bf16 => ffi::gemv_bf16(self.p as *const u16, self.k, r0, r1, x, out),
             _ if self.repacked => {
-                let qt = if self.w == W::Q6K { QType::Q6K } else { QType::Q8_0 };
-                kernels_sys::gemv_raw(qt, self.k, out.as_mut_ptr(), self.p.add(qt.group_offset(r0, self.k)), a.as_ptr(), r1 - r0)
+                let qt = if self.w == W::Q6K {
+                    QType::Q6K
+                } else {
+                    QType::Q8_0
+                };
+                kernels_sys::gemv_raw(
+                    qt,
+                    self.k,
+                    out.as_mut_ptr(),
+                    self.p.add(qt.group_offset(r0, self.k)),
+                    a.as_ptr(),
+                    r1 - r0,
+                )
             }
             _ => ffi::gemv_vecdot(self.w, self.p, self.k, r0, r1, a.as_ptr(), out.as_mut_ptr()),
         }
@@ -76,9 +87,16 @@ impl Dense {
     pub fn load(s: &Shards, mode: DenseMode) -> Result<Dense, String> {
         let t0 = Instant::now();
         let ts: Vec<&Tensor> = s.tensors.iter().filter(|t| is_dense(t)).collect();
-        let total: usize = ts.iter().map(|t| (t.bytes as usize).div_ceil(64) * 64).sum();
+        let total: usize = ts
+            .iter()
+            .map(|t| (t.bytes as usize).div_ceil(64) * 64)
+            .sum();
         let arena = Arena::new(total, false).map_err(|e| e.to_string())?;
-        let files: Vec<File> = s.paths.iter().map(|p| File::open(p).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+        let files: Vec<File> = s
+            .paths
+            .iter()
+            .map(|p| File::open(p).map_err(|e| e.to_string()))
+            .collect::<Result<_, _>>()?;
         let mut mats = HashMap::new();
         let mut off = 0usize;
         let mut tmp = Vec::new();
@@ -95,18 +113,45 @@ impl Dense {
             let f = &files[t.shard];
             if repack {
                 tmp.resize(n, 0);
-                f.read_exact_at(&mut tmp, t.off).map_err(|e| format!("{}: {e}", t.name))?;
-                let qt = if t.w == W::Q6K { QType::Q6K } else { QType::Q8_0 };
+                f.read_exact_at(&mut tmp, t.off)
+                    .map_err(|e| format!("{}: {e}", t.name))?;
+                let qt = if t.w == W::Q6K {
+                    QType::Q6K
+                } else {
+                    QType::Q8_0
+                };
                 kernels_sys::repack(qt, &tmp, dst, rows, k);
             } else {
-                f.read_exact_at(dst, t.off).map_err(|e| format!("{}: {e}", t.name))?;
+                f.read_exact_at(dst, t.off)
+                    .map_err(|e| format!("{}: {e}", t.name))?;
             }
             // SAFETY: advisory syscall on our fd.
-            unsafe { libc::posix_fadvise(f.as_raw_fd(), t.off as i64, n as i64, libc::POSIX_FADV_DONTNEED) };
-            mats.insert(t.name.clone(), Mat { p: dst.as_ptr(), w: t.w, k, n: rows, repacked: repack });
+            unsafe {
+                libc::posix_fadvise(
+                    f.as_raw_fd(),
+                    t.off as i64,
+                    n as i64,
+                    libc::POSIX_FADV_DONTNEED,
+                )
+            };
+            mats.insert(
+                t.name.clone(),
+                Mat {
+                    p: dst.as_ptr(),
+                    w: t.w,
+                    k,
+                    n: rows,
+                    repacked: repack,
+                },
+            );
             off += n.div_ceil(64) * 64;
         }
-        Ok(Dense { arena_bytes: arena.len, _arena: arena, mats, load_seconds: t0.elapsed().as_secs_f64() })
+        Ok(Dense {
+            arena_bytes: arena.len,
+            _arena: arena,
+            mats,
+            load_seconds: t0.elapsed().as_secs_f64(),
+        })
     }
 
     /// The arena every dense tensor lives in (base, bytes).
@@ -115,7 +160,10 @@ impl Dense {
     }
 
     pub fn get(&self, name: &str) -> Mat {
-        *self.mats.get(name).unwrap_or_else(|| panic!("dense tensor {name} missing"))
+        *self
+            .mats
+            .get(name)
+            .unwrap_or_else(|| panic!("dense tensor {name} missing"))
     }
     pub fn opt(&self, name: &str) -> Option<Mat> {
         self.mats.get(name).copied()

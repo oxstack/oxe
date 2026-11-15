@@ -15,10 +15,10 @@
 //!
 //! Prints one JSON object on stdout (and to --json).
 
-use image_dit::backend::{SingleBlockBackend, StageTimes};
-use image_dit::fast::{FastBlock, FastConfig};
 use image_dit::arith::Arith;
 use image_dit::attn_float::AttnPrec;
+use image_dit::backend::{SingleBlockBackend, StageTimes};
+use image_dit::fast::{FastBlock, FastConfig};
 use image_dit::reference::{single_block_ref, single_block_ref_arith};
 use image_dit::types::{rel_rmse, BlockInput, BlockOutput, BlockWeightsF32, Dims};
 use image_dit::{dump, weights};
@@ -82,11 +82,18 @@ fn times_json(t: &StageTimes) -> serde_json::Value {
 }
 
 fn arg(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn arg_usize(args: &[String], name: &str, default: usize) -> usize {
-    arg(args, name).map(|v| v.parse().unwrap_or_else(|_| panic!("{name} needs a number"))).unwrap_or(default)
+    arg(args, name)
+        .map(|v| {
+            v.parse()
+                .unwrap_or_else(|_| panic!("{name} needs a number"))
+        })
+        .unwrap_or(default)
 }
 
 fn make_pool(args: &[String]) -> sched::Pool {
@@ -95,7 +102,11 @@ fn make_pool(args: &[String]) -> sched::Pool {
         Some(list) => sched::parse_cpu_list(&list).expect("--cpus"),
         None => (0..threads).collect(),
     };
-    assert_eq!(cpus.len(), threads, "--cpus must list exactly --threads cores");
+    assert_eq!(
+        cpus.len(),
+        threads,
+        "--cpus must list exactly --threads cores"
+    );
     sched::Pool::new(&cpus, Duration::from_millis(2)).expect("thread pool")
 }
 
@@ -115,15 +126,27 @@ fn config(args: &[String]) -> FastConfig {
 fn attn_precs(args: &[String]) -> Vec<AttnPrec> {
     match arg(args, "--attn-prec") {
         None => vec![AttnPrec::Int8],
-        Some(list) => list.split(',').map(|v| AttnPrec::parse(v.trim()).unwrap_or_else(|e| panic!("{e}"))).collect(),
+        Some(list) => list
+            .split(',')
+            .map(|v| AttnPrec::parse(v.trim()).unwrap_or_else(|e| panic!("{e}")))
+            .collect(),
     }
 }
 
 fn selftest(args: &[String]) -> i32 {
-    let dims = Dims { hidden: 128, heads: 4, head_dim: 32, mlp: 384 };
+    let dims = Dims {
+        hidden: 128,
+        heads: 4,
+        head_dim: 32,
+        mlp: 384,
+    };
     let mut rng = Rng(0x5eed);
-    let w1f: Vec<f32> = (0..dims.lin1_out() * dims.hidden).map(|_| rng.gauss() * 0.08).collect();
-    let w2f: Vec<f32> = (0..dims.hidden * dims.lin2_in()).map(|_| rng.gauss() * 0.04).collect();
+    let w1f: Vec<f32> = (0..dims.lin1_out() * dims.hidden)
+        .map(|_| rng.gauss() * 0.08)
+        .collect();
+    let w2f: Vec<f32> = (0..dims.hidden * dims.lin2_in())
+        .map(|_| rng.gauss() * 0.04)
+        .collect();
     let w1q = weights::quant_q8_0(&w1f, dims.lin1_out(), dims.hidden);
     let w2q = weights::quant_q8_0(&w2f, dims.hidden, dims.lin2_in());
     let q_scale: Vec<f32> = (0..dims.head_dim).map(|_| 1.0 + rng.unit() * 0.3).collect();
@@ -136,7 +159,10 @@ fn selftest(args: &[String]) -> i32 {
         q_scale: q_scale.clone(),
         k_scale: k_scale.clone(),
     };
-    let pool = make_pool(&[String::from("--threads"), arg(args, "--threads").unwrap_or_else(|| "3".into())]);
+    let pool = make_pool(&[
+        String::from("--threads"),
+        arg(args, "--threads").unwrap_or_else(|| "3".into()),
+    ]);
     let mut worst = 0.0f64;
     let mut rows = Vec::new();
     let mut ok = true;
@@ -151,11 +177,22 @@ fn selftest(args: &[String]) -> i32 {
             (32, 32, 16, AttnPrec::F16),
             (128, 128, 8, AttnPrec::F32),
         ] {
-            let cfg = FastConfig { chunk1: c1, chunk2: c2, batch_groups: 2, lin2_row_block: 16, key_chunk: kc, attn_prec: prec };
+            let cfg = FastConfig {
+                chunk1: c1,
+                chunk2: c2,
+                batch_groups: 2,
+                lin2_row_block: 16,
+                key_chunk: kc,
+                attn_prec: prec,
+            };
             let mut fast = FastBlock::new(dims, &w1q, &w2q, &q_scale, &k_scale, cfg, &pool);
             let (got, _) = fast.forward(&input, true);
             let (lean, _) = fast.forward(&input, false);
-            let same = got.out.iter().zip(&lean.out).all(|(a, b)| a.to_bits() == b.to_bits());
+            let same = got
+                .out
+                .iter()
+                .zip(&lean.out)
+                .all(|(a, b)| a.to_bits() == b.to_bits());
             let e = errors(&got, &want, &input.x);
             let d = e["delta"].as_f64().unwrap();
             worst = worst.max(d);
@@ -205,9 +242,20 @@ fn bench(args: &[String]) -> i32 {
     let mut fasts = Vec::new();
     let mut packs = Vec::new();
     for &prec in &precs {
-        let cfg = FastConfig { attn_prec: prec, ..base_cfg };
+        let cfg = FastConfig {
+            attn_prec: prec,
+            ..base_cfg
+        };
         let t0 = Instant::now();
-        fasts.push(FastBlock::new(dims, raw.linear1_q8, raw.linear2_q8, &raw.q_scale, &raw.k_scale, cfg, &pool));
+        fasts.push(FastBlock::new(
+            dims,
+            raw.linear1_q8,
+            raw.linear2_q8,
+            &raw.q_scale,
+            &raw.k_scale,
+            cfg,
+            &pool,
+        ));
         packs.push(t0.elapsed().as_secs_f64());
     }
     let mut runs: Vec<Vec<serde_json::Value>> = vec![Vec::new(); precs.len()];
@@ -246,7 +294,10 @@ fn bench(args: &[String]) -> i32 {
         (None, None)
     };
     if let (Some(want), Some(sd)) = (&want, &sd_out) {
-        let sd_o = BlockOutput { out: sd.clone(), ..Default::default() };
+        let sd_o = BlockOutput {
+            out: sd.clone(),
+            ..Default::default()
+        };
         shared["ref_vs_sdcpp"] = errors(want, &sd_o, &input.x);
         shared["sdcpp_vs_ref"] = errors(&sd_o, want, &input.x);
         if let Some(par) = &par {
@@ -264,12 +315,16 @@ fn bench(args: &[String]) -> i32 {
         let mut totals: Vec<f64> = runs.iter().map(|r| r["total"].as_f64().unwrap()).collect();
         totals.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median = totals[totals.len() / 2];
-        let mut att: Vec<f64> = runs.iter().map(|r| r["attention"].as_f64().unwrap()).collect();
+        let mut att: Vec<f64> = runs
+            .iter()
+            .map(|r| r["attention"].as_f64().unwrap())
+            .collect();
         att.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median_attn = att[att.len() / 2];
 
         // MAC accounting (per block forward)
-        let lin_macs = n as f64 * (dims.lin1_out() * dims.hidden + dims.hidden * dims.lin2_in()) as f64;
+        let lin_macs =
+            n as f64 * (dims.lin1_out() * dims.hidden + dims.hidden * dims.lin2_in()) as f64;
         let attn_macs = 2.0 * (n as f64) * (n as f64) * dims.hidden as f64;
         let tops = |macs: f64, s: f64| 2.0 * macs / s / 1e12;
 
@@ -292,17 +347,27 @@ fn bench(args: &[String]) -> i32 {
         if let Some(want) = &want {
             let (got, _) = fast.forward(&input, true);
             // the lean forward (timed above) must give the same output as the tapped one
-            out["lean_equals_tapped"] = json!(got.out.iter().zip(&last.out).all(|(a, b)| a.to_bits() == b.to_bits()));
+            out["lean_equals_tapped"] = json!(got
+                .out
+                .iter()
+                .zip(&last.out)
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
             out["fast_vs_ref"] = errors(&got, want, &input.x);
             if let Some(sd) = &sd_out {
-                let sd_o = BlockOutput { out: sd.clone(), ..Default::default() };
+                let sd_o = BlockOutput {
+                    out: sd.clone(),
+                    ..Default::default()
+                };
                 out["fast_vs_sdcpp"] = errors(&got, &sd_o, &input.x);
             }
             if let Some(par) = &par {
                 out["fast_vs_parity"] = errors(&got, par, &input.x);
             }
         } else if let Some(sd) = &sd_out {
-            let sd_o = BlockOutput { out: sd.clone(), ..Default::default() };
+            let sd_o = BlockOutput {
+                out: sd.clone(),
+                ..Default::default()
+            };
             out["fast_vs_sdcpp"] = errors(last, &sd_o, &input.x);
         }
         for (k, v) in shared.as_object().unwrap() {

@@ -14,12 +14,24 @@ use crate::state_store::{chain, snap_key, Identity, Manifest, Plan, SnapRef, Sta
 use std::path::{Path, PathBuf};
 
 fn cpus() -> Vec<usize> {
-    let n = std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1);
+    let n = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1);
     vec![n - 1]
 }
 
 fn engine(model: &Path, cache: &Path, depth: usize) -> OxeEngine {
-    OxeEngine::open_cache(model, None, &cpus(), None, 64, 2048, depth, Some(cache.to_path_buf())).unwrap()
+    OxeEngine::open_cache(
+        model,
+        None,
+        &cpus(),
+        None,
+        64,
+        2048,
+        depth,
+        Some(cache.to_path_buf()),
+    )
+    .unwrap()
 }
 
 /// Greedy decode of `steps` engine calls from token `t`: the tokens, the final state bytes and the
@@ -52,10 +64,15 @@ fn state(e: &mut OxeEngine) -> Vec<u8> {
 #[cfg(target_arch = "aarch64")] // the model engine (O-174: x86_64 builds the stub engine only)
 #[test]
 fn oxe_snapshot_glue_and_mtp_driver_resume_exactly_from_the_state_store() {
-    let dir: PathBuf = std::env::temp_dir().join(format!("oxe-p2b-oxestate-{}", std::process::id()));
+    let dir: PathBuf =
+        std::env::temp_dir().join(format!("oxe-p2b-oxestate-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("cache")).unwrap();
-    std::fs::set_permissions(dir.join("cache"), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(
+        dir.join("cache"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
     let model = dir.join("mini-mtp.gguf");
     model::testkit::mini_model_ext(&model, true);
     // the mini model's sha is taken from the environment (model tests do the same)
@@ -69,49 +86,112 @@ fn oxe_snapshot_glue_and_mtp_driver_resume_exactly_from_the_state_store() {
         src.prefill(&a[600..]).unwrap();
         assert_eq!(src.n_past(), 700);
         let root = dir.join(format!("store-{depth}"));
-        let id = Identity::new("sha256:mini", &src.state_id().unwrap(), 64, &src.arith_id(), "b", false);
+        let id = Identity::new(
+            "sha256:mini",
+            &src.state_id().unwrap(),
+            64,
+            &src.arith_id(),
+            "b",
+            false,
+        );
         let mut st = StateStore::open(&root, id, 1 << 40, 3600, true).unwrap();
         st.min_free_bytes = 0;
         st.min_mem_bytes = 0;
         let hs = chain(&st.ident.hash, &a);
         let mut buf = Vec::new();
-        let blocks: Vec<(String, String)> = (0..2).map(|i| (hs[i].clone(), st.write_block(&mut src, &hs[i], i, &mut buf).unwrap())).collect();
+        let blocks: Vec<(String, String)> = (0..2)
+            .map(|i| {
+                (
+                    hs[i].clone(),
+                    st.write_block(&mut src, &hs[i], i, &mut buf).unwrap(),
+                )
+            })
+            .collect();
         // head: straight from the live buffers (snap_save_live, the shutdown path); turn: a RAM checkpoint
         let hk = snap_key(&st.ident.hash, &hs, &a, 700);
         let (hc, hb) = st.write_snap(&mut src, &hk, 700, None).unwrap();
         let tk = snap_key(&st.ident.hash, &hs, &a, 600);
         let (tc, tb) = st.write_snap(&mut src, &tk, 600, Some(&turn)).unwrap();
-        let snap = |pos: usize, key: &str, c: &str, bytes: u64| SnapRef { pos, class: "turn".into(), key: key.into(), c: c.into(), clean: false, bytes };
+        let snap = |pos: usize, key: &str, c: &str, bytes: u64| SnapRef {
+            pos,
+            class: "turn".into(),
+            key: key.into(),
+            c: c.into(),
+            clean: false,
+            bytes,
+        };
         let (head_ref, turn_ref) = (snap(700, &hk, &hc, hb), snap(600, &tk, &tc, tb));
-        st.put_manifest(Manifest { sid: "0".repeat(32), hint: None, owners: vec![], created: 0, atime: crate::state_store::now_s(), n_tokens: 700, blocks: blocks.clone(), snaps: vec![turn_ref.clone(), head_ref.clone()] }).unwrap();
+        st.put_manifest(Manifest {
+            sid: "0".repeat(32),
+            hint: None,
+            owners: vec![],
+            created: 0,
+            atime: crate::state_store::now_s(),
+            n_tokens: 700,
+            blocks: blocks.clone(),
+            snaps: vec![turn_ref.clone(), head_ref.clone()],
+        })
+        .unwrap();
         // the uninterrupted references: from the head, and a RAM restore of the turn checkpoint
         let want_head_state = state(&mut src);
         let want_head = run(&mut src, 5, 12);
         // (back to 700 for the turn reference: reload the engine from its own head)
         let mut ram = engine(&model, &dir.join("cache"), depth);
-        st.load(&mut ram, &Plan { sid: "0".repeat(32), blocks: blocks.clone(), snap: head_ref.clone() }).unwrap();
+        st.load(
+            &mut ram,
+            &Plan {
+                sid: "0".repeat(32),
+                blocks: blocks.clone(),
+                snap: head_ref.clone(),
+            },
+        )
+        .unwrap();
         ram.restore(&turn).unwrap();
         let want_turn_state = state(&mut ram);
         let want_turn = run(&mut ram, 5, 12);
-        for (r, want_state, want) in [(&head_ref, &want_head_state, &want_head), (&turn_ref, &want_turn_state, &want_turn)] {
+        for (r, want_state, want) in [
+            (&head_ref, &want_head_state, &want_head),
+            (&turn_ref, &want_turn_state, &want_turn),
+        ] {
             let mut dst = engine(&model, &dir.join("cache"), depth);
             // a used engine: the load must not depend on what was there
-            dst.prefill(&a[..300].iter().map(|x| (x + 1) % 64).collect::<Vec<_>>()).unwrap();
-            let plan = Plan { sid: "0".repeat(32), blocks: blocks[..r.pos / BLOCK].to_vec(), snap: r.clone() };
+            dst.prefill(&a[..300].iter().map(|x| (x + 1) % 64).collect::<Vec<_>>())
+                .unwrap();
+            let plan = Plan {
+                sid: "0".repeat(32),
+                blocks: blocks[..r.pos / BLOCK].to_vec(),
+                snap: r.clone(),
+            };
             st.load(&mut dst, &plan).unwrap();
             assert_eq!(dst.n_past(), r.pos);
-            assert!(state(&mut dst) == *want_state, "depth {depth} pos {}: state bytes (incl. the MTP driver export) differ", r.pos);
+            assert!(
+                state(&mut dst) == *want_state,
+                "depth {depth} pos {}: state bytes (incl. the MTP driver export) differ",
+                r.pos
+            );
             let got = run(&mut dst, 5, 12);
             assert_eq!(got.0, want.0, "depth {depth} pos {}: tokens", r.pos);
-            assert!(got.1 == want.1, "depth {depth} pos {}: state after decoding", r.pos);
-            assert_eq!(got.2, want.2, "depth {depth} pos {}: MTP drafted / accepted (the draft state) differ", r.pos);
+            assert!(
+                got.1 == want.1,
+                "depth {depth} pos {}: state after decoding",
+                r.pos
+            );
+            assert_eq!(
+                got.2, want.2,
+                "depth {depth} pos {}: MTP drafted / accepted (the draft state) differ",
+                r.pos
+            );
             if depth > 0 {
                 assert!(want.2 .0 > 0, "MTP drafted");
             }
         }
         // a snapshot of the other MTP setting is refused (never a silent wrong draft state)
         let mut other = engine(&model, &dir.join("cache"), if depth == 0 { 2 } else { 0 });
-        let plan = Plan { sid: "0".repeat(32), blocks: blocks.clone(), snap: head_ref.clone() };
+        let plan = Plan {
+            sid: "0".repeat(32),
+            blocks: blocks.clone(),
+            snap: head_ref.clone(),
+        };
         assert!(st.load(&mut other, &plan).is_err());
     }
     std::env::remove_var("OXE_MODEL_SHA256");

@@ -34,11 +34,22 @@ pub fn load_decoder(vae_path: &Path) -> Result<VaeDecoder, String> {
 }
 
 /// Decodes with an already loaded decoder (the decode part of [`decode_file`]).
-pub fn decode_with(dec: &VaeDecoder, z_nchw: &[f32], channels: usize, h: usize, w: usize, threads: usize) -> Result<Rgb, String> {
+pub fn decode_with(
+    dec: &VaeDecoder,
+    z_nchw: &[f32],
+    channels: usize,
+    h: usize,
+    w: usize,
+    threads: usize,
+) -> Result<Rgb, String> {
     let (oh, ow) = dec.output_size(h, w);
     let out = dec.decode(z_nchw, channels, h, w, threads)?;
     if out.len() != 3 * oh * ow {
-        return Err(format!("decode_file: decoder returned {} values, expected {}", out.len(), 3 * oh * ow));
+        return Err(format!(
+            "decode_file: decoder returned {} values, expected {}",
+            out.len(),
+            3 * oh * ow
+        ));
     }
     Ok(to_rgb(&out, oh, ow))
 }
@@ -67,7 +78,11 @@ pub fn decode_file(
 /// Panics if `decoded_chw.len() != 3 * height * width`.
 pub fn to_rgb(decoded_chw: &[f32], height: usize, width: usize) -> Rgb {
     let n = height * width;
-    assert_eq!(decoded_chw.len(), 3 * n, "to_rgb: expected 3*{height}*{width} values");
+    assert_eq!(
+        decoded_chw.len(),
+        3 * n,
+        "to_rgb: expected 3*{height}*{width} values"
+    );
     let mut data = vec![0u8; 3 * n];
     for i in 0..n {
         for c in 0..3 {
@@ -138,7 +153,10 @@ mod tests {
     #[test]
     fn to_rgb_mapping() {
         // Decoder output -1 -> black, +1 -> white, 0 -> mid grey (128), >1 clamps.
-        let decoded = [-1.0f32, 0.0, 1.0, 5.0, /* G */ -1.0, 0.0, 1.0, 5.0, /* B */ -3.0, -1.0, 0.0, 1.0];
+        let decoded = [
+            -1.0f32, 0.0, 1.0, 5.0, /* G */ -1.0, 0.0, 1.0, 5.0, /* B */ -3.0, -1.0, 0.0,
+            1.0,
+        ];
         let img = to_rgb(&decoded, 2, 2);
         assert_eq!(img.width, 2);
         assert_eq!(img.height, 2);

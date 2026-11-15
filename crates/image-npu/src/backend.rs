@@ -49,9 +49,17 @@ pub fn window_payload(src: &dyn WeightSource, w: &Window) -> Result<WindowPayloa
     for l in &w.members {
         let (bytes, rows, k) = src.q8(&l.name)?;
         if rows != l.out_dim || k != l.in_dim || bytes.len() as u64 != l.bytes {
-            return Err(format!("{}: source shape or bytes disagree with the plan", l.name));
+            return Err(format!(
+                "{}: source shape or bytes disagree with the plan",
+                l.name
+            ));
         }
-        linears.push(PayloadLinear { name: l.name.clone(), in_dim: l.in_dim, out_dim: l.out_dim, q8: bytes.to_vec() });
+        linears.push(PayloadLinear {
+            name: l.name.clone(),
+            in_dim: l.in_dim,
+            out_dim: l.out_dim,
+            q8: bytes.to_vec(),
+        });
     }
     Ok(WindowPayload { linears })
 }
@@ -69,7 +77,12 @@ pub trait LinearDevice {
     fn sessions(&self) -> usize;
     /// Loads `w` into an empty `slot`. Errors if the slot is occupied or the window exceeds the
     /// slot budget.
-    fn load_window(&mut self, slot: usize, w: &Window, payload: &WindowPayload) -> Result<(), String>;
+    fn load_window(
+        &mut self,
+        slot: usize,
+        w: &Window,
+        payload: &WindowPayload,
+    ) -> Result<(), String>;
     /// Empties `slot`. Errors if it is empty or a publish on it is in flight.
     fn unload_window(&mut self, slot: usize) -> Result<(), String>;
     /// Starts one publish. Returns one row-major `[n_tokens][out]` buffer per call from `wait`.
@@ -144,7 +157,10 @@ impl MockDevice {
 
     /// Window index loaded in `slot`, if any.
     pub fn resident(&self, slot: usize) -> Option<usize> {
-        self.slots.get(slot).and_then(|s| s.as_ref()).map(|s| s.window)
+        self.slots
+            .get(slot)
+            .and_then(|s| s.as_ref())
+            .map(|s| s.window)
     }
 
     pub fn total_loads(&self) -> usize {
@@ -156,7 +172,9 @@ impl MockDevice {
     }
 
     fn slot_of_tensor(&self, name: &str) -> Option<usize> {
-        self.slots.iter().position(|s| s.as_ref().is_some_and(|s| s.tensors.contains_key(name)))
+        self.slots
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|s| s.tensors.contains_key(name)))
     }
 }
 
@@ -165,16 +183,26 @@ impl LinearDevice for MockDevice {
         self.slots.len()
     }
 
-    fn load_window(&mut self, slot: usize, w: &Window, payload: &WindowPayload) -> Result<(), String> {
+    fn load_window(
+        &mut self,
+        slot: usize,
+        w: &Window,
+        payload: &WindowPayload,
+    ) -> Result<(), String> {
         if slot >= self.slots.len() {
             return Err(format!("load_window: slot {slot} out of range"));
         }
         if self.slots[slot].is_some() {
-            return Err(format!("load_window: slot {slot} is occupied; unload first"));
+            return Err(format!(
+                "load_window: slot {slot} is occupied; unload first"
+            ));
         }
         let charged = w.weight_bytes + w.reserved_bytes;
         if charged > self.budget_bytes {
-            return Err(format!("load_window {}: charge {charged} B exceeds slot budget {} B", w.index, self.budget_bytes));
+            return Err(format!(
+                "load_window {}: charge {charged} B exceeds slot budget {} B",
+                w.index, self.budget_bytes
+            ));
         }
         if payload.linears.len() != w.members.len() {
             return Err("load_window: payload does not match the window".into());
@@ -182,16 +210,34 @@ impl LinearDevice for MockDevice {
         let mut tensors = HashMap::new();
         for (p, m) in payload.linears.iter().zip(&w.members) {
             if p.name != m.name || p.in_dim != m.in_dim || p.out_dim != m.out_dim {
-                return Err(format!("load_window: payload entry {} does not match the window", p.name));
+                return Err(format!(
+                    "load_window: payload entry {} does not match the window",
+                    p.name
+                ));
             }
             let want = m.out_dim * (m.in_dim / 32) * 34;
             if p.q8.len() != want {
-                return Err(format!("load_window: {} has {} bytes, want {want}", p.name, p.q8.len()));
+                return Err(format!(
+                    "load_window: {} has {} bytes, want {want}",
+                    p.name,
+                    p.q8.len()
+                ));
             }
             let w32 = dequant_q8_0(&p.q8, p.out_dim, p.in_dim);
-            tensors.insert(p.name.clone(), MockLinear { in_dim: p.in_dim, out_dim: p.out_dim, w: w32 });
+            tensors.insert(
+                p.name.clone(),
+                MockLinear {
+                    in_dim: p.in_dim,
+                    out_dim: p.out_dim,
+                    w: w32,
+                },
+            );
         }
-        self.slots[slot] = Some(MockSlot { window: w.index, tensors, pending: 0 });
+        self.slots[slot] = Some(MockSlot {
+            window: w.index,
+            tensors,
+            pending: 0,
+        });
         self.loads[slot] += 1;
         self.max_charged[slot] = self.max_charged[slot].max(charged);
         Ok(())
@@ -200,7 +246,9 @@ impl LinearDevice for MockDevice {
     fn unload_window(&mut self, slot: usize) -> Result<(), String> {
         match self.slots.get(slot).and_then(|s| s.as_ref()) {
             None => Err(format!("unload_window: slot {slot} is empty")),
-            Some(s) if s.pending > 0 => Err(format!("unload_window: slot {slot} has a publish in flight")),
+            Some(s) if s.pending > 0 => Err(format!(
+                "unload_window: slot {slot} has a publish in flight"
+            )),
             Some(_) => {
                 self.slots[slot] = None;
                 self.unloads[slot] += 1;
@@ -218,11 +266,19 @@ impl LinearDevice for MockDevice {
             .ok_or_else(|| format!("submit: {} is not loaded", calls[0].tensor))?;
         for c in calls {
             if self.slot_of_tensor(&c.tensor) != Some(slot) {
-                return Err(format!("submit: {} is not in slot {slot}; split the publish", c.tensor));
+                return Err(format!(
+                    "submit: {} is not in slot {slot}; split the publish",
+                    c.tensor
+                ));
             }
             let m = &self.slots[slot].as_ref().expect("slot found above").tensors[&c.tensor];
             if c.input.len() != c.n_tokens * m.in_dim {
-                return Err(format!("submit: {} input length {} != {}", c.tensor, c.input.len(), c.n_tokens * m.in_dim));
+                return Err(format!(
+                    "submit: {} input length {} != {}",
+                    c.tensor,
+                    c.input.len(),
+                    c.n_tokens * m.in_dim
+                ));
             }
         }
         self.slots[slot].as_mut().expect("slot found above").pending += 1;
@@ -234,8 +290,13 @@ impl LinearDevice for MockDevice {
     }
 
     fn wait(&mut self, t: Ticket) -> Result<Vec<Vec<f32>>, String> {
-        let (slot, calls) = self.tickets.remove(&t.0).ok_or_else(|| format!("wait: unknown ticket {}", t.0))?;
-        let s = self.slots[slot].as_mut().expect("in-flight publish keeps its slot loaded");
+        let (slot, calls) = self
+            .tickets
+            .remove(&t.0)
+            .ok_or_else(|| format!("wait: unknown ticket {}", t.0))?;
+        let s = self.slots[slot]
+            .as_mut()
+            .expect("in-flight publish keeps its slot loaded");
         s.pending -= 1;
         let mut outs = Vec::with_capacity(calls.len());
         for c in &calls {
@@ -334,7 +395,10 @@ impl<'a, D: LinearDevice> WindowedRunner<'a, D> {
     }
 
     fn owner_of(&self, tensor: &str) -> Result<usize, String> {
-        self.owner.get(tensor).copied().ok_or_else(|| format!("tensor {tensor} is not in the plan"))
+        self.owner
+            .get(tensor)
+            .copied()
+            .ok_or_else(|| format!("tensor {tensor} is not in the plan"))
     }
 
     /// Waits for every in-flight publish on `slot` and stores its result.
@@ -402,7 +466,14 @@ impl<'a, D: LinearDevice> WindowedRunner<'a, D> {
             let t = self.dev.submit(&calls[start..end])?;
             let id = self.next_id;
             self.next_id += 1;
-            self.inflight.insert(id, Inflight { slot, ticket: Some(t), result: None });
+            self.inflight.insert(
+                id,
+                Inflight {
+                    slot,
+                    ticket: Some(t),
+                    result: None,
+                },
+            );
             self.stats.publishes += 1;
             parts.push(id);
             start = end;
@@ -443,8 +514,11 @@ mod tests {
     fn source() -> MemSource {
         let mut src = MemSource::default();
         for i in 0..N {
-            let v: Vec<f32> = (0..IN * OUT).map(|k| (((k * 7 + i * 3) % 11) as f32) * 0.1 - 0.5).collect();
-            src.q8.insert(format!("t{i}"), (quant_q8_0(&v, OUT, IN), OUT, IN));
+            let v: Vec<f32> = (0..IN * OUT)
+                .map(|k| (((k * 7 + i * 3) % 11) as f32) * 0.1 - 0.5)
+                .collect();
+            src.q8
+                .insert(format!("t{i}"), (quant_q8_0(&v, OUT, IN), OUT, IN));
         }
         src
     }
@@ -475,11 +549,17 @@ mod tests {
     }
 
     fn input(i: usize) -> Vec<f32> {
-        (0..TOKENS * IN).map(|k| ((k + i) as f32) * 0.05 - 0.7).collect()
+        (0..TOKENS * IN)
+            .map(|k| ((k + i) as f32) * 0.05 - 0.7)
+            .collect()
     }
 
     fn call(i: usize) -> LinearCall {
-        LinearCall { tensor: format!("t{i}"), n_tokens: TOKENS, input: input(i) }
+        LinearCall {
+            tensor: format!("t{i}"),
+            n_tokens: TOKENS,
+            input: input(i),
+        }
     }
 
     fn direct(i: usize) -> Vec<f32> {
@@ -571,8 +651,13 @@ mod tests {
         let mut dev = MockDevice::new(1, 600);
         let pl = window_payload(&src, &p[0]).unwrap();
         dev.load_window(0, &p[0], &pl).unwrap();
-        assert!(dev.load_window(0, &p[1], &window_payload(&src, &p[1]).unwrap()).is_err());
+        assert!(dev
+            .load_window(0, &p[1], &window_payload(&src, &p[1]).unwrap())
+            .is_err());
         let mut small = MockDevice::new(1, 100);
-        assert!(small.load_window(0, &p[0], &pl).unwrap_err().contains("exceeds slot budget"));
+        assert!(small
+            .load_window(0, &p[0], &pl)
+            .unwrap_err()
+            .contains("exceeds slot budget"));
     }
 }

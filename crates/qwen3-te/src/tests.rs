@@ -37,11 +37,25 @@ fn q8_bytes(x: &[f32]) -> Vec<u8> {
 }
 
 fn tiny_cfg() -> Qwen3Config {
-    Qwen3Config { hidden: 64, n_layers: 5, n_heads: 4, n_kv_heads: 2, head_dim: 16, ff: 96, eps: 1e-6, rope_theta: 10000.0, vocab: 40 }
+    Qwen3Config {
+        hidden: 64,
+        n_layers: 5,
+        n_heads: 4,
+        n_kv_heads: 2,
+        head_dim: 16,
+        ff: 96,
+        eps: 1e-6,
+        rope_theta: 10000.0,
+        vocab: 40,
+    }
 }
 
 fn tiny_spec() -> KleinSpec {
-    KleinSpec { out_layers: vec![1, 3, 4], min_len: 40, ..KleinSpec::klein() }
+    KleinSpec {
+        out_layers: vec![1, 3, 4],
+        min_len: 40,
+        ..KleinSpec::klein()
+    }
 }
 
 /// Owner of the synthetic Q8_0 bytes; `weights()` borrows them.
@@ -68,9 +82,19 @@ impl Store {
             }
             mats.push(lm);
             let mut nv = |n: usize| (0..n).map(|_| 1.0 + 0.2 * r.f()).collect::<Vec<f32>>();
-            norms.push([nv(cfg.hidden), nv(cfg.head_dim), nv(cfg.head_dim), nv(cfg.hidden)]);
+            norms.push([
+                nv(cfg.hidden),
+                nv(cfg.head_dim),
+                nv(cfg.head_dim),
+                nv(cfg.hidden),
+            ]);
         }
-        Store { cfg, embd, mats, norms }
+        Store {
+            cfg,
+            embd,
+            mats,
+            norms,
+        }
     }
 
     fn weights(&self) -> TeWeights<'_> {
@@ -86,17 +110,32 @@ impl Store {
                     .enumerate()
                     .map(|(i, &kd)| {
                         let (o, k) = crate::weights::expected_shape(c, kd);
-                        Mat::Quant { ty: QType::Q8_0, o, k, bytes: &self.mats[l][i] }
+                        Mat::Quant {
+                            ty: QType::Q8_0,
+                            o,
+                            k,
+                            bytes: &self.mats[l][i],
+                        }
                     })
                     .collect(),
             })
             .collect();
-        TeWeights { cfg: c.clone(), embd: Mat::F32 { o: c.vocab, k: c.hidden, data: Cow::Borrowed(&self.embd) }, layers }
+        TeWeights {
+            cfg: c.clone(),
+            embd: Mat::F32 {
+                o: c.vocab,
+                k: c.hidden,
+                data: Cow::Borrowed(&self.embd),
+            },
+            layers,
+        }
     }
 }
 
 fn input(n_real: usize, spec: &KleinSpec, vocab: usize) -> Encoded {
-    let ids: Vec<u32> = (0..n_real).map(|i| ((i * 7 + 3) % (vocab - 1)) as u32).collect();
+    let ids: Vec<u32> = (0..n_real)
+        .map(|i| ((i * 7 + 3) % (vocab - 1)) as u32)
+        .collect();
     let mut s = spec.clone();
     s.pad_id = (vocab - 1) as u32;
     prompt::pad(ids, &s)
@@ -113,7 +152,13 @@ fn naive(w: &TeWeights, spec: &KleinSpec, e: &Encoded) -> Vec<f32> {
     };
     let lin = |m: &Mat, x: &[Vec<f64>]| -> Vec<Vec<f64>> {
         let rows: Vec<Vec<f64>> = (0..m.o()).map(|r| row(m, r)).collect();
-        x.iter().map(|xt| rows.iter().map(|wr| wr.iter().zip(xt).map(|(a, b)| a * b).sum()).collect()).collect()
+        x.iter()
+            .map(|xt| {
+                rows.iter()
+                    .map(|wr| wr.iter().zip(xt).map(|(a, b)| a * b).sum())
+                    .collect()
+            })
+            .collect()
     };
     let norm = |x: &[f64], g: &[f32]| -> Vec<f64> {
         let ms = x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64;
@@ -161,7 +206,10 @@ fn naive(w: &TeWeights, spec: &KleinSpec, e: &Encoded) -> Vec<f32> {
                         if j > t || !e.mask[j] {
                             f64::NEG_INFINITY
                         } else {
-                            (0..hd).map(|d| q[t][hh * hd + d] * k[j][kh * hd + d]).sum::<f64>() / (hd as f64).sqrt()
+                            (0..hd)
+                                .map(|d| q[t][hh * hd + d] * k[j][kh * hd + d])
+                                .sum::<f64>()
+                                / (hd as f64).sqrt()
                         }
                     })
                     .collect();
@@ -182,7 +230,16 @@ fn naive(w: &TeWeights, spec: &KleinSpec, e: &Encoded) -> Vec<f32> {
         let h2: Vec<Vec<f64>> = x.iter().map(|r| norm(r, &lw.ffn_norm)).collect();
         let gt = lin(lw.mat(Kind::Gate), &h2);
         let up = lin(lw.mat(Kind::Up), &h2);
-        let a: Vec<Vec<f64>> = gt.iter().zip(&up).map(|(g, u)| g.iter().zip(u).map(|(g, u)| g / (1.0 + (-g).exp()) * u).collect()).collect();
+        let a: Vec<Vec<f64>> = gt
+            .iter()
+            .zip(&up)
+            .map(|(g, u)| {
+                g.iter()
+                    .zip(u)
+                    .map(|(g, u)| g / (1.0 + (-g).exp()) * u)
+                    .collect()
+            })
+            .collect();
         let d = lin(lw.mat(Kind::Down), &a);
         for t in 0..n {
             for j in 0..hdim {
@@ -211,8 +268,18 @@ fn rel(a: &[f32], b: &[f32]) -> f64 {
     (d / s).sqrt()
 }
 
-fn run(w: &TeWeights, spec: &KleinSpec, e: &Encoded, lin: &dyn Linears, threads: usize) -> Vec<f32> {
-    Encoder::new(w, spec.clone(), threads).unwrap().encode(lin, e).unwrap().0
+fn run(
+    w: &TeWeights,
+    spec: &KleinSpec,
+    e: &Encoded,
+    lin: &dyn Linears,
+    threads: usize,
+) -> Vec<f32> {
+    Encoder::new(w, spec.clone(), threads)
+        .unwrap()
+        .encode(lin, e)
+        .unwrap()
+        .0
 }
 
 #[test]
@@ -221,7 +288,17 @@ fn cpu_f32_graph_matches_independent_f64_forward() {
     let w = st.weights();
     let spec = tiny_spec();
     let e = input(13, &spec, w.cfg.vocab);
-    let got = run(&w, &spec, &e, &CpuLinears { w: &w, threads: 3, mode: CpuMode::F32 }, 3);
+    let got = run(
+        &w,
+        &spec,
+        &e,
+        &CpuLinears {
+            w: &w,
+            threads: 3,
+            mode: CpuMode::F32,
+        },
+        3,
+    );
     let want = naive(&w, &spec, &e);
     assert_eq!(got.len(), 40 * 3 * 64);
     let r = rel(&got, &want);
@@ -235,8 +312,28 @@ fn output_does_not_depend_on_thread_count() {
     let spec = tiny_spec();
     let e = input(11, &spec, w.cfg.vocab);
     for mode in [CpuMode::F32, CpuMode::Q8] {
-        let a = run(&w, &spec, &e, &CpuLinears { w: &w, threads: 1, mode }, 1);
-        let b = run(&w, &spec, &e, &CpuLinears { w: &w, threads: 5, mode }, 5);
+        let a = run(
+            &w,
+            &spec,
+            &e,
+            &CpuLinears {
+                w: &w,
+                threads: 1,
+                mode,
+            },
+            1,
+        );
+        let b = run(
+            &w,
+            &spec,
+            &e,
+            &CpuLinears {
+                w: &w,
+                threads: 5,
+                mode,
+            },
+            5,
+        );
         assert!(a == b, "{mode:?}: thread count changed bits");
     }
 }
@@ -245,12 +342,26 @@ fn output_does_not_depend_on_thread_count() {
 fn real_rows_ignore_padding_and_pad_rows_are_distinct() {
     let st = Store::new(tiny_cfg(), 9);
     let w = st.weights();
-    let lin = CpuLinears { w: &w, threads: 2, mode: CpuMode::F32 };
+    let lin = CpuLinears {
+        w: &w,
+        threads: 2,
+        mode: CpuMode::F32,
+    };
     let s40 = tiny_spec();
-    let s64 = KleinSpec { min_len: 64, ..tiny_spec() };
-    let (a, b) = (run(&w, &s40, &input(9, &s40, 40), &lin, 2), run(&w, &s64, &input(9, &s64, 40), &lin, 2));
+    let s64 = KleinSpec {
+        min_len: 64,
+        ..tiny_spec()
+    };
+    let (a, b) = (
+        run(&w, &s40, &input(9, &s40, 40), &lin, 2),
+        run(&w, &s64, &input(9, &s64, 40), &lin, 2),
+    );
     let ctx = 3 * 64;
-    assert_eq!(&a[..9 * ctx], &b[..9 * ctx], "real rows changed with the pad count");
+    assert_eq!(
+        &a[..9 * ctx],
+        &b[..9 * ctx],
+        "real rows changed with the pad count"
+    );
     // pads attend to the real tokens but carry their own position: not all identical
     assert_ne!(&a[20 * ctx..21 * ctx], &a[30 * ctx..31 * ctx]);
     // every pad row of the 40-run matches the same position in the 64-run (causal)
@@ -261,12 +372,28 @@ fn real_rows_ignore_padding_and_pad_rows_are_distinct() {
 fn layer_slots_are_the_requested_blocks() {
     let st = Store::new(tiny_cfg(), 10);
     let w = st.weights();
-    let lin = CpuLinears { w: &w, threads: 2, mode: CpuMode::F32 };
+    let lin = CpuLinears {
+        w: &w,
+        threads: 2,
+        mode: CpuMode::F32,
+    };
     let e = input(10, &tiny_spec(), 40);
     let full = run(&w, &tiny_spec(), &e, &lin, 2);
-    let only3 = run(&w, &KleinSpec { out_layers: vec![3], ..tiny_spec() }, &e, &lin, 2);
+    let only3 = run(
+        &w,
+        &KleinSpec {
+            out_layers: vec![3],
+            ..tiny_spec()
+        },
+        &e,
+        &lin,
+        2,
+    );
     for t in 0..40 {
-        assert_eq!(&full[t * 192 + 64..t * 192 + 128], &only3[t * 64..(t + 1) * 64]);
+        assert_eq!(
+            &full[t * 192 + 64..t * 192 + 128],
+            &only3[t * 64..(t + 1) * 64]
+        );
     }
 }
 
@@ -276,8 +403,28 @@ fn q8_emulation_is_close_to_f32_and_exact_against_integer_reference() {
     let w = st.weights();
     let spec = tiny_spec();
     let e = input(17, &spec, 40);
-    let f = run(&w, &spec, &e, &CpuLinears { w: &w, threads: 2, mode: CpuMode::F32 }, 2);
-    let q = run(&w, &spec, &e, &CpuLinears { w: &w, threads: 2, mode: CpuMode::Q8 }, 2);
+    let f = run(
+        &w,
+        &spec,
+        &e,
+        &CpuLinears {
+            w: &w,
+            threads: 2,
+            mode: CpuMode::F32,
+        },
+        2,
+    );
+    let q = run(
+        &w,
+        &spec,
+        &e,
+        &CpuLinears {
+            w: &w,
+            threads: 2,
+            mode: CpuMode::Q8,
+        },
+        2,
+    );
     let r = rel(&q, &f);
     assert!(r > 0.0 && r < 0.03, "q8 vs f32 rel {r}");
     // one GEMM against a per-element integer reference
@@ -297,7 +444,9 @@ fn q8_emulation_is_close_to_f32_and_exact_against_integer_reference() {
             for b in 0..nb {
                 let blk = &wq[(o * nb + b) * 34..(o * nb + b + 1) * 34];
                 let dw = oxn::tiles::half_to_f32(u16::from_le_bytes([blk[0], blk[1]]));
-                let is: i32 = (0..32).map(|i| blk[2 + i] as i8 as i32 * xq[b * 32 + i] as i32).sum();
+                let is: i32 = (0..32)
+                    .map(|i| blk[2 + i] as i8 as i32 * xq[b * 32 + i] as i32)
+                    .sum();
                 acc += is as f32 * (dw * xd[b]);
             }
             assert_eq!(acc, y[t * m.o() + o]);
@@ -319,7 +468,13 @@ fn quantize_q8_0_rounds_ties_to_even_and_handles_zero() {
 }
 
 fn npu_opts(weights: WFmt, budget: usize) -> NpuOpts {
-    NpuOpts { budget_bytes: budget, weights, kc_max: 0, pack_threads: 2, io_threads: 3 }
+    NpuOpts {
+        budget_bytes: budget,
+        weights,
+        kc_max: 0,
+        pack_threads: 2,
+        io_threads: 3,
+    }
 }
 
 #[test]
@@ -329,11 +484,25 @@ fn npu_emulator_fp16_and_w8_match_cpu_reference() {
     let spec = tiny_spec();
     // 45 real tokens: n = 45, one full 32-token tile plus a 13-token tail
     let e = input(45, &spec, 40);
-    let want = run(&w, &spec, &e, &CpuLinears { w: &w, threads: 2, mode: CpuMode::F32 }, 2);
+    let want = run(
+        &w,
+        &spec,
+        &e,
+        &CpuLinears {
+            w: &w,
+            threads: 2,
+            mode: CpuMode::F32,
+        },
+        2,
+    );
     for fmt in [WFmt::Fp16, WFmt::W8] {
         let be = Box::new(oxn::emu::Emu::new(8 << 20, 2));
         let lin = NpuLinears::new(&w, be, npu_opts(fmt, 64 << 20), 2).unwrap();
-        assert_eq!(lin.placed_count(), 5 * 7, "{fmt:?}: every linear of the 5 loaded blocks placed");
+        assert_eq!(
+            lin.placed_count(),
+            5 * 7,
+            "{fmt:?}: every linear of the 5 loaded blocks placed"
+        );
         let got = run(&w, &spec, &e, &lin, 2);
         let r = rel(&got, &want);
         assert!(r < 1e-2, "{fmt:?}: rel {r}");
@@ -353,10 +522,24 @@ fn npu_budget_overflow_and_fp16_range_fall_back_to_cpu_counted() {
     let spec = tiny_spec();
     let e = input(12, &spec, 40);
     // tiny budget: some linears stay on the CPU; results still agree with the reference
-    let want = run(&w, &spec, &e, &CpuLinears { w: &w, threads: 2, mode: CpuMode::F32 }, 2);
+    let want = run(
+        &w,
+        &spec,
+        &e,
+        &CpuLinears {
+            w: &w,
+            threads: 2,
+            mode: CpuMode::F32,
+        },
+        2,
+    );
     let be = Box::new(oxn::emu::Emu::new(8 << 20, 1));
     let lin = NpuLinears::new(&w, be, npu_opts(WFmt::Fp16, 40 << 10), 2).unwrap();
-    assert!(lin.placed_count() > 0 && lin.placed_count() < 28, "placed {}", lin.placed_count());
+    assert!(
+        lin.placed_count() > 0 && lin.placed_count() < 28,
+        "placed {}",
+        lin.placed_count()
+    );
     let got = run(&w, &spec, &e, &lin, 2);
     assert!(rel(&got, &want) < 1e-2);
     assert!(lin.summary()["cpu_calls"].as_u64().unwrap() > 0);
@@ -396,20 +579,50 @@ fn klein_tokens_template_pieces_padding_and_refusals() {
     let suf = FakeTok.encode_piece(spec.suffix).unwrap();
     assert_eq!(e.n_real, pre.len() + 5 + suf.len());
     assert_eq!(&e.tokens[..pre.len()], &pre[..]);
-    assert_eq!(&e.tokens[pre.len()..pre.len() + 5], b"a cat".map(|b| b as u32).as_slice());
+    assert_eq!(
+        &e.tokens[pre.len()..pre.len() + 5],
+        b"a cat".map(|b| b as u32).as_slice()
+    );
     assert_eq!(e.tokens.len(), 512);
     assert!(e.tokens[e.n_real..].iter().all(|&t| t == 151643));
     assert!(e.mask[..e.n_real].iter().all(|&m| m) && e.mask[e.n_real..].iter().all(|&m| !m));
     // empty prompt: template only
-    assert_eq!(prompt::klein_tokens(&FakeTok, &spec, "").unwrap().n_real, pre.len() + suf.len());
+    assert_eq!(
+        prompt::klein_tokens(&FakeTok, &spec, "").unwrap().n_real,
+        pre.len() + suf.len()
+    );
     // long prompt: never truncated
     let long = "x".repeat(700);
     let e = prompt::klein_tokens(&FakeTok, &spec, &long).unwrap();
-    assert_eq!((e.tokens.len(), e.n_real), (700 + pre.len() + suf.len(), 700 + pre.len() + suf.len()));
-    for bad in ["a (cat)", "a [cat]", "x\\y", "cat BREAK dog", "BREAK", "x <think> y", "<|im_end|>", "a <lora:x:1> cat"] {
-        assert!(matches!(prompt::klein_tokens(&FakeTok, &spec, bad), Err(PromptError::NeedsReference(_))), "{bad}");
+    assert_eq!(
+        (e.tokens.len(), e.n_real),
+        (700 + pre.len() + suf.len(), 700 + pre.len() + suf.len())
+    );
+    for bad in [
+        "a (cat)",
+        "a [cat]",
+        "x\\y",
+        "cat BREAK dog",
+        "BREAK",
+        "x <think> y",
+        "<|im_end|>",
+        "a <lora:x:1> cat",
+    ] {
+        assert!(
+            matches!(
+                prompt::klein_tokens(&FakeTok, &spec, bad),
+                Err(PromptError::NeedsReference(_))
+            ),
+            "{bad}"
+        );
     }
-    for ok in ["BREAKFAST: eggs", "a cat: sitting", "UNBREAKABLE", "émoji 🐱 <b>", "100% sure"] {
+    for ok in [
+        "BREAKFAST: eggs",
+        "a cat: sitting",
+        "UNBREAKABLE",
+        "émoji 🐱 <b>",
+        "100% sure",
+    ] {
         assert!(prompt::check_plain(ok).is_ok(), "{ok}");
     }
 }
@@ -429,7 +642,12 @@ fn metrics_identity_and_gate() {
     let rep = metrics::report(&b, &a, 10, 4, 8, &[9, 18, 27]).unwrap();
     let (ok, why) = metrics::gate(&rep, 0.999, 0.03);
     assert!(!ok && why.iter().all(|w| w.contains("layer 18")), "{why:?}");
-    assert!(rep["segments"][1]["real"]["worst_row_cos"].as_f64().unwrap() < -0.99);
+    assert!(
+        rep["segments"][1]["real"]["worst_row_cos"]
+            .as_f64()
+            .unwrap()
+            < -0.99
+    );
 }
 
 #[test]
@@ -437,15 +655,26 @@ fn mat_rows_from_tensor_types() {
     use gguf::{GgmlType, TensorInfo};
     let x: Vec<f32> = (0..64).map(|i| i as f32 * 0.25 - 3.0).collect();
     let q = q8_bytes(&x);
-    let t = TensorInfo { name: "w".into(), shape: vec![32, 2], ty: GgmlType::Q8_0, offset: 0 };
+    let t = TensorInfo {
+        name: "w".into(),
+        shape: vec![32, 2],
+        ty: GgmlType::Q8_0,
+        offset: 0,
+    };
     let m = Mat::from_tensor(&t, &q).unwrap();
     let mut r = vec![0f32; 32];
     m.read_row(1, &mut r).unwrap();
     assert!(r.iter().zip(&x[32..]).all(|(a, b)| (a - b).abs() < 0.06));
     assert!(m.q8_0().is_some());
     assert!(m.read_row(2, &mut r).is_err());
-    let h: Vec<u8> = x.iter().flat_map(|v| oxn::tiles::f32_to_half(*v).to_le_bytes()).collect();
-    let t = TensorInfo { ty: GgmlType::F16, ..t };
+    let h: Vec<u8> = x
+        .iter()
+        .flat_map(|v| oxn::tiles::f32_to_half(*v).to_le_bytes())
+        .collect();
+    let t = TensorInfo {
+        ty: GgmlType::F16,
+        ..t
+    };
     let m = Mat::from_tensor(&t, &h).unwrap();
     m.read_row(0, &mut r).unwrap();
     assert_eq!(&r[..], &x[..32]);
@@ -460,18 +689,31 @@ fn real_tokenizer_template_ids() {
     let p = std::env::var("QWEN3_TE_GGUF").expect("QWEN3_TE_GGUF");
     let tok = tokenizer::Tokenizer::from_gguf(&p).unwrap();
     let spec = KleinSpec::klein();
-    assert_eq!(tok.encode_piece(spec.prefix).unwrap(), vec![151644, 872, 198]);
-    assert_eq!(tok.encode_piece(spec.suffix).unwrap(), vec![151645, 198, 151644, 77091, 198, 151667, 271, 151668, 271]);
+    assert_eq!(
+        tok.encode_piece(spec.prefix).unwrap(),
+        vec![151644, 872, 198]
+    );
+    assert_eq!(
+        tok.encode_piece(spec.suffix).unwrap(),
+        vec![151645, 198, 151644, 77091, 198, 151667, 271, 151668, 271]
+    );
     let g = gguf::Gguf::open(&p).unwrap();
     let c = Qwen3Config::from_header(&g.header).unwrap();
     assert_eq!(c, Qwen3Config::qwen3_4b());
     let w = TeWeights::from_gguf(&g, 27).unwrap();
     assert_eq!(w.layers.len(), 27);
-    assert_eq!(w.linear_fp16_bytes(), 27 * 2 * (2 * 2560 * 4096 + 2 * 2560 * 1024 + 3 * 2560 * 9728) as u64);
+    assert_eq!(
+        w.linear_fp16_bytes(),
+        27 * 2 * (2 * 2560 * 4096 + 2 * 2560 * 1024 + 3 * 2560 * 9728) as u64
+    );
 }
 
 /// Minimal GGUF v3 writer: string/u32/f32 metadata, F32 and Q8_0 tensors.
-fn gguf_file(path: &std::path::Path, kv: &[(&str, KvVal)], tensors: &[(String, Vec<u64>, u32, Vec<u8>)]) {
+fn gguf_file(
+    path: &std::path::Path,
+    kv: &[(&str, KvVal)],
+    tensors: &[(String, Vec<u64>, u32, Vec<u8>)],
+) {
     let mut b: Vec<u8> = Vec::new();
     let s = |b: &mut Vec<u8>, x: &str| {
         b.extend((x.len() as u64).to_le_bytes());
@@ -533,14 +775,32 @@ fn gguf_loader_reads_names_shapes_and_config_like_llama_cpp_files() {
     let c = tiny_cfg();
     let st = Store::new(c.clone(), 21);
     let f32b = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
-    let mut t = vec![("token_embd.weight".to_string(), vec![c.hidden as u64, c.vocab as u64], 0u32, f32b(&st.embd))];
+    let mut t = vec![(
+        "token_embd.weight".to_string(),
+        vec![c.hidden as u64, c.vocab as u64],
+        0u32,
+        f32b(&st.embd),
+    )];
     for l in 0..c.n_layers {
         for (i, kd) in Kind::ALL.iter().enumerate() {
             let (o, k) = crate::weights::expected_shape(&c, *kd);
-            t.push((format!("blk.{l}.{}.weight", kd.gguf()), vec![k as u64, o as u64], 8, st.mats[l][i].clone()));
+            t.push((
+                format!("blk.{l}.{}.weight", kd.gguf()),
+                vec![k as u64, o as u64],
+                8,
+                st.mats[l][i].clone(),
+            ));
         }
-        for (j, nm) in ["attn_norm", "attn_q_norm", "attn_k_norm", "ffn_norm"].iter().enumerate() {
-            t.push((format!("blk.{l}.{nm}.weight"), vec![st.norms[l][j].len() as u64], 0, f32b(&st.norms[l][j])));
+        for (j, nm) in ["attn_norm", "attn_q_norm", "attn_k_norm", "ffn_norm"]
+            .iter()
+            .enumerate()
+        {
+            t.push((
+                format!("blk.{l}.{nm}.weight"),
+                vec![st.norms[l][j].len() as u64],
+                0,
+                f32b(&st.norms[l][j]),
+            ));
         }
     }
     let kv = [
@@ -549,7 +809,10 @@ fn gguf_loader_reads_names_shapes_and_config_like_llama_cpp_files() {
         ("qwen3.embedding_length", KvVal::U32(c.hidden as u32)),
         ("qwen3.feed_forward_length", KvVal::U32(c.ff as u32)),
         ("qwen3.attention.head_count", KvVal::U32(c.n_heads as u32)),
-        ("qwen3.attention.head_count_kv", KvVal::U32(c.n_kv_heads as u32)),
+        (
+            "qwen3.attention.head_count_kv",
+            KvVal::U32(c.n_kv_heads as u32),
+        ),
         ("qwen3.attention.key_length", KvVal::U32(c.head_dim as u32)),
         ("qwen3.rope.freq_base", KvVal::F32(c.rope_theta)),
         ("qwen3.attention.layer_norm_rms_epsilon", KvVal::F32(c.eps)),
@@ -565,8 +828,28 @@ fn gguf_loader_reads_names_shapes_and_config_like_llama_cpp_files() {
     let wm = st.weights();
     let spec = tiny_spec();
     let e = input(14, &spec, c.vocab);
-    let a = run(&wf, &spec, &e, &CpuLinears { w: &wf, threads: 2, mode: CpuMode::F32 }, 2);
-    let b = run(&wm, &spec, &e, &CpuLinears { w: &wm, threads: 2, mode: CpuMode::F32 }, 2);
+    let a = run(
+        &wf,
+        &spec,
+        &e,
+        &CpuLinears {
+            w: &wf,
+            threads: 2,
+            mode: CpuMode::F32,
+        },
+        2,
+    );
+    let b = run(
+        &wm,
+        &spec,
+        &e,
+        &CpuLinears {
+            w: &wm,
+            threads: 2,
+            mode: CpuMode::F32,
+        },
+        2,
+    );
     assert!(a == b, "GGUF-loaded weights differ from the in-memory ones");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -583,7 +866,10 @@ fn o46_gate_passes_closer_candidates_only() {
     assert!(metrics::gate_vs_installed(&rep(&good), &rep(&inst), 1.0).0);
     let (ok, why) = metrics::gate_vs_installed(&rep(&bad), &rep(&inst), 1.0);
     assert!(!ok && why.len() == 6, "{why:?}");
-    assert!(metrics::gate_vs_installed(&rep(&inst), &rep(&inst), 1.0).0, "equal distance passes");
+    assert!(
+        metrics::gate_vs_installed(&rep(&inst), &rep(&inst), 1.0).0,
+        "equal distance passes"
+    );
 }
 
 #[test]
@@ -593,8 +879,28 @@ fn ggml_backend_matches_q8_emulation_and_is_thread_invariant() {
     let spec = tiny_spec();
     // 43 real tokens: 10 full 4-row groups plus a 3-row gemv tail
     let e = input(43, &spec, 40);
-    let q = run(&w, &spec, &e, &CpuLinears { w: &w, threads: 2, mode: CpuMode::Q8 }, 2);
-    let f = run(&w, &spec, &e, &CpuLinears { w: &w, threads: 2, mode: CpuMode::F32 }, 2);
+    let q = run(
+        &w,
+        &spec,
+        &e,
+        &CpuLinears {
+            w: &w,
+            threads: 2,
+            mode: CpuMode::Q8,
+        },
+        2,
+    );
+    let f = run(
+        &w,
+        &spec,
+        &e,
+        &CpuLinears {
+            w: &w,
+            threads: 2,
+            mode: CpuMode::F32,
+        },
+        2,
+    );
     let g1 = crate::ggml::GgmlLinears::new(&w, 1).unwrap();
     let g5 = crate::ggml::GgmlLinears::new(&w, 5).unwrap();
     let a = run(&w, &spec, &e, &g1, 1);
@@ -603,7 +909,12 @@ fn ggml_backend_matches_q8_emulation_and_is_thread_invariant() {
     let rq = rel(&a, &q);
     assert!(rq < 1e-4, "ggml vs q8 emulation rel {rq}");
     assert!(rel(&a, &f) < 0.03);
-    assert_eq!(g1.bytes(), st.mats.iter().flatten().map(|m| m.len()).sum::<usize>() - st.mats[4].iter().map(|m| m.len()).sum::<usize>() + st.mats[4].iter().map(|m| m.len()).sum::<usize>());
+    assert_eq!(
+        g1.bytes(),
+        st.mats.iter().flatten().map(|m| m.len()).sum::<usize>()
+            - st.mats[4].iter().map(|m| m.len()).sum::<usize>()
+            + st.mats[4].iter().map(|m| m.len()).sum::<usize>()
+    );
 }
 
 #[test]
@@ -612,9 +923,15 @@ fn encoder_identity_names_arith_file_and_size() {
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("te.gguf");
     std::fs::write(&p, [0u8; 123]).unwrap();
-    assert_eq!(crate::encoder_identity(&p, "cpu-ggml").unwrap(), format!("{};cpu-ggml;te.gguf;123", crate::ENCODER_VERSION));
+    assert_eq!(
+        crate::encoder_identity(&p, "cpu-ggml").unwrap(),
+        format!("{};cpu-ggml;te.gguf;123", crate::ENCODER_VERSION)
+    );
     assert!(crate::encoder_identity(&p, "gpu").is_err());
-    assert_ne!(crate::encoder_identity(&p, "npu-fp16").unwrap(), crate::encoder_identity(&p, "npu-w8").unwrap());
+    assert_ne!(
+        crate::encoder_identity(&p, "npu-fp16").unwrap(),
+        crate::encoder_identity(&p, "npu-w8").unwrap()
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

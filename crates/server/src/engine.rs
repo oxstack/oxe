@@ -51,7 +51,7 @@ pub trait Engine: Send + 'static {
     fn set_cancel(&mut self, _flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) {}
     /// W2 opt-in backend teardown while the worker owns its engine exclusively.
     /// Must complete before the process exits; ordinary engines own no devices.
-    #[cfg(feature="npu-prefill")]
+    #[cfg(feature = "npu-prefill")]
     fn release_accelerators(&mut self) {}
     /// Append one token and return the logits after it (the decode hot path).
     fn decode(&mut self, token: u32) -> Result<&[f32]> {
@@ -95,7 +95,9 @@ pub trait Engine: Send + 'static {
     }
     /// [`Engine::decode_spec`] for the same requests: `(extra, argmax of each row)`.
     fn decode_spec_argmax(&mut self, token: u32) -> Result<Option<(Vec<u32>, Vec<u32>)>> {
-        Ok(self.decode_spec(token)?.map(|(e, rows)| (e, rows.iter().map(|r| crate::sampling::argmax(r)).collect())))
+        Ok(self
+            .decode_spec(token)?
+            .map(|(e, rows)| (e, rows.iter().map(|r| crate::sampling::argmax(r)).collect())))
     }
     /// Keep only the first `keep` (>= 1) tokens the last `decode_spec` appended (the
     /// server stopped early). Valid until the next engine call.
@@ -261,7 +263,10 @@ impl StubEngine {
     /// The script `scripts_by_first` names for the sequence in the state, if any.
     fn keyed_script(&self) -> Option<Vec<u32>> {
         let first = *self.tokens.first()?;
-        self.scripts_by_first.iter().find(|x| x.0 == first).map(|x| x.1.clone())
+        self.scripts_by_first
+            .iter()
+            .find(|x| x.0 == first)
+            .map(|x| x.1.clone())
     }
 
     /// After a load or restore: the keyed script of the sequence now in the state.
@@ -276,14 +281,21 @@ impl StubEngine {
             *x = 0.0;
         }
         self.logits[next as usize] = 10.0;
-        let second = if next as usize + 1 < self.n_vocab { next + 1 } else { 0 };
+        let second = if next as usize + 1 < self.n_vocab {
+            next + 1
+        } else {
+            0
+        };
         if second != next {
             self.logits[second as usize] = 5.0;
         }
     }
 
     fn next_scripted(&self) -> u32 {
-        self.cur_script.get(self.script_pos).copied().unwrap_or(self.eos)
+        self.cur_script
+            .get(self.script_pos)
+            .copied()
+            .unwrap_or(self.eos)
     }
 }
 
@@ -314,7 +326,8 @@ impl Engine for StubEngine {
         if let Some(&t) = tokens.iter().find(|&&t| t as usize >= self.n_vocab) {
             return Err(EngineError(format!("token {t} out of vocab")));
         }
-        self.calls.push(("prefill", self.tokens.len(), tokens.len()));
+        self.calls
+            .push(("prefill", self.tokens.len(), tokens.len()));
         if !self.prefill_sleep_per_token.is_zero() {
             std::thread::sleep(self.prefill_sleep_per_token * tokens.len() as u32);
         }
@@ -324,7 +337,10 @@ impl Engine for StubEngine {
         if self.fresh {
             self.cur_script = match self.keyed_script() {
                 Some(s) => s,
-                None => self.scripts.pop_front().unwrap_or_else(|| self.default_script.clone()),
+                None => self
+                    .scripts
+                    .pop_front()
+                    .unwrap_or_else(|| self.default_script.clone()),
             };
             self.script_pos = 0;
             self.fresh = false;
@@ -353,7 +369,10 @@ impl Engine for StubEngine {
     }
     fn snapshot(&mut self) -> Result<StubSnapshot> {
         self.calls.push(("snapshot", self.tokens.len(), 0));
-        Ok(StubSnapshot { tokens: self.tokens.clone(), script_pos: self.script_pos })
+        Ok(StubSnapshot {
+            tokens: self.tokens.clone(),
+            script_pos: self.script_pos,
+        })
     }
     /// Exactly the bytes `save_state` writes (LONG-CTX disk-park threshold tests).
     fn state_size_hint(&self) -> usize {
@@ -370,7 +389,8 @@ impl Engine for StubEngine {
         for &t in &self.tokens {
             w.write_all(&t.to_le_bytes()).map_err(e)?;
         }
-        w.write_all(&(self.script_pos as u64).to_le_bytes()).map_err(e)
+        w.write_all(&(self.script_pos as u64).to_le_bytes())
+            .map_err(e)
     }
     fn warm_hint(&mut self) -> Option<Vec<u8>> {
         (self.n_evaluated > 0).then(|| (self.n_evaluated as u64).to_le_bytes().to_vec())
@@ -384,7 +404,10 @@ impl Engine for StubEngine {
         let mut b = vec![0u8; n_pos * 4 + 8];
         r.read_exact(&mut b).map_err(e)?;
         self.calls.push(("load", self.tokens.len(), n_pos));
-        self.tokens = b[..n_pos * 4].chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+        self.tokens = b[..n_pos * 4]
+            .chunks(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
         self.script_pos = u64::from_le_bytes(b[n_pos * 4..].try_into().unwrap()) as usize;
         self.fresh = true;
         self.rescript();
@@ -399,7 +422,8 @@ impl Engine for StubEngine {
             return Err(EngineError("stub: rows beyond n_past".into()));
         }
         for &t in &self.tokens[a..b] {
-            w.write_all(&t.to_le_bytes()).map_err(|e| EngineError(e.to_string()))?;
+            w.write_all(&t.to_le_bytes())
+                .map_err(|e| EngineError(e.to_string()))?;
         }
         Ok(())
     }
@@ -408,15 +432,20 @@ impl Engine for StubEngine {
             return Err(EngineError("stub: rows beyond n_ctx".into()));
         }
         let mut buf = vec![0u8; (b - a) * 4];
-        r.read_exact(&mut buf).map_err(|e| EngineError(e.to_string()))?;
+        r.read_exact(&mut buf)
+            .map_err(|e| EngineError(e.to_string()))?;
         self.tokens.truncate(a);
-        self.tokens.extend(buf.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())));
+        self.tokens.extend(
+            buf.chunks(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap())),
+        );
         self.calls.push(("rows", a, b - a));
         Ok(())
     }
     fn snap_save(&mut self, s: &StubSnapshot, w: &mut dyn std::io::Write) -> Result<()> {
         let e = |e: std::io::Error| EngineError(e.to_string());
-        w.write_all(&(s.tokens.len() as u64).to_le_bytes()).map_err(e)?;
+        w.write_all(&(s.tokens.len() as u64).to_le_bytes())
+            .map_err(e)?;
         w.write_all(&(s.script_pos as u64).to_le_bytes()).map_err(e)
     }
     fn snap_load(&mut self, r: &mut dyn std::io::Read, n_pos: usize) -> Result<()> {
@@ -425,7 +454,9 @@ impl Engine for StubEngine {
         r.read_exact(&mut u).map_err(e)?;
         let pos = u64::from_le_bytes(u[..8].try_into().unwrap()) as usize;
         if pos != n_pos || self.tokens.len() < n_pos {
-            return Err(EngineError("stub: snapshot position does not match its rows".into()));
+            return Err(EngineError(
+                "stub: snapshot position does not match its rows".into(),
+            ));
         }
         self.tokens.truncate(n_pos);
         self.script_pos = u64::from_le_bytes(u[8..].try_into().unwrap()) as usize;
@@ -437,9 +468,12 @@ impl Engine for StubEngine {
     fn restore(&mut self, s: &StubSnapshot) -> Result<()> {
         // the KV for positions < pos must be what the snapshot saw
         if self.tokens.len() < s.tokens.len() || self.tokens[..s.tokens.len()] != s.tokens[..] {
-            return Err(EngineError("stub: restore of a snapshot whose KV prefix was overwritten".into()));
+            return Err(EngineError(
+                "stub: restore of a snapshot whose KV prefix was overwritten".into(),
+            ));
         }
-        self.calls.push(("restore", self.tokens.len(), s.tokens.len()));
+        self.calls
+            .push(("restore", self.tokens.len(), s.tokens.len()));
         self.tokens.truncate(s.tokens.len());
         self.script_pos = s.script_pos;
         self.fresh = true;

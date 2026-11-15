@@ -38,7 +38,8 @@ pub fn read_tag(dir: &Path, tag: &str) -> Result<DumpTensor, String> {
         }
     }
     let name = hits[0].clone();
-    let bad = || format!("bad dump file name '{name}' (want <tag>.call<n>.<type>.<a>x<b>x<c>x<d>.bin)");
+    let bad =
+        || format!("bad dump file name '{name}' (want <tag>.call<n>.<type>.<a>x<b>x<c>x<d>.bin)");
 
     // Everything after "<tag>.call" is "<n>.<type>.<shape>.bin".
     let body = name[prefix.len()..].strip_suffix(".bin").ok_or_else(bad)?;
@@ -117,7 +118,10 @@ pub fn read_block_dump(dir: &Path, dims: &Dims) -> Result<BlockDump, String> {
     let pe = read_tag(dir, "dump.pe")?;
     let pe_ne = [2, 2, half, n];
     if pe.ne != pe_ne {
-        return Err(format!("dump.pe: expected ne {pe_ne:?} (= [2, 2, head_dim/2, n_tokens]), got {:?}", pe.ne));
+        return Err(format!(
+            "dump.pe: expected ne {pe_ne:?} (= [2, 2, head_dim/2, n_tokens]), got {:?}",
+            pe.ne
+        ));
     }
 
     let shift = read_vec(dir, "dump.single.mod.shift", h)?;

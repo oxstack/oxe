@@ -41,13 +41,20 @@ pub mod fattn;
 mod kv8;
 pub mod pfattn;
 mod prefill;
+use kv8::Kv8Scratch;
 pub use kv8::{KvType, PvMode};
 pub use pfattn::{AutoPolicy, GParams, PfAttn, PfKernel, PfPath, PgMk};
 pub use prefill::PfKernelUnits;
-use kv8::Kv8Scratch;
+pub use prefill::{
+    group_by_size, pf_group, pf_group_for, pf_group_thresholds, pf_group_unaligned, pf_tiles,
+    prefill_rows_hist, reset_prefill_rows_hist, set_pf_group, set_pf_group_thresholds,
+    set_pf_group_unaligned, set_pf_tiles, PfProfile, PF_ATTN_PAD, PF_ATTN_PB, PF_ATTN_TT8,
+    PF_CONV_FUSE, PF_DYN_SPLIT, PF_F32_CU8, PF_GDN_X4, PF_GROUP_T1_DEFAULT, PF_MMID_GEMV1,
+    PF_MMID_TILE, PF_PHASES, PF_Q6K_TILE, PF_SUBS, PF_TILES_DEFAULT, PF_TILE_DENSE, PF_WAIT_DIET,
+    UBATCH,
+};
 #[cfg(any(test, feature = "f32-reference"))]
 pub use prefill::{head_logits, PfCounts};
-pub use prefill::{group_by_size, pf_group, pf_group_for, pf_group_unaligned, set_pf_group_unaligned, pf_group_thresholds, pf_tiles, set_pf_group_thresholds, PF_GROUP_T1_DEFAULT, PF_TILES_DEFAULT, prefill_rows_hist, reset_prefill_rows_hist, set_pf_group, set_pf_tiles, PfProfile, PF_ATTN_PAD, PF_ATTN_PB, PF_ATTN_TT8, PF_CONV_FUSE, PF_DYN_SPLIT, PF_F32_CU8, PF_GDN_X4, PF_MMID_GEMV1, PF_MMID_TILE, PF_PHASES, PF_Q6K_TILE, PF_SUBS, PF_TILE_DENSE, PF_WAIT_DIET, UBATCH};
 
 /// CACHE-PERFECT P2: the numerics epoch in the state cache's identity (server `state_store`).
 /// Bump by hand whenever the engine's numerics change (any kernel, accumulation order, rounding
@@ -66,7 +73,10 @@ pub fn kernel_path() -> String {
     let feats = {
         let mut f = Vec::new();
         for (name, on) in [
-            ("dotprod", std::arch::is_aarch64_feature_detected!("dotprod")),
+            (
+                "dotprod",
+                std::arch::is_aarch64_feature_detected!("dotprod"),
+            ),
             ("i8mm", std::arch::is_aarch64_feature_detected!("i8mm")),
             ("fp16", std::arch::is_aarch64_feature_detected!("fp16")),
             ("bf16", std::arch::is_aarch64_feature_detected!("bf16")),
@@ -80,16 +90,37 @@ pub fn kernel_path() -> String {
     };
     #[cfg(not(target_arch = "aarch64"))]
     let feats = String::new();
-    let built: Vec<&str> = [("i8mm", cfg!(target_feature = "i8mm")), ("dotprod", cfg!(target_feature = "dotprod")), ("sve", cfg!(target_feature = "sve"))].iter().filter(|x| x.1).map(|x| x.0).collect();
+    let built: Vec<&str> = [
+        ("i8mm", cfg!(target_feature = "i8mm")),
+        ("dotprod", cfg!(target_feature = "dotprod")),
+        ("sve", cfg!(target_feature = "sve")),
+    ]
+    .iter()
+    .filter(|x| x.1)
+    .map(|x| x.0)
+    .collect();
     // libm probe: bits of exp / ln / tanh / powf / sin over fixed inputs (black_box: no constant folding)
     let mut h = crate::check::Check64::default();
     for i in 0..64u32 {
         let x = std::hint::black_box(0.037f32 * i as f32 - 1.1);
-        for y in [x.exp(), (x.abs() + 0.5).ln(), x.tanh(), (x.abs() + 0.25).powf(1.7), x.sin(), (x as f64).exp() as f32] {
+        for y in [
+            x.exp(),
+            (x.abs() + 0.5).ln(),
+            x.tanh(),
+            (x.abs() + 0.25).powf(1.7),
+            x.sin(),
+            (x as f64).exp() as f32,
+        ] {
             h.update(&y.to_bits().to_le_bytes());
         }
     }
-    format!("kpath={}-{} cpu=[{feats}] built=[{}] libm={:016x}", std::env::consts::ARCH, std::env::consts::OS, built.join("+"), h.finish())
+    format!(
+        "kpath={}-{} cpu=[{feats}] built=[{}] libm={:016x}",
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        built.join("+"),
+        h.finish()
+    )
 }
 
 /// Default decode cutoff for the tiled attention (padded n_kv); below it the per-head path
@@ -211,7 +242,10 @@ pub struct Prof {
 }
 
 /// OD-1: sub-steps inside a phase kind (work ticks; they sum to that phase's work).
-pub const PROF_SUB_NAMES: [&str; 2] = ["deltanet_mix.gemv (qkv, z, beta, alpha rows)", "deltanet_mix.recur (conv, l2, gates, delta rule, norm)"];
+pub const PROF_SUB_NAMES: [&str; 2] = [
+    "deltanet_mix.gemv (qkv, z, beta, alpha rows)",
+    "deltanet_mix.recur (conv, l2, gates, delta rule, norm)",
+];
 
 /// What a decode phase kind is made of (for the OD-1 table).
 pub fn phase_class(k: PhaseKind) -> &'static str {
@@ -255,13 +289,20 @@ unsafe impl<T> Sync for Raw<T> {}
 impl<T> Raw<T> {
     fn new(a: &Mapping, off_bytes: usize, len: usize) -> Raw<T> {
         assert!(off_bytes + len * std::mem::size_of::<T>() <= a.len());
-        Raw { ptr: (a.base() as usize + off_bytes) as *mut T, len }
+        Raw {
+            ptr: (a.base() as usize + off_bytes) as *mut T,
+            len,
+        }
     }
     /// SAFETY: caller upholds the ownership invariants for `r`.
     #[allow(clippy::mut_from_ref)]
     #[inline]
     unsafe fn at(&self, r: Range<usize>) -> &mut [T] {
-        debug_assert!(r.end <= self.len && r.start <= r.end, "{r:?} of {}", self.len);
+        debug_assert!(
+            r.end <= self.len && r.start <= r.end,
+            "{r:?} of {}",
+            self.len
+        );
         std::slice::from_raw_parts_mut(self.ptr.add(r.start), r.end - r.start)
     }
     #[inline]
@@ -283,7 +324,8 @@ impl<T> LBuf<T> {
     #[inline]
     unsafe fn at(&self, ln: usize, r: Range<usize>) -> &mut [T] {
         debug_assert!(r.end <= self.stride);
-        self.raw.at(ln * self.stride + r.start..ln * self.stride + r.end)
+        self.raw
+            .at(ln * self.stride + r.start..ln * self.stride + r.end)
     }
     #[inline]
     fn ptr_at(&self, ln: usize, i: usize) -> *mut T {
@@ -318,7 +360,11 @@ struct Acts {
 }
 impl Acts {
     fn new(n: usize) -> Acts {
-        Acts { q8k: vec![0; ActType::Q8K.bytes(n)], q80: vec![0; ActType::Q8_0.bytes(n)], ok: [false; 2] }
+        Acts {
+            q8k: vec![0; ActType::Q8K.bytes(n)],
+            q80: vec![0; ActType::Q8_0.bytes(n)],
+            ok: [false; 2],
+        }
     }
     fn invalidate(&mut self) {
         self.ok = [false; 2];
@@ -463,7 +509,8 @@ pub const DEC_ATT_PAD: usize = 208;
 /// [0, n) as f32 [position][dim], scale; writes the head_dim outputs (before the sigmoid gate).
 /// Compiled only for tests and the bench-only `f32-reference` feature (never production).
 #[cfg(any(test, feature = "f32-reference"))]
-pub type AttnRef = fn(q: &[f32], k: &[f32], v: &[f32], n: usize, hd: usize, scale: f32, out: &mut [f32]);
+pub type AttnRef =
+    fn(q: &[f32], k: &[f32], v: &[f32], n: usize, hd: usize, scale: f32, out: &mut [f32]);
 
 pub struct Engine<'a> {
     pub plan: &'a Plan,
@@ -616,7 +663,7 @@ pub struct Engine<'a> {
     pf: [Mutex<Option<Box<prefill::Pf>>>; 2],
     #[cfg(feature = "npu-prefill")]
     npu_prefill: Option<crate::npu_prefill::Prefill>,
-    #[cfg(feature="f32-reference")]
+    #[cfg(feature = "f32-reference")]
     f32_reference: Option<crate::f32_reference::Reference>,
 }
 
@@ -658,13 +705,18 @@ impl RecurrentSnapshot {
         }
         for v in [&self.conv, &self.ssm] {
             // SAFETY: f32 slice viewed as bytes (little-endian target).
-            w.write_all(unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 4) })?;
+            w.write_all(unsafe {
+                std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 4)
+            })?;
         }
         Ok(())
     }
 
     /// Read [`RecurrentSnapshot::write_to`]; the lengths must be this engine's (`want`: conv, ssm).
-    pub fn read_from(r: &mut dyn std::io::Read, want: (usize, usize)) -> std::io::Result<RecurrentSnapshot> {
+    pub fn read_from(
+        r: &mut dyn std::io::Read,
+        want: (usize, usize),
+    ) -> std::io::Result<RecurrentSnapshot> {
         let mut u = [0u8; 8];
         let mut get = |r: &mut dyn std::io::Read| -> std::io::Result<usize> {
             r.read_exact(&mut u)?;
@@ -672,13 +724,17 @@ impl RecurrentSnapshot {
         };
         let (pos, nc, ns) = (get(r)?, get(r)?, get(r)?);
         if (nc, ns) != want {
-            return Err(std::io::Error::other("snapshot of another recurrent layout"));
+            return Err(std::io::Error::other(
+                "snapshot of another recurrent layout",
+            ));
         }
         let mut conv = vec![0f32; nc];
         let mut ssm = vec![0f32; ns];
         for v in [&mut conv, &mut ssm] {
             // SAFETY: f32 slice viewed as bytes.
-            r.read_exact(unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, v.len() * 4) })?;
+            r.read_exact(unsafe {
+                std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, v.len() * 4)
+            })?;
         }
         Ok(RecurrentSnapshot { pos, conv, ssm })
     }
@@ -705,22 +761,36 @@ static KV_VPAD: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// Decode attention scratch off the power-of-two n_ctx stride: ON by default since MoE candidate 2
 /// (batch 1 G1: 26.38 -> 25.43 ms/token at 8K, token-identical); `OXE_DEC_ATTN_PAD=0` turns it off.
 pub fn dec_attn_pad_default() -> bool {
-    std::env::var("OXE_DEC_ATTN_PAD").map(|v| v.trim() != "0").unwrap_or(true)
+    std::env::var("OXE_DEC_ATTN_PAD")
+        .map(|v| v.trim() != "0")
+        .unwrap_or(true)
 }
 /// Fused 4-row delta-net step in decode / verify: ON by default since MoE candidate 2 (bitwise
 /// equal; with the pad 25.07 ms/token at 8K); `OXE_DEC_FUSED_DN=0` turns it off.
 pub fn dec_fused_dn_default() -> bool {
-    std::env::var("OXE_DEC_FUSED_DN").map(|v| v.trim() != "0").unwrap_or(true)
+    std::env::var("OXE_DEC_FUSED_DN")
+        .map(|v| v.trim() != "0")
+        .unwrap_or(true)
 }
 /// One line with the switches in effect for engines built now, and every OXE_* variable of the
 /// environment (W4-5: goes into every result row and the server's start-up log).
 pub fn effective_switches() -> String {
     let (t1, t2) = pf_group_thresholds();
     let group = match pf_group() {
-        0 => format!("auto(t1={t1},t2={})", if t2 == 0 { "off".to_string() } else { t2.to_string() }),
+        0 => format!(
+            "auto(t1={t1},t2={})",
+            if t2 == 0 {
+                "off".to_string()
+            } else {
+                t2.to_string()
+            }
+        ),
         g => g.to_string(),
     };
-    let mut env: Vec<String> = std::env::vars().filter(|(k, _)| k.starts_with("OXE_") && k != "OXE_MODEL_SHA256").map(|(k, v)| format!("{k}={v}")).collect();
+    let mut env: Vec<String> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("OXE_") && k != "OXE_MODEL_SHA256")
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
     env.sort();
     format!(
         "pf_tiles={} pf_group={group} pf_group_unaligned={} dec_attn_pad={} dec_fused_dn={} dec_vl={} kv_vpad={} env=[{}]",
@@ -744,7 +814,9 @@ pub fn set_kv_v_thp(on: bool) {
 }
 pub fn kv_v_thp() -> bool {
     match KV_V_THP.load(Relaxed) {
-        usize::MAX => std::env::var("OXE_KV_V_THP").map(|v| v.trim() != "0").unwrap_or(true),
+        usize::MAX => std::env::var("OXE_KV_V_THP")
+            .map(|v| v.trim() != "0")
+            .unwrap_or(true),
         v => v != 0,
     }
 }
@@ -771,7 +843,11 @@ pub fn kv_vpad() -> usize {
     if v != usize::MAX {
         return v;
     }
-    let n = std::env::var("OXE_KV_VPAD").ok().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(KV_VPAD_DEFAULT).min(4096);
+    let n = std::env::var("OXE_KV_VPAD")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(KV_VPAD_DEFAULT)
+        .min(4096);
     KV_VPAD.store(n, Relaxed);
     n
 }
@@ -838,7 +914,11 @@ impl CtxMem {
     /// prefill scratch of the decode team is counted too when `pf` differs: the engine keeps both).
     pub fn total(&self, dec: usize, pf: usize) -> usize {
         let pf_all = if pf == dec { pf } else { pf + dec };
-        self.kv + self.recurrent + self.decode_scratch + dec * self.decode_per_thread + pf_all * self.prefill_per_thread
+        self.kv
+            + self.recurrent
+            + self.decode_scratch
+            + dec * self.decode_per_thread
+            + pf_all * self.prefill_per_thread
     }
 }
 
@@ -847,32 +927,86 @@ impl CtxMem {
 /// layers with KV (the MTP layer included when on), `lanes` attention lanes (MTP engines:
 /// `MAX_LANES.max(verify_lanes + 1)`), `n_slots` recurrent slots (verify lanes, at least 1).
 /// Mirrors the allocation in [`Engine::with_options`] and `Pf::new`; the tests hold the two equal.
-pub fn ctx_mem(d: &ModelDesc, n_ctx: usize, kv: KvType, n_att: usize, lanes: usize, n_slots: usize) -> CtxMem {
-    ctx_mem_with_auto(d, n_ctx, kv, n_att, lanes, n_slots, pfattn::PfAttn::from_env(), pfattn::AutoPolicy::from_env())
+pub fn ctx_mem(
+    d: &ModelDesc,
+    n_ctx: usize,
+    kv: KvType,
+    n_att: usize,
+    lanes: usize,
+    n_slots: usize,
+) -> CtxMem {
+    ctx_mem_with_auto(
+        d,
+        n_ctx,
+        kv,
+        n_att,
+        lanes,
+        n_slots,
+        pfattn::PfAttn::from_env(),
+        pfattn::AutoPolicy::from_env(),
+    )
 }
 
 /// [`ctx_mem`] for an explicit prefill attention mode (PREFILL-LONG: with fa2 active at this
 /// n_ctx and f16 KV, the prefill scratch per thread is O(chunk) beyond `pfattn::PFA_MIN_KV`).
-pub fn ctx_mem_with(d: &ModelDesc, n_ctx: usize, kv: KvType, n_att: usize, lanes: usize, n_slots: usize, pf_attn: pfattn::PfAttn) -> CtxMem {
-    ctx_mem_with_auto(d, n_ctx, kv, n_att, lanes, n_slots, pf_attn, pfattn::AutoPolicy::from_env())
+pub fn ctx_mem_with(
+    d: &ModelDesc,
+    n_ctx: usize,
+    kv: KvType,
+    n_att: usize,
+    lanes: usize,
+    n_slots: usize,
+    pf_attn: pfattn::PfAttn,
+) -> CtxMem {
+    ctx_mem_with_auto(
+        d,
+        n_ctx,
+        kv,
+        n_att,
+        lanes,
+        n_slots,
+        pf_attn,
+        pfattn::AutoPolicy::from_env(),
+    )
 }
 
 /// [`ctx_mem_with`] for an explicit `auto` policy (PREFILL-POLICY: the tiled part of the prefill
 /// scratch is sized for the resolved cutoff).
 #[allow(clippy::too_many_arguments)]
-pub fn ctx_mem_with_auto(d: &ModelDesc, n_ctx: usize, kv: KvType, n_att: usize, lanes: usize, n_slots: usize, pf_attn: pfattn::PfAttn, auto: pfattn::AutoPolicy) -> CtxMem {
+pub fn ctx_mem_with_auto(
+    d: &ModelDesc,
+    n_ctx: usize,
+    kv: KvType,
+    n_att: usize,
+    lanes: usize,
+    n_slots: usize,
+    pf_attn: pfattn::PfAttn,
+    auto: pfattn::AutoPolicy,
+) -> CtxMem {
     let n_ctx = n_ctx.max(1).div_ceil(256) * 256;
     let hd = d.head_dim;
     let rb = kv8::row_bytes(hd);
     let k_pos = if kv.k8() { rb } else { 2 * hd };
     let v_pos = if kv.v8() { rb } else { 2 * hd };
     let kv_per_pos = n_att * d.n_head_kv * (k_pos + v_pos);
-    let v_pad = if kv.v8() { 0 } else { n_att * d.n_head_kv * hd * kv_vpad() * 2 };
+    let v_pad = if kv.v8() {
+        0
+    } else {
+        n_att * d.n_head_kv * hd * kv_vpad() * 2
+    };
     let conv = (d.ssm_conv_kernel - 1) * d.ssm_conv_channels();
     let ssm = d.ssm_n_vheads * d.ssm_head_v_dim() * d.ssm_head_v_dim();
     let group = d.n_head / d.n_head_kv;
-    let acs = if dec_attn_pad_default() { n_ctx + DEC_ATT_PAD } else { n_ctx };
-    let vpart = if kv.v8() { d.n_head_kv * (n_ctx / kv8::PV_CHUNK) * lanes * group * hd * 4 } else { 0 };
+    let acs = if dec_attn_pad_default() {
+        n_ctx + DEC_ATT_PAD
+    } else {
+        n_ctx
+    };
+    let vpart = if kv.v8() {
+        d.n_head_kv * (n_ctx / kv8::PV_CHUNK) * lanes * group * hd * 4
+    } else {
+        0
+    };
     let att_tt = prefill::att_tt_want(d, pf_tiles());
     CtxMem {
         n_ctx,
@@ -881,7 +1015,16 @@ pub fn ctx_mem_with_auto(d: &ModelDesc, n_ctx: usize, kv: KvType, n_att: usize, 
         recurrent: n_slots.max(1) * d.n_recurrent() * (conv + ssm) * 4,
         decode_scratch: lanes * d.n_head * acs * (4 + 2) + vpart,
         decode_per_thread: n_ctx * (4 + 4 + 4 + 2),
-        prefill_per_thread: prefill::pf_ctx_bytes(d, n_ctx, att_tt, if kv.any8() { pfattn::PfPath::TILED } else { pf_attn.path(n_ctx, auto) }),
+        prefill_per_thread: prefill::pf_ctx_bytes(
+            d,
+            n_ctx,
+            att_tt,
+            if kv.any8() {
+                pfattn::PfPath::TILED
+            } else {
+                pf_attn.path(n_ctx, auto)
+            },
+        ),
     }
 }
 
@@ -909,46 +1052,84 @@ impl<'a> Engine<'a> {
     /// `g.path`; it must match this engine's loaded CPU model. Exclusive access
     /// prevents changing the work-unit registry while a team is running.
     #[cfg(feature = "npu-prefill")]
-    pub fn enable_npu_prefill(&mut self,g:&gguf::Gguf,source_sha:&str,backend:Box<dyn oxn::Backend>,
-        cfg:crate::npu_prefill::Config,pack_cpus:&[usize])->Result<crate::npu_prefill::Stats,String>{
-        #[cfg(feature="f32-reference")]
-        if self.f32_reference.is_some(){return Err("f32 reference cannot offload to NPU".into());}
-        if self.npu_prefill.is_some(){return Err("npu prefill: already prepared".into());}
-        let p=crate::npu_prefill::Prefill::prepare(self.plan,self.ws,g,source_sha,backend,cfg,pack_cpus)?;
-        let stats=p.stats();self.npu_prefill=Some(p);Ok(stats)
+    pub fn enable_npu_prefill(
+        &mut self,
+        g: &gguf::Gguf,
+        source_sha: &str,
+        backend: Box<dyn oxn::Backend>,
+        cfg: crate::npu_prefill::Config,
+        pack_cpus: &[usize],
+    ) -> Result<crate::npu_prefill::Stats, String> {
+        #[cfg(feature = "f32-reference")]
+        if self.f32_reference.is_some() {
+            return Err("f32 reference cannot offload to NPU".into());
+        }
+        if self.npu_prefill.is_some() {
+            return Err("npu prefill: already prepared".into());
+        }
+        let p = crate::npu_prefill::Prefill::prepare(
+            self.plan, self.ws, g, source_sha, backend, cfg, pack_cpus,
+        )?;
+        let stats = p.stats();
+        self.npu_prefill = Some(p);
+        Ok(stats)
     }
 
     /// Original-weight f32 proof engine, never a production precision setting.
     /// Only fresh sequential reset/prefill/step is supported; state files and MTP
     /// are rejected because the f32 shadow KV has no production serialization.
-    #[cfg(feature="f32-reference")]
-    pub fn enable_f32_reference(&mut self,g:gguf::Gguf,source_sha:&str)->Result<(),String>{
-        if self.f32_reference.is_some()||self.pos.load(Relaxed)!=0||self.mtp.is_some()||self.kv.any8()
-            ||self.pf.iter().any(|p|p.lock().unwrap().is_some()){
+    #[cfg(feature = "f32-reference")]
+    pub fn enable_f32_reference(&mut self, g: gguf::Gguf, source_sha: &str) -> Result<(), String> {
+        if self.f32_reference.is_some()
+            || self.pos.load(Relaxed) != 0
+            || self.mtp.is_some()
+            || self.kv.any8()
+            || self.pf.iter().any(|p| p.lock().unwrap().is_some())
+        {
             return Err("f32 reference needs a fresh f16-KV, non-MTP engine".into());
         }
-        #[cfg(feature="npu-prefill")]
-        if self.npu_prefill.is_some(){return Err("f32 reference cannot own an NPU context".into());}
-        self.f32_reference=Some(crate::f32_reference::Reference::new(g,source_sha,self.plan,self.ws,self.n_ctx)?);Ok(())
+        #[cfg(feature = "npu-prefill")]
+        if self.npu_prefill.is_some() {
+            return Err("f32 reference cannot own an NPU context".into());
+        }
+        self.f32_reference = Some(crate::f32_reference::Reference::new(
+            g, source_sha, self.plan, self.ws, self.n_ctx,
+        )?);
+        Ok(())
     }
 
     #[cfg(feature = "npu-prefill")]
-    pub fn npu_prefill_stats(&self)->Option<crate::npu_prefill::Stats>{self.npu_prefill.as_ref().map(|p|p.stats())}
+    pub fn npu_prefill_stats(&self) -> Option<crate::npu_prefill::Stats> {
+        self.npu_prefill.as_ref().map(|p| p.stats())
+    }
 
     /// Exclusive owner-only quiescence. This joins with every borrow of Engine;
     /// no job or checkpoint may be in flight. On a prior fault, the controller
     /// must keep its NPU fault latch and perform the device-clean checks before
     /// granting images; local destruction alone is not a hardware-health proof.
     #[cfg(feature = "npu-prefill")]
-    pub fn release_npu_prefill(&mut self)->Option<crate::npu_prefill::Stats>{
-        self.npu_prefill.take().map(|p|{let s=p.stats();drop(p);s})
+    pub fn release_npu_prefill(&mut self) -> Option<crate::npu_prefill::Stats> {
+        self.npu_prefill.take().map(|p| {
+            let s = p.stats();
+            drop(p);
+            s
+        })
     }
 
-    pub fn new(plan: &'a Plan, ws: &'a WeightStore, cfg: EngineConfig) -> Result<Engine<'a>, String> {
+    pub fn new(
+        plan: &'a Plan,
+        ws: &'a WeightStore,
+        cfg: EngineConfig,
+    ) -> Result<Engine<'a>, String> {
         Self::with_options(plan, ws, cfg, EngineOptions::default())
     }
 
-    pub fn with_options(plan: &'a Plan, ws: &'a WeightStore, cfg: EngineConfig, opt: EngineOptions<'a>) -> Result<Engine<'a>, String> {
+    pub fn with_options(
+        plan: &'a Plan,
+        ws: &'a WeightStore,
+        cfg: EngineConfig,
+        opt: EngineOptions<'a>,
+    ) -> Result<Engine<'a>, String> {
         let d = &plan.desc;
         let n = plan.nthreads;
         let n_ctx = validate_n_ctx(cfg.n_ctx, d.n_ctx_train)?;
@@ -958,25 +1139,44 @@ impl<'a> Engine<'a> {
         let k_used = d.n_expert_used;
         let n_slots = opt.verify_lanes.max(1);
         // MTP engines get every lane for catch-up runs (prompt seeding); verify uses n_slots
-        let lanes = if opt.mtp.is_some() { MAX_LANES.max(n_slots + 1) } else { n_slots };
+        let lanes = if opt.mtp.is_some() {
+            MAX_LANES.max(n_slots + 1)
+        } else {
+            n_slots
+        };
         if n > 255 || d.ssm_conv_kernel > 16 {
             return Err("thread count or conv kernel beyond the engine limits".into());
         }
         if lanes > MAX_LANES {
             return Err(format!("{lanes} lanes > MAX_LANES {MAX_LANES}"));
         }
-        let mut downs: Vec<(Tid, Tid)> = plan.layers.iter().map(|l| (l.down_exps, l.down_shexp)).collect();
+        let mut downs: Vec<(Tid, Tid)> = plan
+            .layers
+            .iter()
+            .map(|l| (l.down_exps, l.down_shexp))
+            .collect();
         if let Some(m) = opt.mtp {
             downs.push((m.layer.down_exps, m.layer.down_shexp));
         }
         let get = |id: Tid| -> &WeightRef {
             if id >= crate::mtp::MTP_TID_BASE {
-                return opt.mtp.and_then(|m| m.get(id)).expect("MTP tensor not loaded");
+                return opt
+                    .mtp
+                    .and_then(|m| m.get(id))
+                    .expect("MTP tensor not loaded");
             }
             ws.refs[id].as_ref().expect("tensor not loaded")
         };
-        let hq_blk = downs.iter().map(|&(a, _)| get(a).qtype().act().bytes(QK_K)).max().unwrap();
-        let hsh_blk = downs.iter().map(|&(_, b)| get(b).qtype().act().bytes(QK_K)).max().unwrap();
+        let hq_blk = downs
+            .iter()
+            .map(|&(a, _)| get(a).qtype().act().bytes(QK_K))
+            .max()
+            .unwrap();
+        let hsh_blk = downs
+            .iter()
+            .map(|&(_, b)| get(b).qtype().act().bytes(QK_K))
+            .max()
+            .unwrap();
         let n_rec = d.n_recurrent();
         let n_att = d.n_attention() + opt.mtp.is_some() as usize;
         let conv_len = (d.ssm_conv_kernel - 1) * d.ssm_conv_channels();
@@ -995,7 +1195,11 @@ impl<'a> Engine<'a> {
         // one cache line) moves each row off its neighbours. Layout only: no result and no state
         // file changes (state files hold the first n positions of every row, not the stride).
         let v_stride = n_ctx + kv_vpad();
-        let v_len = if kv.v8() { 0 } else { d.n_head_kv * hd * v_stride };
+        let v_len = if kv.v8() {
+            0
+        } else {
+            d.n_head_kv * hd * v_stride
+        };
 
         let mut c = Carve { off: 0 };
         let x2 = c.lanes::<f32>(d.n_embd, lanes);
@@ -1018,34 +1222,74 @@ impl<'a> Engine<'a> {
         let vcache = c.take::<u16>(n_att * v_len);
         let aq16 = c.take::<u16>(lanes * att_width);
         let agate = c.take::<f32>(lanes * att_width);
-        let acs = if dec_attn_pad_default() { n_ctx + DEC_ATT_PAD } else { n_ctx };
+        let acs = if dec_attn_pad_default() {
+            n_ctx + DEC_ATT_PAD
+        } else {
+            n_ctx
+        };
         let akq = c.take::<f32>(lanes * d.n_head * acs);
         let ap16 = c.take::<u16>(lanes * d.n_head * acs);
         // int8 KV (after every f16-mode buffer, so the f16 arena layout is unchanged)
-        let (k8_len, v8_len) = (if kv.k8() { kv8_len } else { 0 }, if kv.v8() { kv8_len } else { 0 });
+        let (k8_len, v8_len) = (
+            if kv.k8() { kv8_len } else { 0 },
+            if kv.v8() { kv8_len } else { 0 },
+        );
         let kcache8 = c.take::<u8>(n_att * k8_len);
         let vcache8 = c.take::<u8>(n_att * v8_len);
         let vraw = c.lanes::<f32>(if kv.v8() { d.n_head_kv * hd } else { 0 }, lanes);
         let group = d.n_head / d.n_head_kv;
-        let aq8 = c.take::<u8>(if kv.k8() { lanes * d.n_head * kv8::row_bytes(hd) } else { 0 });
-        let vpart = c.take::<f32>(if kv.v8() { d.n_head_kv * (n_ctx / kv8::PV_CHUNK) * lanes * group * hd } else { 0 });
+        let aq8 = c.take::<u8>(if kv.k8() {
+            lanes * d.n_head * kv8::row_bytes(hd)
+        } else {
+            0
+        });
+        let vpart = c.take::<f32>(if kv.v8() {
+            d.n_head_kv * (n_ctx / kv8::PV_CHUNK) * lanes * group * hd
+        } else {
+            0
+        });
         // O-70 fused attention partials (after every other buffer; untouched pages unless fused runs)
-        let fpart = c.take::<f32>(if kv.any8() { 0 } else { fattn::part_len(n_ctx, d.n_head_kv, group, hd, lanes) });
-        let fml = c.take::<f32>(if kv.any8() { 0 } else { fattn::ml_len(n_ctx, d.n_head_kv, group, lanes) });
+        let fpart = c.take::<f32>(if kv.any8() {
+            0
+        } else {
+            fattn::part_len(n_ctx, d.n_head_kv, group, hd, lanes)
+        });
+        let fml = c.take::<f32>(if kv.any8() {
+            0
+        } else {
+            fattn::ml_len(n_ctx, d.n_head_kv, group, lanes)
+        });
         let state = Mapping::anon(c.off, true).map_err(|e| format!("state arena: {e}"))?;
         if !kv_v_thp() && vcache.1 > 0 {
             advise_no_thp(&state, vcache.0, vcache.1 * 2);
         }
         let f = |p: (usize, usize)| Raw::<f32>::new(&state, p.0, p.1);
-        let lf = |p: (usize, usize, usize)| LBuf { raw: Raw::<f32>::new(&state, p.0, p.1), stride: p.2 };
-        let lu = |p: (usize, usize, usize)| LBuf { raw: Raw::<u8>::new(&state, p.0, p.1), stride: p.2 };
+        let lf = |p: (usize, usize, usize)| LBuf {
+            raw: Raw::<f32>::new(&state, p.0, p.1),
+            stride: p.2,
+        };
+        let lu = |p: (usize, usize, usize)| LBuf {
+            raw: Raw::<u8>::new(&state, p.0, p.1),
+            stride: p.2,
+        };
         let mtp_width = if opt.mtp.is_some() { 2 * d.n_embd } else { 0 };
-        let wide = d.n_embd.max(d.ssm_d_inner).max(att_width).max(d.ff_exp).max(d.ff_shexp).max(mtp_width);
+        let wide = d
+            .n_embd
+            .max(d.ssm_d_inner)
+            .max(att_width)
+            .max(d.ff_exp)
+            .max(d.ff_shexp)
+            .max(mtp_width);
         let mut att_index = index_of(d, LayerKind::Attention);
         let mtp = opt.mtp.map(|w| {
             att_index.push(n_att - 1);
-            let (phases, entry_rows) = crate::mtp::phases(d, n, w.draft.as_ref().map(|dh| dh.w.rows));
-            MtpRt { w, phases, entry_rows }
+            let (phases, entry_rows) =
+                crate::mtp::phases(d, n, w.draft.as_ref().map(|dh| dh.w.rows));
+            MtpRt {
+                w,
+                phases,
+                entry_rows,
+            }
         });
         let new_ts = || ThreadState {
             xin: vec![0.0; d.n_embd],
@@ -1073,12 +1317,36 @@ impl<'a> Engine<'a> {
             p16: vec![0; n_ctx],
             aout: vec![0.0; hd],
             gsig: vec![0.0; hd],
-            kq8: vec![0; if kv.any8() { d.n_head_kv * kv8::row_bytes(hd) } else { 0 }],
-            kv8s: if kv.any8() { Kv8Scratch::new(hd, lanes * (d.n_head / d.n_head_kv)) } else { Kv8Scratch::empty() },
-            kv8acc: vec![0.0; if kv.v8() { kv8::QK * lanes * (d.n_head / d.n_head_kv) } else { 0 }],
+            kq8: vec![
+                0;
+                if kv.any8() {
+                    d.n_head_kv * kv8::row_bytes(hd)
+                } else {
+                    0
+                }
+            ],
+            kv8s: if kv.any8() {
+                Kv8Scratch::new(hd, lanes * (d.n_head / d.n_head_kv))
+            } else {
+                Kv8Scratch::empty()
+            },
+            kv8acc: vec![
+                0.0;
+                if kv.v8() {
+                    kv8::QK * lanes * (d.n_head / d.n_head_kv)
+                } else {
+                    0
+                }
+            ],
             fa: fattn::FaScratch::default(),
             pbst: Vec::new(),
-            tmp: vec![0.0; d.n_embd.max(plan.head_chunk).max(2 * att_width).max(d.ssm_conv_channels())],
+            tmp: vec![
+                0.0;
+                d.n_embd
+                    .max(plan.head_chunk)
+                    .max(2 * att_width)
+                    .max(d.ssm_conv_channels())
+            ],
             g: vec![0.0; QK_K.max(d.ff_shexp)],
             u: vec![0.0; QK_K.max(d.ff_shexp)],
             probs: vec![0.0; d.n_expert],
@@ -1094,7 +1362,7 @@ impl<'a> Engine<'a> {
             prof: Prof::default(),
         };
         let e = Engine {
-            #[cfg(feature="f32-reference")]
+            #[cfg(feature = "f32-reference")]
             f32_reference: None,
             #[cfg(feature = "npu-prefill")]
             npu_prefill: None,
@@ -1114,15 +1382,20 @@ impl<'a> Engine<'a> {
             kv8_pv: kv8::pv_mode_from_env(),
             aq8: Raw::new(&state, aq8.0, aq8.1),
             vpart: f(vpart),
-            attn_fused: std::env::var("OXE_ATTN").map(|v| v == "fused").unwrap_or(false),
+            attn_fused: std::env::var("OXE_ATTN")
+                .map(|v| v == "fused")
+                .unwrap_or(false),
             attn_fused_ch: fattn::chunk_from_env(),
             attn_fused_min_kv: env_usize("OXE_ATTN_FUSED_MIN_KV").unwrap_or(ATTN_FUSED_MIN_KV),
-            attn_fused_min_kv1: env_usize("OXE_ATTN_FUSED_1LANE_MIN_KV").unwrap_or(ATTN_FUSED_1LANE_MIN_KV),
+            attn_fused_min_kv1: env_usize("OXE_ATTN_FUSED_1LANE_MIN_KV")
+                .unwrap_or(ATTN_FUSED_1LANE_MIN_KV),
             pf_attn: pfattn::PfAttn::from_env(),
             pf_auto: pfattn::AutoPolicy::from_env(),
             pf_xparams: pfattn::XParams::from_env(),
             pf_gparams: pfattn::GParams::from_env(),
-            pf_kunits: (0..prefill::PF_KUNIT_SLOTS).map(|_| sched::Padded(Default::default())).collect(),
+            pf_kunits: (0..prefill::PF_KUNIT_SLOTS)
+                .map(|_| sched::Padded(Default::default()))
+                .collect(),
             pf_attn_threads: pfattn::pf_attn_threads_from_env(),
             fpart: f(fpart),
             fml: f(fml),
@@ -1150,7 +1423,10 @@ impl<'a> Engine<'a> {
             h: lf(h),
             hq: lu(hq),
             logits: lf(logits),
-            argmax: LBuf { raw: Raw::new(&state, argmax.0, argmax.1), stride: argmax.2 },
+            argmax: LBuf {
+                raw: Raw::new(&state, argmax.0, argmax.1),
+                stride: argmax.2,
+            },
             rope: lf(rope),
             hout: lf(hout),
             hin: lf(hin),
@@ -1163,19 +1439,34 @@ impl<'a> Engine<'a> {
             akq: Raw::new(&state, akq.0, akq.1),
             ap16: Raw::new(&state, ap16.0, ap16.1),
             acs,
-            att_stats: std::env::var_os("OXE_ATTN_STATS").map(|_| [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)]),
-            attn_tiled: std::env::var("OXE_ATTN").map(|v| v != "legacy").unwrap_or(true),
+            att_stats: std::env::var_os("OXE_ATTN_STATS")
+                .map(|_| [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)]),
+            attn_tiled: std::env::var("OXE_ATTN")
+                .map(|v| v != "legacy")
+                .unwrap_or(true),
             attn_out: AttnOut::from_env(),
             dec_fused_dn: dec_fused_dn_default(),
-            dec_vl: std::env::var("OXE_VL").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-            attn_min_kv: std::env::var("OXE_ATTN_TILED_MIN_KV").ok().and_then(|v| v.parse().ok()).unwrap_or(ATTN_TILED_MIN_KV),
+            dec_vl: std::env::var("OXE_VL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            attn_min_kv: std::env::var("OXE_ATTN_TILED_MIN_KV")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(ATTN_TILED_MIN_KV),
             _state: state,
-            threads: (0..n).map(|_| Box::new(UnsafeCell::new((0..lanes).map(|_| new_ts()).collect()))).collect(),
+            threads: (0..n)
+                .map(|_| Box::new(UnsafeCell::new((0..lanes).map(|_| new_ts()).collect())))
+                .collect(),
             rec_index: index_of(d, LayerKind::Recurrent),
             att_index,
             pos: AtomicUsize::new(0),
             hw: AtomicUsize::new(0),
-            trace: if cfg.trace { Some(Trace::default()) } else { None },
+            trace: if cfg.trace {
+                Some(Trace::default())
+            } else {
+                None
+            },
             cfg,
             lanes,
             n_slots,
@@ -1317,7 +1608,12 @@ impl<'a> Engine<'a> {
                 *x += a.load(std::sync::atomic::Ordering::Relaxed);
             }
         }
-        prefill::PfKernelUnits { tiled: u[0], fa2: u[1], fa2x: u[2], pfg: u[3] }
+        prefill::PfKernelUnits {
+            tiled: u[0],
+            fa2: u[1],
+            fa2x: u[2],
+            pfg: u[3],
+        }
     }
 
     pub fn reset_pf_kernel_units(&self) {
@@ -1390,7 +1686,9 @@ impl<'a> Engine<'a> {
 
     /// OXE_ATTN_STATS counters: (32-position probability blocks, all exactly zero, all < 2^-10).
     pub fn attn_stats(&self) -> Option<(u64, u64, u64)> {
-        self.att_stats.as_ref().map(|s| (s[0].load(Relaxed), s[1].load(Relaxed), s[2].load(Relaxed)))
+        self.att_stats
+            .as_ref()
+            .map(|s| (s[0].load(Relaxed), s[1].load(Relaxed), s[2].load(Relaxed)))
     }
     /// Column stride of the decode attention scratch (n_ctx, or padded with OXE_DEC_ATTN_PAD=1).
     pub fn attn_col_stride(&self) -> usize {
@@ -1409,7 +1707,10 @@ impl<'a> Engine<'a> {
     /// always with an int8 KV cache (the per-head C path reads f16 only; the cutoff is 0 then).
     #[inline]
     fn tiled_at(&self, last: usize) -> bool {
-        self.kv.any8() || (self.attn_tiled && self.trace.is_none() && padded_n_kv(last, self.n_ctx) >= self.attn_min_kv)
+        self.kv.any8()
+            || (self.attn_tiled
+                && self.trace.is_none()
+                && padded_n_kv(last, self.n_ctx) >= self.attn_min_kv)
     }
 
     /// Barriers per one-token step at the current position: the plan's, plus two inside each
@@ -1441,13 +1742,19 @@ impl<'a> Engine<'a> {
     /// Bench (`oxe fused-ref`): attention-output check on / off (see the `attn_check` field).
     #[cfg(any(test, feature = "f32-reference"))]
     pub fn set_attn_check(&mut self, on: bool) {
-        self.attn_check = if on { Some(Mutex::new((0.0, 0.0))) } else { None };
+        self.attn_check = if on {
+            Some(Mutex::new((0.0, 0.0)))
+        } else {
+            None
+        };
     }
 
     /// (sum of squared errors, sum of squared reference values) since the last call; resets.
     #[cfg(any(test, feature = "f32-reference"))]
     pub fn take_attn_check(&self) -> Option<(f64, f64)> {
-        self.attn_check.as_ref().map(|m| std::mem::take(&mut *m.lock().unwrap()))
+        self.attn_check
+            .as_ref()
+            .map(|m| std::mem::take(&mut *m.lock().unwrap()))
     }
 
     /// Tests: degrade the fused path by scaling its output by (1 + eps).
@@ -1472,7 +1779,12 @@ impl<'a> Engine<'a> {
                     k.extend_from_slice(self.kcache8.at(at..at + n * rb));
                 } else {
                     let at = ai * d.n_head_kv * self.n_ctx * hd + h * self.n_ctx * hd;
-                    k.extend(self.kcache.at(at..at + n * hd).iter().flat_map(|x| x.to_le_bytes()));
+                    k.extend(
+                        self.kcache
+                            .at(at..at + n * hd)
+                            .iter()
+                            .flat_map(|x| x.to_le_bytes()),
+                    );
                 }
                 if self.kv.v8() {
                     let at = ai * self.v8_len + h * self.n_ctx * rb;
@@ -1480,7 +1792,12 @@ impl<'a> Engine<'a> {
                 } else {
                     for j in 0..hd {
                         let at = self.vrow(ai, h * hd + j);
-                        v.extend(self.vcache.at(at..at + n).iter().flat_map(|x| x.to_le_bytes()));
+                        v.extend(
+                            self.vcache
+                                .at(at..at + n)
+                                .iter()
+                                .flat_map(|x| x.to_le_bytes()),
+                        );
                     }
                 }
             }
@@ -1500,16 +1817,27 @@ impl<'a> Engine<'a> {
             for p in 0..n {
                 if self.kv.k8() {
                     let at = ai * self.k8_len + (kvh * self.n_ctx + p) * rb;
-                    kv8::deq_f32(self.kcache8.at(at..at + rb), hd, &mut k[p * hd..(p + 1) * hd]);
+                    kv8::deq_f32(
+                        self.kcache8.at(at..at + rb),
+                        hd,
+                        &mut k[p * hd..(p + 1) * hd],
+                    );
                 } else {
                     let at = ai * d.n_head_kv * self.n_ctx * hd + (kvh * self.n_ctx + p) * hd;
-                    for (o, &x) in k[p * hd..(p + 1) * hd].iter_mut().zip(self.kcache.at(at..at + hd).iter()) {
+                    for (o, &x) in k[p * hd..(p + 1) * hd]
+                        .iter_mut()
+                        .zip(self.kcache.at(at..at + hd).iter())
+                    {
                         *o = kv8::h2f(x);
                     }
                 }
                 if self.kv.v8() {
                     let at = ai * self.v8_len + (kvh * self.n_ctx + p) * rb;
-                    kv8::deq_f32(self.vcache8.at(at..at + rb), hd, &mut v[p * hd..(p + 1) * hd]);
+                    kv8::deq_f32(
+                        self.vcache8.at(at..at + rb),
+                        hd,
+                        &mut v[p * hd..(p + 1) * hd],
+                    );
                 }
             }
             if !self.kv.v8() {
@@ -1545,7 +1873,12 @@ impl<'a> Engine<'a> {
         let at = self.v8row(ai, kvh, pos);
         // SAFETY: vraw rows complete and read-only after the barrier; the designated writer of
         // (kvh, pos) is the only writer of that cache row and nobody reads it before the next barrier.
-        unsafe { kv8::quant_row(self.vraw.at(ln, kvh * hd..(kvh + 1) * hd), self.vcache8.at(at..at + rb)) };
+        unsafe {
+            kv8::quant_row(
+                self.vraw.at(ln, kvh * hd..(kvh + 1) * hd),
+                self.vcache8.at(at..at + rb),
+            )
+        };
     }
 
     /// int8 K: quantise `kn` (normalised, roped) into slot `kvh` of `ts.kq8` (the bytes the
@@ -1596,7 +1929,11 @@ impl<'a> Engine<'a> {
     #[inline]
     fn w(&self, id: Tid) -> &WeightRef {
         if id >= crate::mtp::MTP_TID_BASE {
-            return self.mtp.as_ref().and_then(|m| m.w.get(id)).expect("MTP tensor not loaded");
+            return self
+                .mtp
+                .as_ref()
+                .and_then(|m| m.w.get(id))
+                .expect("MTP tensor not loaded");
         }
         self.ws.refs[id].as_ref().expect("tensor not loaded")
     }
@@ -1606,7 +1943,12 @@ impl<'a> Engine<'a> {
         if l < self.plan.layers.len() {
             &self.plan.layers[l]
         } else {
-            &self.mtp.as_ref().expect("MTP layer without an MTP head").w.layer
+            &self
+                .mtp
+                .as_ref()
+                .expect("MTP layer without an MTP head")
+                .w
+                .layer
         }
     }
 
@@ -1623,7 +1965,9 @@ impl<'a> Engine<'a> {
             if hw > 0 {
                 // V^T rows are v_stride apart (n_ctx + OXE_KV_VPAD), not n_ctx
                 for r in 0..self.vcache.len / self.v_stride {
-                    self.vcache.at(r * self.v_stride..r * self.v_stride + hw).fill(0);
+                    self.vcache
+                        .at(r * self.v_stride..r * self.v_stride + hw)
+                        .fill(0);
                 }
             }
             // int8 V rows (per position; empty in f16 mode): zero as a fresh cache
@@ -1636,7 +1980,10 @@ impl<'a> Engine<'a> {
 
     fn slot_ranges(&self) -> (Range<usize>, Range<usize>) {
         let s = self.cur_slot.load(Relaxed);
-        (s * self.conv_len_all..(s + 1) * self.conv_len_all, s * self.ssm_len_all..(s + 1) * self.ssm_len_all)
+        (
+            s * self.conv_len_all..(s + 1) * self.conv_len_all,
+            s * self.ssm_len_all..(s + 1) * self.ssm_len_all,
+        )
     }
 
     /// Save the recurrent state (conv + delta-net S of every layer) and the position. The KV
@@ -1649,11 +1996,20 @@ impl<'a> Engine<'a> {
     }
 
     pub fn save_recurrent(&self) -> RecurrentSnapshot {
-        #[cfg(feature="f32-reference")]
-        assert!(self.f32_reference.is_none(),"f32 reference snapshots are unsupported");
+        #[cfg(feature = "f32-reference")]
+        assert!(
+            self.f32_reference.is_none(),
+            "f32 reference snapshots are unsupported"
+        );
         let (cr, sr) = self.slot_ranges();
         // SAFETY: called between runs by the owner thread.
-        unsafe { RecurrentSnapshot { pos: self.pos(), conv: self.conv_state.at(cr).to_vec(), ssm: self.ssm_state.at(sr).to_vec() } }
+        unsafe {
+            RecurrentSnapshot {
+                pos: self.pos(),
+                conv: self.conv_state.at(cr).to_vec(),
+                ssm: self.ssm_state.at(sr).to_vec(),
+            }
+        }
     }
 
     /// CACHE-PERFECT P2b: write the LIVE recurrent state in the [`RecurrentSnapshot::write_to`]
@@ -1666,7 +2022,10 @@ impl<'a> Engine<'a> {
         // SAFETY: called between runs by the owner thread; f32 slices viewed as bytes (LE target).
         unsafe {
             for v in [self.conv_state.at(cr), self.ssm_state.at(sr)] {
-                w.write_all(std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 4))?;
+                w.write_all(std::slice::from_raw_parts(
+                    v.as_ptr() as *const u8,
+                    v.len() * 4,
+                ))?;
             }
         }
         Ok(())
@@ -1675,10 +2034,15 @@ impl<'a> Engine<'a> {
     /// As [`Engine::save_recurrent`], reusing `old`'s buffers (an evicted checkpoint) so no
     /// 62.8 MiB allocation and page-fault pass is paid per checkpoint.
     pub fn save_recurrent_into(&self, old: RecurrentSnapshot) -> RecurrentSnapshot {
-        #[cfg(feature="f32-reference")]
-        assert!(self.f32_reference.is_none(),"f32 reference snapshots are unsupported");
+        #[cfg(feature = "f32-reference")]
+        assert!(
+            self.f32_reference.is_none(),
+            "f32 reference snapshots are unsupported"
+        );
         let (cr, sr) = self.slot_ranges();
-        let RecurrentSnapshot { mut conv, mut ssm, .. } = old;
+        let RecurrentSnapshot {
+            mut conv, mut ssm, ..
+        } = old;
         conv.clear();
         ssm.clear();
         // SAFETY: called between runs by the owner thread.
@@ -1686,7 +2050,11 @@ impl<'a> Engine<'a> {
             conv.extend_from_slice(self.conv_state.at(cr));
             ssm.extend_from_slice(self.ssm_state.at(sr));
         }
-        RecurrentSnapshot { pos: self.pos(), conv, ssm }
+        RecurrentSnapshot {
+            pos: self.pos(),
+            conv,
+            ssm,
+        }
     }
 
     /// Bytes [`Engine::write_state`] writes at the current position (capacity hint). Per
@@ -1708,7 +2076,12 @@ impl<'a> Engine<'a> {
         let d = &self.plan.desc;
         let ts = self.threads[0].get();
         // SAFETY: lengths only; thread 0's lane 0 state exists for every engine.
-        let per_thread = unsafe { (*ts).first().map(|t| t.kq.len() * 4 + t.mask.len() * 4 + t.wp.len() * 4 + t.p16.len() * 2).unwrap_or(0) };
+        let per_thread = unsafe {
+            (*ts)
+                .first()
+                .map(|t| t.kq.len() * 4 + t.mask.len() * 4 + t.wp.len() * 4 + t.p16.len() * 2)
+                .unwrap_or(0)
+        };
         let rb = kv8::row_bytes(d.head_dim);
         let k = if self.kv.k8() { rb } else { 2 * d.head_dim };
         let v = if self.kv.v8() { rb } else { 2 * d.head_dim };
@@ -1719,7 +2092,12 @@ impl<'a> Engine<'a> {
             recurrent: (self.conv_state.len + self.ssm_state.len) * 4,
             decode_scratch: self.akq.len * 4 + self.ap16.len * 2 + self.vpart.len * 4,
             decode_per_thread: per_thread,
-            prefill_per_thread: prefill::pf_ctx_bytes(d, self.n_ctx, prefill::att_tt_want(d, pf_tiles()), self.pf_path()),
+            prefill_per_thread: prefill::pf_ctx_bytes(
+                d,
+                self.n_ctx,
+                prefill::att_tt_want(d, pf_tiles()),
+                self.pf_path(),
+            ),
         }
     }
 
@@ -1759,7 +2137,11 @@ impl<'a> Engine<'a> {
         let rows = d.n_attention() * d.n_head_kv * d.head_dim;
         for r in 0..rows {
             // SAFETY: between runs; rows of the main attention layers.
-            unsafe { self.vcache.at(r * self.v_stride + a..r * self.v_stride + b).fill(0) };
+            unsafe {
+                self.vcache
+                    .at(r * self.v_stride + a..r * self.v_stride + b)
+                    .fill(0)
+            };
         }
     }
 
@@ -1767,10 +2149,16 @@ impl<'a> Engine<'a> {
     /// >= the snapshot's are zeroed: they get probability 0 in attention anyway, but zero
     /// keeps them finite, as a fresh cache is.
     pub fn restore_recurrent(&self, s: &RecurrentSnapshot) {
-        #[cfg(feature="f32-reference")]
-        assert!(self.f32_reference.is_none(),"f32 reference snapshots are unsupported");
+        #[cfg(feature = "f32-reference")]
+        assert!(
+            self.f32_reference.is_none(),
+            "f32 reference snapshots are unsupported"
+        );
         let (cr, sr) = self.slot_ranges();
-        assert!(s.conv.len() == cr.len() && s.ssm.len() == sr.len(), "snapshot from another model");
+        assert!(
+            s.conv.len() == cr.len() && s.ssm.len() == sr.len(),
+            "snapshot from another model"
+        );
         // SAFETY: called between runs by the owner thread.
         unsafe {
             self.conv_state.at(cr).copy_from_slice(&s.conv);
@@ -1793,21 +2181,35 @@ impl<'a> Engine<'a> {
     }
 
     pub fn state_layout(&self) -> String {
-        #[cfg(feature="f32-reference")]
-        if self.f32_reference.is_some(){return "private-f32-reference-no-state-ABI".into();}
+        #[cfg(feature = "f32-reference")]
+        if self.f32_reference.is_some() {
+            return "private-f32-reference-no-state-ABI".into();
+        }
         let d = &self.plan.desc;
         // f16: the string of every earlier build (existing prefix stores and session files stay
         // valid); int8 types name themselves (kv=k8|v8|kv8), so no file is read across types
-        let kv = if self.kv.any8() { format!("kv={}", self.kv.name()) } else { "f16kv".to_string() };
-        format!("att={} kv_heads={} head_dim={} conv={} ssm={} {kv}", self.n_att, d.n_head_kv, d.head_dim, self.conv_len_all, self.ssm_len_all)
+        let kv = if self.kv.any8() {
+            format!("kv={}", self.kv.name())
+        } else {
+            "f16kv".to_string()
+        };
+        format!(
+            "att={} kv_heads={} head_dim={} conv={} ssm={} {kv}",
+            self.n_att, d.n_head_kv, d.head_dim, self.conv_len_all, self.ssm_len_all
+        )
     }
 
     /// Write the sequence state of positions < pos to `w` (the prefix store): per attention
     /// layer (MTP layer included when the engine has one) K rows then V^T rows, f16 bits, then
     /// the recurrent state (conv, S) of the current slot, f32; all little-endian, raw.
     pub fn write_state(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
-        #[cfg(feature="f32-reference")]
-        if self.f32_reference.is_some(){return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"f32 reference has no parked-state ABI"));}
+        #[cfg(feature = "f32-reference")]
+        if self.f32_reference.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "f32 reference has no parked-state ABI",
+            ));
+        }
         fn bytes<T>(s: &[T]) -> &[u8] {
             // SAFETY: plain-old-data slices (u16 / f32) viewed as bytes.
             unsafe { std::slice::from_raw_parts(s.as_ptr() as *const u8, std::mem::size_of_val(s)) }
@@ -1850,7 +2252,12 @@ impl<'a> Engine<'a> {
     /// CACHE-PERFECT P2: K / V rows of positions [a, b) only, per attention layer (MTP layer
     /// included) in [`Engine::write_state`]'s order (K rows per KV head, then V: V^T rows per
     /// (head, dim) for f16, Q8_0 rows per head for int8). A 256-position block of the state store.
-    pub fn write_kv_rows(&self, a: usize, b: usize, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+    pub fn write_kv_rows(
+        &self,
+        a: usize,
+        b: usize,
+        w: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
         fn bytes<T>(s: &[T]) -> &[u8] {
             // SAFETY: plain-old-data slices (u16 / f32) viewed as bytes.
             unsafe { std::slice::from_raw_parts(s.as_ptr() as *const u8, std::mem::size_of_val(s)) }
@@ -1892,10 +2299,17 @@ impl<'a> Engine<'a> {
 
     /// Read rows written by [`Engine::write_kv_rows`] for positions [a, b); the position does not
     /// change (a recurrent snapshot, [`Engine::restore_recurrent`], sets it after the rows).
-    pub fn read_kv_rows(&self, a: usize, b: usize, r: &mut dyn std::io::Read) -> std::io::Result<()> {
+    pub fn read_kv_rows(
+        &self,
+        a: usize,
+        b: usize,
+        r: &mut dyn std::io::Read,
+    ) -> std::io::Result<()> {
         fn bytes<T>(s: &mut [T]) -> &mut [u8] {
             // SAFETY: plain-old-data slices (u16 / f32) viewed as bytes.
-            unsafe { std::slice::from_raw_parts_mut(s.as_mut_ptr() as *mut u8, std::mem::size_of_val(s)) }
+            unsafe {
+                std::slice::from_raw_parts_mut(s.as_mut_ptr() as *mut u8, std::mem::size_of_val(s))
+            }
         }
         if a > b || b > self.n_ctx {
             return Err(std::io::Error::other("kv rows beyond the context"));
@@ -1943,11 +2357,18 @@ impl<'a> Engine<'a> {
     /// [`Engine::state_layout`]); the position becomes `n_pos`. On error the state is
     /// undefined: reset the engine.
     pub fn read_state(&self, r: &mut dyn std::io::Read, n_pos: usize) -> std::io::Result<()> {
-        #[cfg(feature="f32-reference")]
-        if self.f32_reference.is_some(){return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"f32 reference has no parked-state ABI"));}
+        #[cfg(feature = "f32-reference")]
+        if self.f32_reference.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "f32 reference has no parked-state ABI",
+            ));
+        }
         fn bytes<T>(s: &mut [T]) -> &mut [u8] {
             // SAFETY: plain-old-data slices (u16 / f32) viewed as bytes.
-            unsafe { std::slice::from_raw_parts_mut(s.as_mut_ptr() as *mut u8, std::mem::size_of_val(s)) }
+            unsafe {
+                std::slice::from_raw_parts_mut(s.as_mut_ptr() as *mut u8, std::mem::size_of_val(s))
+            }
         }
         if n_pos > self.n_ctx {
             return Err(std::io::Error::other("state longer than the context"));
@@ -1999,8 +2420,11 @@ impl<'a> Engine<'a> {
     /// Copy of the sequence state (KV of positions < pos, recurrent state of the current
     /// slot) in llama.cpp's state-file order (see [`StateDump`]).
     pub fn dump_state(&self) -> StateDump {
-        #[cfg(feature="f32-reference")]
-        assert!(self.f32_reference.is_none(),"f32 reference cannot export rounded shadow KV");
+        #[cfg(feature = "f32-reference")]
+        assert!(
+            self.f32_reference.is_none(),
+            "f32 reference cannot export rounded shadow KV"
+        );
         let d = &self.plan.desc;
         let n_pos = self.pos();
         let hd = d.head_dim;
@@ -2045,8 +2469,12 @@ impl<'a> Engine<'a> {
                 n_pos,
                 k,
                 v,
-                conv: (0..n_rec).map(|r| cs[r * conv_len..(r + 1) * conv_len].to_vec()).collect(),
-                ssm: (0..n_rec).map(|r| ss[r * ssm_len..(r + 1) * ssm_len].to_vec()).collect(),
+                conv: (0..n_rec)
+                    .map(|r| cs[r * conv_len..(r + 1) * conv_len].to_vec())
+                    .collect(),
+                ssm: (0..n_rec)
+                    .map(|r| ss[r * ssm_len..(r + 1) * ssm_len].to_vec())
+                    .collect(),
             }
         }
     }
@@ -2059,7 +2487,16 @@ impl<'a> Engine<'a> {
     /// Full logits of lane `ln` of the last run.
     pub fn logits_lane(&self, ln: usize) -> &[f32] {
         // SAFETY: read between runs.
-        unsafe { self.logits.at(ln, 0..if self.cfg.logits { self.plan.desc.n_vocab } else { 0 }) }
+        unsafe {
+            self.logits.at(
+                ln,
+                0..if self.cfg.logits {
+                    self.plan.desc.n_vocab
+                } else {
+                    0
+                },
+            )
+        }
     }
 
     /// Normalised final hidden state (`h_nextn`) of lane `ln` of the last run: the target's
@@ -2115,8 +2552,12 @@ impl<'a> Engine<'a> {
     /// Run one token at the current position on all workers; returns the greedy argmax
     /// (lowest index among equal maxima, like a first-max scan over the vocabulary).
     pub fn step<P: Team + ?Sized>(&self, pool: &P, token: u32) -> u32 {
-        #[cfg(feature="f32-reference")]
-        if self.f32_reference.is_some(){return self.prefill(pool,&[token],1).expect("nonempty f32 reference step");}
+        #[cfg(feature = "f32-reference")]
+        if self.f32_reference.is_some() {
+            return self
+                .prefill(pool, &[token], 1)
+                .expect("nonempty f32 reference step");
+        }
         let g = self.verify(pool, &[token]);
         self.commit(1);
         g[0]
@@ -2126,13 +2567,24 @@ impl<'a> Engine<'a> {
     /// exactly what a one-token `step` at its position would). Returns the argmax per lane.
     /// The position does not move until [`Engine::commit`].
     pub fn verify<P: Team + ?Sized>(&self, pool: &P, tokens: &[u32]) -> [u32; MAX_LANES] {
-        #[cfg(feature="f32-reference")]
-        assert!(self.f32_reference.is_none(),"f32 reference uses sequential prefill/step, not quantized verify");
+        #[cfg(feature = "f32-reference")]
+        assert!(
+            self.f32_reference.is_none(),
+            "f32 reference uses sequential prefill/step, not quantized verify"
+        );
         assert_eq!(pool.nthreads(), self.plan.nthreads);
         let n = tokens.len();
-        assert!(n >= 1 && n <= self.n_slots, "verify of {n} tokens (engine has {} lanes)", self.n_slots);
+        assert!(
+            n >= 1 && n <= self.n_slots,
+            "verify of {n} tokens (engine has {} lanes)",
+            self.n_slots
+        );
         let pos = self.pos.load(Relaxed);
-        assert!(pos + n <= self.n_ctx, "context full ({} positions)", self.n_ctx);
+        assert!(
+            pos + n <= self.n_ctx,
+            "context full ({} positions)",
+            self.n_ctx
+        );
         self.note_kv(pos + n);
         for (ln, _) in tokens.iter().enumerate() {
             self.rope_init(ln, pos + ln);
@@ -2141,7 +2593,15 @@ impl<'a> Engine<'a> {
         self.pend[1].store(self.cur_slot.load(Relaxed), Relaxed);
         self.pend[2].store(n, Relaxed);
         self.pend[3].store(0, Relaxed);
-        let run = Run { phases: &self.plan.phases, toks: tokens, pos0: pos, head_mask: (1u32 << n) - 1, head_norm: self.plan.out_norm, mtp: false, seed: false };
+        let run = Run {
+            phases: &self.plan.phases,
+            toks: tokens,
+            pos0: pos,
+            head_mask: (1u32 << n) - 1,
+            head_norm: self.plan.out_norm,
+            mtp: false,
+            seed: false,
+        };
         pool.run_job(&|ctx: &mut Ctx| self.thread_run(ctx, &run));
         let mut out = [u32::MAX; MAX_LANES];
         for (ln, o) in out.iter_mut().enumerate().take(n) {
@@ -2154,7 +2614,12 @@ impl<'a> Engine<'a> {
     /// pos0 + m and the recurrent state is the one after lane m-1 (slot index change). May be
     /// called again with a smaller `m` until the next run (to drop tokens a caller did not use).
     pub fn commit(&self, m: usize) {
-        let (pos0, cur0, n, prev) = (self.pend[0].load(Relaxed), self.pend[1].load(Relaxed), self.pend[2].load(Relaxed), self.pend[3].load(Relaxed));
+        let (pos0, cur0, n, prev) = (
+            self.pend[0].load(Relaxed),
+            self.pend[1].load(Relaxed),
+            self.pend[2].load(Relaxed),
+            self.pend[3].load(Relaxed),
+        );
         assert!(n > 0, "commit without a pending verify");
         let hi = if prev == 0 { n } else { prev };
         assert!(m >= 1 && m <= hi, "commit({m}) of {hi} lanes");
@@ -2167,7 +2632,14 @@ impl<'a> Engine<'a> {
     /// Run the MTP head over `toks` at positions pos0.. with input hidden states `hs` (one
     /// per lane). Writes the MTP KV at those positions; `hidden(ln)` is its h_nextn. With
     /// `head_last`, returns the argmax of the last lane's logits (else u32::MAX).
-    pub fn mtp_run<P: Team + ?Sized>(&self, pool: &P, toks: &[u32], pos0: usize, hs: &[&[f32]], head_last: bool) -> u32 {
+    pub fn mtp_run<P: Team + ?Sized>(
+        &self,
+        pool: &P,
+        toks: &[u32],
+        pos0: usize,
+        hs: &[&[f32]],
+        head_last: bool,
+    ) -> u32 {
         let m = self.mtp.as_ref().expect("engine has no MTP head");
         let n = toks.len();
         assert!(n >= 1 && n <= self.lanes && hs.len() == n);
@@ -2212,13 +2684,24 @@ impl<'a> Engine<'a> {
             unsafe { self.hin.at(ln, 0..ne).copy_from_slice(&h[..ne]) };
             self.rope_init(ln, pos0 + ln);
         }
-        let run = Run { phases: &m.phases, toks, pos0, head_mask: 0, head_norm: m.w.head_norm, mtp: true, seed: true };
+        let run = Run {
+            phases: &m.phases,
+            toks,
+            pos0,
+            head_mask: 0,
+            head_norm: m.w.head_norm,
+            mtp: true,
+            seed: true,
+        };
         pool.run_job(&|ctx: &mut Ctx| self.thread_run(ctx, &run));
     }
 
     pub fn profile_sum(&self) -> Vec<Prof> {
         // SAFETY: called by the owner thread between runs.
-        self.threads.iter().map(|c| unsafe { (&*c.get())[0].prof.clone() }).collect()
+        self.threads
+            .iter()
+            .map(|c| unsafe { (&*c.get())[0].prof.clone() })
+            .collect()
     }
     pub fn reset_profile(&self) {
         for c in &self.threads {
@@ -2246,7 +2729,9 @@ impl<'a> Engine<'a> {
         }
         if run.seed {
             // MTP KV seeding: the AttnQkv phase without Q, then the designated K writes
-            let (Work::AttnQkv { k_rows, v_rows, .. }, Work::AttnCore { qheads }) = (&run.phases[0].work[tid], &run.phases[1].work[tid]) else {
+            let (Work::AttnQkv { k_rows, v_rows, .. }, Work::AttnCore { qheads }) =
+                (&run.phases[0].work[tid], &run.phases[1].work[tid])
+            else {
                 panic!("MTP phases: AttnQkv, AttnCore first")
             };
             let l = run.phases[0].layer;
@@ -2278,19 +2763,51 @@ impl<'a> Engine<'a> {
                     }
                     self.rec_mix(tss, l, tid, kheads.clone());
                 }
-                (PhaseKind::RecOut, Work::RecOut { rows }) => self.mixer_out(tss, l, tid, rows.clone()),
-                (PhaseKind::AttnQkv, Work::AttnQkv { qheads, k_rows, v_rows }) => {
+                (PhaseKind::RecOut, Work::RecOut { rows }) => {
+                    self.mixer_out(tss, l, tid, rows.clone())
+                }
+                (
+                    PhaseKind::AttnQkv,
+                    Work::AttnQkv {
+                        qheads,
+                        k_rows,
+                        v_rows,
+                    },
+                ) => {
                     for (ln, ts) in tss.iter_mut().enumerate() {
                         self.layer_entry(ts, l, run.toks[ln], ln);
                     }
-                    self.attn_qkv(tss, l, tid, run.pos0, qheads.clone(), k_rows.clone(), v_rows.clone());
+                    self.attn_qkv(
+                        tss,
+                        l,
+                        tid,
+                        run.pos0,
+                        qheads.clone(),
+                        k_rows.clone(),
+                        v_rows.clone(),
+                    );
                 }
-                (PhaseKind::AttnCore, Work::AttnCore { qheads }) => self.attn_core(ctx, tss, l, run.pos0, qheads.clone()),
-                (PhaseKind::AttnOut, Work::AttnOut { rows }) => self.mixer_out(tss, l, tid, rows.clone()),
-                (PhaseKind::MoeRouter, Work::MoeRouter { rows, sh_rows }) => self.moe_router(tss, l, tid, rows.clone(), sh_rows.clone()),
-                (PhaseKind::MoeGateUp, Work::MoeGateUp { units }) => self.moe_gate_up(tss, l, tid, units.clone()),
+                (PhaseKind::AttnCore, Work::AttnCore { qheads }) => {
+                    self.attn_core(ctx, tss, l, run.pos0, qheads.clone())
+                }
+                (PhaseKind::AttnOut, Work::AttnOut { rows }) => {
+                    self.mixer_out(tss, l, tid, rows.clone())
+                }
+                (PhaseKind::MoeRouter, Work::MoeRouter { rows, sh_rows }) => {
+                    self.moe_router(tss, l, tid, rows.clone(), sh_rows.clone())
+                }
+                (PhaseKind::MoeGateUp, Work::MoeGateUp { units }) => {
+                    self.moe_gate_up(tss, l, tid, units.clone())
+                }
                 (PhaseKind::MoeDown, Work::MoeDown { rows }) => self.moe_down(tss, l, rows.clone()),
-                (PhaseKind::Head, Work::Head { rows }) => self.head(tss, tid, rows.clone(), run.head_mask, run.head_norm, run.mtp),
+                (PhaseKind::Head, Work::Head { rows }) => self.head(
+                    tss,
+                    tid,
+                    rows.clone(),
+                    run.head_mask,
+                    run.head_norm,
+                    run.mtp,
+                ),
                 (k, w) => panic!("plan mismatch: {k:?} with {w:?}"),
             }
             if prof {
@@ -2345,8 +2862,16 @@ impl<'a> Engine<'a> {
             (PhaseKind::AttnCore, Work::AttnCore { qheads }) => {
                 // K and V of positions < pos0 + lanes, each row once for its query-head group
                 let hd = d.head_dim;
-                let kb = if self.kv.k8() { kv8::row_bytes(hd) } else { 2 * hd };
-                let vb = if self.kv.v8() { kv8::row_bytes(hd) } else { 2 * hd };
+                let kb = if self.kv.k8() {
+                    kv8::row_bytes(hd)
+                } else {
+                    2 * hd
+                };
+                let vb = if self.kv.v8() {
+                    kv8::row_bytes(hd)
+                } else {
+                    2 * hd
+                };
                 let total = d.n_head_kv * (pos0 + lanes) * (kb + vb);
                 prof_add(&PROF_BYTES, (total * qheads.len() / d.n_head.max(1)) as u64);
             }
@@ -2370,7 +2895,8 @@ impl<'a> Engine<'a> {
             }
         } else {
             // SAFETY: x2 complete (MoeDown barrier) and read-only until the next MoeDown.
-            ts.xin.copy_from_slice(unsafe { self.x2.at(ln, 0..self.plan.desc.n_embd) });
+            ts.xin
+                .copy_from_slice(unsafe { self.x2.at(ln, 0..self.plan.desc.n_embd) });
         }
     }
 
@@ -2394,12 +2920,36 @@ impl<'a> Engine<'a> {
     /// out[0..rows.len()) = W[rows] . x for expert `e`; `act` must be x quantised for W's type
     /// (ignored for F32 weights, which use ggml_vec_dot_f32 on `x`).
     #[inline]
-    fn mv(&self, w: &WeightRef, e: usize, rows: Range<usize>, out: *mut f32, x: *const f32, act: *const u8) {
+    fn mv(
+        &self,
+        w: &WeightRef,
+        e: usize,
+        rows: Range<usize>,
+        out: *mut f32,
+        x: *const f32,
+        act: *const u8,
+    ) {
         if rows.is_empty() {
             return;
         }
-        #[cfg(feature="npu-prefill")]
-        if e==0&&self.npu_prefill.as_ref().is_some_and(|p|unsafe{p.cpu_f32(w.ptr,true,1,rows.start,rows.end,x,out,rows.len(),std::ptr::null())}){return;}
+        #[cfg(feature = "npu-prefill")]
+        if e == 0
+            && self.npu_prefill.as_ref().is_some_and(|p| unsafe {
+                p.cpu_f32(
+                    w.ptr,
+                    true,
+                    1,
+                    rows.start,
+                    rows.end,
+                    x,
+                    out,
+                    rows.len(),
+                    std::ptr::null(),
+                )
+            })
+        {
+            return;
+        }
         if w.is_f32() {
             for (i, r) in rows.enumerate() {
                 // SAFETY: row r of expert e of a k-wide f32 tensor; x has k floats; out has rows.len() floats.
@@ -2413,7 +2963,17 @@ impl<'a> Engine<'a> {
             // SAFETY: rows within the tensor (plan coverage, multiples of the row group); the
             // activation holds k values in q's activation format; out has rows.len() floats.
             unsafe {
-                if self.dec_vl & VL_Q6K_ONE != 0 && q == QType::Q6K && kernels_sys::gemv_lanes_raw(q, w.k, &[out], w.rows_ptr(e, rows.start), &[act], rows.len()) {
+                if self.dec_vl & VL_Q6K_ONE != 0
+                    && q == QType::Q6K
+                    && kernels_sys::gemv_lanes_raw(
+                        q,
+                        w.k,
+                        &[out],
+                        w.rows_ptr(e, rows.start),
+                        &[act],
+                        rows.len(),
+                    )
+                {
                     return;
                 }
                 gemv_raw(q, w.k, out, w.rows_ptr(e, rows.start), act, rows.len())
@@ -2425,21 +2985,47 @@ impl<'a> Engine<'a> {
     /// chunks (whole row groups) and every lane runs on a chunk while it is in cache. Each
     /// output row is one independent dot product, so the chunking never changes a value.
     #[inline]
-    fn mv_lanes(&self, w: &WeightRef, e: usize, rows: Range<usize>, n: usize, outs: &[*mut f32], xs: &[*const f32], acts: &[*const u8]) {
+    fn mv_lanes(
+        &self,
+        w: &WeightRef,
+        e: usize,
+        rows: Range<usize>,
+        n: usize,
+        outs: &[*mut f32],
+        xs: &[*const f32],
+        acts: &[*const u8],
+    ) {
         self.prof_w(w, rows.len());
         if n == 1 {
             self.mv(w, e, rows, outs[0], xs[0], acts[0]);
             return;
         }
-        #[cfg(feature="npu-prefill")]
-        if e==0&&self.npu_prefill.as_ref().is_some_and(|p|p.cpu_f32_selected(w.ptr,true)){
-            for ln in 0..n{self.mv(w,e,rows.clone(),outs[ln],xs[ln],acts[ln]);}return;
+        #[cfg(feature = "npu-prefill")]
+        if e == 0
+            && self
+                .npu_prefill
+                .as_ref()
+                .is_some_and(|p| p.cpu_f32_selected(w.ptr, true))
+        {
+            for ln in 0..n {
+                self.mv(w, e, rows.clone(), outs[ln], xs[ln], acts[ln]);
+            }
+            return;
         }
         let vl = self.dec_vl & VL_MV != 0 && !w.is_f32();
         if vl && n <= kernels_sys::VL_MAX_LANES {
             // OD-6b: the rows are read and unpacked once for all lanes (bitwise the GEMV per lane).
             // SAFETY: as mv() for every lane; the lanes' outputs are distinct buffers.
-            if unsafe { kernels_sys::gemv_lanes_raw(w.qtype(), w.k, outs, w.rows_ptr(e, rows.start), acts, rows.len()) } {
+            if unsafe {
+                kernels_sys::gemv_lanes_raw(
+                    w.qtype(),
+                    w.k,
+                    outs,
+                    w.rows_ptr(e, rows.start),
+                    acts,
+                    rows.len(),
+                )
+            } {
                 return;
             }
         }
@@ -2450,14 +3036,29 @@ impl<'a> Engine<'a> {
             let mut l0 = 0;
             while l0 < n {
                 // more than VL_MAX_LANES lanes: lane groups of up to 4 on the chunk while it is in cache
-                let g = if vl { (n - l0).min(kernels_sys::VL_MAX_LANES) } else { 1 };
+                let g = if vl {
+                    (n - l0).min(kernels_sys::VL_MAX_LANES)
+                } else {
+                    1
+                };
                 let mut go = [std::ptr::null_mut(); kernels_sys::VL_MAX_LANES];
                 for (i, o) in go.iter_mut().enumerate().take(g) {
                     // SAFETY: outs[ln] has rows.len() floats.
                     *o = unsafe { outs[l0 + i].add(r - rows.start) };
                 }
                 // SAFETY: as above, for rows r..r+c.
-                if g == 1 || !unsafe { kernels_sys::gemv_lanes_raw(w.qtype(), w.k, &go[..g], w.rows_ptr(e, r), &acts[l0..l0 + g], c) } {
+                if g == 1
+                    || !unsafe {
+                        kernels_sys::gemv_lanes_raw(
+                            w.qtype(),
+                            w.k,
+                            &go[..g],
+                            w.rows_ptr(e, r),
+                            &acts[l0..l0 + g],
+                            c,
+                        )
+                    }
+                {
                     for i in 0..g {
                         self.mv(w, e, r..r + c, go[i], xs[l0 + i], acts[l0 + i]);
                     }
@@ -2469,13 +3070,24 @@ impl<'a> Engine<'a> {
     }
 
     /// `mv_lanes` with every lane's activation taken from its ts.xn.
-    fn mv_xn_lanes(&self, tss: &mut [ThreadState], w: &WeightRef, e: usize, rows: Range<usize>, out: impl Fn(usize, &mut ThreadState) -> *mut f32) {
+    fn mv_xn_lanes(
+        &self,
+        tss: &mut [ThreadState],
+        w: &WeightRef,
+        e: usize,
+        rows: Range<usize>,
+        out: impl Fn(usize, &mut ThreadState) -> *mut f32,
+    ) {
         let n = tss.len();
         let mut outs = [std::ptr::null_mut(); MAX_LANES];
         let mut xs = [std::ptr::null(); MAX_LANES];
         let mut acts = [std::ptr::null(); MAX_LANES];
         for (ln, ts) in tss.iter_mut().enumerate() {
-            acts[ln] = if w.is_f32() { std::ptr::null() } else { ts.acts.get(w.qtype(), &ts.xn) };
+            acts[ln] = if w.is_f32() {
+                std::ptr::null()
+            } else {
+                ts.acts.get(w.qtype(), &ts.xn)
+            };
             xs[ln] = ts.xn.as_ptr();
             outs[ln] = out(ln, ts);
         }
@@ -2505,7 +3117,11 @@ impl<'a> Engine<'a> {
         let mut xs = [std::ptr::null(); MAX_LANES];
         let mut acts = [std::ptr::null(); MAX_LANES];
         for (ln, ts) in tss.iter_mut().enumerate() {
-            acts[ln] = if w.is_f32() { std::ptr::null() } else { ts.acts.get(w.qtype(), &ts.cat) };
+            acts[ln] = if w.is_f32() {
+                std::ptr::null()
+            } else {
+                ts.acts.get(w.qtype(), &ts.cat)
+            };
             xs[ln] = ts.cat.as_ptr();
             outs[ln] = self.x2.ptr_at(ln, rows.start);
         }
@@ -2521,7 +3137,20 @@ impl<'a> Engine<'a> {
         let tg0 = if self.cfg.profile { ticks() } else { 0 };
         let d = &self.plan.desc;
         let lt = self.layer(l);
-        let Mixer::Recurrent { qkv, z, beta, alpha, conv1d, a, dt_bias, norm, .. } = lt.mixer else { unreachable!() };
+        let Mixer::Recurrent {
+            qkv,
+            z,
+            beta,
+            alpha,
+            conv1d,
+            a,
+            dt_bias,
+            norm,
+            ..
+        } = lt.mixer
+        else {
+            unreachable!()
+        };
         for ts in tss.iter_mut() {
             self.norm(ts, None, lt.attn_norm);
         }
@@ -2531,7 +3160,12 @@ impl<'a> Engine<'a> {
         if kheads.is_empty() {
             return;
         }
-        let (ds, nk, nv, hv) = (d.ssm_d_state, d.ssm_n_kheads, d.ssm_n_vheads, d.ssm_head_v_dim());
+        let (ds, nk, nv, hv) = (
+            d.ssm_d_state,
+            d.ssm_n_kheads,
+            d.ssm_n_vheads,
+            d.ssm_head_v_dim(),
+        );
         let vpk = nv / nk;
         let eps = d.rms_eps;
         let nch = d.ssm_conv_channels();
@@ -2549,11 +3183,15 @@ impl<'a> Engine<'a> {
         let wqkv = *self.w(qkv);
         let wz = *self.w(z);
         for r in ranges[..nr].iter().cloned() {
-            self.mv_xn_lanes(tss, &wqkv, 0, r.clone(), |_, ts| ts.qkv[r.start..].as_mut_ptr());
+            self.mv_xn_lanes(tss, &wqkv, 0, r.clone(), |_, ts| {
+                ts.qkv[r.start..].as_mut_ptr()
+            });
         }
         for m in 0..vpk {
             let zr = (kheads.start + m * nk) * hv..(kheads.end + m * nk) * hv;
-            self.mv_xn_lanes(tss, &wz, 0, zr.clone(), |_, ts| ts.z[zr.start..].as_mut_ptr());
+            self.mv_xn_lanes(tss, &wz, 0, zr.clone(), |_, ts| {
+                ts.z[zr.start..].as_mut_ptr()
+            });
         }
         // beta / alpha rows of our value heads (whole row groups for quantised weights)
         for (wid, dst_is_beta) in [(beta, true), (alpha, false)] {
@@ -2567,7 +3205,13 @@ impl<'a> Engine<'a> {
                     (v0 / g * g)..(v1.div_ceil(g) * g).min(nv)
                 };
                 let s = rows.start;
-                self.mv_xn_lanes(tss, &w, 0, rows, |_, ts| if dst_is_beta { ts.beta[s..].as_mut_ptr() } else { ts.alpha[s..].as_mut_ptr() });
+                self.mv_xn_lanes(tss, &w, 0, rows, |_, ts| {
+                    if dst_is_beta {
+                        ts.beta[s..].as_mut_ptr()
+                    } else {
+                        ts.alpha[s..].as_mut_ptr()
+                    }
+                });
             }
         }
         if self.cfg.profile {
@@ -2585,14 +3229,21 @@ impl<'a> Engine<'a> {
         let cur = self.cur_slot.load(Relaxed);
         for (ln, ts) in tss.iter_mut().enumerate() {
             let dst = (cur + ln) % self.n_slots;
-            let src = if ln == 0 { dst } else { (cur + ln - 1) % self.n_slots };
+            let src = if ln == 0 {
+                dst
+            } else {
+                (cur + ln - 1) % self.n_slots
+            };
             let cbase = dst * self.conv_len_all + ri * conv_len;
             let cs = unsafe { self.conv_state.at(cbase..cbase + conv_len) };
             if src != dst {
                 let sbase = src * self.conv_len_all + ri * conv_len;
                 for r in ranges[..nr].iter() {
                     // SAFETY: conv-state rows of our channels (both slots) are owned by this thread.
-                    let from = unsafe { self.conv_state.at(sbase + r.start * (kc - 1)..sbase + r.end * (kc - 1)) };
+                    let from = unsafe {
+                        self.conv_state
+                            .at(sbase + r.start * (kc - 1)..sbase + r.end * (kc - 1))
+                    };
                     cs[r.start * (kc - 1)..r.end * (kc - 1)].copy_from_slice(from);
                 }
             }
@@ -2615,8 +3266,20 @@ impl<'a> Engine<'a> {
             }
             if self.trace.is_some() {
                 for r in ranges[..nr].iter().cloned() {
-                    self.tr("linear_attn_qkv_mixed", Some(l), nch, r.start, &ts.qkv[r.clone()]);
-                    self.tr("conv_output_silu", Some(l), nch, r.start, &ts.conv[r.clone()]);
+                    self.tr(
+                        "linear_attn_qkv_mixed",
+                        Some(l),
+                        nch,
+                        r.start,
+                        &ts.qkv[r.clone()],
+                    );
+                    self.tr(
+                        "conv_output_silu",
+                        Some(l),
+                        nch,
+                        r.start,
+                        &ts.conv[r.clone()],
+                    );
                 }
                 for m in 0..vpk {
                     let zr = (kheads.start + m * nk) * hv..(kheads.end + m * nk) * hv;
@@ -2629,8 +3292,20 @@ impl<'a> Engine<'a> {
                 ops::gdn_l2_norm(&mut ts.conv[nk * ds + g * ds..nk * ds + (g + 1) * ds], eps);
             }
             if self.trace.is_some() {
-                self.tr("q_conv_predelta", Some(l), nk * ds, ranges[0].start, &ts.conv[ranges[0].clone()]);
-                self.tr("k_conv_predelta", Some(l), nk * ds, ranges[0].start, &ts.conv[ranges[1].clone()]);
+                self.tr(
+                    "q_conv_predelta",
+                    Some(l),
+                    nk * ds,
+                    ranges[0].start,
+                    &ts.conv[ranges[0].clone()],
+                );
+                self.tr(
+                    "k_conv_predelta",
+                    Some(l),
+                    nk * ds,
+                    ranges[0].start,
+                    &ts.conv[ranges[1].clone()],
+                );
             }
             // gates: g = softplus(alpha + dt_bias) * ssm_a ; beta = sigmoid(beta)
             for m in 0..vpk {
@@ -2654,12 +3329,19 @@ impl<'a> Engine<'a> {
                     let kh = vh % nk;
                     let hb = ri * ssm_len + vh * hv * hv;
                     // SAFETY: the state of value head vh (every slot) is owned by this thread.
-                    let s = unsafe { self.ssm_state.at(dst * self.ssm_len_all + hb..dst * self.ssm_len_all + hb + hv * hv) };
+                    let s = unsafe {
+                        self.ssm_state
+                            .at(dst * self.ssm_len_all + hb..dst * self.ssm_len_all + hb + hv * hv)
+                    };
                     // the old state: this slot (lane 0), or the previous lane's slot; OD-6b bit 8 reads
                     // it from there in the step instead of copying it over first
                     let mut s_in = s.as_ptr();
                     if src != dst {
-                        let from = unsafe { self.ssm_state.at(src * self.ssm_len_all + hb..src * self.ssm_len_all + hb + hv * hv) };
+                        let from = unsafe {
+                            self.ssm_state
+                                .at(src * self.ssm_len_all + hb
+                                    ..src * self.ssm_len_all + hb + hv * hv)
+                        };
                         if self.dec_vl & VL_DN_FROM != 0 {
                             s_in = from.as_ptr();
                         } else {
@@ -2669,19 +3351,42 @@ impl<'a> Engine<'a> {
                     // SAFETY: q/k/v slices of hv/ds floats inside conv; scratch sized hv; s_in is the
                     // slot itself or another slot's hv * hv state of this head (owned by this thread).
                     unsafe {
-                        let (q, k, v) = (ts.conv[kh * ds..].as_ptr(), ts.conv[nk * ds + kh * ds..].as_ptr(), ts.conv[2 * nk * ds + vh * hv..].as_ptr());
-                        let (g, be, dl, at) = (ts.gate[vh], ts.beta_s[vh], ts.delta.as_mut_ptr(), ts.gdn_out.as_mut_ptr());
+                        let (q, k, v) = (
+                            ts.conv[kh * ds..].as_ptr(),
+                            ts.conv[nk * ds + kh * ds..].as_ptr(),
+                            ts.conv[2 * nk * ds + vh * hv..].as_ptr(),
+                        );
+                        let (g, be, dl, at) = (
+                            ts.gate[vh],
+                            ts.beta_s[vh],
+                            ts.delta.as_mut_ptr(),
+                            ts.gdn_out.as_mut_ptr(),
+                        );
                         if std::ptr::eq(s_in, s.as_ptr()) {
                             // in place: the unchanged step functions
-                            let step = if self.dec_fused_dn { ffi::oxe_gated_delta_net_step_f32_x4 } else { ffi::oxe_gated_delta_net_step_f32 };
+                            let step = if self.dec_fused_dn {
+                                ffi::oxe_gated_delta_net_step_f32_x4
+                            } else {
+                                ffi::oxe_gated_delta_net_step_f32
+                            };
                             step(s.as_mut_ptr(), q, k, v, g, be, hv as i64, dl, at);
                         } else {
-                            let step = if self.dec_fused_dn { ffi::oxe_gated_delta_net_step_f32_x4_from } else { ffi::oxe_gated_delta_net_step_f32_from };
+                            let step = if self.dec_fused_dn {
+                                ffi::oxe_gated_delta_net_step_f32_x4_from
+                            } else {
+                                ffi::oxe_gated_delta_net_step_f32_from
+                            };
                             step(s.as_mut_ptr(), s_in, q, k, v, g, be, hv as i64, dl, at);
                         }
                     }
                     if self.trace.is_some() {
-                        self.tr("attn_output", Some(l), nv * hv, vh * hv, &ts.gdn_out.clone());
+                        self.tr(
+                            "attn_output",
+                            Some(l),
+                            nv * hv,
+                            vh * hv,
+                            &ts.gdn_out.clone(),
+                        );
                     }
                     ops::rms_norm_mul(&ts.gdn_out, wn, &mut ts.tmpn[..hv], eps);
                     ops::silu(&ts.z[vh * hv..(vh + 1) * hv], &mut ts.zs);
@@ -2711,7 +3416,11 @@ impl<'a> Engine<'a> {
             // SAFETY: O is complete (previous barrier) and read-only in this phase.
             let o = unsafe { self.o.at(ln, 0..width) };
             ts.acts.invalidate();
-            acts[ln] = if w.is_f32() { std::ptr::null() } else { ts.acts.get(w.qtype(), o) };
+            acts[ln] = if w.is_f32() {
+                std::ptr::null()
+            } else {
+                ts.acts.get(w.qtype(), o)
+            };
             xs[ln] = o.as_ptr();
             outs[ln] = ts.tmp.as_mut_ptr();
         }
@@ -2724,11 +3433,19 @@ impl<'a> Engine<'a> {
                 x1[i] = ts.tmp[i] + ts.xin[r];
             }
             if self.trace.is_some() {
-                self.tr(name, Some(l), d.n_embd, rows.start, &ts.tmp[..rows.len()].to_vec());
+                self.tr(
+                    name,
+                    Some(l),
+                    d.n_embd,
+                    rows.start,
+                    &ts.tmp[..rows.len()].to_vec(),
+                );
                 self.tr("attn_residual", Some(l), d.n_embd, rows.start, &x1.to_vec());
                 if tid == 0 {
                     // SAFETY: as above.
-                    self.tr("attn_out_input", Some(l), width, 0, unsafe { self.o.at(ln, 0..width) });
+                    self.tr("attn_out_input", Some(l), width, 0, unsafe {
+                        self.o.at(ln, 0..width)
+                    });
                 }
             }
         }
@@ -2737,10 +3454,21 @@ impl<'a> Engine<'a> {
     // ---------------------------------------------------------------- attention
 
     #[allow(clippy::too_many_arguments)]
-    fn attn_qkv(&self, tss: &mut [ThreadState], l: usize, tid: usize, pos0: usize, qheads: Range<usize>, k_rows: Range<usize>, v_rows: Range<usize>) {
+    fn attn_qkv(
+        &self,
+        tss: &mut [ThreadState],
+        l: usize,
+        tid: usize,
+        pos0: usize,
+        qheads: Range<usize>,
+        k_rows: Range<usize>,
+        v_rows: Range<usize>,
+    ) {
         let d = &self.plan.desc;
         let lt = self.layer(l);
-        let Mixer::Attention { q, q_norm, .. } = lt.mixer else { unreachable!() };
+        let Mixer::Attention { q, q_norm, .. } = lt.mixer else {
+            unreachable!()
+        };
         for ts in tss.iter_mut() {
             self.norm(ts, None, lt.attn_norm);
         }
@@ -2751,7 +3479,9 @@ impl<'a> Engine<'a> {
         let eps = d.rms_eps;
         let qr = qheads.start * 2 * hd..qheads.end * 2 * hd;
         let wq = *self.w(q);
-        self.mv_xn_lanes(tss, &wq, 0, qr.clone(), |_, ts| ts.qg[qr.start..].as_mut_ptr());
+        self.mv_xn_lanes(tss, &wq, 0, qr.clone(), |_, ts| {
+            ts.qg[qr.start..].as_mut_ptr()
+        });
         let wqn = self.w(q_norm).f32_slice();
         for (ln, ts) in tss.iter_mut().enumerate() {
             // SAFETY: rope cache written before the run, read-only.
@@ -2760,28 +3490,61 @@ impl<'a> Engine<'a> {
                 let (a0, b0) = (h * 2 * hd, h * 2 * hd + hd);
                 ops::rms_norm_mul(&ts.qg[a0..b0], wqn, &mut ts.q[h * hd..(h + 1) * hd], eps);
                 if self.trace.is_some() {
-                    self.tr("Qcur_normed", Some(l), d.n_head * hd, h * hd, &ts.q[h * hd..(h + 1) * hd].to_vec());
+                    self.tr(
+                        "Qcur_normed",
+                        Some(l),
+                        d.n_head * hd,
+                        h * hd,
+                        &ts.q[h * hd..(h + 1) * hd].to_vec(),
+                    );
                 }
                 // SAFETY: q head of hd floats; cache of n_rot floats.
-                unsafe { ffi::oxe_rope_neox_inplace(ts.q[h * hd..].as_mut_ptr(), d.n_rot as i32, cache.as_ptr()) };
+                unsafe {
+                    ffi::oxe_rope_neox_inplace(
+                        ts.q[h * hd..].as_mut_ptr(),
+                        d.n_rot as i32,
+                        cache.as_ptr(),
+                    )
+                };
                 if self.attn_tiled || self.kv.any8() {
                     let c = self.acol(h, ln);
                     // SAFETY: column (lane ln, head h) is written only by the owner of query head h
                     // and read by the attention threads after the AttnQkv barrier.
                     unsafe {
-                        ops::fp32_to_fp16(&ts.q[h * hd..(h + 1) * hd], self.aq16.at(c * hd..(c + 1) * hd));
-                        ops::sigmoid(&ts.qg[h * 2 * hd + hd..(h + 1) * 2 * hd], self.agate.at(c * hd..(c + 1) * hd));
+                        ops::fp32_to_fp16(
+                            &ts.q[h * hd..(h + 1) * hd],
+                            self.aq16.at(c * hd..(c + 1) * hd),
+                        );
+                        ops::sigmoid(
+                            &ts.qg[h * 2 * hd + hd..(h + 1) * 2 * hd],
+                            self.agate.at(c * hd..(c + 1) * hd),
+                        );
                         if self.kv.k8() {
                             // fused int8 scores: the query as Q8_0 (llama.cpp's q8_0 KV: the vec_dot_type)
                             let rb = kv8::row_bytes(hd);
-                            kv8::quant_row(&ts.q[h * hd..(h + 1) * hd], self.aq8.at(c * rb..(c + 1) * rb));
+                            kv8::quant_row(
+                                &ts.q[h * hd..(h + 1) * hd],
+                                self.aq8.at(c * rb..(c + 1) * rb),
+                            );
                         }
                     }
                 }
             }
             if self.trace.is_some() {
-                self.tr("Qcur_full", Some(l), 2 * d.n_head * hd, qr.start, &ts.qg[qr.clone()].to_vec());
-                self.tr("Qcur", Some(l), d.n_head * hd, qheads.start * hd, &ts.q[qheads.start * hd..qheads.end * hd].to_vec());
+                self.tr(
+                    "Qcur_full",
+                    Some(l),
+                    2 * d.n_head * hd,
+                    qr.start,
+                    &ts.qg[qr.clone()].to_vec(),
+                );
+                self.tr(
+                    "Qcur",
+                    Some(l),
+                    d.n_head * hd,
+                    qheads.start * hd,
+                    &ts.q[qheads.start * hd..qheads.end * hd].to_vec(),
+                );
             }
         }
         self.attn_kv(tss, l, pos0, k_rows, v_rows);
@@ -2789,23 +3552,38 @@ impl<'a> Engine<'a> {
 
     /// Raw K rows of every lane into kraw (normalised and roped after the barrier, see
     /// [`Engine::write_k`]) and V rows straight into the (transposed) V cache at pos0 + lane.
-    fn attn_kv(&self, tss: &mut [ThreadState], l: usize, pos0: usize, k_rows: Range<usize>, v_rows: Range<usize>) {
+    fn attn_kv(
+        &self,
+        tss: &mut [ThreadState],
+        l: usize,
+        pos0: usize,
+        k_rows: Range<usize>,
+        v_rows: Range<usize>,
+    ) {
         let d = &self.plan.desc;
         let hd = d.head_dim;
-        let Mixer::Attention { k, v, .. } = self.layer(l).mixer else { unreachable!() };
+        let Mixer::Attention { k, v, .. } = self.layer(l).mixer else {
+            unreachable!()
+        };
         // raw K rows (normalised and roped by the attention threads after the barrier)
         let wk = *self.w(k);
-        self.mv_xn_lanes(tss, &wk, 0, k_rows.clone(), |ln, _| self.kraw.ptr_at(ln, k_rows.start));
+        self.mv_xn_lanes(tss, &wk, 0, k_rows.clone(), |ln, _| {
+            self.kraw.ptr_at(ln, k_rows.start)
+        });
         // V rows straight into the (transposed) V cache at `pos`
         if !v_rows.is_empty() {
             let wv = *self.w(v);
             if self.kv.v8() {
                 // int8 V: raw rows (quantised whole after the barrier, see `store_v8`)
-                self.mv_xn_lanes(tss, &wv, 0, v_rows.clone(), |ln, _| self.vraw.ptr_at(ln, v_rows.start));
+                self.mv_xn_lanes(tss, &wv, 0, v_rows.clone(), |ln, _| {
+                    self.vraw.ptr_at(ln, v_rows.start)
+                });
                 if self.trace.is_some() {
                     for ln in 0..tss.len() {
                         // SAFETY: this thread's rows of vraw.
-                        self.tr("Vcur", Some(l), d.n_head_kv * hd, v_rows.start, unsafe { self.vraw.at(ln, v_rows.clone()) });
+                        self.tr("Vcur", Some(l), d.n_head_kv * hd, v_rows.start, unsafe {
+                            self.vraw.at(ln, v_rows.clone())
+                        });
                     }
                 }
                 return;
@@ -2822,7 +3600,13 @@ impl<'a> Engine<'a> {
                     unsafe { *self.vcache.ptr_at(self.vrow(ai, kvh * hd + dim) + pos) = h16[0] };
                 }
                 if self.trace.is_some() {
-                    self.tr("Vcur", Some(l), d.n_head_kv * hd, v_rows.start, &ts.tmp[..v_rows.len()].to_vec());
+                    self.tr(
+                        "Vcur",
+                        Some(l),
+                        d.n_head_kv * hd,
+                        v_rows.start,
+                        &ts.tmp[..v_rows.len()].to_vec(),
+                    );
                 }
             }
         }
@@ -2832,7 +3616,9 @@ impl<'a> Engine<'a> {
     /// rows of every lane at pos0 + lane (kraw complete: after the AttnQkv barrier).
     fn write_k(&self, tss: &mut [ThreadState], l: usize, pos0: usize, qheads: Range<usize>) {
         let d = &self.plan.desc;
-        let Mixer::Attention { k_norm, .. } = self.layer(l).mixer else { unreachable!() };
+        let Mixer::Attention { k_norm, .. } = self.layer(l).mixer else {
+            unreachable!()
+        };
         let hd = d.head_dim;
         let group = d.n_head / d.n_head_kv;
         let ai = self.att_index[l];
@@ -2848,7 +3634,9 @@ impl<'a> Engine<'a> {
                 let cache = unsafe { self.rope.at(ln, 0..hd) };
                 ops::rms_norm_mul(kr, wkn, &mut ts.kn, d.rms_eps);
                 // SAFETY: hd floats; cache of n_rot floats.
-                unsafe { ffi::oxe_rope_neox_inplace(ts.kn.as_mut_ptr(), d.n_rot as i32, cache.as_ptr()) };
+                unsafe {
+                    ffi::oxe_rope_neox_inplace(ts.kn.as_mut_ptr(), d.n_rot as i32, cache.as_ptr())
+                };
                 if self.kv.k8() {
                     self.k8_from(ts, kvh, Some(self.k8row(ai, kvh, pos0 + ln)));
                 } else {
@@ -2871,7 +3659,14 @@ impl<'a> Engine<'a> {
         ((h / group) * self.lanes + ln) * group + h % group
     }
 
-    fn attn_core(&self, ctx: &mut Ctx, tss: &mut [ThreadState], l: usize, pos0: usize, qheads: Range<usize>) {
+    fn attn_core(
+        &self,
+        ctx: &mut Ctx,
+        tss: &mut [ThreadState],
+        l: usize,
+        pos0: usize,
+        qheads: Range<usize>,
+    ) {
         // the same decision on every thread (same run); tiled and per-head are bit-identical,
         // fused (opt-in) is its own class with its own cutoffs
         let last = pos0 + tss.len() - 1;
@@ -2894,7 +3689,9 @@ impl<'a> Engine<'a> {
         }
         let d = &self.plan.desc;
         let lt = self.layer(l);
-        let Mixer::Attention { k_norm, .. } = lt.mixer else { unreachable!() };
+        let Mixer::Attention { k_norm, .. } = lt.mixer else {
+            unreachable!()
+        };
         let hd = d.head_dim;
         let group = d.n_head / d.n_head_kv;
         let ai = self.att_index[l];
@@ -2916,10 +3713,22 @@ impl<'a> Engine<'a> {
                     let kr = unsafe { self.kraw.at(0, kvh * hd..(kvh + 1) * hd) };
                     ops::rms_norm_mul(kr, wkn, &mut ts.kn, d.rms_eps);
                     if self.trace.is_some() && qheads.contains(&(kvh * group)) {
-                        self.tr("Kcur_normed", Some(l), d.n_head_kv * hd, kvh * hd, &ts.kn.clone());
+                        self.tr(
+                            "Kcur_normed",
+                            Some(l),
+                            d.n_head_kv * hd,
+                            kvh * hd,
+                            &ts.kn.clone(),
+                        );
                     }
                     // SAFETY: hd floats; cache of n_rot floats.
-                    unsafe { ffi::oxe_rope_neox_inplace(ts.kn.as_mut_ptr(), d.n_rot as i32, cache.as_ptr()) };
+                    unsafe {
+                        ffi::oxe_rope_neox_inplace(
+                            ts.kn.as_mut_ptr(),
+                            d.n_rot as i32,
+                            cache.as_ptr(),
+                        )
+                    };
                     ops::fp32_to_fp16(&ts.kn, &mut ts.k16);
                     if qheads.contains(&(kvh * group)) {
                         // designated writer of this KV head's cache row at `pos`
@@ -2946,7 +3755,10 @@ impl<'a> Engine<'a> {
             let n_kv = padded_n_kv(pos, self.n_ctx);
             for h in qheads.clone() {
                 let kvh = h / group;
-                let k_last = self.kcache.ptr_at(ai * kv_len + (kvh * self.n_ctx + pos) * hd) as *const u16;
+                let k_last = self
+                    .kcache
+                    .ptr_at(ai * kv_len + (kvh * self.n_ctx + pos) * hd)
+                    as *const u16;
                 self.attn_head(ts, l, h, kvh, ai, kv_len, pos, n_kv, scale, ln, k_last);
             }
         }
@@ -2958,10 +3770,19 @@ impl<'a> Engine<'a> {
     /// and by V^T row (outputs), with each K / V^T row loaded once for all query heads of its
     /// KV head and all lanes. Three steps separated by two barriers inside the phase:
     /// [1] scores K^T q, [2] softmax rows -> f16 probabilities, [3] V^T p (+ sigmoid gate) -> O.
-    fn attn_core_tiled(&self, ctx: &mut Ctx, tss: &mut [ThreadState], l: usize, pos0: usize, qheads: Range<usize>) {
+    fn attn_core_tiled(
+        &self,
+        ctx: &mut Ctx,
+        tss: &mut [ThreadState],
+        l: usize,
+        pos0: usize,
+        qheads: Range<usize>,
+    ) {
         let d = &self.plan.desc;
         let lt = self.layer(l);
-        let Mixer::Attention { k_norm, .. } = lt.mixer else { unreachable!() };
+        let Mixer::Attention { k_norm, .. } = lt.mixer else {
+            unreachable!()
+        };
         let (tid, nth) = (ctx.tid, ctx.nthreads);
         let hd = d.head_dim;
         let nkv = d.n_head_kv;
@@ -2984,17 +3805,31 @@ impl<'a> Engine<'a> {
                 let kr = unsafe { self.kraw.at(ln, kvh * hd..(kvh + 1) * hd) };
                 ops::rms_norm_mul(kr, wkn, &mut ts.kn, d.rms_eps);
                 // SAFETY: hd floats; cache of n_rot floats.
-                unsafe { ffi::oxe_rope_neox_inplace(ts.kn.as_mut_ptr(), d.n_rot as i32, cache.as_ptr()) };
+                unsafe {
+                    ffi::oxe_rope_neox_inplace(ts.kn.as_mut_ptr(), d.n_rot as i32, cache.as_ptr())
+                };
                 let owner = qheads.contains(&(kvh * group));
                 if self.kv.k8() {
                     // int8: the local copy is what the cache row holds, f16(deq(quant(k)))
-                    self.k8_from(ts, kvh, if owner { Some(self.k8row(ai, kvh, pos0 + ln)) } else { None });
+                    self.k8_from(
+                        ts,
+                        kvh,
+                        if owner {
+                            Some(self.k8row(ai, kvh, pos0 + ln))
+                        } else {
+                            None
+                        },
+                    );
                 } else {
                     ops::fp32_to_fp16(&ts.kn, &mut ts.k16[kvh * hd..(kvh + 1) * hd]);
                     if owner {
                         let at = ai * kv_len + (kvh * n_ctx + pos0 + ln) * hd;
                         // SAFETY: designated writer of this row; no reader in this run.
-                        unsafe { self.kcache.at(at..at + hd).copy_from_slice(&ts.k16[kvh * hd..(kvh + 1) * hd]) };
+                        unsafe {
+                            self.kcache
+                                .at(at..at + hd)
+                                .copy_from_slice(&ts.k16[kvh * hd..(kvh + 1) * hd])
+                        };
                     }
                 }
                 if self.kv.v8() && owner {
@@ -3147,7 +3982,9 @@ impl<'a> Engine<'a> {
             }
             if let Some(st) = &self.att_stats {
                 // SAFETY: column c's probabilities were just written by this thread.
-                let pr = unsafe { std::slice::from_raw_parts(self.ap16.ptr_at(c * self.acs) as *const u16, n32) };
+                let pr = unsafe {
+                    std::slice::from_raw_parts(self.ap16.ptr_at(c * self.acs) as *const u16, n32)
+                };
                 let (mut z, mut t) = (0u64, 0u64);
                 let full = (pos + 1) / 32; // blocks entirely at positions <= pos
                 for b in pr.chunks_exact(32).take(full) {
@@ -3203,11 +4040,15 @@ impl<'a> Engine<'a> {
                     let mut acc = 0f32;
                     for ch in 0..nch {
                         // SAFETY: partials complete (barrier), read-only.
-                        acc += unsafe { *self.vpart.ptr_at((kvh * all + ch) * cap + col * hd + dd) };
+                        acc +=
+                            unsafe { *self.vpart.ptr_at((kvh * all + ch) * cap + col * hd + dd) };
                     }
                     let (ln, h) = (col / group, kvh * group + col % group);
                     // SAFETY: gate complete; O element (lane ln, head h, dim dd) owned by this thread.
-                    unsafe { *self.o.ptr_at(ln, h * hd + dd) = acc * *self.agate.ptr_at((c0 + col) * hd + dd) };
+                    unsafe {
+                        *self.o.ptr_at(ln, h * hd + dd) =
+                            acc * *self.agate.ptr_at((c0 + col) * hd + dd)
+                    };
                 }
             }
             return;
@@ -3251,7 +4092,10 @@ impl<'a> Engine<'a> {
                         let gc = c0 + col;
                         for dd in r..re {
                             // SAFETY: as in the f16 path below.
-                            unsafe { *self.o.ptr_at(ln, h * hd + dd) = ts0.kv8acc[(dd - r) * ncol + col] * *self.agate.ptr_at(gc * hd + dd) };
+                            unsafe {
+                                *self.o.ptr_at(ln, h * hd + dd) = ts0.kv8acc[(dd - r) * ncol + col]
+                                    * *self.agate.ptr_at(gc * hd + dd)
+                            };
                         }
                     }
                     r = re;
@@ -3315,7 +4159,10 @@ impl<'a> Engine<'a> {
                     for dd in r..re {
                         // SAFETY: gate complete (AttnQkv barrier); O element (lane ln, head h,
                         // dim dd) is written only by the owner of V^T row (kvh, dd).
-                        unsafe { *self.o.ptr_at(ln, h * hd + dd) = out[(dd - r) * ncol + col] * *self.agate.ptr_at(gc * hd + dd) };
+                        unsafe {
+                            *self.o.ptr_at(ln, h * hd + dd) =
+                                out[(dd - r) * ncol + col] * *self.agate.ptr_at(gc * hd + dd)
+                        };
                     }
                 }
                 r = re;
@@ -3395,7 +4242,14 @@ impl<'a> Engine<'a> {
     /// the kernel wrote vs the f32-attention reference over the same roped f32 query and the
     /// stored K / V; adds the squared error and the squared reference to the check.
     #[cfg(any(test, feature = "f32-reference"))]
-    fn attn_check_ref(&self, ctx: &mut Ctx, tss: &mut [ThreadState], l: usize, pos0: usize, qheads: Range<usize>) {
+    fn attn_check_ref(
+        &self,
+        ctx: &mut Ctx,
+        tss: &mut [ThreadState],
+        l: usize,
+        pos0: usize,
+        qheads: Range<usize>,
+    ) {
         let d = &self.plan.desc;
         let hd = d.head_dim;
         let group = d.n_head / d.n_head_kv;
@@ -3414,7 +4268,15 @@ impl<'a> Engine<'a> {
                     kv = Some((h / group, k, v));
                 }
                 let (_, k, v) = kv.as_ref().unwrap();
-                crate::fused_ref::ref_attn_f64(&ts.q[h * hd..(h + 1) * hd], k, v, pos + 1, hd, scale, &mut out);
+                crate::fused_ref::ref_attn_f64(
+                    &ts.q[h * hd..(h + 1) * hd],
+                    k,
+                    v,
+                    pos + 1,
+                    hd,
+                    scale,
+                    &mut out,
+                );
                 ops::sigmoid(&ts.qg[h * 2 * hd + hd..(h + 1) * 2 * hd], &mut gate);
                 // SAFETY: complete after the barrier; read only.
                 let o = unsafe { self.o.at(ln, h * hd..(h + 1) * hd) };
@@ -3435,7 +4297,15 @@ impl<'a> Engine<'a> {
     /// Test hook ([`Engine::set_attn_ref`]): every query head of this thread through the f32
     /// reference `f` over the stored K / V (dequantised), with the tiled path's barrier count.
     #[cfg(any(test, feature = "f32-reference"))]
-    fn attn_core_ref(&self, ctx: &mut Ctx, tss: &mut [ThreadState], f: AttnRef, l: usize, pos0: usize, qheads: Range<usize>) {
+    fn attn_core_ref(
+        &self,
+        ctx: &mut Ctx,
+        tss: &mut [ThreadState],
+        f: AttnRef,
+        l: usize,
+        pos0: usize,
+        qheads: Range<usize>,
+    ) {
         let d = &self.plan.desc;
         let hd = d.head_dim;
         let group = d.n_head / d.n_head_kv;
@@ -3477,7 +4347,20 @@ impl<'a> Engine<'a> {
     /// One query head over the cache (positions < pos from the cache, `pos` from `k_last`).
     #[allow(clippy::too_many_arguments)]
     #[inline]
-    fn attn_head(&self, ts: &mut ThreadState, l: usize, h: usize, kvh: usize, ai: usize, kv_len: usize, pos: usize, n_kv: usize, scale: f32, ln: usize, k_last: *const u16) {
+    fn attn_head(
+        &self,
+        ts: &mut ThreadState,
+        l: usize,
+        h: usize,
+        kvh: usize,
+        ai: usize,
+        kv_len: usize,
+        pos: usize,
+        n_kv: usize,
+        scale: f32,
+        ln: usize,
+        k_last: *const u16,
+    ) {
         let d = &self.plan.desc;
         let hd = d.head_dim;
         let l_trace = self.trace.is_some();
@@ -3513,16 +4396,41 @@ impl<'a> Engine<'a> {
             o[j] = ts.aout[j] * ts.gsig[j];
         }
         if l_trace {
-            self.tr("kq_soft_max", Some(l), n_kv * d.n_head, h * n_kv, &ts.kq[..n_kv].to_vec());
-            self.tr("attn_pregate", Some(l), d.n_head * hd, h * hd, &ts.aout.clone());
-            self.tr("gate_sigmoid", Some(l), d.n_head * hd, h * hd, &ts.gsig.clone());
+            self.tr(
+                "kq_soft_max",
+                Some(l),
+                n_kv * d.n_head,
+                h * n_kv,
+                &ts.kq[..n_kv].to_vec(),
+            );
+            self.tr(
+                "attn_pregate",
+                Some(l),
+                d.n_head * hd,
+                h * hd,
+                &ts.aout.clone(),
+            );
+            self.tr(
+                "gate_sigmoid",
+                Some(l),
+                d.n_head * hd,
+                h * hd,
+                &ts.gsig.clone(),
+            );
             self.tr("attn_gated", Some(l), d.n_head * hd, h * hd, &o.to_vec());
         }
     }
 
     // ---------------------------------------------------------------- MoE
 
-    fn moe_router(&self, tss: &mut [ThreadState], l: usize, tid: usize, rows: Range<usize>, sh_rows: Range<usize>) {
+    fn moe_router(
+        &self,
+        tss: &mut [ThreadState],
+        l: usize,
+        tid: usize,
+        rows: Range<usize>,
+        sh_rows: Range<usize>,
+    ) {
         let d = &self.plan.desc;
         let lt = self.layer(l);
         for (ln, ts) in tss.iter_mut().enumerate() {
@@ -3535,7 +4443,9 @@ impl<'a> Engine<'a> {
         }
         let wr = *self.w(lt.router);
         // this thread owns router logits `rows`
-        self.mv_xn_lanes(tss, &wr, 0, rows.clone(), |ln, _| self.router.ptr_at(ln, rows.start));
+        self.mv_xn_lanes(tss, &wr, 0, rows.clone(), |ln, _| {
+            self.router.ptr_at(ln, rows.start)
+        });
         // shared-expert gate (redundant on every thread)
         let gs = self.w(lt.shexp_gate).f32_slice();
         for ts in tss.iter_mut() {
@@ -3556,9 +4466,17 @@ impl<'a> Engine<'a> {
         }
         if self.trace.is_some() {
             // SAFETY: own rows.
-            self.tr("ffn_moe_logits", Some(l), d.n_expert, rows.start, unsafe { self.router.at(0, rows.clone()) });
+            self.tr("ffn_moe_logits", Some(l), d.n_expert, rows.start, unsafe {
+                self.router.at(0, rows.clone())
+            });
             if tid == 0 {
-                self.tr("shared_expert_gate_sigmoid", Some(l), 1, 0, &[tss[0].sh_gate]);
+                self.tr(
+                    "shared_expert_gate_sigmoid",
+                    Some(l),
+                    1,
+                    0,
+                    &[tss[0].sh_gate],
+                );
             }
         }
     }
@@ -3599,7 +4517,13 @@ impl<'a> Engine<'a> {
             self.tr("ffn_moe_probs", Some(l), d.n_expert, 0, &ts.probs.clone());
             let ids: Vec<f32> = ts.ids.iter().map(|&i| i as f32).collect();
             self.tr("ffn_moe_topk", Some(l), d.n_expert_used, 0, &ids);
-            self.tr("ffn_moe_weights_norm", Some(l), d.n_expert_used, 0, &ts.w.clone());
+            self.tr(
+                "ffn_moe_weights_norm",
+                Some(l),
+                d.n_expert_used,
+                0,
+                &ts.w.clone(),
+            );
         }
         let bpe = d.ff_exp / QK_K;
         let (wg, wu) = (*self.w(lt.gate_exps), *self.w(lt.up_exps));
@@ -3616,7 +4540,11 @@ impl<'a> Engine<'a> {
             t0.uni_u.clear();
             for ln in 0..n {
                 for j in 0..k {
-                    let e = if ln == 0 { t0.ids[j] } else { rest[ln - 1].ids[j] } as u32;
+                    let e = if ln == 0 {
+                        t0.ids[j]
+                    } else {
+                        rest[ln - 1].ids[j]
+                    } as u32;
                     if !t0.uni_e.contains(&e) {
                         t0.uni_e.push(e);
                         for b in 0..bpe {
@@ -3626,10 +4554,18 @@ impl<'a> Engine<'a> {
                 }
             }
         }
-        let n_units = if n == 1 { units.len() } else { tss[0].uni_u.len() };
+        let n_units = if n == 1 {
+            units.len()
+        } else {
+            tss[0].uni_u.len()
+        };
         let nt = self.plan.nthreads;
         // same ranges as plan::split(n_units, nt)[tid], without the allocation
-        let my = if n == 1 { units.clone() } else { n_units * tid / nt..n_units * (tid + 1) / nt };
+        let my = if n == 1 {
+            units.clone()
+        } else {
+            n_units * tid / nt..n_units * (tid + 1) / nt
+        };
         for u in my {
             let mut users = [(0usize, 0usize); MAX_LANES];
             let mut nu = 0;
@@ -3657,14 +4593,38 @@ impl<'a> Engine<'a> {
             let mut au = [std::ptr::null(); MAX_LANES];
             for (i, &(ln, _)) in users.iter().enumerate() {
                 let ts = &mut tss[ln];
-                ag[i] = if wg.is_f32() { std::ptr::null() } else { ts.acts.get(wg.qtype(), &ts.xn) };
-                au[i] = if wu.is_f32() { std::ptr::null() } else { ts.acts.get(wu.qtype(), &ts.xn) };
+                ag[i] = if wg.is_f32() {
+                    std::ptr::null()
+                } else {
+                    ts.acts.get(wg.qtype(), &ts.xn)
+                };
+                au[i] = if wu.is_f32() {
+                    std::ptr::null()
+                } else {
+                    ts.acts.get(wu.qtype(), &ts.xn)
+                };
                 xs[i] = ts.xn.as_ptr();
                 og[i] = ts.g.as_mut_ptr();
                 ou[i] = ts.u.as_mut_ptr();
             }
-            self.mv_lanes(&wg, e as usize, rows.clone(), nu, &og[..nu], &xs[..nu], &ag[..nu]);
-            self.mv_lanes(&wu, e as usize, rows.clone(), nu, &ou[..nu], &xs[..nu], &au[..nu]);
+            self.mv_lanes(
+                &wg,
+                e as usize,
+                rows.clone(),
+                nu,
+                &og[..nu],
+                &xs[..nu],
+                &ag[..nu],
+            );
+            self.mv_lanes(
+                &wu,
+                e as usize,
+                rows.clone(),
+                nu,
+                &ou[..nu],
+                &xs[..nu],
+                &au[..nu],
+            );
             for &(ln, j) in users {
                 let ts = &tss[ln];
                 let off = j * d.ff_exp + b * QK_K;
@@ -3728,7 +4688,15 @@ impl<'a> Engine<'a> {
                         nu += 1;
                     }
                 }
-                self.mv_lanes(&wd, e as usize, rows.clone(), nu, &outs[..nu], &nulls[..nu], &acts[..nu]);
+                self.mv_lanes(
+                    &wd,
+                    e as usize,
+                    rows.clone(),
+                    nu,
+                    &outs[..nu],
+                    &nulls[..nu],
+                    &acts[..nu],
+                );
             }
         }
         let wsd = *self.w(lt.down_shexp);
@@ -3738,7 +4706,15 @@ impl<'a> Engine<'a> {
             outs[ln] = ts.dtmp[k * d.n_embd..].as_mut_ptr();
             acts[ln] = self.hsh_q.ptr_at(ln, 0) as *const u8;
         }
-        self.mv_lanes(&wsd, 0, rows.clone(), n, &outs[..n], &nulls[..n], &acts[..n]);
+        self.mv_lanes(
+            &wsd,
+            0,
+            rows.clone(),
+            n,
+            &outs[..n],
+            &nulls[..n],
+            &acts[..n],
+        );
         for (ln, ts) in tss.iter_mut().enumerate() {
             // SAFETY: x1 read-only in this phase; this thread owns rows of x2.
             let x1 = unsafe { self.x1.at(ln, rows.clone()) };
@@ -3780,11 +4756,20 @@ impl<'a> Engine<'a> {
 
     /// `mtp`: an MTP draft run; with a restricted draft head (WP-D3b) the rows are that head's
     /// and the argmax maps back through its id list (no logits row: drafts need only the argmax).
-    fn head(&self, tss: &mut [ThreadState], tid: usize, rows: Range<usize>, mask: u32, norm: Tid, mtp: bool) {
+    fn head(
+        &self,
+        tss: &mut [ThreadState],
+        tid: usize,
+        rows: Range<usize>,
+        mask: u32,
+        norm: Tid,
+        mtp: bool,
+    ) {
         let d = &self.plan.desc;
         for (ln, ts) in tss.iter_mut().enumerate() {
             // SAFETY: x2 of the last layer complete (MoeDown barrier).
-            ts.xin.copy_from_slice(unsafe { self.x2.at(ln, 0..d.n_embd) });
+            ts.xin
+                .copy_from_slice(unsafe { self.x2.at(ln, 0..d.n_embd) });
             self.norm(ts, None, norm);
             if tid == 0 {
                 // SAFETY: thread 0 writes h_nextn; read only between runs.
@@ -3794,7 +4779,11 @@ impl<'a> Engine<'a> {
         if tid == 0 && self.trace.is_some() {
             self.tr("result_norm", None, d.n_embd, 0, &tss[0].xn.clone());
         }
-        let draft = if mtp { self.mtp.as_ref().and_then(|m| m.w.draft.as_ref()) } else { None };
+        let draft = if mtp {
+            self.mtp.as_ref().and_then(|m| m.w.draft.as_ref())
+        } else {
+            None
+        };
         let w = match draft {
             Some(dh) => dh.w,
             None => *self.w(self.plan.output),
@@ -3821,7 +4810,18 @@ impl<'a> Engine<'a> {
                     g += 1;
                     if g == kernels_sys::VL_MAX_LANES || ln == last {
                         // SAFETY: as mv() for every lane of the group; each lane writes its own ts.tmp (>= head_chunk floats).
-                        if g > 1 && unsafe { kernels_sys::gemv_lanes_raw(w.qtype(), w.k, &go[..g], w.rows_ptr(0, r), &ga[..g], c) } {
+                        if g > 1
+                            && unsafe {
+                                kernels_sys::gemv_lanes_raw(
+                                    w.qtype(),
+                                    w.k,
+                                    &go[..g],
+                                    w.rows_ptr(0, r),
+                                    &ga[..g],
+                                    c,
+                                )
+                            }
+                        {
                             done |= gm;
                         }
                         g = 0;

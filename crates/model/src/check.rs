@@ -14,14 +14,21 @@ pub struct Check64 {
 
 impl Default for Check64 {
     fn default() -> Self {
-        Check64 { h: 0x243f_6a88_85a3_08d3, tail: [0; 8], nt: 0, len: 0 }
+        Check64 {
+            h: 0x243f_6a88_85a3_08d3,
+            tail: [0; 8],
+            nt: 0,
+            len: 0,
+        }
     }
 }
 
 impl Check64 {
     #[inline]
     fn word(&mut self, w: u64) {
-        self.h = (self.h ^ w).wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(29);
+        self.h = (self.h ^ w)
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .rotate_left(29);
     }
     pub fn update(&mut self, mut d: &[u8]) {
         self.len += d.len() as u64;
@@ -59,4 +66,3 @@ impl Check64 {
         h ^ (h >> 33)
     }
 }
-

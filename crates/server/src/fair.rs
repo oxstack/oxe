@@ -92,12 +92,24 @@ impl Drop for Ticket<'_> {
 
 impl Fair {
     pub fn new(quantum_ms: u64) -> Fair {
-        Fair { quantum_ms: AtomicU64::new(quantum_ms), q: Mutex::new(Queue::default()), cv: Condvar::new(), suspended: AtomicUsize::new(0), rebased: Mutex::new(VecDeque::new()) }
+        Fair {
+            quantum_ms: AtomicU64::new(quantum_ms),
+            q: Mutex::new(Queue::default()),
+            cv: Condvar::new(),
+            suspended: AtomicUsize::new(0),
+            rebased: Mutex::new(VecDeque::new()),
+        }
     }
 
     /// `OXE_FAIR_QUANTUM_MS` (unset, unparsable or 0: off).
     pub fn from_env() -> Fair {
-        Fair::new(std::env::var("OXE_FAIR_QUANTUM_MS").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(0).min(600_000))
+        Fair::new(
+            std::env::var("OXE_FAIR_QUANTUM_MS")
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(0)
+                .min(600_000),
+        )
     }
 
     /// The configured quantum; None = fair slicing off.
@@ -114,7 +126,9 @@ impl Fair {
 
     /// max(configured, SWITCH_FACTOR x the last switch of this run)
     pub fn effective_quantum(configured: Duration, switch_ms: f64) -> Duration {
-        configured.max(Duration::from_secs_f64((switch_ms * SWITCH_FACTOR / 1e3).max(0.0)))
+        configured.max(Duration::from_secs_f64(
+            (switch_ms * SWITCH_FACTOR / 1e3).max(0.0),
+        ))
     }
 
     /// Join the back of the queue.
@@ -137,7 +151,11 @@ impl Fair {
             if q.order.front() == Some(&t.id) {
                 return true;
             }
-            q = self.cv.wait_timeout(q, Duration::from_millis(POLL_MS)).unwrap_or_else(|p| p.into_inner()).0;
+            q = self
+                .cv
+                .wait_timeout(q, Duration::from_millis(POLL_MS))
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
         }
     }
 
@@ -158,7 +176,13 @@ impl Fair {
 
     /// The tickets in turn order (tests, status).
     pub fn order(&self) -> Vec<u64> {
-        self.q.lock().unwrap_or_else(|p| p.into_inner()).order.iter().copied().collect()
+        self.q
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .order
+            .iter()
+            .copied()
+            .collect()
     }
 
     pub fn ticket_id(t: &Ticket) -> u64 {
@@ -204,7 +228,10 @@ impl Fair {
     /// job of the request asks: the state write and the idle re-prefill).
     pub fn post_reply_req(&self, req_no: u64) -> u64 {
         let r = self.rebased.lock().unwrap_or_else(|p| p.into_inner());
-        r.iter().rev().find(|x| x.0 == req_no).map_or(req_no, |x| x.1)
+        r.iter()
+            .rev()
+            .find(|x| x.0 == req_no)
+            .map_or(req_no, |x| x.1)
     }
 }
 
@@ -227,9 +254,18 @@ impl Drop for Running<'_> {
 /// The fair driver (`service::run_blocking` with a quantum, on a blocking thread): ticket, turn,
 /// worker, then slices until the generation ends, giving the worker and the turn away between them.
 /// `gp.cancel` must be set (run_blocking does).
-pub(crate) fn run_sliced<E: Engine>(st: &State<E>, prompt: &[Token], gp: &mut GenParams, queued: Instant, on_partial: &mut dyn FnMut(Partial) -> bool) -> Result<GenResult, GenError> {
+pub(crate) fn run_sliced<E: Engine>(
+    st: &State<E>,
+    prompt: &[Token],
+    gp: &mut GenParams,
+    queued: Instant,
+    on_partial: &mut dyn FnMut(Partial) -> bool,
+) -> Result<GenResult, GenError> {
     let fair = &st.fair;
-    let flag = gp.cancel.clone().unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let flag = gp
+        .cancel
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     // the request number this generation's post-reply jobs are armed with (see `post_reply_req`)
     let my_req = gp.req_no.unwrap_or_else(|| st.reqs.load(Ordering::SeqCst));
     if let Some(pr) = &gp.progress {
@@ -259,7 +295,8 @@ pub(crate) fn run_sliced<E: Engine>(st: &State<E>, prompt: &[Token], gp: &mut Ge
             let q = fair.quantum();
             let eff = q.map(|q| Fair::effective_quantum(q, run.switch_ms()));
             let t0 = Instant::now();
-            let mut want = || eff.is_some_and(|e| t0.elapsed() >= e) && fair.others_waiting(&ticket);
+            let mut want =
+                || eff.is_some_and(|e| t0.elapsed() >= e) && fair.others_waiting(&ticket);
             w.generate_slice(&st.tok, prompt, gp, &mut run, on_partial, &mut want)?
         };
         if let Some(r) = r {
@@ -308,7 +345,11 @@ mod tests {
         let f = Fair::new(10);
         let c = || Arc::new(AtomicBool::new(false));
         let (a, b, d) = (f.enter(c()), f.enter(c()), f.enter(c()));
-        let ids = [Fair::ticket_id(&a), Fair::ticket_id(&b), Fair::ticket_id(&d)];
+        let ids = [
+            Fair::ticket_id(&a),
+            Fair::ticket_id(&b),
+            Fair::ticket_id(&d),
+        ];
         assert_eq!(f.order(), ids);
         let never = AtomicBool::new(false);
         assert!(f.wait_turn(&a, &never));
@@ -317,11 +358,18 @@ mod tests {
         for _ in 0..6 {
             let front = f.order()[0];
             seen.push(front);
-            let t = [&a, &b, &d].into_iter().find(|t| Fair::ticket_id(t) == front).unwrap();
+            let t = [&a, &b, &d]
+                .into_iter()
+                .find(|t| Fair::ticket_id(t) == front)
+                .unwrap();
             assert!(f.wait_turn(t, &never));
             f.rotate(t);
         }
-        assert_eq!(seen, [ids[0], ids[1], ids[2], ids[0], ids[1], ids[2]], "round robin");
+        assert_eq!(
+            seen,
+            [ids[0], ids[1], ids[2], ids[0], ids[1], ids[2]],
+            "round robin"
+        );
         drop(b);
         assert_eq!(f.order(), [ids[0], ids[2]]);
         drop(a);
@@ -345,7 +393,11 @@ mod tests {
         f.cancel_all();
         assert!(!h.join().unwrap(), "cancelled while waiting");
         assert!(flag.load(Ordering::SeqCst));
-        assert_eq!(f.order(), [Fair::ticket_id(&first)], "the cancelled ticket left the queue");
+        assert_eq!(
+            f.order(),
+            [Fair::ticket_id(&first)],
+            "the cancelled ticket left the queue"
+        );
     }
 
     #[test]

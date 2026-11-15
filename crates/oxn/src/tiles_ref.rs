@@ -18,7 +18,15 @@ pub fn ref_act_index(t_pad: usize, k: usize, kc: usize, m: usize, kk: usize) -> 
 }
 
 /// Reference X writer: element by element.
-pub fn ref_write_act(dst: &mut [u16], t_pad: usize, k: usize, kc: usize, m: usize, k0: usize, row: &[f32]) {
+pub fn ref_write_act(
+    dst: &mut [u16],
+    t_pad: usize,
+    k: usize,
+    kc: usize,
+    m: usize,
+    k0: usize,
+    row: &[f32],
+) {
     for (i, &v) in row.iter().enumerate() {
         dst[ref_act_index(t_pad, k, kc, m, k0 + i)] = f32_to_half(v);
     }
@@ -47,7 +55,11 @@ pub fn ref_read_out(
             } else {
                 (m / 32) * ntiles_o + n / 32
             };
-            let idx = c * rtiles * ntiles_o * 1024 + tile * 1024 + ((m % 32) / 2) * 64 + 2 * (n % 32) + (m % 2);
+            let idx = c * rtiles * ntiles_o * 1024
+                + tile * 1024
+                + ((m % 32) / 2) * 64
+                + 2 * (n % 32)
+                + (m % 2);
             let v = half_to_f32(src[idx]);
             acc = if c == 0 { v } else { acc + v };
         }
@@ -90,7 +102,10 @@ pub fn ref_w8_get(w8: &[u8], o: usize, k: usize, kc: usize, n: usize, k_idx: usi
     let base = rec * 1152;
     let nl = n % 32;
     let kli = kl % 32;
-    let scale = half_to_f32(u16::from_le_bytes([w8[base + 1024 + 2 * nl], w8[base + 1025 + 2 * nl]]));
+    let scale = half_to_f32(u16::from_le_bytes([
+        w8[base + 1024 + 2 * nl],
+        w8[base + 1025 + 2 * nl],
+    ]));
     let q = w8[base + (kli / 2) * 64 + 2 * nl + (kli % 2)] as i8;
     scale * (q as f32)
 }

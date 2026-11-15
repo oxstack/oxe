@@ -56,10 +56,14 @@ fn main() {
     // The qwen4exp graph port, linked against the PRODUCTION ggml objects (tools/sync_ggml_prod.sh).
     // Compiled with the production ggml-cpu C++ flags; it does no float arithmetic of its own.
     let home = std::env::var("HOME").unwrap_or_default();
-    let prod = std::env::var("OXF_GGML_PROD").unwrap_or_else(|_| format!("{home}/.cache/local-ai/snapdragon-engine/ggml-prod"));
+    let prod = std::env::var("OXF_GGML_PROD")
+        .unwrap_or_else(|_| format!("{home}/.cache/local-ai/snapdragon-engine/ggml-prod"));
     let prod = PathBuf::from(prod);
     if !prod.join("lib/libggml-cpu.a").exists() {
-        panic!("{}: production ggml missing, run tools/sync_ggml_prod.sh", prod.display());
+        panic!(
+            "{}: production ggml missing, run tools/sync_ggml_prod.sh",
+            prod.display()
+        );
     }
     let csrc = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("csrc");
     let objs = cc::Build::new()
@@ -100,14 +104,27 @@ fn main() {
     for o in objs.iter().chain(pf_objs.iter()) {
         ld.arg(o);
     }
-    ld.arg("--start-group").arg(prod.join("lib/libggml-cpu.a")).arg(prod.join("lib/libggml-base.a")).arg("--end-group");
+    ld.arg("--start-group")
+        .arg(prod.join("lib/libggml-cpu.a"))
+        .arg(prod.join("lib/libggml-base.a"))
+        .arg("--end-group");
     let st = ld.status().expect("ld -r");
     assert!(st.success(), "ld -r failed");
-    let st = Command::new("objcopy").arg("-w").arg("--keep-global-symbol=fg_*").arg(&all).status().expect("objcopy");
+    let st = Command::new("objcopy")
+        .arg("-w")
+        .arg("--keep-global-symbol=fg_*")
+        .arg(&all)
+        .status()
+        .expect("objcopy");
     assert!(st.success(), "objcopy failed");
     let lib = out.join("liboxf_flash_graph.a");
     std::fs::remove_file(&lib).ok();
-    let st = Command::new("ar").arg("crs").arg(&lib).arg(&all).status().expect("ar");
+    let st = Command::new("ar")
+        .arg("crs")
+        .arg(&lib)
+        .arg(&all)
+        .status()
+        .expect("ar");
     assert!(st.success(), "ar failed");
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=oxf_flash_graph");
@@ -122,18 +139,28 @@ fn main() {
     println!("cargo:rerun-if-changed={}", prod.join("lib").display());
     println!("cargo:rerun-if-env-changed=OXF_GGML_PROD");
     let manifest = std::fs::read_to_string(prod.join("MANIFEST")).unwrap_or_default();
-    let cpu_sha = manifest.lines().find(|l| l.ends_with("lib/libggml-cpu.a")).and_then(|l| l.split_whitespace().next()).unwrap_or("unknown");
+    let cpu_sha = manifest
+        .lines()
+        .find(|l| l.ends_with("lib/libggml-cpu.a"))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or("unknown");
     println!("cargo:rustc-env=OXF_GGML_PROD_CPU_SHA={cpu_sha}");
     println!("cargo:rerun-if-changed={}", v.display());
     println!("cargo:rustc-env=OXF_KERNEL_CFLAGS=-O3 -DNDEBUG -std=gnu11 {CPU_ARCH}");
-    let rev = Command::new("git").args(["rev-parse", "--short=12", "HEAD"]).output().ok().filter(|o| o.status.success());
+    let rev = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
     let dirty = Command::new("git")
         .args(["status", "--porcelain", "--untracked-files=no"])
         .output()
         .ok()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
-    let mut s = rev.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_else(|| "unknown".into());
+    let mut s = rev
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".into());
     if dirty {
         s.push_str("-dirty");
     }

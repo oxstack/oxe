@@ -157,7 +157,8 @@ impl Gen {
         let scale = (3.0 / fan_in).sqrt();
         let w = self.rng.vec(cout * cin * k * k, scale);
         let b = self.rng.vec(cout, 0.1);
-        self.t.insert(format!("{name}.weight"), (vec![cout, cin, k, k], w));
+        self.t
+            .insert(format!("{name}.weight"), (vec![cout, cin, k, k], w));
         self.t.insert(format!("{name}.bias"), (vec![cout], b));
     }
     fn norm(&mut self, name: &str, c: usize) {
@@ -327,8 +328,14 @@ impl Reference<'_> {
     }
 
     fn resblock(&self, base: &str, x: &RT) -> RT {
-        let h = self.conv(&format!("{base}.conv1"), &Self::silu(&self.gn(&format!("{base}.norm1"), x)));
-        let h = self.conv(&format!("{base}.conv2"), &Self::silu(&self.gn(&format!("{base}.norm2"), &h)));
+        let h = self.conv(
+            &format!("{base}.conv1"),
+            &Self::silu(&self.gn(&format!("{base}.norm1"), x)),
+        );
+        let h = self.conv(
+            &format!("{base}.conv2"),
+            &Self::silu(&self.gn(&format!("{base}.norm2"), &h)),
+        );
         let sc = if self.t.contains_key(&format!("{base}.nin_shortcut.weight")) {
             self.conv(&format!("{base}.nin_shortcut"), x)
         } else {
@@ -348,7 +355,12 @@ impl Reference<'_> {
         let mut o = RT::zeros(c, x.h, x.w);
         for i in 0..l {
             let mut s: Vec<f64> = (0..l)
-                .map(|j| (0..c).map(|cc| q.d[cc * l + i] * k.d[cc * l + j]).sum::<f64>() * scale)
+                .map(|j| {
+                    (0..c)
+                        .map(|cc| q.d[cc * l + i] * k.d[cc * l + j])
+                        .sum::<f64>()
+                        * scale
+                })
                 .collect();
             let m = s.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
             for v in s.iter_mut() {
@@ -407,10 +419,18 @@ impl Reference<'_> {
         let x = self.attn("decoder.mid.attn_1", &x);
         let mut x = self.resblock("decoder.mid.block_2", &x);
         // Levels from the tensor map: count "decoder.up.i" entries.
-        let n_levels = (0..).take_while(|i| self.t.contains_key(&format!("decoder.up.{i}.block.0.conv1.weight"))).count();
+        let n_levels = (0..)
+            .take_while(|i| {
+                self.t
+                    .contains_key(&format!("decoder.up.{i}.block.0.conv1.weight"))
+            })
+            .count();
         for i in (0..n_levels).rev() {
             let mut j = 0;
-            while self.t.contains_key(&format!("decoder.up.{i}.block.{j}.conv1.weight")) {
+            while self
+                .t
+                .contains_key(&format!("decoder.up.{i}.block.{j}.conv1.weight"))
+            {
                 x = self.resblock(&format!("decoder.up.{i}.block.{j}"), &x);
                 j += 1;
             }
@@ -456,7 +476,12 @@ fn check_config(cfg: Cfg, seed: u64, h: usize, w: usize) {
     assert_eq!(got.len(), 3 * oh * ow);
     assert_eq!(want.len(), 3 * oh * ow);
     let e = rel_rmse(&got, &want);
-    eprintln!("config z={} mid={} levels={} rel_rmse={e:e}", cfg.z, cfg.mid, cfg.mults.len());
+    eprintln!(
+        "config z={} mid={} levels={} rel_rmse={e:e}",
+        cfg.z,
+        cfg.mid,
+        cfg.mults.len()
+    );
     assert!(e < 1e-5, "relative RMSE {e:e} >= 1e-5");
 }
 
@@ -475,25 +500,56 @@ fn decoder_matches_f64_reference_three_levels() {
 #[test]
 fn winograd_and_channel_major_match_f64_reference() {
     use image_vae::decoder::set_conv_mode;
-    for (cfg, seed, h, w) in [(CFG_A, 11u64, 3usize, 3usize), (CFG_B, 23, 2, 4), (CFG_WIDE, 31, 2, 3)] {
+    for (cfg, seed, h, w) in [
+        (CFG_A, 11u64, 3usize, 3usize),
+        (CFG_B, 23, 2, 4),
+        (CFG_WIDE, 31, 2, 3),
+    ] {
         let t = make_tensors(cfg, seed);
         let latent = random_latent(4 * cfg.z * h * w, seed ^ 0x5555);
-        let want = Reference { t: &t, groups: cfg.groups }.decode(&latent, 4 * cfg.z, h, w);
+        let want = Reference {
+            t: &t,
+            groups: cfg.groups,
+        }
+        .decode(&latent, 4 * cfg.z, h, w);
         let dec = VaeDecoder::from_tensors(t.clone(), cfg.groups).expect("build decoder");
         let direct = dec.decode(&latent, 4 * cfg.z, h, w, 2).expect("decode");
         set_conv_mode("winograd").unwrap();
-        let wino = dec.decode(&latent, 4 * cfg.z, h, w, 2).expect("decode winograd");
-        let wino5 = dec.decode(&latent, 4 * cfg.z, h, w, 5).expect("decode winograd");
+        let wino = dec
+            .decode(&latent, 4 * cfg.z, h, w, 2)
+            .expect("decode winograd");
+        let wino5 = dec
+            .decode(&latent, 4 * cfg.z, h, w, 5)
+            .expect("decode winograd");
         set_conv_mode("f32").unwrap();
-        let (major, _) = dec.decode_timed_channel_major(&latent, 4 * cfg.z, h, w, 2).expect("decode channel-major");
-        let (e_d, e_w, e_m) = (rel_rmse(&direct, &want), rel_rmse(&wino, &want), rel_rmse(&major, &want));
-        eprintln!("config z={} mid={}: rel_rmse direct {e_d:e}, winograd {e_w:e}, channel-major {e_m:e}", cfg.z, cfg.mid);
+        let (major, _) = dec
+            .decode_timed_channel_major(&latent, 4 * cfg.z, h, w, 2)
+            .expect("decode channel-major");
+        let (e_d, e_w, e_m) = (
+            rel_rmse(&direct, &want),
+            rel_rmse(&wino, &want),
+            rel_rmse(&major, &want),
+        );
+        eprintln!(
+            "config z={} mid={}: rel_rmse direct {e_d:e}, winograd {e_w:e}, channel-major {e_m:e}",
+            cfg.z, cfg.mid
+        );
         assert!(e_w < 1e-5, "winograd: relative RMSE {e_w:e} >= 1e-5");
         assert!(e_m < 1e-5, "channel-major: relative RMSE {e_m:e} >= 1e-5");
-        assert!(wino.iter().zip(&wino5).all(|(a, b)| a.to_bits() == b.to_bits()), "winograd decode depends on the thread count");
+        assert!(
+            wino.iter()
+                .zip(&wino5)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "winograd decode depends on the thread count"
+        );
         if cfg.mid >= 32 {
             // wide enough for the Winograd form to be taken: it must not be the direct result bit for bit
-            assert!(wino.iter().zip(&direct).any(|(a, b)| a.to_bits() != b.to_bits()), "winograd mode did not change anything: is it running?");
+            assert!(
+                wino.iter()
+                    .zip(&direct)
+                    .any(|(a, b)| a.to_bits() != b.to_bits()),
+                "winograd mode did not change anything: is it running?"
+            );
         }
     }
 }
@@ -512,12 +568,18 @@ fn int8_mode_is_close_and_thread_invariant() {
     let a = dec.decode(&latent, 4 * cfg.z, h, w, 1).unwrap();
     let b = dec.decode(&latent, 4 * cfg.z, h, w, 6).unwrap();
     set_conv_mode("f32").unwrap();
-    assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "int8 decode depends on the thread count");
+    assert!(
+        a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+        "int8 decode depends on the thread count"
+    );
     let want: Vec<f64> = f.iter().map(|v| *v as f64).collect();
     let e = rel_rmse(&a, &want);
     eprintln!("int8 vs f32 decode on CFG_WIDE: rel_rmse {e:e}");
     if cfg!(target_arch = "aarch64") {
-        assert!(e > 1e-6 && e < 0.2, "int8 decode: relative RMSE {e:e} vs f32");
+        assert!(
+            e > 1e-6 && e < 0.2,
+            "int8 decode: relative RMSE {e:e} vs f32"
+        );
     }
 }
 
@@ -532,12 +594,19 @@ fn decode_is_thread_invariant_and_pure() {
         for threads in [2usize, 3, 7] {
             let got = dec.decode(&latent, 4 * cfg.z, h, w, threads).unwrap();
             assert!(
-                got.len() == base.len() && got.iter().zip(&base).all(|(a, b)| a.to_bits() == b.to_bits()),
+                got.len() == base.len()
+                    && got
+                        .iter()
+                        .zip(&base)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
                 "threads={threads} differs from threads=1"
             );
         }
         let again = dec.decode(&latent, 4 * cfg.z, h, w, 1).unwrap();
-        assert!(again.iter().zip(&base).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(again
+            .iter()
+            .zip(&base)
+            .all(|(a, b)| a.to_bits() == b.to_bits()));
     }
 }
 

@@ -9,7 +9,12 @@ use int8_gemm::f16_to_f32;
 use std::path::{Path, PathBuf};
 
 fn tiny() -> Dims {
-    Dims { hidden: 16, heads: 2, head_dim: 8, mlp: 24 }
+    Dims {
+        hidden: 16,
+        heads: 2,
+        head_dim: 8,
+        mlp: 24,
+    }
 }
 
 /// xorshift64, no external crates.
@@ -72,7 +77,9 @@ fn rand_problem(rng: &mut Rng, d: Dims, n: usize) -> (BlockWeightsF32, BlockInpu
 }
 
 fn flat32(rows: &[Vec<f64>]) -> Vec<f32> {
-    rows.iter().flat_map(|r| r.iter().map(|&x| x as f32)).collect()
+    rows.iter()
+        .flat_map(|r| r.iter().map(|&x| x as f32))
+        .collect()
 }
 
 /// Independent scalar reference: plain f64 loops, no helpers from the parent module.
@@ -257,12 +264,19 @@ fn rope_identity_and_quarter_turn() {
 fn rope_preserves_pair_norms_for_rotations() {
     let mut rng = Rng::new(21);
     let mut x = rng.vec(8, 2.0);
-    let before: Vec<f64> = x.chunks_exact(2).map(|p| (p[0] as f64).hypot(p[1] as f64)).collect();
+    let before: Vec<f64> = x
+        .chunks_exact(2)
+        .map(|p| (p[0] as f64).hypot(p[1] as f64))
+        .collect();
     let pe = rand_pe(&mut rng, 1, 4);
     rope(&mut x, &pe);
     for (i, p) in x.chunks_exact(2).enumerate() {
         let after = (p[0] as f64).hypot(p[1] as f64);
-        assert!((after - before[i]).abs() < 1e-5, "pair {i}: {after} vs {}", before[i]);
+        assert!(
+            (after - before[i]).abs() < 1e-5,
+            "pair {i}: {after} vs {}",
+            before[i]
+        );
     }
 }
 
@@ -298,7 +312,10 @@ fn attention_equal_keys_average_values() {
     for tq in 0..n {
         for c in 0..h {
             let mean = (0..n).map(|tk| v[tk * h + c] as f64).sum::<f64>() / n as f64;
-            assert!((out[tq * h + c] as f64 - mean).abs() < 1e-5, "tq {tq} c {c}");
+            assert!(
+                (out[tq * h + c] as f64 - mean).abs() < 1e-5,
+                "tq {tq} c {c}"
+            );
         }
     }
 }
@@ -321,7 +338,10 @@ fn attention_peaked_logit_selects_one_value() {
         for dd in 0..hd {
             let got = out[tq * h + dd];
             let want = v[2 * h + dd];
-            assert!((got - want).abs() < 1e-4, "tq {tq} dim {dd}: {got} vs {want}");
+            assert!(
+                (got - want).abs() < 1e-4,
+                "tq {tq} dim {dd}: {got} vs {want}"
+            );
         }
     }
 }
@@ -347,9 +367,21 @@ fn reference_matches_naive_and_is_thread_invariant() {
         assert!(e < 1e-5, "{name}: rel_rmse {e}");
     }
 
-    assert_eq!(bits(&r1.out), bits(&r3.out), "out differs across thread counts");
-    assert_eq!(bits(&r1.attn), bits(&r3.attn), "attn differs across thread counts");
-    assert_eq!(bits(&r1.mlp), bits(&r3.mlp), "mlp differs across thread counts");
+    assert_eq!(
+        bits(&r1.out),
+        bits(&r3.out),
+        "out differs across thread counts"
+    );
+    assert_eq!(
+        bits(&r1.attn),
+        bits(&r3.attn),
+        "attn differs across thread counts"
+    );
+    assert_eq!(
+        bits(&r1.mlp),
+        bits(&r3.mlp),
+        "mlp differs across thread counts"
+    );
     assert_eq!(bits(&r1.z), bits(&r3.z), "z differs across thread counts");
 }
 
@@ -362,11 +394,16 @@ fn f16_conversion_values_and_round_trip() {
     assert_eq!(f32_to_f16(2f32.powi(-24)), 0x0001);
     assert_eq!(f32_to_f16(1e10), 0x7c00);
 
-    let table = [0.0f32, 1.0, -2.0, 0.1, 65504.0, 1e-5, 1e-7, -3.0e-5, 1e10, -1e10];
+    let table = [
+        0.0f32, 1.0, -2.0, 0.1, 65504.0, 1e-5, 1e-7, -3.0e-5, 1e10, -1e10,
+    ];
     for &x in &table {
         let back = f16_to_f32(f32_to_f16(x));
         if x.abs() > 65504.0 {
-            assert!(back.is_infinite() && back.signum() == x.signum(), "x={x} back={back}");
+            assert!(
+                back.is_infinite() && back.signum() == x.signum(),
+                "x={x} back={back}"
+            );
             continue;
         }
         let tol = if x.abs() < 6.103_515_6e-5 {
@@ -396,7 +433,10 @@ fn q8_quant_dequant_error_within_half_step() {
         for j in 0..32 {
             let i = b * 32 + j;
             let err = (back[i] - x[i]).abs();
-            assert!(err <= d / 2.0 * (1.0 + 1e-5) + 1e-6, "elem {i}: err {err}, d {d}");
+            assert!(
+                err <= d / 2.0 * (1.0 + 1e-5) + 1e-6,
+                "elem {i}: err {err}, d {d}"
+            );
         }
     }
     assert!(back[..32].iter().all(|&v| v == 0.0));
@@ -410,7 +450,10 @@ fn scratch_dir(name: &str) -> PathBuf {
 }
 
 fn write_tensor(dir: &Path, tag: &str, ty: &str, ne: [usize; 4], vals: &[f32]) {
-    let name = format!("{tag}.call0.{ty}.{}x{}x{}x{}.bin", ne[0], ne[1], ne[2], ne[3]);
+    let name = format!(
+        "{tag}.call0.{ty}.{}x{}x{}x{}.bin",
+        ne[0], ne[1], ne[2], ne[3]
+    );
     let mut bytes = Vec::new();
     for &v in vals {
         if ty == "f16" {
@@ -424,7 +467,13 @@ fn write_tensor(dir: &Path, tag: &str, ty: &str, ne: [usize; 4], vals: &[f32]) {
 
 /// Writes a complete, valid block dump set for `d` and `n` tokens, except the tag `skip`
 /// (so a test can write that one tag with a wrong shape instead). Returns (x, expected_out).
-fn write_valid_set(dir: &Path, d: Dims, n: usize, rng: &mut Rng, skip: &str) -> (Vec<f32>, Vec<f32>) {
+fn write_valid_set(
+    dir: &Path,
+    d: Dims,
+    n: usize,
+    rng: &mut Rng,
+    skip: &str,
+) -> (Vec<f32>, Vec<f32>) {
     let half = d.head_dim / 2;
     let x = rng.vec(n * d.hidden, 1.0);
     let eo = rng.vec(n * d.hidden, 1.0);
@@ -442,13 +491,31 @@ fn write_valid_set(dir: &Path, d: Dims, n: usize, rng: &mut Rng, skip: &str) -> 
         write_tensor(dir, "dump.pe", "f32", [2, 2, half, n], &pe);
     }
     if skip != "dump.single.mod.shift" {
-        write_tensor(dir, "dump.single.mod.shift", "f32", [d.hidden, 1, 1, 1], &shift);
+        write_tensor(
+            dir,
+            "dump.single.mod.shift",
+            "f32",
+            [d.hidden, 1, 1, 1],
+            &shift,
+        );
     }
     if skip != "dump.single.mod.scale" {
-        write_tensor(dir, "dump.single.mod.scale", "f32", [d.hidden, 1, 1, 1], &scale);
+        write_tensor(
+            dir,
+            "dump.single.mod.scale",
+            "f32",
+            [d.hidden, 1, 1, 1],
+            &scale,
+        );
     }
     if skip != "dump.single.mod.gate" {
-        write_tensor(dir, "dump.single.mod.gate", "f32", [d.hidden, 1, 1, 1], &gate);
+        write_tensor(
+            dir,
+            "dump.single.mod.gate",
+            "f32",
+            [d.hidden, 1, 1, 1],
+            &gate,
+        );
     }
     (x, eo)
 }
@@ -478,7 +545,13 @@ fn dump_block_round_trip() {
 #[test]
 fn dump_f16_is_converted() {
     let dir = scratch_dir("dump-f16");
-    write_tensor(&dir, "dump.probe", "f16", [4, 1, 1, 1], &[1.0, -2.0, 0.5, 0.25]);
+    write_tensor(
+        &dir,
+        "dump.probe",
+        "f16",
+        [4, 1, 1, 1],
+        &[1.0, -2.0, 0.5, 0.25],
+    );
     let t = read_tag(&dir, "dump.probe").unwrap();
     assert_eq!(t.ne, [4, 1, 1, 1]);
     assert_eq!(t.data, vec![1.0, -2.0, 0.5, 0.25]);
@@ -494,30 +567,56 @@ fn dump_rejects_bad_shapes_and_missing_tags() {
     // Wrong hidden size on the input tensor.
     let dir = scratch_dir("dump-bad-x");
     write_valid_set(&dir, d, n, &mut rng, "dump.single.0.in");
-    write_tensor(&dir, "dump.single.0.in", "f32", [15, n, 1, 1], &rng.vec(15 * n, 1.0));
+    write_tensor(
+        &dir,
+        "dump.single.0.in",
+        "f32",
+        [15, n, 1, 1],
+        &rng.vec(15 * n, 1.0),
+    );
     let err = read_block_dump(&dir, &d).err().expect("expected an error");
-    assert!(err.contains("dump.single.0.in") && err.contains("15"), "{err}");
+    assert!(
+        err.contains("dump.single.0.in") && err.contains("15"),
+        "{err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 
     // Wrong element count for a modulation vector (ne reported).
     let dir = scratch_dir("dump-bad-shift");
     write_valid_set(&dir, d, n, &mut rng, "dump.single.mod.shift");
-    write_tensor(&dir, "dump.single.mod.shift", "f32", [15, 1, 1, 1], &rng.vec(15, 0.1));
+    write_tensor(
+        &dir,
+        "dump.single.mod.shift",
+        "f32",
+        [15, 1, 1, 1],
+        &rng.vec(15, 0.1),
+    );
     let err = read_block_dump(&dir, &d).err().expect("expected an error");
-    assert!(err.contains("dump.single.mod.shift") && err.contains("15"), "{err}");
+    assert!(
+        err.contains("dump.single.mod.shift") && err.contains("15"),
+        "{err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 
     // pe with the wrong half-width (3 pairs instead of head_dim/2 = 4).
     let dir = scratch_dir("dump-bad-pe");
     write_valid_set(&dir, d, n, &mut rng, "dump.pe");
-    write_tensor(&dir, "dump.pe", "f32", [2, 2, 3, n], &rng.vec(2 * 2 * 3 * n, 1.0));
+    write_tensor(
+        &dir,
+        "dump.pe",
+        "f32",
+        [2, 2, 3, n],
+        &rng.vec(2 * 2 * 3 * n, 1.0),
+    );
     let err = read_block_dump(&dir, &d).err().expect("expected an error");
     assert!(err.contains("dump.pe"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 
     // Missing tag.
     let dir = scratch_dir("dump-missing");
-    let err = read_tag(&dir, "dump.single.0.in").err().expect("expected an error");
+    let err = read_tag(&dir, "dump.single.0.in")
+        .err()
+        .expect("expected an error");
     assert!(err.contains("no dump file"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -526,14 +625,24 @@ fn dump_rejects_bad_shapes_and_missing_tags() {
 fn arith_f32_is_the_plain_reference_and_parity_differs_slightly() {
     use crate::arith::Arith;
     use crate::reference::{single_block_ref_arith, single_block_ref_taps};
-    let d = Dims { hidden: 64, heads: 2, head_dim: 32, mlp: 96 };
+    let d = Dims {
+        hidden: 64,
+        heads: 2,
+        head_dim: 32,
+        mlp: 96,
+    };
     let mut r = Rng::new(0x5eed_1234);
     let (w, inp) = rand_problem(&mut r, d, 9);
     let plain = single_block_ref(&w, &inp, 2);
     let f = single_block_ref_arith(&w, &inp, 2, Arith::F32);
     assert_eq!(plain.out, f.out);
     let (p, taps) = single_block_ref_taps(&w, &inp, 2, Arith::SdParity);
-    let delta = |o: &[f32]| o.iter().zip(&inp.x).map(|(a, b)| a - b).collect::<Vec<f32>>();
+    let delta = |o: &[f32]| {
+        o.iter()
+            .zip(&inp.x)
+            .map(|(a, b)| a - b)
+            .collect::<Vec<f32>>()
+    };
     let e = crate::types::rel_rmse(&delta(&p.out), &delta(&f.out));
     assert!(e > 0.0 && e < 0.05, "parity block delta error {e}");
     assert_eq!(taps.x_mod.len(), 9 * 64);

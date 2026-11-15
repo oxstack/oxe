@@ -59,7 +59,10 @@ pub enum TeBackend {
     CpuQ8,
     /// sd.cpp's ggml Q8_0 kernels (repacked weights): the production CPU path
     CpuGgml,
-    Npu { backend: Box<dyn oxn::Backend>, opts: npu::NpuOpts },
+    Npu {
+        backend: Box<dyn oxn::Backend>,
+        opts: npu::NpuOpts,
+    },
 }
 
 impl TeBackend {
@@ -70,7 +73,14 @@ impl TeBackend {
             TeBackend::CpuQ8 => "cpu-q8".into(),
             TeBackend::CpuGgml => "cpu-ggml".into(),
             TeBackend::Npu { opts, .. } => {
-                format!("npu-{}", if opts.weights == oxn::wfmt::WFmt::Fp16 { "fp16" } else { "w8" })
+                format!(
+                    "npu-{}",
+                    if opts.weights == oxn::wfmt::WFmt::Fp16 {
+                        "fp16"
+                    } else {
+                        "w8"
+                    }
+                )
             }
         }
     }
@@ -83,7 +93,10 @@ pub const ENCODER_VERSION: &str = "qwen3-te/1";
 /// (name and size, like the DiT part of the key). Computable without loading the model.
 pub fn encoder_identity(te: &Path, arith: &str) -> Result<String, String> {
     let meta = std::fs::metadata(te).map_err(|e| format!("{}: {e}", te.display()))?;
-    let name = te.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or("text encoder path has no file name")?;
+    let name = te
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or("text encoder path has no file name")?;
     if !["cpu-f32", "cpu-q8", "cpu-ggml", "npu-fp16", "npu-w8"].contains(&arith) {
         return Err(format!("unknown encoder arithmetic '{arith}'"));
     }
@@ -103,7 +116,12 @@ pub struct TeOutput {
 /// `VmRSS` and `VmHWM` of this process in KiB (Linux; `None` elsewhere).
 pub fn rss_kib() -> Option<(u64, u64)> {
     let s = std::fs::read_to_string("/proc/self/status").ok()?;
-    let f = |k: &str| s.lines().find(|l| l.starts_with(k)).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse().ok());
+    let f = |k: &str| {
+        s.lines()
+            .find(|l| l.starts_with(k))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse().ok())
+    };
     Some((f("VmRSS:")?, f("VmHWM:")?))
 }
 
@@ -111,13 +129,20 @@ pub fn rss_kib() -> Option<(u64, u64)> {
 /// `max_n` > 0: a prompt whose padded length exceeds it is refused as `NeedsReference` (the
 /// native path is gated at n_txt 512). Every accelerator session is released before return
 /// (`summary.release_s`), so the DiT can place its weights afterwards (one at a time).
-pub fn encode_prompt(gguf: &Path, prompt: &str, backend: TeBackend, threads: usize, max_n: usize) -> Result<TeOutput, TeError> {
+pub fn encode_prompt(
+    gguf: &Path,
+    prompt: &str,
+    backend: TeBackend,
+    threads: usize,
+    max_n: usize,
+) -> Result<TeOutput, TeError> {
     let t_all = Instant::now();
     let rss0 = rss_kib();
     let spec = KleinSpec::klein();
     let arith = backend.arith();
     let t = Instant::now();
-    let tok = tokenizer::Tokenizer::from_gguf(gguf).map_err(|e| TeError::Other(format!("tokenizer: {}", e.0)))?;
+    let tok = tokenizer::Tokenizer::from_gguf(gguf)
+        .map_err(|e| TeError::Other(format!("tokenizer: {}", e.0)))?;
     let enc = match prompt::klein_tokens(&tok, &spec, prompt) {
         Ok(e) => e,
         Err(prompt::PromptError::NeedsReference(s)) => return Err(TeError::NeedsReference(s)),
@@ -125,7 +150,10 @@ pub fn encode_prompt(gguf: &Path, prompt: &str, backend: TeBackend, threads: usi
     };
     drop(tok);
     if max_n > 0 && enc.tokens.len() > max_n {
-        return Err(TeError::NeedsReference(format!("{} tokens, the native path is gated at {max_n}", enc.tokens.len())));
+        return Err(TeError::NeedsReference(format!(
+            "{} tokens, the native path is gated at {max_n}",
+            enc.tokens.len()
+        )));
     }
     let tokenize_s = t.elapsed().as_secs_f64();
     let t = Instant::now();
@@ -137,8 +165,16 @@ pub fn encode_prompt(gguf: &Path, prompt: &str, backend: TeBackend, threads: usi
     let (ctx, tm, name, lsum, prep_s) = {
         let t = Instant::now();
         let lin: Box<dyn Linears + '_> = match backend {
-            TeBackend::CpuF32 => Box::new(CpuLinears { w: &w, threads, mode: CpuMode::F32 }),
-            TeBackend::CpuQ8 => Box::new(CpuLinears { w: &w, threads, mode: CpuMode::Q8 }),
+            TeBackend::CpuF32 => Box::new(CpuLinears {
+                w: &w,
+                threads,
+                mode: CpuMode::F32,
+            }),
+            TeBackend::CpuQ8 => Box::new(CpuLinears {
+                w: &w,
+                threads,
+                mode: CpuMode::Q8,
+            }),
             TeBackend::CpuGgml => Box::new(ggml::GgmlLinears::new(&w, threads)?),
             TeBackend::Npu { backend, opts } => {
                 let counted = Box::new(npu::CountingBackend::new(backend, dma.clone()));
@@ -169,7 +205,14 @@ pub fn encode_prompt(gguf: &Path, prompt: &str, backend: TeBackend, threads: usi
         "host": {"rss_start_kib": rss0.map(|r| r.0), "rss_end_kib": rss1.map(|r| r.0), "hwm_kib": rss1.map(|r| r.1)},
         "wall_s": t_all.elapsed().as_secs_f64(),
     });
-    Ok(TeOutput { ctx, n: enc.tokens.len(), n_real: enc.n_real, ctx_dim: spec.ctx_dim(&w.cfg), tokens: enc.tokens, summary })
+    Ok(TeOutput {
+        ctx,
+        n: enc.tokens.len(),
+        n_real: enc.n_real,
+        ctx_dim: spec.ctx_dim(&w.cfg),
+        tokens: enc.tokens,
+        summary,
+    })
 }
 
 /// Backend from command-line style options (shared by the `qwen3-te` binary and `oxi`):
@@ -181,7 +224,9 @@ pub fn backend_from_opts(get: &dyn Fn(&str) -> Option<String>) -> Result<TeBacke
     let num = |k: &str, d: usize| -> Result<usize, String> {
         match get(k) {
             None => Ok(d),
-            Some(v) => v.parse().map_err(|_| format!("--{k} must be an integer, got '{v}'")),
+            Some(v) => v
+                .parse()
+                .map_err(|_| format!("--{k} must be an integer, got '{v}'")),
         }
     };
     match get("te-backend").as_deref().unwrap_or("cpu-f32") {
@@ -202,16 +247,26 @@ pub fn backend_from_opts(get: &dyn Fn(&str) -> Option<String>) -> Result<TeBacke
             if kc_max != 0 && kc_max < 32 {
                 return Err("--te-npu-kc must be 0 or at least 32".into());
             }
-            let budget = num("te-npu-budget-mib", 6144)?.checked_mul(1 << 20).ok_or("--te-npu-budget-mib too large")?;
+            let budget = num("te-npu-budget-mib", 6144)?
+                .checked_mul(1 << 20)
+                .ok_or("--te-npu-budget-mib too large")?;
             let backend: Box<dyn oxn::Backend> = match get("te-npu").as_deref().unwrap_or("emu") {
                 "emu" => Box::new(oxn::emu::Emu::new(8 << 20, sessions)),
                 "device" => device_backend(sessions)?,
                 o => return Err(format!("--te-npu must be emu or device, got '{o}'")),
             };
-            let opts = npu::NpuOpts { budget_bytes: budget, weights, kc_max, pack_threads: 0, io_threads: num("te-io-threads", 8)? };
+            let opts = npu::NpuOpts {
+                budget_bytes: budget,
+                weights,
+                kc_max,
+                pack_threads: 0,
+                io_threads: num("te-io-threads", 8)?,
+            };
             Ok(TeBackend::Npu { backend, opts })
         }
-        o => Err(format!("--te-backend must be cpu-f32, cpu-q8, cpu-ggml or npu, got '{o}'")),
+        o => Err(format!(
+            "--te-backend must be cpu-f32, cpu-q8, cpu-ggml or npu, got '{o}'"
+        )),
     }
 }
 
@@ -237,7 +292,13 @@ pub fn write_f32(path: &Path, v: &[f32]) -> Result<(), String> {
 pub fn read_f32(path: &Path) -> Result<Vec<f32>, String> {
     let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if b.len() % 4 != 0 {
-        return Err(format!("{}: {} bytes is not f32 data", path.display(), b.len()));
+        return Err(format!(
+            "{}: {} bytes is not f32 data",
+            path.display(),
+            b.len()
+        ));
     }
-    Ok(b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Ok(b.chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
 }

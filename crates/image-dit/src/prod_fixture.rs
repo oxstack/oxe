@@ -68,7 +68,10 @@ fn prod_shape_block_1536_and_4608() {
     let w1 = random_q8(dims.lin1_out(), dims.hidden, &mut rng);
     let w2 = random_q8(dims.hidden, dims.lin2_in(), &mut rng);
     let ones = vec![1.0f32; dims.head_dim];
-    let threads = std::env::var("OXI_FIXTURE_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(12usize);
+    let threads = std::env::var("OXI_FIXTURE_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12usize);
     let cpus: Vec<usize> = (0..threads).collect();
     let pool = sched::Pool::new(&cpus, Duration::from_millis(2)).expect("pool");
     let mut sizes = vec![1536usize];
@@ -76,7 +79,11 @@ fn prod_shape_block_1536_and_4608() {
         sizes.push(4608);
     }
     for chunk in [256usize, 32] {
-        let cfg = FastConfig { chunk1: chunk, chunk2: chunk, ..FastConfig::default() };
+        let cfg = FastConfig {
+            chunk1: chunk,
+            chunk2: chunk,
+            ..FastConfig::default()
+        };
         let t0 = std::time::Instant::now();
         let mut block = FastBlock::new(dims, &w1, &w2, &ones, &ones, cfg, &pool);
         let pack = t0.elapsed().as_secs_f64();
@@ -88,7 +95,11 @@ fn prod_shape_block_1536_and_4608() {
             let mut same = true;
             for _ in 0..3 {
                 let (b, t) = block.forward(&inp, false);
-                same &= a.out.iter().zip(&b.out).all(|(x, y)| x.to_bits() == y.to_bits());
+                same &= a
+                    .out
+                    .iter()
+                    .zip(&b.out)
+                    .all(|(x, y)| x.to_bits() == y.to_bits());
                 if t.total < best {
                     best = t.total;
                     best_t = Some(t);
@@ -97,7 +108,8 @@ fn prod_shape_block_1536_and_4608() {
             assert!(a.out.iter().all(|v| v.is_finite()), "non-finite output");
             assert!(same, "output not repeatable");
             let t = best_t.expect("three runs");
-            let lin = n as f64 * (dims.lin1_out() * dims.hidden + dims.hidden * dims.lin2_in()) as f64;
+            let lin =
+                n as f64 * (dims.lin1_out() * dims.hidden + dims.hidden * dims.lin2_in()) as f64;
             let att = 2.0 * (n as f64) * (n as f64) * dims.hidden as f64;
             println!(
                 "dit block fixture tokens={n} chunk={chunk} threads={threads} pack={pack:.2}s: total {:.3} s (norm_quant {:.3}, linear1 {:.3}, attention {:.3}, requant {:.3}, linear2 {:.3}); effective TOPS block {:.2}, linear1 {:.2}, linear2 {:.2}, attention {:.2}",

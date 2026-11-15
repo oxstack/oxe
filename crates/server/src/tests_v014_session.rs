@@ -18,7 +18,14 @@ use crate::sampling::SamplingParams;
 use crate::tests_echo::synth_tokenizer;
 
 fn greedy(n_predict: i64) -> GenParams {
-    GenParams { n_predict, sampling: SamplingParams { temperature: 0.0, ..Default::default() }, ..Default::default() }
+    GenParams {
+        n_predict,
+        sampling: SamplingParams {
+            temperature: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 const SYS: usize = 100;
@@ -26,7 +33,9 @@ const INSTR: u32 = 299;
 
 /// `n` filler tokens (1..=250, never the instruction id), varied by `seed`.
 fn fill(n: usize, seed: usize) -> Vec<u32> {
-    (0..n).map(|k| ((k * 7 + seed * 13) % 250) as u32 + 1).collect()
+    (0..n)
+        .map(|k| ((k * 7 + seed * 13) % 250) as u32 + 1)
+        .collect()
 }
 
 /// One request's message layout: message starts, user starts, last message a user message.
@@ -64,16 +73,27 @@ fn session(max_user: usize, hops2: usize) -> Run {
     w.cache.max_user = max_user;
     let mut requests = Vec::new();
     let mut max_counts = (0, 0, 0);
-    let mut l = Layout { msg_starts: vec![0, SYS], user_starts: vec![SYS] };
+    let mut l = Layout {
+        msg_starts: vec![0, SYS],
+        user_starts: vec![SYS],
+    };
     let mut run = |w: &mut Worker<StubEngine>, prompt: &[u32], gp: &GenParams| -> usize {
         let c0 = w.engine.calls.len();
         let r = w.generate(&tok, prompt, gp, &mut |_| true).unwrap();
-        let pre: Vec<(usize, usize)> = w.engine.calls[c0..].iter().filter(|c| c.0 == "prefill").map(|c| (c.1, c.2)).collect();
+        let pre: Vec<(usize, usize)> = w.engine.calls[c0..]
+            .iter()
+            .filter(|c| c.0 == "prefill")
+            .map(|c| (c.1, c.2))
+            .collect();
         requests.push((r.timings.cache_n, pre));
         let info = w.cache.snapshot_info();
         let users = info.iter().filter(|x| x.1 == PRIO_USER).count();
         let turns = info.iter().filter(|x| x.1 == PRIO_TURN).count();
-        max_counts = (max_counts.0.max(users), max_counts.1.max(turns), max_counts.2.max(info.len()));
+        max_counts = (
+            max_counts.0.max(users),
+            max_counts.1.max(turns),
+            max_counts.2.max(info.len()),
+        );
         r.timings.cache_n
     };
     // turn 1: [system | user 1], then three tool hops
@@ -107,8 +127,17 @@ fn session(max_user: usize, hops2: usize) -> Run {
     // the compaction request: the history to the cut (before user 2), then the instruction message
     let mut comp = history_to_cut;
     comp.extend([INSTR; 30]);
-    let compaction_cache = run(&mut w, &comp, &params(&layout_to_cut, true, Some("compaction")));
-    Run { requests, pt: reply_end, compaction_cache, max_counts }
+    let compaction_cache = run(
+        &mut w,
+        &comp,
+        &params(&layout_to_cut, true, Some("compaction")),
+    );
+    Run {
+        requests,
+        pt: reply_end,
+        compaction_cache,
+        max_counts,
+    }
 }
 
 /// The compaction request resumes at the second user message's point (the previous reply's end:
@@ -119,11 +148,23 @@ fn compaction_request_resumes_at_the_cut_after_a_long_tool_loop() {
     for hops2 in [2usize, 6, 12] {
         let on = session(2, hops2);
         let off = session(0, hops2);
-        assert_eq!(on.compaction_cache, on.pt, "hops {hops2}: v0.1.4 resumes at the user point");
-        assert!(off.compaction_cache + 64 < off.pt, "hops {hops2}: v0.1.3 fell back far: {} vs point {}", off.compaction_cache, off.pt);
+        assert_eq!(
+            on.compaction_cache, on.pt,
+            "hops {hops2}: v0.1.4 resumes at the user point"
+        );
+        assert!(
+            off.compaction_cache + 64 < off.pt,
+            "hops {hops2}: v0.1.3 fell back far: {} vs point {}",
+            off.compaction_cache,
+            off.pt
+        );
         // the class caps and the slot budget hold all along
         let (users, turns, total) = on.max_counts;
-        assert!(users <= 2 && turns <= 4 && total <= 8, "hops {hops2}: {:?}", on.max_counts);
+        assert!(
+            users <= 2 && turns <= 4 && total <= 8,
+            "hops {hops2}: {:?}",
+            on.max_counts
+        );
     }
 }
 
@@ -137,7 +178,10 @@ fn user_points_add_no_prefill_split() {
     let k = on.requests.len() - 1;
     assert_eq!(k, off.requests.len() - 1);
     for i in 0..k {
-        assert_eq!(on.requests[i], off.requests[i], "request {i}: cache_n and prefill calls");
+        assert_eq!(
+            on.requests[i], off.requests[i],
+            "request {i}: cache_n and prefill calls"
+        );
     }
 }
 
@@ -160,8 +204,18 @@ fn user_point_placement_and_cap() {
     gp.msg_starts = vec![0, SYS, 203, 300, 350, 470];
     gp.query_start = true;
     w.generate(&tok, &prompt, &gp, &mut |_| true).unwrap();
-    let users: Vec<usize> = w.cache.snapshot_info().iter().filter(|x| x.1 == PRIO_USER).map(|x| x.0).collect();
-    assert_eq!(users, vec![336, 464], "grid floors of the two newest user starts");
+    let users: Vec<usize> = w
+        .cache
+        .snapshot_info()
+        .iter()
+        .filter(|x| x.1 == PRIO_USER)
+        .map(|x| x.0)
+        .collect();
+    assert_eq!(
+        users,
+        vec![336, 464],
+        "grid floors of the two newest user starts"
+    );
     // a user message 5 tokens after the live end: the point is the live end itself
     let live = w.cache.tokens.len();
     let mut next = w.cache.tokens.clone();
@@ -174,15 +228,38 @@ fn user_point_placement_and_cap() {
     let snaps_before = w.engine.calls.iter().filter(|c| c.0 == "snapshot").count();
     w.generate(&tok, &next, &gp2, &mut |_| true).unwrap();
     let info = w.cache.snapshot_info();
-    let users: Vec<usize> = info.iter().filter(|x| x.1 == PRIO_USER).map(|x| x.0).collect();
-    assert!(users.contains(&live), "the live end is the new user point: {info:?}");
+    let users: Vec<usize> = info
+        .iter()
+        .filter(|x| x.1 == PRIO_USER)
+        .map(|x| x.0)
+        .collect();
+    assert!(
+        users.contains(&live),
+        "the live end is the new user point: {info:?}"
+    );
     assert_eq!(users.len(), 2, "cap 2: {info:?}");
-    assert!(!users.contains(&336), "the oldest user point went: {info:?}");
+    assert!(
+        !users.contains(&336),
+        "the oldest user point went: {info:?}"
+    );
     // the live end's own end-of-generation checkpoint was promoted, not copied again
-    let snaps: Vec<usize> = w.engine.calls.iter().filter(|c| c.0 == "snapshot").map(|c| c.1).skip(snaps_before).collect();
-    assert!(!snaps.contains(&live), "no second snapshot at the live end: {snaps:?}");
+    let snaps: Vec<usize> = w
+        .engine
+        .calls
+        .iter()
+        .filter(|c| c.0 == "snapshot")
+        .map(|c| c.1)
+        .skip(snaps_before)
+        .collect();
+    assert!(
+        !snaps.contains(&live),
+        "no second snapshot at the live end: {snaps:?}"
+    );
     // the query point of that request is a query point, not a user point
-    assert!(info.iter().any(|x| x.1 == PRIO_QUERY && x.0 > u), "{info:?}");
+    assert!(
+        info.iter().any(|x| x.1 == PRIO_QUERY && x.0 > u),
+        "{info:?}"
+    );
 }
 
 /// On the mini model (real numerics, MTP off and on): the same session with and without the class
@@ -199,7 +276,10 @@ fn user_class_keeps_outputs_bitwise_on_the_mini_model() {
             let mut w = mini_worker(&dir, depth, None);
             w.cache.max_user = max_user;
             let mut out = Vec::new();
-            let mut l = Layout { msg_starts: vec![0, 70], user_starts: vec![70] };
+            let mut l = Layout {
+                msg_starts: vec![0, 70],
+                user_starts: vec![70],
+            };
             let gp = |l: &Layout, q: bool, kind: Option<&str>| {
                 let mut g = greedy(6);
                 g.first_user = Some(70);
@@ -244,12 +324,26 @@ fn user_class_keeps_outputs_bitwise_on_the_mini_model() {
         let k = on.len() - 1;
         for i in 0..k {
             assert_eq!(on[i].0, off[i].0, "depth {depth} request {i}: tokens");
-            assert!(on[i].1 == off[i].1, "depth {depth} request {i}: state bytes differ");
-            assert_eq!(on[i].2, off[i].2, "depth {depth} request {i}: drafted / accepted");
+            assert!(
+                on[i].1 == off[i].1,
+                "depth {depth} request {i}: state bytes differ"
+            );
+            assert_eq!(
+                on[i].2, off[i].2,
+                "depth {depth} request {i}: drafted / accepted"
+            );
             assert_eq!(on[i].3, off[i].3, "depth {depth} request {i}: cache_n");
         }
-        assert_eq!(on[k].3, *pt_on, "depth {depth}: the compaction resumes at the user point");
-        assert!(off[k].3 < *pt_off, "depth {depth}: v0.1.3 resumed earlier ({} vs {})", off[k].3, pt_off);
+        assert_eq!(
+            on[k].3, *pt_on,
+            "depth {depth}: the compaction resumes at the user point"
+        );
+        assert!(
+            off[k].3 < *pt_off,
+            "depth {depth}: v0.1.3 resumed earlier ({} vs {})",
+            off[k].3,
+            pt_off
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

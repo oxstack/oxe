@@ -28,7 +28,10 @@ const F16_NAN: u16 = 0x7e00;
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) as u32
     }
     /// uniform in [-1, 1]
@@ -117,7 +120,14 @@ impl Case {
                 q = vec![qv; NCOL * HD];
             }
         }
-        Case { n_ctx, pos0, k, vt, v_stride, q16: f16s(&q) }
+        Case {
+            n_ctx,
+            pos0,
+            k,
+            vt,
+            v_stride,
+            q16: f16s(&q),
+        }
     }
 
     fn last(&self) -> usize {
@@ -175,12 +185,45 @@ fn old_tiled(c: &Case) -> Vec<f32> {
     let scale = 1.0 / (HD as f32).sqrt();
     // SAFETY: buffers sized for the case; K rows < rows finite, V^T finite up to n_ctx >= nkv.
     unsafe {
-        ffi::oxe_dot_f16_tile(HD as i32, c.k.as_ptr(), HD as i64, rows as i32, c.q16.as_ptr(), HD as i64, NCOL as i32, akq.as_mut_ptr(), 1, acs as i64, std::ptr::null());
+        ffi::oxe_dot_f16_tile(
+            HD as i32,
+            c.k.as_ptr(),
+            HD as i64,
+            rows as i32,
+            c.q16.as_ptr(),
+            HD as i64,
+            NCOL as i32,
+            akq.as_mut_ptr(),
+            1,
+            acs as i64,
+            std::ptr::null(),
+        );
         for col in 0..NCOL {
             let pos = c.pos0 + col / GROUP;
-            ffi::oxe_attn_softmax_row_f16(akq.as_ptr().add(col * acs), pos as i32, nkv as i32, scale, wp.as_mut_ptr(), dp.as_mut_ptr(), ap16.as_mut_ptr().add(col * acs), n32 as i32);
+            ffi::oxe_attn_softmax_row_f16(
+                akq.as_ptr().add(col * acs),
+                pos as i32,
+                nkv as i32,
+                scale,
+                wp.as_mut_ptr(),
+                dp.as_mut_ptr(),
+                ap16.as_mut_ptr().add(col * acs),
+                n32 as i32,
+            );
         }
-        ffi::oxe_dot_f16_tile(n32 as i32, c.vt.as_ptr(), c.v_stride as i64, HD as i32, ap16.as_ptr(), acs as i64, NCOL as i32, aot.as_mut_ptr(), NCOL as i64, 1, nf.as_ptr());
+        ffi::oxe_dot_f16_tile(
+            n32 as i32,
+            c.vt.as_ptr(),
+            c.v_stride as i64,
+            HD as i32,
+            ap16.as_ptr(),
+            acs as i64,
+            NCOL as i32,
+            aot.as_mut_ptr(),
+            NCOL as i64,
+            1,
+            nf.as_ptr(),
+        );
     }
     let mut out = vec![0f32; NCOL * HD];
     for col in 0..NCOL {
@@ -206,10 +249,18 @@ fn ref_f64(c: &Case) -> Vec<f64> {
     let mut s = vec![0f64; rows];
     for col in 0..NCOL {
         let n = c.pos0 + col / GROUP + 1;
-        let q: Vec<f64> = c.q16[col * HD..(col + 1) * HD].iter().map(|&h| h2f(h)).collect();
+        let q: Vec<f64> = c.q16[col * HD..(col + 1) * HD]
+            .iter()
+            .map(|&h| h2f(h))
+            .collect();
         let mut m = f64::NEG_INFINITY;
         for p in 0..n {
-            s[p] = k[p * HD..(p + 1) * HD].iter().zip(&q).map(|(&a, b)| a as f64 * b).sum::<f64>() * scale;
+            s[p] = k[p * HD..(p + 1) * HD]
+                .iter()
+                .zip(&q)
+                .map(|(&a, b)| a as f64 * b)
+                .sum::<f64>()
+                * scale;
             m = m.max(s[p]);
         }
         let mut sum = 0f64;
@@ -219,7 +270,12 @@ fn ref_f64(c: &Case) -> Vec<f64> {
         }
         for d in 0..HD {
             let v = &vt[d * rows..d * rows + n];
-            out[col * HD + d] = s[..n].iter().zip(v).map(|(a, &b)| a * b as f64).sum::<f64>() / sum;
+            out[col * HD + d] = s[..n]
+                .iter()
+                .zip(v)
+                .map(|(a, &b)| a * b as f64)
+                .sum::<f64>()
+                / sum;
         }
     }
     out
@@ -230,7 +286,11 @@ fn rel_err(x: &[f32], r: &[f64]) -> f64 {
     x.chunks(HD)
         .zip(r.chunks(HD))
         .map(|(xs, rs)| {
-            let e2: f64 = xs.iter().zip(rs).map(|(&a, &b)| (a as f64 - b) * (a as f64 - b)).sum();
+            let e2: f64 = xs
+                .iter()
+                .zip(rs)
+                .map(|(&a, &b)| (a as f64 - b) * (a as f64 - b))
+                .sum();
             let r2: f64 = rs.iter().map(|b| b * b).sum();
             (e2 / r2.max(1e-300)).sqrt()
         })
@@ -251,17 +311,31 @@ fn n_ctx_for(last: usize) -> usize {
 fn fa2_random_matches_f64_and_tiled_at_8k_40k_70k() {
     for &pos0 in &[8_190usize, 40_000, 70_001 - 4] {
         for &qs in &[1.0f32, 4.0, 16.0] {
-            let c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Random(qs), 0x9fa2 ^ pos0 as u64 ^ ((qs as u64) << 32));
+            let c = Case::new(
+                n_ctx_for(pos0 + TT - 1),
+                pos0,
+                Kind::Random(qs),
+                0x9fa2 ^ pos0 as u64 ^ ((qs as u64) << 32),
+            );
             let r = ref_f64(&c);
             let f = fa2(&c, TT);
-            assert!(f.iter().all(|v| v.is_finite()), "pos0 {pos0} qs {qs}: non-finite fa2 output (read beyond the rows?)");
+            assert!(
+                f.iter().all(|v| v.is_finite()),
+                "pos0 {pos0} qs {qs}: non-finite fa2 output (read beyond the rows?)"
+            );
             let old = old_tiled(&c);
             let (ef, eo) = (rel_err(&f, &r), rel_err(&old, &r));
             let efo = rel_err(&f, &old.iter().map(|&x| x as f64).collect::<Vec<_>>());
             println!("pfattn qs {qs:>4} n_kv {:>6}: rel L2 vs f64 fa2 {ef:.2e} tiled {eo:.2e}; fa2 vs tiled {efo:.2e}", pos0 + TT);
             let tol = 3e-3 * (qs as f64 / 4.0).max(1.0);
-            assert!(ef <= tol, "pos0 {pos0} qs {qs}: fa2 error {ef:.3e} vs f64 (bound {tol:.1e})");
-            assert!(ef <= eo * 1.25 + 3e-4, "pos0 {pos0} qs {qs}: fa2 error {ef:.3e} worse than tiled {eo:.3e}");
+            assert!(
+                ef <= tol,
+                "pos0 {pos0} qs {qs}: fa2 error {ef:.3e} vs f64 (bound {tol:.1e})"
+            );
+            assert!(
+                ef <= eo * 1.25 + 3e-4,
+                "pos0 {pos0} qs {qs}: fa2 error {ef:.3e} worse than tiled {eo:.3e}"
+            );
         }
     }
 }
@@ -270,13 +344,18 @@ fn fa2_random_matches_f64_and_tiled_at_8k_40k_70k() {
 /// around the chunk / 32-block boundaries and deep (the unit straddles them).
 #[test]
 fn fa2_uniform_exact_counts() {
-    for &pos0 in &[0usize, 1, 25, 30, 250, 252, 255, 256, 509, 8_184, 8_190, 40_000, 70_001] {
+    for &pos0 in &[
+        0usize, 1, 25, 30, 250, 252, 255, 256, 509, 8_184, 8_190, 40_000, 70_001,
+    ] {
         let c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Uniform, 3);
         let r = ref_f64(&c);
         for per in [TT, 2, 1] {
             let f = fa2(&c, per);
             for (i, (&x, &y)) in f.iter().zip(&r).enumerate() {
-                assert!((x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12, "pos0 {pos0} per {per}: out[{i}] = {x} want {y}");
+                assert!(
+                    (x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12,
+                    "pos0 {pos0} per {per}: out[{i}] = {x} want {y}"
+                );
             }
         }
     }
@@ -288,17 +367,26 @@ fn fa2_uniform_exact_counts() {
 #[test]
 fn fa2_spikes_masking_and_large_logits() {
     for &pos0 in &[0usize, 250, 8_188, 40_000] {
-        let mut sp = vec![0usize, 31, 32, 255, 256, 257, 8_191, 8_192, 8_447, 8_448, 39_999];
+        let mut sp = vec![
+            0usize, 31, 32, 255, 256, 257, 8_191, 8_192, 8_447, 8_448, 39_999,
+        ];
         sp.extend([pos0 + 3, pos0 + TT - 1]);
         sp.retain(|&p| p < pos0 + TT);
         for keep_only_inside in [false, true] {
-            let s: Vec<usize> = if keep_only_inside { vec![pos0 + 3] } else { sp.clone() };
+            let s: Vec<usize> = if keep_only_inside {
+                vec![pos0 + 3]
+            } else {
+                sp.clone()
+            };
             let c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Spikes(s.clone()), 5);
             let r = ref_f64(&c);
             for per in [TT, 1] {
                 let f = fa2(&c, per);
                 for (i, (&x, &y)) in f.iter().zip(&r).enumerate() {
-                    assert!((x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12, "pos0 {pos0} spikes {s:?} per {per}: out[{i}] = {x} want {y}");
+                    assert!(
+                        (x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12,
+                        "pos0 {pos0} spikes {s:?} per {per}: out[{i}] = {x} want {y}"
+                    );
                 }
             }
         }
@@ -310,11 +398,19 @@ fn fa2_spikes_masking_and_large_logits() {
 #[test]
 fn fa2_unit_split_is_bitwise_invariant() {
     for &pos0 in &[3usize, 253, 9_000, 40_000 - 3] {
-        let c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Random(4.0), 77 ^ pos0 as u64);
+        let c = Case::new(
+            n_ctx_for(pos0 + TT - 1),
+            pos0,
+            Kind::Random(4.0),
+            77 ^ pos0 as u64,
+        );
         let a = fa2(&c, TT);
         assert!(a.iter().all(|v| v.is_finite()));
         for per in [4usize, 2, 1] {
-            assert!(same_bits(&fa2(&c, per), &a), "pos0 {pos0}: units of {per} tokens differ from units of {TT}");
+            assert!(
+                same_bits(&fa2(&c, per), &a),
+                "pos0 {pos0}: units of {per} tokens differ from units of {TT}"
+            );
         }
     }
     assert_eq!(PFA_CH % 32, 0);
@@ -354,13 +450,21 @@ fn fa2x_random_error_vs_f64_no_worse_than_fa2_and_tiled() {
     let mut worst = Vec::new();
     for &pos0 in &[8_190usize, 40_000, 70_001 - 4] {
         for &qs in &[1.0f32, 4.0, 16.0] {
-            let c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Random(qs), 0x9fa2 ^ pos0 as u64 ^ ((qs as u64) << 32));
+            let c = Case::new(
+                n_ctx_for(pos0 + TT - 1),
+                pos0,
+                Kind::Random(qs),
+                0x9fa2 ^ pos0 as u64 ^ ((qs as u64) << 32),
+            );
             let r = ref_f64(&c);
             let (ef, eo) = (rel_err(&fa2(&c, TT), &r), rel_err(&old_tiled(&c), &r));
             for fold in FOLDS {
                 for ch in [128usize, 256] {
                     let x = fa2x(&c, TT, XParams::new(fold, ch).unwrap());
-                    assert!(x.iter().all(|v| v.is_finite()), "pos0 {pos0} qs {qs} fold {fold}: non-finite fa2x output");
+                    assert!(
+                        x.iter().all(|v| v.is_finite()),
+                        "pos0 {pos0} qs {qs} fold {fold}: non-finite fa2x output"
+                    );
                     let ex = rel_err(&x, &r);
                     println!("pfattn-x qs {qs:>4} n_kv {:>6} fold {fold:>2} ch {ch:>3}: rel L2 vs f64 fa2x {ex:.3e} fa2 {ef:.3e} tiled {eo:.3e}", pos0 + TT);
                     worst.push(format!("n_kv {} qs {qs} fold {fold} ch {ch}: fa2x {ex:.3e} fa2 {ef:.3e} tiled {eo:.3e}", pos0 + TT));
@@ -369,7 +473,11 @@ fn fa2x_random_error_vs_f64_no_worse_than_fa2_and_tiled() {
                     let tol = 3e-3 * (qs as f64 / 4.0).max(1.0) * if fold == 8 { 1.0 } else { 2.0 };
                     assert!(ex <= tol, "pos0 {pos0} qs {qs} fold {fold} ch {ch}: fa2x error {ex:.3e} vs f64 (bound {tol:.1e})");
                     if fold == 8 {
-                        assert!(ex <= ef * 1.05 + 1e-6 && ex <= eo * 1.05 + 1e-6, "fold 8 must be no worse than today (5% noise): {}", worst.last().unwrap());
+                        assert!(
+                            ex <= ef * 1.05 + 1e-6 && ex <= eo * 1.05 + 1e-6,
+                            "fold 8 must be no worse than today (5% noise): {}",
+                            worst.last().unwrap()
+                        );
                     }
                 }
             }
@@ -381,32 +489,55 @@ fn fa2x_random_error_vs_f64_no_worse_than_fa2_and_tiled() {
 /// units of 8 / 2 / 1 tokens, against f64 at 1e-6.
 #[test]
 fn fa2x_exact_fixtures_all_folds_and_chunks() {
-    let xps: Vec<XParams> = [(8usize, 32usize), (8, 128), (16, 256), (32, FA2X_MAX_CH), (32, 96)].iter().map(|&(f, c)| XParams::new(f, c).unwrap()).collect();
-    for &pos0 in &[0usize, 1, 25, 30, 120, 125, 250, 252, 255, 256, 509, 8_184, 8_190, 40_000, 70_001] {
+    let xps: Vec<XParams> = [
+        (8usize, 32usize),
+        (8, 128),
+        (16, 256),
+        (32, FA2X_MAX_CH),
+        (32, 96),
+    ]
+    .iter()
+    .map(|&(f, c)| XParams::new(f, c).unwrap())
+    .collect();
+    for &pos0 in &[
+        0usize, 1, 25, 30, 120, 125, 250, 252, 255, 256, 509, 8_184, 8_190, 40_000, 70_001,
+    ] {
         let c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Uniform, 3);
         let r = ref_f64(&c);
         for &xp in &xps {
             for per in [TT, 2, 1] {
                 let f = fa2x(&c, per, xp);
                 for (i, (&x, &y)) in f.iter().zip(&r).enumerate() {
-                    assert!((x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12, "uniform pos0 {pos0} {xp:?} per {per}: out[{i}] = {x} want {y}");
+                    assert!(
+                        (x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12,
+                        "uniform pos0 {pos0} {xp:?} per {per}: out[{i}] = {x} want {y}"
+                    );
                 }
             }
         }
     }
     for &pos0 in &[0usize, 120, 250, 8_188, 40_000] {
-        let mut sp = vec![0usize, 31, 32, 95, 96, 127, 128, 255, 256, 257, 8_191, 8_192, 8_447, 8_448, 39_999];
+        let mut sp = vec![
+            0usize, 31, 32, 95, 96, 127, 128, 255, 256, 257, 8_191, 8_192, 8_447, 8_448, 39_999,
+        ];
         sp.extend([pos0 + 3, pos0 + TT - 1]);
         sp.retain(|&p| p < pos0 + TT);
         for keep_only_inside in [false, true] {
-            let s: Vec<usize> = if keep_only_inside { vec![pos0 + 3] } else { sp.clone() };
+            let s: Vec<usize> = if keep_only_inside {
+                vec![pos0 + 3]
+            } else {
+                sp.clone()
+            };
             let c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Spikes(s.clone()), 5);
             let r = ref_f64(&c);
             for &xp in &xps {
                 for per in [TT, 1] {
                     let f = fa2x(&c, per, xp);
                     for (i, (&x, &y)) in f.iter().zip(&r).enumerate() {
-                        assert!((x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12, "spikes pos0 {pos0} {s:?} {xp:?} per {per}: out[{i}] = {x} want {y}");
+                        assert!(
+                            (x as f64 - y).abs() <= 1e-6 * y.abs() + 1e-12,
+                            "spikes pos0 {pos0} {s:?} {xp:?} per {per}: out[{i}] = {x} want {y}"
+                        );
                     }
                 }
             }
@@ -419,13 +550,21 @@ fn fa2x_exact_fixtures_all_folds_and_chunks() {
 #[test]
 fn fa2x_unit_split_is_bitwise_invariant() {
     for &pos0 in &[3usize, 125, 253, 9_000, 40_000 - 3] {
-        let c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Random(4.0), 77 ^ pos0 as u64);
+        let c = Case::new(
+            n_ctx_for(pos0 + TT - 1),
+            pos0,
+            Kind::Random(4.0),
+            77 ^ pos0 as u64,
+        );
         for fold in FOLDS {
             let xp = XParams::new(fold, 128).unwrap();
             let a = fa2x(&c, TT, xp);
             assert!(a.iter().all(|v| v.is_finite()));
             for per in [4usize, 2, 1] {
-                assert!(same_bits(&fa2x(&c, per, xp), &a), "pos0 {pos0} fold {fold}: units of {per} tokens differ from units of {TT}");
+                assert!(
+                    same_bits(&fa2x(&c, per, xp), &a),
+                    "pos0 {pos0} fold {fold}: units of {per} tokens differ from units of {TT}"
+                );
             }
         }
     }
@@ -437,7 +576,12 @@ fn fa2x_unit_split_is_bitwise_invariant() {
 #[test]
 fn fa2x_gqa_shared_pass_equals_single_column_runs() {
     for &pos0 in &[5usize, 254, 9_001] {
-        let c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Random(8.0), 0x6aa ^ pos0 as u64);
+        let c = Case::new(
+            n_ctx_for(pos0 + TT - 1),
+            pos0,
+            Kind::Random(8.0),
+            0x6aa ^ pos0 as u64,
+        );
         let xp = XParams::default();
         let all = fa2x(&c, TT, xp);
         let mut scr = Scratch::new(1, HD);
@@ -449,7 +593,12 @@ fn fa2x_gqa_shared_pass_equals_single_column_runs() {
             t.q16 = c.q16[col * HD..].as_ptr();
             // SAFETY: one column of the case (rows up to its own position).
             unsafe { t.run_x(&mut scr, xp) };
-            assert!(same_bits(scr.out(0), &all[col * HD..(col + 1) * HD]), "pos0 {pos0}: column {col} (head {} of token {}) differs alone", col % GROUP, col / GROUP);
+            assert!(
+                same_bits(scr.out(0), &all[col * HD..(col + 1) * HD]),
+                "pos0 {pos0}: column {col} (head {} of token {}) differs alone",
+                col % GROUP,
+                col / GROUP
+            );
         }
     }
 }
@@ -490,7 +639,10 @@ fn outlier_case(n_ctx: usize, pos0: usize, qs: f32, mag: f32, dims: &[usize], se
 
 /// Max |x - ref| over all outputs.
 fn max_abs(x: &[f32], r: &[f64]) -> f64 {
-    x.iter().zip(r).map(|(&a, &b)| (a as f64 - b).abs()).fold(0f64, f64::max)
+    x.iter()
+        .zip(r)
+        .map(|(&a, &b)| (a as f64 - b).abs())
+        .fold(0f64, f64::max)
 }
 
 #[test]
@@ -498,10 +650,16 @@ fn fa2x_envelope_realistic_and_adversarial() {
     let xp = XParams::default();
     // kv_len of the unit's columns = pos0 + 1 .. pos0 + 8: 1 (pos0 0), around the fa2x chunk
     // (128) and fa2 chunk (256), the 32 / 8 row tiles, 4096 and ~8K, each boundary +-1
-    let pos0s = [0usize, 1, 23, 24, 25, 119, 120, 121, 247, 248, 249, 4087, 4088, 4089, 8183];
+    let pos0s = [
+        0usize, 1, 23, 24, 25, 119, 120, 121, 247, 248, 249, 4087, 4088, 4089, 8183,
+    ];
     // dims: none, a consecutive block of 8 at the end of each rotary half (24..32, 56..64),
     // the same count scattered (stride 32: the tiled order's worst case)
-    let blocks: [(&str, Vec<usize>); 3] = [("none", vec![]), ("block8x2", (24..32).chain(56..64).collect()), ("scatter16", (0..16).map(|i| i * 16 + 3).collect())];
+    let blocks: [(&str, Vec<usize>); 3] = [
+        ("none", vec![]),
+        ("block8x2", (24..32).chain(56..64).collect()),
+        ("scatter16", (0..16).map(|i| i * 16 + 3).collect()),
+    ];
     let mut lines = Vec::new();
     let mut worst_ratio = 0f64;
     for (bname, dims) in &blocks {
@@ -516,10 +674,19 @@ fn fa2x_envelope_realistic_and_adversarial() {
                 let (t, f) = (old_tiled(&c), fa2(&c, TT));
                 let x8 = fa2x(&c, TT, xp);
                 let x1 = fa2x(&c, 1, xp);
-                assert!(same_bits(&x8, &x1), "{bname} mag {mag} pos0 {pos0}: fa2x unit split changed bits");
+                assert!(
+                    same_bits(&x8, &x1),
+                    "{bname} mag {mag} pos0 {pos0}: fa2x unit split changed bits"
+                );
                 let fin = |v: &[f32]| v.iter().all(|y| y.is_finite());
-                assert!(fin(&t) && fin(&f), "{bname} mag {mag} pos0 {pos0}: tiled / fa2 non-finite");
-                assert!(fin(&x8), "{bname} mag {mag} pos0 {pos0}: fa2x NON-FINITE where tiled and fa2 are finite");
+                assert!(
+                    fin(&t) && fin(&f),
+                    "{bname} mag {mag} pos0 {pos0}: tiled / fa2 non-finite"
+                );
+                assert!(
+                    fin(&x8),
+                    "{bname} mag {mag} pos0 {pos0}: fa2x NON-FINITE where tiled and fa2 are finite"
+                );
                 let (et, ef, ex) = (rel_err(&t, &r), rel_err(&f, &r), rel_err(&x8, &r));
                 let (at, af, ax) = (max_abs(&t, &r), max_abs(&f, &r), max_abs(&x8, &r));
                 let ratio = ex / et.max(ef).max(1e-7);
@@ -535,7 +702,11 @@ fn fa2x_envelope_realistic_and_adversarial() {
                 // noise is O(1e-3) and grows with the outlier magnitude for EVERY kernel (CI
                 // 43358304704: mag 16 puts tiled and fa2 at 8e-2 too). So the bound is relative
                 // to the shipped classes on the same case (seen: x0.3 .. x1.43).
-                assert!(ex <= 2.5 * et.max(ef) + 2e-3, "fa2x outside the f16 class envelope: {}", lines.last().unwrap().1);
+                assert!(
+                    ex <= 2.5 * et.max(ef) + 2e-3,
+                    "fa2x outside the f16 class envelope: {}",
+                    lines.last().unwrap().1
+                );
             }
         }
     }
@@ -555,7 +726,12 @@ fn fa2x_envelope_large_logit_spikes() {
     for &pos0 in &[0usize, 120, 121, 248, 4089] {
         for &spike in &[640.0f32, 960.0] {
             // score = q . k / 16: q = 1 on 16 dims, k = spike / 16 there at the spike positions
-            let mut c = Case::new(n_ctx_for(pos0 + TT - 1), pos0, Kind::Random(1.0), 0x5b1 ^ pos0 as u64);
+            let mut c = Case::new(
+                n_ctx_for(pos0 + TT - 1),
+                pos0,
+                Kind::Random(1.0),
+                0x5b1 ^ pos0 as u64,
+            );
             let sp = [pos0 / 2, pos0 + 3];
             for &p in &sp {
                 for d in 0..16 {
@@ -570,7 +746,10 @@ fn fa2x_envelope_large_logit_spikes() {
             let r = ref_f64(&c);
             let (et, ex) = (rel_err(&old_tiled(&c), &r), rel_err(&fa2x(&c, TT, xp), &r));
             println!("fa2x-envelope spike {spike:>4} kv_len {:>5}..: rel L2 tiled {et:.2e} fa2x {ex:.2e}", pos0 + 1);
-            assert!(ex.is_finite() && ex <= 4.0 * et + 2e-3, "spike {spike} pos0 {pos0}: tiled {et:.2e} fa2x {ex:.2e}");
+            assert!(
+                ex.is_finite() && ex <= 4.0 * et + 2e-3,
+                "spike {spike} pos0 {pos0}: tiled {et:.2e} fa2x {ex:.2e}"
+            );
         }
     }
 }

@@ -46,7 +46,13 @@ unsafe impl Send for NgramTable {}
 unsafe impl Sync for NgramTable {}
 
 impl NgramTable {
-    pub fn new(fd: i32, base: u64, head_off: Vec<u64>, head_vocab: Vec<u64>, cache_bytes: usize) -> std::io::Result<NgramTable> {
+    pub fn new(
+        fd: i32,
+        base: u64,
+        head_off: Vec<u64>,
+        head_vocab: Vec<u64>,
+        cache_bytes: usize,
+    ) -> std::io::Result<NgramTable> {
         assert_eq!(head_off.len(), PLE_HEADS);
         assert_eq!(head_vocab.len(), PLE_HEADS);
         let cap = (cache_bytes / PAGE as usize).max(64);
@@ -74,7 +80,11 @@ impl NgramTable {
         let order = if h < PLE_HEADS / 2 { 2 } else { 3 };
         let mut x = 0u64;
         for i in 0..order {
-            let t = if toks.len() > i { toks[toks.len() - 1 - i] as u64 } else { 0 };
+            let t = if toks.len() > i {
+                toks[toks.len() - 1 - i] as u64
+            } else {
+                0
+            };
             x = x.wrapping_add(t.wrapping_mul(MULT[i]));
         }
         x ^= (h as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
@@ -161,13 +171,19 @@ impl NgramTable {
             let o = o as usize;
             // SAFETY: page slots inside the arena, READY (read complete).
             unsafe {
-                let p0 = std::slice::from_raw_parts(self.arena.ptr.add(s0 as usize * PAGE as usize), PAGE as usize);
+                let p0 = std::slice::from_raw_parts(
+                    self.arena.ptr.add(s0 as usize * PAGE as usize),
+                    PAGE as usize,
+                );
                 if s1 == u32::MAX {
                     row.copy_from_slice(&p0[o..o + PLE_ROW_BYTES]);
                 } else {
                     let a = PAGE as usize - o;
                     row[..a].copy_from_slice(&p0[o..]);
-                    let p1 = std::slice::from_raw_parts(self.arena.ptr.add(s1 as usize * PAGE as usize), PAGE as usize);
+                    let p1 = std::slice::from_raw_parts(
+                        self.arena.ptr.add(s1 as usize * PAGE as usize),
+                        PAGE as usize,
+                    );
                     row[a..].copy_from_slice(&p1[..PLE_ROW_BYTES - a]);
                 }
             }

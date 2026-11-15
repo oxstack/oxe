@@ -34,12 +34,17 @@ impl Trace {
             }
             let v: Vec<u32> = line
                 .split(',')
-                .map(|x| x.trim().parse::<u32>().map_err(|e| format!("line {}: {e}", i + 2)))
+                .map(|x| {
+                    x.trim()
+                        .parse::<u32>()
+                        .map_err(|e| format!("line {}: {e}", i + 2))
+                })
                 .collect::<Result<_, _>>()?;
             if v.len() != 6 {
                 return Err(format!("line {}: {} fields", i + 2, v.len()));
             }
-            let (phase, step, layer, slot, e) = (v[1], v[2], v[3] as usize, v[4] as usize, v[5] as usize);
+            let (phase, step, layer, slot, e) =
+                (v[1], v[2], v[3] as usize, v[4] as usize, v[5] as usize);
             if layer >= N_LAYER || slot >= TOP_K || e >= N_EXPERT {
                 return Err(format!("line {}: out of range", i + 2));
             }
@@ -75,7 +80,11 @@ impl Trace {
                 return Err(format!("decode step {} incomplete", d.0));
             }
         }
-        Ok(Trace { prefill, decode: dec.into_iter().map(|d| d.1).collect(), records })
+        Ok(Trace {
+            prefill,
+            decode: dec.into_iter().map(|d| d.1).collect(),
+            records,
+        })
     }
 }
 
@@ -106,10 +115,12 @@ mod tests {
     }
     #[test]
     fn real_trace_if_present() {
-        let p = std::env::var_os("OXF_EXPERT_TRACE").map(std::path::PathBuf::from).unwrap_or_else(|| {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap())
-                .join(".cache/local-ai/snapdragon-engine/flash/flash-fixed353-expert-ids.csv")
-        });
+        let p = std::env::var_os("OXF_EXPERT_TRACE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap())
+                    .join(".cache/local-ai/snapdragon-engine/flash/flash-fixed353-expert-ids.csv")
+            });
         if !p.exists() {
             return;
         }

@@ -39,7 +39,10 @@ fn opts(a: &Args) -> Opts {
     let cand = a.get("candidate").and_then(Candidate::parse).unwrap_or_else(|| {
         die("--candidate prefill-fa2 | prefill-fa2x | prefill-pfg | fused-decode required (O-117: the candidate is explicit; prefill candidates run genuinely batched prefill)")
     });
-    let p = a.get("prefix-len").map(|_| a.num("prefix-len", 0)).unwrap_or_else(|| die("--prefix-len P required (32768, 65536, ..)"));
+    let p = a
+        .get("prefix-len")
+        .map(|_| a.num("prefix-len", 0))
+        .unwrap_or_else(|| die("--prefix-len P required (32768, 65536, ..)"));
     let n = a.num("n", 1000);
     let n_samples = a.num("ref-samples", 200);
     let ubatch = a.num("ubatch", model::engine::UBATCH);
@@ -47,7 +50,9 @@ fn opts(a: &Args) -> Opts {
         die("fused-ref needs --prefix-len >= 64, --n >= 1, --ref-samples >= 1, --ubatch >= 1");
     }
     let control = match a.get("control") {
-        Some(c) => Control::parse(c).unwrap_or_else(|| die(&format!("--control {c}: decode | ubatch:N"))),
+        Some(c) => {
+            Control::parse(c).unwrap_or_else(|| die(&format!("--control {c}: decode | ubatch:N")))
+        }
         None if cand.is_prefill() => Control::Decode,
         None => Control::Ubatch(model::engine::UBATCH),
     };
@@ -55,7 +60,13 @@ fn opts(a: &Args) -> Opts {
         die("fused-decode: the incumbent is the tiled decode; the control must be batched (--control ubatch:N)");
     }
     let num = |k: &str, d: f64| {
-        let v = a.get(k).map(|v| v.parse::<f64>().unwrap_or_else(|_| die(&format!("--{k}: not a number")))).unwrap_or(d);
+        let v = a
+            .get(k)
+            .map(|v| {
+                v.parse::<f64>()
+                    .unwrap_or_else(|_| die(&format!("--{k}: not a number")))
+            })
+            .unwrap_or(d);
         if !v.is_finite() || v < 0.0 {
             die(&format!("--{k}: a finite number >= 0"));
         }
@@ -69,7 +80,15 @@ fn opts(a: &Args) -> Opts {
         jump_threshold: num("jump-threshold", def.jump_threshold),
         ..def
     };
-    Opts { cand, control, gate, p, n, n_samples, ubatch }
+    Opts {
+        cand,
+        control,
+        gate,
+        p,
+        n,
+        n_samples,
+        ubatch,
+    }
 }
 
 /// `oxe fused-ref ... --check-args`: the resolved options (no tokenizer, no model), then the
@@ -94,8 +113,17 @@ pub(super) fn check_args(a: &Args) {
 }
 
 pub(super) fn run(a: &Args) {
-    let Opts { cand, control, gate, p, n, n_samples, ubatch } = opts(a);
-    let tk = tokenizer::Tokenizer::from_gguf(a.model()).unwrap_or_else(|e| die(&format!("tokenizer: {e:?}")));
+    let Opts {
+        cand,
+        control,
+        gate,
+        p,
+        n,
+        n_samples,
+        ubatch,
+    } = opts(a);
+    let tk = tokenizer::Tokenizer::from_gguf(a.model())
+        .unwrap_or_else(|e| die(&format!("tokenizer: {e:?}")));
     // prefix: ids file (the same ids as a prefill-bench --prefix-ids-file state) or a text file
     let src = match (a.get("prefix-ids-file"), a.get("text-file")) {
         (Some(f), None) => read_ids_file(f),
@@ -103,16 +131,28 @@ pub(super) fn run(a: &Args) {
         _ => die("exactly one of --prefix-ids-file F or --text-file F"),
     };
     if src.len() < p {
-        die(&format!("prefix source has {} tokens, --prefix-len needs {p}", src.len()));
+        die(&format!(
+            "prefix source has {} tokens, --prefix-len needs {p}",
+            src.len()
+        ));
     }
     let prefix = &src[..p];
     let (cont_src, cont_name) = match a.get("continuation-file") {
-        Some(f) => (std::fs::read_to_string(f).unwrap_or_else(|e| die(&format!("{f}: {e}"))), f.to_string()),
-        None => (FIXTURE.to_string(), "builtin:fused-ref-continuation.txt".to_string()),
+        Some(f) => (
+            std::fs::read_to_string(f).unwrap_or_else(|e| die(&format!("{f}: {e}"))),
+            f.to_string(),
+        ),
+        None => (
+            FIXTURE.to_string(),
+            "builtin:fused-ref-continuation.txt".to_string(),
+        ),
     };
     let cont_all = tk.encode(&cont_src, false, true);
     if cont_all.len() < n {
-        die(&format!("continuation has {} tokens, --n needs {n}", cont_all.len()));
+        die(&format!(
+            "continuation has {} tokens, --n needs {n}",
+            cont_all.len()
+        ));
     }
     let cont = &cont_all[..n];
     let n_ctx = a.num("ctx", (p + n + 16).next_multiple_of(1024));
@@ -128,9 +168,19 @@ pub(super) fn run(a: &Args) {
     );
     let cont_hash = format!("{:016x}", model::weights::hash_bytes(cont_src.as_bytes()));
     let arms = if cand.is_prefill() {
-        json!(["incumbent: tiled batched prefill (ubatch)", "candidate: batched prefill with the candidate kernel (ubatch)", "reference: batched prefill, f32-attention reference for every row", "control: tiled decode or tiled batched prefill at another ubatch"])
+        json!([
+            "incumbent: tiled batched prefill (ubatch)",
+            "candidate: batched prefill with the candidate kernel (ubatch)",
+            "reference: batched prefill, f32-attention reference for every row",
+            "control: tiled decode or tiled batched prefill at another ubatch"
+        ])
     } else {
-        json!(["control: tiled batched prefill (ubatch)", "incumbent: tiled decode", "candidate: fused decode", "reference: forked decode steps of the incumbent"])
+        json!([
+            "control: tiled batched prefill (ubatch)",
+            "incumbent: tiled decode",
+            "candidate: fused decode",
+            "reference: forked decode steps of the incumbent"
+        ])
     };
     let plan = json!({"candidate": cand.name(), "prefix_tokens": p, "positions": n, "ref_samples": samples.len(), "n_ctx": n_ctx,
         "ubatch": ubatch, "control": control.name(), "prefix_ids": sha_ids(prefix), "continuation": cont_name, "continuation_text_hash": cont_hash,
@@ -141,17 +191,42 @@ pub(super) fn run(a: &Args) {
         println!("{}", serde_json::to_string_pretty(&plan).unwrap());
         return;
     }
-    let state_file = a.get("state-file").unwrap_or_else(|| die("--state-file F required (built once, reused)"));
-    let out = a.get("out").unwrap_or_else(|| die("--out NEW_FILE required"));
+    let state_file = a
+        .get("state-file")
+        .unwrap_or_else(|| die("--state-file F required (built once, reused)"));
+    let out = a
+        .get("out")
+        .unwrap_or_else(|| die("--out NEW_FILE required"));
     if Path::new(out).exists() {
         die("--out exists; pick a new file");
     }
     let s = setup(a, n_ctx);
-    if prefix.iter().chain(cont).any(|&t| t as usize >= s.loaded.plan.desc.n_vocab) {
+    if prefix
+        .iter()
+        .chain(cont)
+        .any(|&t| t as usize >= s.loaded.plan.desc.n_vocab)
+    {
         die("token id outside vocabulary");
     }
-    let cfg = EngineConfig { n_ctx, logits: true, trace: false, profile: false };
-    let mk = || Engine::with_options(&s.loaded.plan, &s.loaded.ws, cfg.clone(), EngineOptions { verify_lanes: 1, mtp: None, kv_type: Some(model::engine::KvType::F16) }).unwrap_or_else(|e| die(&e));
+    let cfg = EngineConfig {
+        n_ctx,
+        logits: true,
+        trace: false,
+        profile: false,
+    };
+    let mk = || {
+        Engine::with_options(
+            &s.loaded.plan,
+            &s.loaded.ws,
+            cfg.clone(),
+            EngineOptions {
+                verify_lanes: 1,
+                mtp: None,
+                kv_type: Some(model::engine::KvType::F16),
+            },
+        )
+        .unwrap_or_else(|e| die(&e))
+    };
     let mut ea = mk();
     // the saved state is built by the tiled incumbent (the same kind as prefill-bench
     // --prefix-len/--state-file: one state serves both tools)
@@ -161,7 +236,11 @@ pub(super) fn run(a: &Args) {
     let built = if state_file_load(state_file, &ea, &header, p).is_none() {
         for c in prefix.chunks(STATE_CHUNK) {
             ea.prefill(&s.pool, c, model::engine::UBATCH).unwrap();
-            eprintln!("fused-ref: prefix {}/{p} after {:.1} s", ea.pos(), t0.elapsed().as_secs_f64());
+            eprintln!(
+                "fused-ref: prefix {}/{p} after {:.1} s",
+                ea.pos(),
+                t0.elapsed().as_secs_f64()
+            );
         }
         state_file_save(state_file, &ea, &header, 0, &[]);
         true
@@ -175,9 +254,25 @@ pub(super) fn run(a: &Args) {
         }
     };
     let t1 = Instant::now();
-    let mut progress = |m: &str| eprintln!("fused-ref {}: {m} ({:.1} s)", cand.name(), t1.elapsed().as_secs_f64());
+    let mut progress = |m: &str| {
+        eprintln!(
+            "fused-ref {}: {m} ({:.1} s)",
+            cand.name(),
+            t1.elapsed().as_secs_f64()
+        )
+    };
     let (rep, fused_chunk) = if cand.is_prefill() {
-        let r = fused_ref::run_prefill(&mut ea, &s.pool, &mut load, cand, cont, ubatch, control, &samples, &mut progress);
+        let r = fused_ref::run_prefill(
+            &mut ea,
+            &s.pool,
+            &mut load,
+            cand,
+            cont,
+            ubatch,
+            control,
+            &samples,
+            &mut progress,
+        );
         (r, None)
     } else {
         let mut eb = mk();
@@ -185,7 +280,16 @@ pub(super) fn run(a: &Args) {
             eb.set_attn_fused_chunk(ch.parse().unwrap_or_else(|_| die("--fused-chunk")));
             ea.set_attn_fused_chunk(eb.attn_fused_chunk());
         }
-        let r = fused_ref::run_fused_decode(&mut ea, &mut eb, &s.pool, &mut load, cont, control, &samples, &mut progress);
+        let r = fused_ref::run_fused_decode(
+            &mut ea,
+            &mut eb,
+            &s.pool,
+            &mut load,
+            cont,
+            control,
+            &samples,
+            &mut progress,
+        );
         (r, Some(eb.attn_fused_chunk()))
     };
     let run_s = t1.elapsed().as_secs_f64();
@@ -201,8 +305,14 @@ pub(super) fn run(a: &Args) {
     o.insert("model_sha256".into(), json!(s.loaded.ws.info.model_sha256));
     o.insert("threads".into(), json!(s.pool.nthreads()));
     o.insert("fused_chunk".into(), json!(fused_chunk));
-    o.insert("effective".into(), json!(model::engine::effective_switches()));
-    o.insert("engine_commit".into(), json!(option_env!("OXE_GIT_COMMIT").unwrap_or("unknown")));
+    o.insert(
+        "effective".into(),
+        json!(model::engine::effective_switches()),
+    );
+    o.insert(
+        "engine_commit".into(),
+        json!(option_env!("OXE_GIT_COMMIT").unwrap_or("unknown")),
+    );
     o.insert("state".into(), json!({"built": built, "seconds": state_s, "built_with": "tiled batched prefill, ubatch 256, chunks of 4096"}));
     o.insert("run_seconds".into(), json!(run_s));
     let text = serde_json::to_string_pretty(&res).unwrap();
@@ -232,7 +342,22 @@ fn receipt(r: &Report, v: &Verdict, g: &Gate, scope_label: &str) -> serde_json::
     let arms: Vec<_> = r.arms.iter().map(|x| json!({"role": x.role, "path": x.path, "decode_steps": x.decode_steps, "fused_decode": x.fused, "pf_kernel": pf(x.pf_kernel),
         "batched_prefill": {"passes": x.pf.passes, "rows": x.pf.rows, "max_rows_per_pass": x.pf.max_rows,
             "attention_units": {"tiled": x.pf.units_tiled, "per_head": x.pf.units_per_head, "fa2": x.pf.units_fa2, "fa2x": x.pf.units_fa2x, "pfg": x.pf.units_pfg, "f32_reference": x.pf.units_ref}}})).collect();
-    let per_position: Vec<_> = r.rows.iter().zip(&r.control_rows).map(|(c, k)| json!([c.position, c.kld, c.top1, c.inc_top1, k.kld, k.top1, c.finite && k.finite])).collect();
+    let per_position: Vec<_> = r
+        .rows
+        .iter()
+        .zip(&r.control_rows)
+        .map(|(c, k)| {
+            json!([
+                c.position,
+                c.kld,
+                c.top1,
+                c.inc_top1,
+                k.kld,
+                k.top1,
+                c.finite && k.finite
+            ])
+        })
+        .collect();
     let refs: Vec<_> = r.refs.iter().map(|x| json!({"index": x.index, "position": x.position, "sampled": x.sampled, "disagreement": x.disagreement,
         "ref_top1": x.ref_top1, "ref_margin": x.ref_margin, "ref_absmax": x.ref_absmax, "tiled_top1": x.inc_top1, "cand_top1": x.cand_top1,
         "tiled_rms": x.inc_rms, "cand_rms": x.cand_rms, "tiled_kld_vs_ref": x.inc_kld_vs_ref, "cand_kld_vs_ref": x.cand_kld_vs_ref,

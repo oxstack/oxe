@@ -10,11 +10,11 @@ pub mod mapping_probe;
 pub mod shared_memory;
 mod weight_imports;
 pub use weight_imports::ImportedWeight;
-pub mod tiles;
-pub mod wfmt;
-pub mod emu;
 #[cfg(feature = "device")]
 pub mod device;
+pub mod emu;
+pub mod tiles;
+pub mod wfmt;
 
 pub const GF_YCOL: u32 = 0x01;
 pub const GF_NO_WFETCH: u32 = 0x02;

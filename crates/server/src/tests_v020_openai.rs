@@ -15,12 +15,19 @@ use std::time::Duration;
 const SYS: &str = "You are a test system.";
 
 async fn call(st: &Arc<State<StubEngine>>, method: &str, path: &str, body: Json) -> (u16, Json) {
-    let b = if body.is_null() { Vec::new() } else { serde_json::to_vec(&body).unwrap() };
+    let b = if body.is_null() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(&body).unwrap()
+    };
     match handle(st.clone(), method, path, "", &b).await {
         Reply::Json(c, j) => (c, j),
         Reply::Stream(mut rx) => {
             let mut frames = Vec::new();
-            while let Some(f) = tokio::time::timeout(Duration::from_secs(30), rx.recv()).await.expect("stream hung") {
+            while let Some(f) = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .expect("stream hung")
+            {
                 for line in f.lines() {
                     if let Some(d) = line.strip_prefix("data: ").filter(|d| *d != "[DONE]") {
                         frames.push(serde_json::from_str::<Json>(d).unwrap());
@@ -43,13 +50,21 @@ fn chat_body(thinking: bool, extra: Json) -> Json {
 
 fn with_default(st: Arc<State<StubEngine>>, n: i64) -> Arc<State<StubEngine>> {
     let mut st = st;
-    Arc::get_mut(&mut st).expect("fresh state").default_max_tokens = n;
+    Arc::get_mut(&mut st)
+        .expect("fresh state")
+        .default_max_tokens = n;
     st
 }
 
 fn assert_error(j: &Json, code: &str, param: Option<&str>) {
     let e = &j["error"];
-    let keys: Vec<&str> = e.as_object().unwrap().keys().map(|k| k.as_str()).take(4).collect();
+    let keys: Vec<&str> = e
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_str())
+        .take(4)
+        .collect();
     assert_eq!(keys, ["code", "message", "param", "type"], "{j}");
     assert_eq!(e["code"], code, "{j}");
     assert_eq!(e["param"], param.map_or(Json::Null, |p| json!(p)), "{j}");
@@ -68,29 +83,87 @@ async fn default_output_limit_applies_only_without_a_length_field() {
     assert_eq!(default_max_tokens_for(Some("junk"), 4), 1);
     let long = "Hello there, this is a much longer stub reply text";
     let st = with_default(srv(false, &[long; 6], None), 3);
-    let (c, r) = call(&st, "POST", "/v1/chat/completions", chat_body(false, json!({}))).await;
+    let (c, r) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(false, json!({})),
+    )
+    .await;
     assert_eq!(c, 200, "{r}");
-    assert_eq!((r["usage"]["completion_tokens"].as_u64(), &r["choices"][0]["finish_reason"]), (Some(3), &json!("length")), "{r}");
-    let (_, r) = call(&st, "POST", "/v1/chat/completions", chat_body(false, json!({"max_tokens": 5}))).await;
-    assert_eq!(r["usage"]["completion_tokens"], 5, "explicit max_tokens wins");
-    let (_, r) = call(&st, "POST", "/v1/chat/completions", chat_body(false, json!({"max_completion_tokens": 2, "max_tokens": 5}))).await;
-    assert_eq!(r["usage"]["completion_tokens"], 2, "max_completion_tokens is the OpenAI name and wins");
-    let (_, r) = call(&st, "POST", "/v1/chat/completions", chat_body(false, json!({"max_tokens": null}))).await;
+    assert_eq!(
+        (
+            r["usage"]["completion_tokens"].as_u64(),
+            &r["choices"][0]["finish_reason"]
+        ),
+        (Some(3), &json!("length")),
+        "{r}"
+    );
+    let (_, r) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(false, json!({"max_tokens": 5})),
+    )
+    .await;
+    assert_eq!(
+        r["usage"]["completion_tokens"], 5,
+        "explicit max_tokens wins"
+    );
+    let (_, r) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(false, json!({"max_completion_tokens": 2, "max_tokens": 5})),
+    )
+    .await;
+    assert_eq!(
+        r["usage"]["completion_tokens"], 2,
+        "max_completion_tokens is the OpenAI name and wins"
+    );
+    let (_, r) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(false, json!({"max_tokens": null})),
+    )
+    .await;
     assert_eq!(r["usage"]["completion_tokens"], 3, "null = absent");
-    let (_, r) = call(&st, "POST", "/completion", json!({"prompt": "hi", "temperature": 0})).await;
+    let (_, r) = call(
+        &st,
+        "POST",
+        "/completion",
+        json!({"prompt": "hi", "temperature": 0}),
+    )
+    .await;
     assert_eq!(r["tokens_predicted"], 3, "the native route too: {r}");
     let st = with_default(srv(false, &[long], None), -1);
-    let (_, r) = call(&st, "POST", "/v1/chat/completions", chat_body(false, json!({}))).await;
-    assert_eq!(r["choices"][0]["finish_reason"], "stop", "no default: runs to the end: {r}");
+    let (_, r) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(false, json!({})),
+    )
+    .await;
+    assert_eq!(
+        r["choices"][0]["finish_reason"], "stop",
+        "no default: runs to the end: {r}"
+    );
 
     let st = with_default(srv(false, &[], None), 1234);
     let (_, m) = call(&st, "GET", "/v1/models", Json::Null).await;
     assert_eq!(m["data"][0]["max_output_tokens"], 1234);
     assert_eq!(m["data"][0]["meta"]["max_output_tokens"], 1234);
-    assert_eq!(m["data"][0]["context_length"], m["data"][0]["meta"]["n_ctx"]);
+    assert_eq!(
+        m["data"][0]["context_length"],
+        m["data"][0]["meta"]["n_ctx"]
+    );
     let (_, p) = call(&st, "GET", "/props", Json::Null).await;
     assert_eq!(p["default_generation_settings"]["max_output_tokens"], 1234);
-    assert_eq!(p["default_generation_settings"]["params"]["n_predict"], 1234);
+    assert_eq!(
+        p["default_generation_settings"]["params"]["n_predict"],
+        1234
+    );
 }
 
 /// `GET /v1/models/{id}` (OpenAI models.retrieve), the legacy completions route, an unknown route.
@@ -105,7 +178,13 @@ async fn models_retrieve_and_route_errors() {
     assert_eq!(c, 404);
     assert_error(&e, "model_not_found", Some("model"));
     // the legacy completions route answers (tests_v020_legacy); a malformed one is a 400 naming its field
-    let (c, e) = call(&st, "POST", "/v1/completions", json!({"prompt": ["a", "b"]})).await;
+    let (c, e) = call(
+        &st,
+        "POST",
+        "/v1/completions",
+        json!({"prompt": ["a", "b"]}),
+    )
+    .await;
     assert_eq!(c, 400, "{e}");
     assert_error(&e, "unsupported_value", Some("prompt"));
     let (c, e) = call(&st, "GET", "/v1/nope", Json::Null).await;
@@ -118,7 +197,13 @@ async fn models_retrieve_and_route_errors() {
 #[tokio::test(flavor = "multi_thread")]
 async fn error_object_shape() {
     let st = srv(false, &[], None);
-    let (c, e) = call(&st, "POST", "/v1/chat/completions", json!({"messages": "x"})).await;
+    let (c, e) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        json!({"messages": "x"}),
+    )
+    .await;
     assert_eq!(c, 400);
     assert_error(&e, "invalid_request", None);
     assert_eq!(e["error"]["type"], "invalid_request_error");
@@ -128,35 +213,92 @@ async fn error_object_shape() {
     let (c, e) = call(&st, "POST", "/v1/chat/completions", b).await;
     assert_eq!(c, 400);
     assert_error(&e, "unsupported_content_type", Some("messages"));
-    assert!(e["error"]["message"].as_str().unwrap().contains("text only"), "{e}");
+    assert!(
+        e["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("text only"),
+        "{e}"
+    );
     // context overflow
     let mut st = srv(false, &[], None);
     Arc::get_mut(&mut st).unwrap().n_ctx = 64;
     let big = "word ".repeat(200);
-    let (c, e) = call(&st, "POST", "/v1/chat/completions", json!({"messages": [{"role":"user","content": big}]})).await;
+    let (c, e) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        json!({"messages": [{"role":"user","content": big}]}),
+    )
+    .await;
     assert_eq!(c, 400, "{e}");
     assert_error(&e, "context_length_exceeded", Some("messages"));
     assert_eq!(e["error"]["type"], "exceed_context_size_error");
-    assert!(e["error"]["message"].as_str().unwrap().contains("exceeds the available context size"));
+    assert!(e["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("exceeds the available context size"));
 }
 
 /// `usage.completion_tokens_details.reasoning_tokens`: the think block's tokens (thinking on), 0 off;
 /// in the non-streamed reply and the streamed usage chunk.
 #[tokio::test(flavor = "multi_thread")]
 async fn usage_reports_reasoning_tokens() {
-    let st = srv(true, &["plan it\n</think>\n\nDone", "plan it\n</think>\n\nDone"], None);
+    let st = srv(
+        true,
+        &["plan it\n</think>\n\nDone", "plan it\n</think>\n\nDone"],
+        None,
+    );
     let want = st.tok.encode("plan it\n</think>", false, true).len() as u64;
-    let (_, r) = call(&st, "POST", "/v1/chat/completions", chat_body(true, json!({}))).await;
-    assert_eq!(r["choices"][0]["message"]["reasoning_content"], "plan it", "{r}");
-    assert_eq!(r["usage"]["completion_tokens_details"]["reasoning_tokens"], want, "{r}");
+    let (_, r) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(true, json!({})),
+    )
+    .await;
+    assert_eq!(
+        r["choices"][0]["message"]["reasoning_content"], "plan it",
+        "{r}"
+    );
+    assert_eq!(
+        r["usage"]["completion_tokens_details"]["reasoning_tokens"], want,
+        "{r}"
+    );
     assert!(r["usage"]["completion_tokens"].as_u64().unwrap() > want);
     assert!(r["usage"]["prompt_tokens_details"]["cached_tokens"].is_u64());
-    let (_, frames) = call(&st, "POST", "/v1/chat/completions", chat_body(true, json!({"stream": true, "stream_options": {"include_usage": true}}))).await;
-    let u = frames.as_array().unwrap().iter().find(|f| f["usage"].is_object()).expect("usage chunk");
-    assert_eq!(u["usage"]["completion_tokens_details"]["reasoning_tokens"], want, "{u}");
+    let (_, frames) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(
+            true,
+            json!({"stream": true, "stream_options": {"include_usage": true}}),
+        ),
+    )
+    .await;
+    let u = frames
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["usage"].is_object())
+        .expect("usage chunk");
+    assert_eq!(
+        u["usage"]["completion_tokens_details"]["reasoning_tokens"], want,
+        "{u}"
+    );
     let st = srv(false, &["Done"], None);
-    let (_, r) = call(&st, "POST", "/v1/chat/completions", chat_body(false, json!({}))).await;
-    assert_eq!(r["usage"]["completion_tokens_details"]["reasoning_tokens"], 0, "{r}");
+    let (_, r) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(false, json!({})),
+    )
+    .await;
+    assert_eq!(
+        r["usage"]["completion_tokens_details"]["reasoning_tokens"], 0,
+        "{r}"
+    );
 }
 
 /// Penalties / logit_bias: absent or zero = the same reply and the same engine calls as before
@@ -171,20 +313,35 @@ async fn sampler_penalties_and_logit_bias() {
         (c, r, calls)
     };
     let (_, base, base_calls) = run(json!({})).await;
-    for z in [json!({"presence_penalty": 0, "frequency_penalty": 0, "logit_bias": {}}), json!({"logit_bias": {"5": 0, "7": 0.0}}), json!({"logit_bias": [[5, 0]]})] {
+    for z in [
+        json!({"presence_penalty": 0, "frequency_penalty": 0, "logit_bias": {}}),
+        json!({"logit_bias": {"5": 0, "7": 0.0}}),
+        json!({"logit_bias": [[5, 0]]}),
+    ] {
         let (_, zero, zero_calls) = run(z.clone()).await;
         assert_eq!(base["choices"], zero["choices"], "{z}");
-        assert_eq!(base_calls, zero_calls, "{z}: no adjustment (an all-zero bias too): the same engine calls, fast path kept");
+        assert_eq!(
+            base_calls, zero_calls,
+            "{z}: no adjustment (an all-zero bias too): the same engine calls, fast path kept"
+        );
     }
     // the first scripted token is banned: the stub's runner-up (id + 1) is picked instead
     let tok = crate::tests_echo::synth_tokenizer();
     let first = tok.encode("Hello there", false, true)[0];
     let (c, biased, _) = run(json!({"logit_bias": {first.to_string(): -100}})).await;
     assert_eq!(c, 200, "{biased}");
-    assert_ne!(biased["choices"][0]["message"]["content"], base["choices"][0]["message"]["content"], "{biased}");
+    assert_ne!(
+        biased["choices"][0]["message"]["content"], base["choices"][0]["message"]["content"],
+        "{biased}"
+    );
     let (c, pen, _) = run(json!({"presence_penalty": 1.5, "frequency_penalty": 0.5})).await;
     assert_eq!(c, 200, "{pen}");
-    for bad in [json!({"logit_bias": {"1": 101}}), json!({"logit_bias": {"x": 1}}), json!({"logit_bias": 3}), json!({"presence_penalty": 3})] {
+    for bad in [
+        json!({"logit_bias": {"1": 101}}),
+        json!({"logit_bias": {"x": 1}}),
+        json!({"logit_bias": 3}),
+        json!({"presence_penalty": 3}),
+    ] {
         let (c, e, _) = run(bad.clone()).await;
         assert_eq!(c, 400, "{bad}: {e}");
         assert_error(&e, "invalid_request", None);
@@ -206,15 +363,31 @@ async fn logprobs_follow_the_adjusted_row() {
         let (c, r) = call(&st, "POST", "/v1/chat/completions", chat_body(false, e)).await;
         assert_eq!(c, 200, "{r}");
         let content = if stream {
-            r.as_array().unwrap().iter().find_map(|f| f["choices"][0]["logprobs"]["content"].as_array().cloned()).expect("streamed logprobs")
+            r.as_array()
+                .unwrap()
+                .iter()
+                .find_map(|f| f["choices"][0]["logprobs"]["content"].as_array().cloned())
+                .expect("streamed logprobs")
         } else {
-            r["choices"][0]["logprobs"]["content"].as_array().cloned().expect("logprobs")
+            r["choices"][0]["logprobs"]["content"]
+                .as_array()
+                .cloned()
+                .expect("logprobs")
         };
         let t = &content[0];
-        assert_eq!(t["id"], runner, "stream {stream}: the biased token was drawn: {t}");
+        assert_eq!(
+            t["id"], runner,
+            "stream {stream}: the biased token was drawn: {t}"
+        );
         let lp = t["logprob"].as_f64().unwrap();
-        assert!(lp > (0.5f64).ln(), "stream {stream}: reported from the adjusted row (raw p would be ~e^-5): {t}");
-        assert_eq!(t["top_logprobs"][0]["id"], runner, "stream {stream}: top-1 of the adjusted row: {t}");
+        assert!(
+            lp > (0.5f64).ln(),
+            "stream {stream}: reported from the adjusted row (raw p would be ~e^-5): {t}"
+        );
+        assert_eq!(
+            t["top_logprobs"][0]["id"], runner,
+            "stream {stream}: top-1 of the adjusted row: {t}"
+        );
         assert!((t["top_logprobs"][0]["logprob"].as_f64().unwrap() - lp).abs() < 1e-6);
     }
 }
@@ -231,12 +404,29 @@ fn draft_mtp_without_an_mtp_block_degrades_to_none() {
     let dir = std::env::temp_dir().join(format!("oxe-nomtp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("cache")).unwrap();
-    std::fs::set_permissions(dir.join("cache"), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(
+        dir.join("cache"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
     model::testkit::mini_model(&dir.join("plain.gguf"));
     model::testkit::mini_model_ext(&dir.join("mtp.gguf"), true);
     std::env::set_var("OXE_MODEL_SHA256", "0".repeat(64));
-    let n = std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1);
-    let open = |name: &str, depth: usize| OxeEngine::open_cache(&dir.join(name), None, &[n - 1], None, 64, 2048, depth, Some(dir.join("cache")));
+    let n = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1);
+    let open = |name: &str, depth: usize| {
+        OxeEngine::open_cache(
+            &dir.join(name),
+            None,
+            &[n - 1],
+            None,
+            64,
+            2048,
+            depth,
+            Some(dir.join("cache")),
+        )
+    };
 
     let mut asked = open("plain.gguf", 2).expect("draft-mtp on a model without MTP must load");
     assert_eq!(asked.spec_max_depth(), 0);
@@ -246,16 +436,29 @@ fn draft_mtp_without_an_mtp_block_degrades_to_none() {
     assert!(plain.spec_fallback().is_none());
     // the same greedy output as without speculation
     let prompt: Vec<u32> = (0..20).map(|i| (i * 7 + 3) % 64).collect();
-    let (mut a, mut b) = (crate::sampling::argmax(asked.prefill(&prompt).unwrap()), crate::sampling::argmax(plain.prefill(&prompt).unwrap()));
+    let (mut a, mut b) = (
+        crate::sampling::argmax(asked.prefill(&prompt).unwrap()),
+        crate::sampling::argmax(plain.prefill(&prompt).unwrap()),
+    );
     for _ in 0..8 {
         assert_eq!(a, b);
-        assert!(asked.decode_spec_argmax(a).unwrap().is_none(), "no speculation");
+        assert!(
+            asked.decode_spec_argmax(a).unwrap().is_none(),
+            "no speculation"
+        );
         a = asked.decode_argmax(a).unwrap();
         b = plain.decode_argmax(b).unwrap();
     }
     let p = crate::service::speculative_json(asked.spec_max_depth(), asked.spec_fallback());
-    assert_eq!((&p["requested"], &p["active"], &p["depth"]), (&json!("draft-mtp"), &json!("none"), &json!(0)), "{p}");
-    assert!(p["fallback"].as_str().is_some_and(|f| f.contains("MTP")), "{p}");
+    assert_eq!(
+        (&p["requested"], &p["active"], &p["depth"]),
+        (&json!("draft-mtp"), &json!("none"), &json!(0)),
+        "{p}"
+    );
+    assert!(
+        p["fallback"].as_str().is_some_and(|f| f.contains("MTP")),
+        "{p}"
+    );
 
     // /props of a server on that engine
     let tok = crate::tests_echo::synth_tokenizer();
@@ -269,12 +472,19 @@ fn draft_mtp_without_an_mtp_block_degrades_to_none() {
         engine_status: None,
     };
     let st = Arc::new(State::new(cfg, tok, crate::generate::Worker::new(asked, 4)).unwrap());
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let props = match rt.block_on(handle(st, "GET", "/props", "", b"")) {
         Reply::Json(200, j) => j,
         _ => panic!("/props"),
     };
-    assert_eq!(props["speculative"]["active"], "none", "{}", props["speculative"]);
+    assert_eq!(
+        props["speculative"]["active"], "none",
+        "{}",
+        props["speculative"]
+    );
     assert_eq!(props["speculative"]["requested"], "draft-mtp");
 
     // with an MTP block it is used
@@ -282,7 +492,10 @@ fn draft_mtp_without_an_mtp_block_degrades_to_none() {
     assert_eq!(with.spec_max_depth(), 2);
     assert!(with.spec_fallback().is_none());
     let p = crate::service::speculative_json(with.spec_max_depth(), with.spec_fallback());
-    assert_eq!((&p["active"], &p["depth"], &p["fallback"]), (&json!("draft-mtp"), &json!(2), &Json::Null));
+    assert_eq!(
+        (&p["active"], &p["depth"], &p["fallback"]),
+        (&json!("draft-mtp"), &json!(2), &Json::Null)
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -298,31 +511,65 @@ async fn streamed_logprobs_equal_non_streamed_rows_with_multibyte_text() {
         let n_tok = tok.encode(reply, false, true).len();
         let extra = json!({"max_tokens": 64, "logprobs": true, "top_logprobs": 3});
         let st = srv(false, &[reply], None);
-        let (_, r) = call(&st, "POST", "/v1/chat/completions", chat_body(false, extra.clone())).await;
-        let want = r["choices"][0]["logprobs"]["content"].as_array().cloned().expect("logprobs");
+        let (_, r) = call(
+            &st,
+            "POST",
+            "/v1/chat/completions",
+            chat_body(false, extra.clone()),
+        )
+        .await;
+        let want = r["choices"][0]["logprobs"]["content"]
+            .as_array()
+            .cloned()
+            .expect("logprobs");
         assert_eq!(r["choices"][0]["message"]["content"], reply);
-        assert!(want.len() > n_tok - 1, "{reply}: one row per generated token ({} rows, {n_tok} text tokens)", want.len());
+        assert!(
+            want.len() > n_tok - 1,
+            "{reply}: one row per generated token ({} rows, {n_tok} text tokens)",
+            want.len()
+        );
         let st = srv(false, &[reply], None);
         let mut e = extra.clone();
         e["stream"] = json!(true);
         let (_, frames) = call(&st, "POST", "/v1/chat/completions", chat_body(false, e)).await;
-        let got: Vec<Json> = frames.as_array().unwrap().iter()
-            .filter_map(|f| f["choices"][0]["logprobs"]["content"].as_array().cloned()).flatten().collect();
-        assert_eq!(got, want, "{reply}: streamed rows differ from the non-streamed ones");
-        let text: String = frames.as_array().unwrap().iter().filter_map(|f| f["choices"][0]["delta"]["content"].as_str()).collect();
+        let got: Vec<Json> = frames
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["choices"][0]["logprobs"]["content"].as_array().cloned())
+            .flatten()
+            .collect();
+        assert_eq!(
+            got, want,
+            "{reply}: streamed rows differ from the non-streamed ones"
+        );
+        let text: String = frames
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["choices"][0]["delta"]["content"].as_str())
+            .collect();
         assert_eq!(text, reply);
 
         // native /completion: n_probs rows
         let b = json!({"prompt": "hi", "temperature": 0, "n_predict": 64, "n_probs": 2});
         let st = srv(false, &[reply], None);
         let (_, r) = call(&st, "POST", "/completion", b.clone()).await;
-        let want = r["completion_probabilities"].as_array().cloned().expect("native rows");
+        let want = r["completion_probabilities"]
+            .as_array()
+            .cloned()
+            .expect("native rows");
         let st = srv(false, &[reply], None);
         let mut b = b;
         b["stream"] = json!(true);
         let (_, frames) = call(&st, "POST", "/completion", b).await;
-        let got: Vec<Json> = frames.as_array().unwrap().iter()
-            .filter_map(|f| f["completion_probabilities"].as_array().cloned()).flatten().collect();
+        let got: Vec<Json> = frames
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["completion_probabilities"].as_array().cloned())
+            .flatten()
+            .collect();
         assert_eq!(got, want, "{reply}: native streamed rows differ");
     }
 }
@@ -352,10 +599,26 @@ async fn reasoning_effort_is_the_thinking_switch() {
         (true, json!({"reasoning_effort": "minimal"}), false),
         (true, json!({"reasoning_effort": "high"}), true),
         // the explicit template switch wins, both ways
-        (false, json!({"reasoning_effort": "high", "chat_template_kwargs": {"enable_thinking": false}}), false),
-        (false, json!({"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": true}}), true),
-        (false, json!({"reasoning_effort": "minimal", "chat_template_kwargs": {"enable_thinking": true}}), true),
-        (true, json!({"reasoning_effort": "low", "chat_template_kwargs": {"enable_thinking": false}}), false),
+        (
+            false,
+            json!({"reasoning_effort": "high", "chat_template_kwargs": {"enable_thinking": false}}),
+            false,
+        ),
+        (
+            false,
+            json!({"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": true}}),
+            true,
+        ),
+        (
+            false,
+            json!({"reasoning_effort": "minimal", "chat_template_kwargs": {"enable_thinking": true}}),
+            true,
+        ),
+        (
+            true,
+            json!({"reasoning_effort": "low", "chat_template_kwargs": {"enable_thinking": false}}),
+            false,
+        ),
         // absent, null, unknown: the server default
         (false, json!({}), false),
         (true, json!({}), true),
@@ -368,21 +631,45 @@ async fn reasoning_effort_is_the_thinking_switch() {
         let (c, r) = call(&st, "POST", "/v1/chat/completions", body(extra.clone())).await;
         assert_eq!(c, 200, "{extra} {r}");
         let m = &r["choices"][0]["message"];
-        let n = r["usage"]["completion_tokens_details"]["reasoning_tokens"].as_u64().unwrap();
+        let n = r["usage"]["completion_tokens_details"]["reasoning_tokens"]
+            .as_u64()
+            .unwrap();
         if thinking {
-            assert_eq!(m["reasoning_content"], "plan it", "default {default} {extra}: {r}");
+            assert_eq!(
+                m["reasoning_content"], "plan it",
+                "default {default} {extra}: {r}"
+            );
             assert!(n > 0, "default {default} {extra}: {r}");
         } else {
-            assert!(m.get("reasoning_content").is_none_or(|v| v.is_null() || v == ""), "default {default} {extra}: {r}");
-            assert!(m["content"].as_str().is_some_and(|t| !t.is_empty()), "default {default} {extra}: {r}");
+            assert!(
+                m.get("reasoning_content")
+                    .is_none_or(|v| v.is_null() || v == ""),
+                "default {default} {extra}: {r}"
+            );
+            assert!(
+                m["content"].as_str().is_some_and(|t| !t.is_empty()),
+                "default {default} {extra}: {r}"
+            );
             assert_eq!(n, 0, "default {default} {extra}: {r}");
         }
     }
     // absent = the same prompt as before, byte for byte (the field alone renders nothing)
     let st = srv(false, &[], None);
     let (_, plain) = call(&st, "POST", "/apply-template", body(json!({}))).await;
-    let (_, null) = call(&st, "POST", "/apply-template", body(json!({"reasoning_effort": null}))).await;
+    let (_, null) = call(
+        &st,
+        "POST",
+        "/apply-template",
+        body(json!({"reasoning_effort": null})),
+    )
+    .await;
     assert_eq!(plain["prompt"], null["prompt"]);
-    let (c, e) = call(&st, "POST", "/v1/chat/completions", body(json!({"reasoning_effort": 3}))).await;
+    let (c, e) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        body(json!({"reasoning_effort": 3})),
+    )
+    .await;
     assert_eq!(c, 400, "{e}");
 }

@@ -125,21 +125,48 @@ impl<'a, D: LinearDevice> HybridModel<'a, D> {
         for i in 0..dims.n_double {
             let norms = |s: &str| -> Result<Norms, String> {
                 Ok(Norms {
-                    q: vecn(src, &format!("double_blocks.{i}.{s}_attn.norm.query_norm.scale"), dims.head_dim)?,
-                    k: vecn(src, &format!("double_blocks.{i}.{s}_attn.norm.key_norm.scale"), dims.head_dim)?,
+                    q: vecn(
+                        src,
+                        &format!("double_blocks.{i}.{s}_attn.norm.query_norm.scale"),
+                        dims.head_dim,
+                    )?,
+                    k: vecn(
+                        src,
+                        &format!("double_blocks.{i}.{s}_attn.norm.key_norm.scale"),
+                        dims.head_dim,
+                    )?,
                 })
             };
-            double.push(DoubleNorms { img: norms("img")?, txt: norms("txt")? });
+            double.push(DoubleNorms {
+                img: norms("img")?,
+                txt: norms("txt")?,
+            });
         }
         let mut single = Vec::with_capacity(dims.n_single);
         for i in 0..dims.n_single {
             single.push(Norms {
-                q: vecn(src, &format!("single_blocks.{i}.norm.query_norm.scale"), dims.head_dim)?,
-                k: vecn(src, &format!("single_blocks.{i}.norm.key_norm.scale"), dims.head_dim)?,
+                q: vecn(
+                    src,
+                    &format!("single_blocks.{i}.norm.query_norm.scale"),
+                    dims.head_dim,
+                )?,
+                k: vecn(
+                    src,
+                    &format!("single_blocks.{i}.norm.key_norm.scale"),
+                    dims.head_dim,
+                )?,
             });
         }
         let runner = WindowedRunner::new(plan, src, dev)?;
-        Ok(HybridModel { dims, embed, double, single, runner, schedule, trace: None })
+        Ok(HybridModel {
+            dims,
+            embed,
+            double,
+            single,
+            runner,
+            schedule,
+            trace: None,
+        })
     }
 
     pub fn stats(&self) -> RunnerStats {
@@ -186,7 +213,10 @@ impl<'a, D: LinearDevice> HybridModel<'a, D> {
         let half = d.head_dim / 2;
         let (n_img, n_txt) = (input.n_img, input.n_txt);
         let n = n_txt + n_img;
-        if input.img.len() != n_img * d.in_ch || input.txt.len() != n_txt * d.ctx_dim || input.pe.len() != n * half * 4 {
+        if input.img.len() != n_img * d.in_ch
+            || input.txt.len() != n_txt * d.ctx_dim
+            || input.pe.len() != n * half * 4
+        {
             return Err("input shapes do not match the model".into());
         }
         let split = self.schedule == Schedule::StreamSplit;
@@ -224,7 +254,13 @@ impl<'a, D: LinearDevice> HybridModel<'a, D> {
 
         // final layer on image tokens (CPU), `img_tok` = x[n_txt*h..]
         let y = ln_rows(&x[n_txt * h..], n_img, h, &mfin[..h], &mfin[h..]);
-        Ok(linear_rows(&self.embed.final_linear, h, d.out_ch, &y, n_img))
+        Ok(linear_rows(
+            &self.embed.final_linear,
+            h,
+            d.out_ch,
+            &y,
+            n_img,
+        ))
     }
 
     /// Double block, merged schedule: publishes A {qkv}, B {proj}, C {mlp0}, D {mlp2}, each with
@@ -254,8 +290,22 @@ impl<'a, D: LinearDevice> HybridModel<'a, D> {
         let ha = self.sub("A", &[call(&nt.qkv, n_txt, xt), call(&ni.qkv, n_img, xi)])?;
         let ya = self.wai("A", ha)?;
         let dn = &self.double[i];
-        let (qt, kt, vt) = post_qkv(&d, &ya[0], n_txt, &dn.txt.q, &dn.txt.k, &pe[..n_txt * half * 4]);
-        let (qi, ki, vi) = post_qkv(&d, &ya[1], n_img, &dn.img.q, &dn.img.k, &pe[n_txt * half * 4..]);
+        let (qt, kt, vt) = post_qkv(
+            &d,
+            &ya[0],
+            n_txt,
+            &dn.txt.q,
+            &dn.txt.k,
+            &pe[..n_txt * half * 4],
+        );
+        let (qi, ki, vi) = post_qkv(
+            &d,
+            &ya[1],
+            n_img,
+            &dn.img.q,
+            &dn.img.k,
+            &pe[n_txt * half * 4..],
+        );
         self.cpu("A.post");
         let q = [qt, qi].concat();
         let k = [kt, ki].concat();
@@ -264,7 +314,13 @@ impl<'a, D: LinearDevice> HybridModel<'a, D> {
         self.cpu("attention");
         let (attn_t, attn_i) = attn.split_at(n_txt * h);
 
-        let hb = self.sub("B", &[call(&nt.proj, n_txt, attn_t.to_vec()), call(&ni.proj, n_img, attn_i.to_vec())])?;
+        let hb = self.sub(
+            "B",
+            &[
+                call(&nt.proj, n_txt, attn_t.to_vec()),
+                call(&ni.proj, n_img, attn_i.to_vec()),
+            ],
+        )?;
         let pb = self.wai("B", hb)?;
         residual(&mut txt, &mt.gate1, &pb[0], h);
         residual(&mut img, &mi.gate1, &pb[1], h);
@@ -314,11 +370,25 @@ impl<'a, D: LinearDevice> HybridModel<'a, D> {
         let ha_i = self.sub("A.img", &[call(&ni.qkv, n_img, xi)])?;
         let ya_t = self.wai("A.txt", ha_t)?;
         let dn = &self.double[i];
-        let (qt, kt, vt) = post_qkv(&d, &ya_t[0], n_txt, &dn.txt.q, &dn.txt.k, &pe[..n_txt * half * 4]);
+        let (qt, kt, vt) = post_qkv(
+            &d,
+            &ya_t[0],
+            n_txt,
+            &dn.txt.q,
+            &dn.txt.k,
+            &pe[..n_txt * half * 4],
+        );
         self.cpu("A.txt.post"); // overlaps the img qkv publish
         let ya_i = self.wai("A.img", ha_i)?;
         let dn = &self.double[i];
-        let (qi, ki, vi) = post_qkv(&d, &ya_i[0], n_img, &dn.img.q, &dn.img.k, &pe[n_txt * half * 4..]);
+        let (qi, ki, vi) = post_qkv(
+            &d,
+            &ya_i[0],
+            n_img,
+            &dn.img.q,
+            &dn.img.k,
+            &pe[n_txt * half * 4..],
+        );
         self.cpu("A.img.post");
 
         let q = [qt, qi].concat();
@@ -358,7 +428,14 @@ impl<'a, D: LinearDevice> HybridModel<'a, D> {
     }
 
     /// Single block: publish {linear1} (all tokens), CPU attention and gate, publish {linear2}.
-    fn single(&mut self, i: usize, x: Vec<f32>, n: usize, ms: &Mods3, pe: &[f32]) -> Result<Vec<f32>, String> {
+    fn single(
+        &mut self,
+        i: usize,
+        x: Vec<f32>,
+        n: usize,
+        ms: &Mods3,
+        pe: &[f32],
+    ) -> Result<Vec<f32>, String> {
         let d = self.dims;
         let (h, hd, m) = (d.hidden, d.head_dim, d.mlp);
         let half = hd / 2;
@@ -422,7 +499,11 @@ impl<D: LinearDevice> DitBackend for HybridModel<'_, D> {
 }
 
 fn call(name: &str, n_tokens: usize, input: Vec<f32>) -> LinearCall {
-    LinearCall { tensor: name.to_string(), n_tokens, input }
+    LinearCall {
+        tensor: name.to_string(),
+        n_tokens,
+        input,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -461,7 +542,14 @@ struct Mods6 {
 /// `full_ref::Mods6::from_vec` (chunk order of sd.cpp `Modulation::forward`).
 fn mods6(v: &[f32], h: usize) -> Mods6 {
     let c = |k: usize| v[k * h..(k + 1) * h].to_vec();
-    Mods6 { shift1: c(0), scale1: c(1), gate1: c(2), shift2: c(3), scale2: c(4), gate2: c(5) }
+    Mods6 {
+        shift1: c(0),
+        scale1: c(1),
+        gate1: c(2),
+        shift2: c(3),
+        scale2: c(4),
+        gate2: c(5),
+    }
 }
 
 struct Mods3 {
@@ -473,7 +561,11 @@ struct Mods3 {
 /// `full_ref::Mods3::from_vec`.
 fn mods3(v: &[f32], h: usize) -> Mods3 {
     let c = |k: usize| v[k * h..(k + 1) * h].to_vec();
-    Mods3 { shift: c(0), scale: c(1), gate: c(2) }
+    Mods3 {
+        shift: c(0),
+        scale: c(1),
+        gate: c(2),
+    }
 }
 
 /// `full_ref::linear_rows`: `y[t][o] = sum_i w[o][i] x[t][i]`, `w` is `[out][in]`.
@@ -509,7 +601,12 @@ fn dot8(a: &[f32], b: &[f32]) -> f32 {
 fn ln_rows(x: &[f32], rows: usize, width: usize, shift: &[f32], scale: &[f32]) -> Vec<f32> {
     let mut out = vec![0f32; rows * width];
     for t in 0..rows {
-        ln_modulate(&x[t * width..(t + 1) * width], shift, scale, &mut out[t * width..(t + 1) * width]);
+        ln_modulate(
+            &x[t * width..(t + 1) * width],
+            shift,
+            scale,
+            &mut out[t * width..(t + 1) * width],
+        );
     }
     out
 }
@@ -519,7 +616,11 @@ fn ln_rows(x: &[f32], rows: usize, width: usize, shift: &[f32], scale: &[f32]) -
 fn ln_modulate(x: &[f32], shift: &[f32], scale: &[f32], out: &mut [f32]) {
     let n = x.len() as f64;
     let mean = x.iter().map(|&v| v as f64).sum::<f64>() / n;
-    let var = x.iter().map(|&v| (v as f64 - mean) * (v as f64 - mean)).sum::<f64>() / n;
+    let var = x
+        .iter()
+        .map(|&v| (v as f64 - mean) * (v as f64 - mean))
+        .sum::<f64>()
+        / n;
     let denom = (var + EPS as f64).sqrt();
     for (((o, &xv), &sc), &sh) in out.iter_mut().zip(x).zip(scale).zip(shift) {
         let y = ((xv as f64 - mean) / denom) as f32;
@@ -566,7 +667,14 @@ fn timestep_embedding(t: f32, dim: usize, max_period: f32, time_factor: f32) -> 
 
 /// `full_ref::stream_qkv` after the qkv linear: split rows into q, k, v; per head QK RMS norm and
 /// RoPE. `y` is `[n][3h]`.
-fn post_qkv(d: &HybridDims, y: &[f32], n: usize, qs: &[f32], ks: &[f32], pe: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+fn post_qkv(
+    d: &HybridDims,
+    y: &[f32],
+    n: usize,
+    qs: &[f32],
+    ks: &[f32],
+    pe: &[f32],
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     let (h, hd) = (d.hidden, d.head_dim);
     let half = hd / 2;
     let mut q = vec![0f32; n * h];
@@ -611,7 +719,14 @@ fn swiglu(m0: &[f32], n: usize, mlp: usize) -> Vec<f32> {
 }
 
 /// Joint attention in f32 for query rows `rows` over all `n` tokens (`full_ref::attention`).
-fn attention_f32_rows(d: &HybridDims, q: &[f32], k: &[f32], v: &[f32], n: usize, rows: Range<usize>) -> Vec<f32> {
+fn attention_f32_rows(
+    d: &HybridDims,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    n: usize,
+    rows: Range<usize>,
+) -> Vec<f32> {
     let (h, hd) = (d.hidden, d.head_dim);
     let scale = 1.0 / (hd as f32).sqrt();
     let mut out = vec![0f32; rows.len() * h];
@@ -646,7 +761,14 @@ fn attention_f32_rows(d: &HybridDims, q: &[f32], k: &[f32], v: &[f32], n: usize,
 }
 
 /// Single-block attention with f64 softmax and accumulation (`reference::attn_stage`).
-fn attention_f64_rows(d: &HybridDims, q: &[f32], k: &[f32], v: &[f32], n: usize, rows: Range<usize>) -> Vec<f32> {
+fn attention_f64_rows(
+    d: &HybridDims,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    n: usize,
+    rows: Range<usize>,
+) -> Vec<f32> {
     let (h, hd) = (d.hidden, d.head_dim);
     let sqrt_hd = (hd as f32).sqrt();
     let mut out = vec![0f32; rows.len() * h];
@@ -688,7 +810,10 @@ fn attention_f64_rows(d: &HybridDims, q: &[f32], k: &[f32], v: &[f32], n: usize,
 mod tests {
     use super::*;
     use crate::backend::MockDevice;
-    use crate::plan::{assign_slots, block_linear_order, plan_windows, steady_reloads_per_step, stream_split_publishes, ActReserve, PlanConfig};
+    use crate::plan::{
+        assign_slots, block_linear_order, plan_windows, steady_reloads_per_step,
+        stream_split_publishes, ActReserve, PlanConfig,
+    };
     use image_dit::fast_model::MemSource;
     use image_dit::model::DitBackend;
     use image_dit::types::rel_rmse;
@@ -713,7 +838,17 @@ mod tests {
     /// The brief's tiny klein: hidden 64, heads 2, head_dim 32, mlp 192, in 16, ctx 48, out 16,
     /// 1 double + 2 single blocks.
     fn tiny_dims() -> HybridDims {
-        HybridDims { hidden: 64, heads: 2, head_dim: 32, mlp: 192, in_ch: 16, ctx_dim: 48, out_ch: 16, n_double: 1, n_single: 2 }
+        HybridDims {
+            hidden: 64,
+            heads: 2,
+            head_dim: 32,
+            mlp: 192,
+            in_ch: 16,
+            ctx_dim: 48,
+            out_ch: 16,
+            n_double: 1,
+            n_single: 2,
+        }
     }
 
     fn put_f(src: &mut MemSource, name: &str, v: Vec<f32>, rows: usize, k: usize) {
@@ -722,12 +857,18 @@ mod tests {
 
     fn put_q(src: &mut MemSource, name: &str, r: &mut Rng, rows: usize, k: usize) {
         let v = r.vec(rows * k, 1.0 / (k as f32).sqrt());
-        src.q8.insert(name.to_string(), (quant_q8_0(&v, rows, k), rows, k));
+        src.q8
+            .insert(name.to_string(), (quant_q8_0(&v, rows, k), rows, k));
     }
 
     fn put_qg(src: &mut MemSource, name: &str, r: &mut Rng, rows: usize, k: usize, g: f32) {
-        let v: Vec<f32> = r.vec(rows * k, 1.0 / (k as f32).sqrt()).iter().map(|x| x * g).collect();
-        src.q8.insert(name.to_string(), (quant_q8_0(&v, rows, k), rows, k));
+        let v: Vec<f32> = r
+            .vec(rows * k, 1.0 / (k as f32).sqrt())
+            .iter()
+            .map(|x| x * g)
+            .collect();
+        src.q8
+            .insert(name.to_string(), (quant_q8_0(&v, rows, k), rows, k));
     }
 
     fn put_norm(src: &mut MemSource, name: &str, r: &mut Rng, len: usize) {
@@ -750,31 +891,99 @@ mod tests {
         put_f(&mut src, "time_in.in_layer.weight", v, h, TIME_DIM);
         let v = r.vec(h * h, fi(h));
         put_f(&mut src, "time_in.out_layer.weight", v, h, h);
-        for name in ["double_stream_modulation_img.lin.weight", "double_stream_modulation_txt.lin.weight"] {
+        for name in [
+            "double_stream_modulation_img.lin.weight",
+            "double_stream_modulation_txt.lin.weight",
+        ] {
             let v: Vec<f32> = r.vec(6 * h * h, fi(h)).iter().map(|x| x * g).collect();
             put_f(&mut src, name, v, 6 * h, h);
         }
         let v: Vec<f32> = r.vec(3 * h * h, fi(h)).iter().map(|x| x * g).collect();
         put_f(&mut src, "single_stream_modulation.lin.weight", v, 3 * h, h);
         let v: Vec<f32> = r.vec(2 * h * h, fi(h)).iter().map(|x| x * g).collect();
-        put_f(&mut src, "final_layer.adaLN_modulation.1.weight", v, 2 * h, h);
+        put_f(
+            &mut src,
+            "final_layer.adaLN_modulation.1.weight",
+            v,
+            2 * h,
+            h,
+        );
         let v = r.vec(c.out_ch * h, fi(h));
         put_f(&mut src, "final_layer.linear.weight", v, c.out_ch, h);
         for i in 0..c.n_double {
             for s in ["img", "txt"] {
-                put_q(&mut src, &format!("double_blocks.{i}.{s}_attn.qkv.weight"), &mut r, 3 * h, h);
-                put_qg(&mut src, &format!("double_blocks.{i}.{s}_attn.proj.weight"), &mut r, h, h, g);
-                put_q(&mut src, &format!("double_blocks.{i}.{s}_mlp.0.weight"), &mut r, 2 * m, h);
-                put_qg(&mut src, &format!("double_blocks.{i}.{s}_mlp.2.weight"), &mut r, h, m, g);
-                put_norm(&mut src, &format!("double_blocks.{i}.{s}_attn.norm.query_norm.scale"), &mut r, hd);
-                put_norm(&mut src, &format!("double_blocks.{i}.{s}_attn.norm.key_norm.scale"), &mut r, hd);
+                put_q(
+                    &mut src,
+                    &format!("double_blocks.{i}.{s}_attn.qkv.weight"),
+                    &mut r,
+                    3 * h,
+                    h,
+                );
+                put_qg(
+                    &mut src,
+                    &format!("double_blocks.{i}.{s}_attn.proj.weight"),
+                    &mut r,
+                    h,
+                    h,
+                    g,
+                );
+                put_q(
+                    &mut src,
+                    &format!("double_blocks.{i}.{s}_mlp.0.weight"),
+                    &mut r,
+                    2 * m,
+                    h,
+                );
+                put_qg(
+                    &mut src,
+                    &format!("double_blocks.{i}.{s}_mlp.2.weight"),
+                    &mut r,
+                    h,
+                    m,
+                    g,
+                );
+                put_norm(
+                    &mut src,
+                    &format!("double_blocks.{i}.{s}_attn.norm.query_norm.scale"),
+                    &mut r,
+                    hd,
+                );
+                put_norm(
+                    &mut src,
+                    &format!("double_blocks.{i}.{s}_attn.norm.key_norm.scale"),
+                    &mut r,
+                    hd,
+                );
             }
         }
         for i in 0..c.n_single {
-            put_q(&mut src, &format!("single_blocks.{i}.linear1.weight"), &mut r, 3 * h + 2 * m, h);
-            put_qg(&mut src, &format!("single_blocks.{i}.linear2.weight"), &mut r, h, h + m, g);
-            put_norm(&mut src, &format!("single_blocks.{i}.norm.query_norm.scale"), &mut r, hd);
-            put_norm(&mut src, &format!("single_blocks.{i}.norm.key_norm.scale"), &mut r, hd);
+            put_q(
+                &mut src,
+                &format!("single_blocks.{i}.linear1.weight"),
+                &mut r,
+                3 * h + 2 * m,
+                h,
+            );
+            put_qg(
+                &mut src,
+                &format!("single_blocks.{i}.linear2.weight"),
+                &mut r,
+                h,
+                h + m,
+                g,
+            );
+            put_norm(
+                &mut src,
+                &format!("single_blocks.{i}.norm.query_norm.scale"),
+                &mut r,
+                hd,
+            );
+            put_norm(
+                &mut src,
+                &format!("single_blocks.{i}.norm.key_norm.scale"),
+                &mut r,
+                hd,
+            );
         }
         src
     }
@@ -837,7 +1046,8 @@ mod tests {
         let src = tiny_source(c, 1);
         let plan = plan_with_budget(c, BIG);
         assert_eq!(plan.len(), 1);
-        let mut m = HybridModel::new(&src, c, plan, MockDevice::new(1, BIG), Schedule::Merged).unwrap();
+        let mut m =
+            HybridModel::new(&src, c, plan, MockDevice::new(1, BIG), Schedule::Merged).unwrap();
         let inp = input(c, N_TXT, N_IMG, 7, 0.8);
         let got = m.forward(&inp);
         check_close(&got, &ref_forward(&src, &inp), "merged vs ref");
@@ -851,7 +1061,14 @@ mod tests {
         let plan = plan_with_budget(c, BIG);
         let expect_pubs = 8 * c.n_double + 2 * c.n_single;
         assert_eq!(stream_split_publishes(&plan), expect_pubs);
-        let mut m = HybridModel::new(&src, c, plan, MockDevice::new(1, BIG), Schedule::StreamSplit).unwrap();
+        let mut m = HybridModel::new(
+            &src,
+            c,
+            plan,
+            MockDevice::new(1, BIG),
+            Schedule::StreamSplit,
+        )
+        .unwrap();
         let inp = input(c, N_TXT, N_IMG, 9, 0.6);
         let got = m.forward(&inp);
         check_close(&got, &ref_forward(&src, &inp), "stream-split vs ref");
@@ -864,14 +1081,27 @@ mod tests {
         let src = tiny_source(c, 3);
         let plan = plan_with_budget(c, SMALL);
         let w = plan.len();
-        assert!(w >= 3, "the small budget should give several windows, got {w}");
-        let mut m = HybridModel::new(&src, c, plan.clone(), MockDevice::new(w, SMALL), Schedule::Merged).unwrap();
+        assert!(
+            w >= 3,
+            "the small budget should give several windows, got {w}"
+        );
+        let mut m = HybridModel::new(
+            &src,
+            c,
+            plan.clone(),
+            MockDevice::new(w, SMALL),
+            Schedule::Merged,
+        )
+        .unwrap();
         let inp = input(c, N_TXT, N_IMG, 11, 0.4);
         let got = m.forward(&inp);
         check_close(&got, &ref_forward(&src, &inp), "multi-window vs ref");
         assert_eq!(m.stats().loads, w, "every window loaded once");
         assert_eq!(m.stats().reloads, 0);
-        assert_eq!(m.stats().publishes, plan.iter().map(|x| x.stage_publishes).sum::<usize>());
+        assert_eq!(
+            m.stats().publishes,
+            plan.iter().map(|x| x.stage_publishes).sum::<usize>()
+        );
     }
 
     #[test]
@@ -881,16 +1111,25 @@ mod tests {
         let plan = plan_with_budget(c, SMALL);
         let w = plan.len();
         let per_step: usize = plan.iter().map(|x| x.stage_publishes).sum();
-        let mut m = HybridModel::new(&src, c, plan, MockDevice::new(w, SMALL), Schedule::Merged).unwrap();
+        let mut m =
+            HybridModel::new(&src, c, plan, MockDevice::new(w, SMALL), Schedule::Merged).unwrap();
         let mut loads_after = Vec::new();
         for (step, ts) in [0.9f32, 0.7, 0.5, 0.3].iter().enumerate() {
             let inp = input(c, N_TXT, N_IMG, 20 + step as u64, *ts);
             let got = m.forward(&inp);
             check_close(&got, &ref_forward(&src, &inp), &format!("step {step}"));
             loads_after.push(m.stats().loads);
-            assert_eq!(m.stats().publishes, per_step * (step + 1), "publishes per step equal the plan");
+            assert_eq!(
+                m.stats().publishes,
+                per_step * (step + 1),
+                "publishes per step equal the plan"
+            );
         }
-        assert_eq!(loads_after, vec![w, w, w, w], "no loads after the first step");
+        assert_eq!(
+            loads_after,
+            vec![w, w, w, w],
+            "no loads after the first step"
+        );
         assert_eq!(m.stats().reloads, 0);
         assert_eq!(m.device().total_loads(), w);
     }
@@ -903,10 +1142,15 @@ mod tests {
         let w = plan.len();
         let predicted = steady_reloads_per_step(w, 1);
         assert_eq!(predicted, w);
-        let mut m = HybridModel::new(&src, c, plan, MockDevice::new(1, SMALL), Schedule::Merged).unwrap();
+        let mut m =
+            HybridModel::new(&src, c, plan, MockDevice::new(1, SMALL), Schedule::Merged).unwrap();
         for step in 0..4 {
             let inp = input(c, N_TXT, N_IMG, 30 + step as u64, 0.5);
-            check_close(&m.forward(&inp), &ref_forward(&src, &inp), &format!("1 slot step {step}"));
+            check_close(
+                &m.forward(&inp),
+                &ref_forward(&src, &inp),
+                &format!("1 slot step {step}"),
+            );
         }
         assert_eq!(m.stats().loads, 4 * w);
         assert_eq!(m.stats().reloads, 3 * predicted);
@@ -923,11 +1167,20 @@ mod tests {
         let w = plan.len();
         let predicted = steady_reloads_per_step(w, 2);
         let slots = assign_slots(w, 2);
-        assert_eq!(slots.iter().filter(|&&s| s == 0).count(), 1, "one pinned window");
-        let mut m = HybridModel::new(&src, c, plan, MockDevice::new(2, SMALL), Schedule::Merged).unwrap();
+        assert_eq!(
+            slots.iter().filter(|&&s| s == 0).count(),
+            1,
+            "one pinned window"
+        );
+        let mut m =
+            HybridModel::new(&src, c, plan, MockDevice::new(2, SMALL), Schedule::Merged).unwrap();
         for step in 0..4 {
             let inp = input(c, N_TXT, N_IMG, 40 + step as u64, 0.5);
-            check_close(&m.forward(&inp), &ref_forward(&src, &inp), &format!("2 slots step {step}"));
+            check_close(
+                &m.forward(&inp),
+                &ref_forward(&src, &inp),
+                &format!("2 slots step {step}"),
+            );
         }
         assert_eq!(m.stats().reloads, 3 * predicted);
         assert!(m.device().max_charged.iter().all(|&x| x <= SMALL));
@@ -941,19 +1194,45 @@ mod tests {
         let inp = input(c, N_TXT, N_IMG, 50, 0.5);
 
         let between = |t: &[String], a: &str, b: &str| -> Vec<String> {
-            let s = t.iter().position(|x| x == a).unwrap_or_else(|| panic!("no {a}"));
-            let e = t.iter().skip(s).position(|x| x == b).map(|k| s + k).unwrap_or_else(|| panic!("no {b}"));
-            t[s + 1..e].iter().filter(|x| x.starts_with("cpu:")).cloned().collect()
+            let s = t
+                .iter()
+                .position(|x| x == a)
+                .unwrap_or_else(|| panic!("no {a}"));
+            let e = t
+                .iter()
+                .skip(s)
+                .position(|x| x == b)
+                .map(|k| s + k)
+                .unwrap_or_else(|| panic!("no {b}"));
+            t[s + 1..e]
+                .iter()
+                .filter(|x| x.starts_with("cpu:"))
+                .cloned()
+                .collect()
         };
 
-        let mut sp = HybridModel::new(&src, c, plan.clone(), MockDevice::new(1, BIG), Schedule::StreamSplit).unwrap();
+        let mut sp = HybridModel::new(
+            &src,
+            c,
+            plan.clone(),
+            MockDevice::new(1, BIG),
+            Schedule::StreamSplit,
+        )
+        .unwrap();
         sp.enable_trace();
         sp.forward(&inp);
         let t = sp.take_trace();
-        assert_eq!(between(&t, "submit:A.img", "wait:A.img"), vec!["cpu:A.txt.post".to_string()]);
-        assert_eq!(between(&t, "submit:B.txt", "wait:B.txt"), vec!["cpu:attention.img".to_string()]);
+        assert_eq!(
+            between(&t, "submit:A.img", "wait:A.img"),
+            vec!["cpu:A.txt.post".to_string()]
+        );
+        assert_eq!(
+            between(&t, "submit:B.txt", "wait:B.txt"),
+            vec!["cpu:attention.img".to_string()]
+        );
 
-        let mut mg = HybridModel::new(&src, c, plan, MockDevice::new(1, BIG), Schedule::Merged).unwrap();
+        let mut mg =
+            HybridModel::new(&src, c, plan, MockDevice::new(1, BIG), Schedule::Merged).unwrap();
         mg.enable_trace();
         mg.forward(&inp);
         let t = mg.take_trace();

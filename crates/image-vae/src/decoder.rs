@@ -264,7 +264,13 @@ impl ConvJob<'_> {
     }
 }
 
-fn store_tile<const NB: usize>(planes: &mut [&mut [f32]], w: usize, y: usize, x0: usize, acc: &[[f32; TILE]; NB]) {
+fn store_tile<const NB: usize>(
+    planes: &mut [&mut [f32]],
+    w: usize,
+    y: usize,
+    x0: usize,
+    acc: &[[f32; TILE]; NB],
+) {
     for (j, a) in acc.iter().enumerate() {
         planes[j][y * w + x0..y * w + x0 + TILE].copy_from_slice(a);
     }
@@ -325,7 +331,11 @@ pub fn set_conv_mode(name: &str) -> Result<(), String> {
         "f32" => (false, false),
         "winograd" => (false, true),
         "int8" => (true, false),
-        other => return Err(format!("--vae-conv must be f32, winograd or int8, got '{other}'")),
+        other => {
+            return Err(format!(
+                "--vae-conv must be f32, winograd or int8, got '{other}'"
+            ))
+        }
     };
     set_int8_conv(int8);
     set_winograd(wino);
@@ -360,9 +370,24 @@ const GP: usize = 4;
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-unsafe fn conv_tile(wp: *const f32, xin: *const f32, cin: usize, k: usize, pw: usize, y: usize, x0: usize, bias: *const f32, out: *mut f32) {
+unsafe fn conv_tile(
+    wp: *const f32,
+    xin: *const f32,
+    cin: usize,
+    k: usize,
+    pw: usize,
+    y: usize,
+    x0: usize,
+    bias: *const f32,
+    out: *mut f32,
+) {
     use core::arch::aarch64::*;
-    let (b0, b1, b2, b3) = (vld1q_f32(bias), vld1q_f32(bias.add(4)), vld1q_f32(bias.add(8)), vld1q_f32(bias.add(12)));
+    let (b0, b1, b2, b3) = (
+        vld1q_f32(bias),
+        vld1q_f32(bias.add(4)),
+        vld1q_f32(bias.add(8)),
+        vld1q_f32(bias.add(12)),
+    );
     let (mut a00, mut a01, mut a02, mut a03) = (b0, b1, b2, b3);
     let (mut a10, mut a11, mut a12, mut a13) = (b0, b1, b2, b3);
     let (mut a20, mut a21, mut a22, mut a23) = (b0, b1, b2, b3);
@@ -373,7 +398,12 @@ unsafe fn conv_tile(wp: *const f32, xin: *const f32, cin: usize, k: usize, pw: u
             let p0 = xin.add(((y + ky) * pw + x0 + kx) * cin);
             let (p1, p2, p3) = (p0.add(cin), p0.add(2 * cin), p0.add(3 * cin));
             for ci in 0..cin {
-                let (w0, w1, w2, w3) = (vld1q_f32(w), vld1q_f32(w.add(4)), vld1q_f32(w.add(8)), vld1q_f32(w.add(12)));
+                let (w0, w1, w2, w3) = (
+                    vld1q_f32(w),
+                    vld1q_f32(w.add(4)),
+                    vld1q_f32(w.add(8)),
+                    vld1q_f32(w.add(12)),
+                );
                 w = w.add(GC);
                 let s0 = vld1q_dup_f32(p0.add(ci));
                 let s1 = vld1q_dup_f32(p1.add(ci));
@@ -398,7 +428,12 @@ unsafe fn conv_tile(wp: *const f32, xin: *const f32, cin: usize, k: usize, pw: u
             }
         }
     }
-    for (i, v) in [a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33].into_iter().enumerate() {
+    for (i, v) in [
+        a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33,
+    ]
+    .into_iter()
+    .enumerate()
+    {
         vst1q_f32(out.add(i * 4), v);
     }
 }
@@ -406,7 +441,17 @@ unsafe fn conv_tile(wp: *const f32, xin: *const f32, cin: usize, k: usize, pw: u
 /// Portable form of [`conv_tile`] (same order of operations up to FMA contraction).
 #[cfg(not(target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
-unsafe fn conv_tile(wp: *const f32, xin: *const f32, cin: usize, k: usize, pw: usize, y: usize, x0: usize, bias: *const f32, out: *mut f32) {
+unsafe fn conv_tile(
+    wp: *const f32,
+    xin: *const f32,
+    cin: usize,
+    k: usize,
+    pw: usize,
+    y: usize,
+    x0: usize,
+    bias: *const f32,
+    out: *mut f32,
+) {
     let mut acc = [0f32; GP * GC];
     for p in 0..GP {
         for j in 0..GC {
@@ -432,7 +477,18 @@ unsafe fn conv_tile(wp: *const f32, xin: *const f32, cin: usize, k: usize, pw: u
 
 impl Conv {
     fn new(w: Vec<f32>, b: Vec<f32>, cout: usize, cin: usize, k: usize) -> Conv {
-        Conv { w, b, cout, cin, k, wp: std::sync::OnceLock::new(), wq: std::sync::OnceLock::new(), wup: std::sync::OnceLock::new(), wq_up: std::sync::OnceLock::new(), wwin: std::sync::OnceLock::new() }
+        Conv {
+            w,
+            b,
+            cout,
+            cin,
+            k,
+            wp: std::sync::OnceLock::new(),
+            wq: std::sync::OnceLock::new(),
+            wup: std::sync::OnceLock::new(),
+            wq_up: std::sync::OnceLock::new(),
+            wwin: std::sync::OnceLock::new(),
+        }
     }
 
     /// Weights in GEMM order `[cout block][tap][cin][GC]` (missing output channels of the last block are 0).
@@ -445,7 +501,8 @@ impl Conv {
                 let (cb, j) = (co / GC, co % GC);
                 for ci in 0..cin {
                     for tap in 0..taps {
-                        p[((cb * taps + tap) * cin + ci) * GC + j] = self.w[(co * cin + ci) * taps + tap];
+                        p[((cb * taps + tap) * cin + ci) * GC + j] =
+                            self.w[(co * cin + ci) * taps + tap];
                     }
                 }
             }
@@ -480,24 +537,29 @@ impl Conv {
         // 1. zero-padded channel-last copy, tiled so that few input planes are live at a time
         let mut xin = vec![0f32; ph * pw * cin];
         let xd = &x.d;
-        for_each_chunk_mut(&mut xin, pw * cin, threads, &|yy: usize, row: &mut [f32]| {
-            if yy < pad || yy >= h + pad {
-                return;
-            }
-            let y = yy - pad;
-            for x0 in (0..w).step_by(16) {
-                let x1 = (x0 + 16).min(w);
-                for c0 in (0..cin).step_by(4) {
-                    let c1 = (c0 + 4).min(cin);
-                    for ci in c0..c1 {
-                        let src = &xd[ci * hw + y * w..][..w];
-                        for xx in x0..x1 {
-                            row[(xx + pad) * cin + ci] = src[xx];
+        for_each_chunk_mut(
+            &mut xin,
+            pw * cin,
+            threads,
+            &|yy: usize, row: &mut [f32]| {
+                if yy < pad || yy >= h + pad {
+                    return;
+                }
+                let y = yy - pad;
+                for x0 in (0..w).step_by(16) {
+                    let x1 = (x0 + 16).min(w);
+                    for c0 in (0..cin).step_by(4) {
+                        let c1 = (c0 + 4).min(cin);
+                        for ci in c0..c1 {
+                            let src = &xd[ci * hw + y * w..][..w];
+                            for xx in x0..x1 {
+                                row[(xx + pad) * cin + ci] = src[xx];
+                            }
                         }
                     }
                 }
-            }
-        });
+            },
+        );
         // 2. GEMM tiles into a block-major buffer [cout block][h][w4][GC]
         let wp = self.packed();
         let nb = cout.div_ceil(GC);
@@ -509,19 +571,34 @@ impl Conv {
         let mut blk = vec![0f32; nb * h * w4 * GC];
         let xin_ref = &xin;
         let bias_ref = &bias;
-        for_each_chunk_mut(&mut blk, band * w4 * GC, threads, &|i: usize, out: &mut [f32]| {
-            let (cb, y0) = (i / bands, (i % bands) * band);
-            let wb = &wp[cb * taps * cin * GC..(cb + 1) * taps * cin * GC];
-            for dy in 0..band {
-                for x0 in (0..w4).step_by(GP) {
-                    // SAFETY: xin has rows y0+dy .. +k and columns x0 .. x0+GP+k-1 (pw = w4 + 2*pad);
-                    // wb holds taps*cin*GC floats; out holds band*w4*GC floats.
-                    unsafe {
-                        conv_tile(wb.as_ptr(), xin_ref.as_ptr(), cin, k, pw, y0 + dy, x0, bias_ref.as_ptr().add(cb * GC), out.as_mut_ptr().add((dy * w4 + x0) * GC));
+        for_each_chunk_mut(
+            &mut blk,
+            band * w4 * GC,
+            threads,
+            &|i: usize, out: &mut [f32]| {
+                let (cb, y0) = (i / bands, (i % bands) * band);
+                let wb = &wp[cb * taps * cin * GC..(cb + 1) * taps * cin * GC];
+                for dy in 0..band {
+                    for x0 in (0..w4).step_by(GP) {
+                        // SAFETY: xin has rows y0+dy .. +k and columns x0 .. x0+GP+k-1 (pw = w4 + 2*pad);
+                        // wb holds taps*cin*GC floats; out holds band*w4*GC floats.
+                        unsafe {
+                            conv_tile(
+                                wb.as_ptr(),
+                                xin_ref.as_ptr(),
+                                cin,
+                                k,
+                                pw,
+                                y0 + dy,
+                                x0,
+                                bias_ref.as_ptr().add(cb * GC),
+                                out.as_mut_ptr().add((dy * w4 + x0) * GC),
+                            );
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
         // 3. back to channel-major planes
         let mut out = vec![0f32; cout * hw];
         let blk_ref = &blk;
@@ -534,12 +611,21 @@ impl Conv {
                 }
             }
         });
-        Feat { c: cout, h, w, d: out }
+        Feat {
+            c: cout,
+            h,
+            w,
+            d: out,
+        }
     }
 
     /// Shapes the int8 path takes: the heavy 3x3 convolutions (the 1x1 and small ones stay f32).
     fn int8_ok(&self, x: &Feat) -> bool {
-        self.k == 3 && self.cin >= I8_CHUNK && self.cin % I8_CHUNK == 0 && self.cout % 8 == 0 && x.w % 8 == 0
+        self.k == 3
+            && self.cin >= I8_CHUNK
+            && self.cin % I8_CHUNK == 0
+            && self.cout % 8 == 0
+            && x.w % 8 == 0
     }
 
     fn packed_i8(&self) -> &int8_gemm::Packed {
@@ -578,39 +664,57 @@ impl Conv {
         // 1. channel-last copy of the input, then int8 codes and scales per (pixel, chunk); padding stays 0
         let mut xin = vec![0f32; ph * pw * cin];
         let xd = &x.d;
-        for_each_chunk_mut(&mut xin, pw * cin, threads, &|yy: usize, row: &mut [f32]| {
-            if yy < pad || yy >= h + pad {
-                return;
-            }
-            let y = yy - pad;
-            for x0 in (0..w).step_by(16) {
-                let x1 = (x0 + 16).min(w);
-                for ci in 0..cin {
-                    let src = &xd[ci * hw + y * w..][..w];
-                    for xx in x0..x1 {
-                        row[(xx + pad) * cin + ci] = src[xx];
+        for_each_chunk_mut(
+            &mut xin,
+            pw * cin,
+            threads,
+            &|yy: usize, row: &mut [f32]| {
+                if yy < pad || yy >= h + pad {
+                    return;
+                }
+                let y = yy - pad;
+                for x0 in (0..w).step_by(16) {
+                    let x1 = (x0 + 16).min(w);
+                    for ci in 0..cin {
+                        let src = &xd[ci * hw + y * w..][..w];
+                        for xx in x0..x1 {
+                            row[(xx + pad) * cin + ci] = src[xx];
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
         let mut qs = vec![0f32; ph * pw * nch];
         let xin_ref = &xin;
-        for_each_chunk_mut(&mut qs, pw * nch, threads, &|yy: usize, srow: &mut [f32]| {
-            let row = &xin_ref[yy * pw * cin..(yy + 1) * pw * cin];
-            for (c, s) in srow.iter_mut().enumerate() {
-                let mut amax = 0f32;
-                for &v in &row[c * I8_CHUNK..(c + 1) * I8_CHUNK] {
-                    amax = amax.max(v.abs());
+        for_each_chunk_mut(
+            &mut qs,
+            pw * nch,
+            threads,
+            &|yy: usize, srow: &mut [f32]| {
+                let row = &xin_ref[yy * pw * cin..(yy + 1) * pw * cin];
+                for (c, s) in srow.iter_mut().enumerate() {
+                    let mut amax = 0f32;
+                    for &v in &row[c * I8_CHUNK..(c + 1) * I8_CHUNK] {
+                        amax = amax.max(v.abs());
+                    }
+                    *s = if amax > 0.0 && amax.is_finite() {
+                        amax / 127.0
+                    } else {
+                        0.0
+                    };
                 }
-                *s = if amax > 0.0 && amax.is_finite() { amax / 127.0 } else { 0.0 };
-            }
-        });
+            },
+        );
         let mut q = vec![0i8; ph * pw * cin];
         let qs_ref = &qs;
         for_each_chunk_mut(&mut q, pw * cin, threads, &|yy: usize, qrow: &mut [i8]| {
             let row = &xin_ref[yy * pw * cin..(yy + 1) * pw * cin];
             let srow = &qs_ref[yy * pw * nch..(yy + 1) * pw * nch];
-            for (c, (qc, xc)) in qrow.chunks_exact_mut(I8_CHUNK).zip(row.chunks_exact(I8_CHUNK)).enumerate() {
+            for (c, (qc, xc)) in qrow
+                .chunks_exact_mut(I8_CHUNK)
+                .zip(row.chunks_exact(I8_CHUNK))
+                .enumerate()
+            {
                 let s = srow[c];
                 let inv = if s > 0.0 { 1.0 / s } else { 0.0 };
                 for (o, &v) in qc.iter_mut().zip(xc) {
@@ -624,34 +728,53 @@ impl Conv {
         let row_groups = cout / G;
         let mut outn = vec![0f32; hw * cout];
         let (q_ref, bias) = (&q, &self.b);
-        for_each_chunk_mut(&mut outn, w * cout, threads, &|y: usize, orow: &mut [f32]| {
-            let mut ybuf = vec![0f32; I8_BATCH * cout];
-            for x0 in (0..w).step_by(I8_BATCH) {
-                let nb = I8_BATCH.min(w - x0);
-                let mut xp = Packed::zeroed(nb, kk, I8_CHUNK);
-                for j in 0..nb {
-                    for ky in 0..k {
-                        for kx in 0..k {
-                            let px = (y + ky) * pw + x0 + j + kx;
-                            xp.set_codes(j, (ky * k + kx) * cin, &q_ref[px * cin..(px + 1) * cin], &qs_ref[px * nch..(px + 1) * nch]);
+        for_each_chunk_mut(
+            &mut outn,
+            w * cout,
+            threads,
+            &|y: usize, orow: &mut [f32]| {
+                let mut ybuf = vec![0f32; I8_BATCH * cout];
+                for x0 in (0..w).step_by(I8_BATCH) {
+                    let nb = I8_BATCH.min(w - x0);
+                    let mut xp = Packed::zeroed(nb, kk, I8_CHUNK);
+                    for j in 0..nb {
+                        for ky in 0..k {
+                            for kx in 0..k {
+                                let px = (y + ky) * pw + x0 + j + kx;
+                                xp.set_codes(
+                                    j,
+                                    (ky * k + kx) * cin,
+                                    &q_ref[px * cin..(px + 1) * cin],
+                                    &qs_ref[px * nch..(px + 1) * nch],
+                                );
+                            }
+                        }
+                    }
+                    let mut rb = 0;
+                    while rb < row_groups {
+                        let re = (rb + I8_ROW_GROUPS).min(row_groups);
+                        gemm(
+                            &xp,
+                            wq,
+                            0..nb / G,
+                            rb..re,
+                            &mut ybuf[rb * G..],
+                            cout,
+                            Order::MulAdd,
+                            false,
+                        );
+                        rb = re;
+                    }
+                    for t in 0..nb {
+                        let dst = &mut orow[(x0 + t) * cout..(x0 + t + 1) * cout];
+                        let src = &ybuf[t * cout..(t + 1) * cout];
+                        for co in 0..cout {
+                            dst[co] = src[co] + bias[co];
                         }
                     }
                 }
-                let mut rb = 0;
-                while rb < row_groups {
-                    let re = (rb + I8_ROW_GROUPS).min(row_groups);
-                    gemm(&xp, wq, 0..nb / G, rb..re, &mut ybuf[rb * G..], cout, Order::MulAdd, false);
-                    rb = re;
-                }
-                for t in 0..nb {
-                    let dst = &mut orow[(x0 + t) * cout..(x0 + t + 1) * cout];
-                    let src = &ybuf[t * cout..(t + 1) * cout];
-                    for co in 0..cout {
-                        dst[co] = src[co] + bias[co];
-                    }
-                }
-            }
-        });
+            },
+        );
         // 3. back to channel-major planes
         let mut out = vec![0f32; cout * hw];
         let outn_ref = &outn;
@@ -660,7 +783,12 @@ impl Conv {
                 *o = outn_ref[i * cout + co];
             }
         });
-        Feat { c: cout, h, w, d: out }
+        Feat {
+            c: cout,
+            h,
+            w,
+            d: out,
+        }
     }
 
     /// The earlier channel-major blocked kernel (4 output channels x 16 columns), bitwise equal to
@@ -693,10 +821,15 @@ impl Conv {
             plane_p,
             pw,
         };
-        for_each_chunk_mut(&mut out, CO_BLOCK * hw, threads, &|bi: usize, blk: &mut [f32]| {
-            let mut planes: Vec<&mut [f32]> = blk.chunks_mut(hw).collect();
-            conv_block(&job, bi * CO_BLOCK, &mut planes, h, w);
-        });
+        for_each_chunk_mut(
+            &mut out,
+            CO_BLOCK * hw,
+            threads,
+            &|bi: usize, blk: &mut [f32]| {
+                let mut planes: Vec<&mut [f32]> = blk.chunks_mut(hw).collect();
+                conv_block(&job, bi * CO_BLOCK, &mut planes, h, w);
+            },
+        );
         Feat {
             c: cout,
             h,
@@ -759,7 +892,10 @@ impl Conv {
 /// channels, so the result does not depend on the thread count.
 fn group_norm_act(x: &Feat, norm: &Norm, groups: usize, silu: bool, threads: usize) -> Feat {
     let c = x.c;
-    assert!(groups > 0 && c % groups == 0, "group_norm: {c} channels, {groups} groups");
+    assert!(
+        groups > 0 && c % groups == 0,
+        "group_norm: {c} channels, {groups} groups"
+    );
     let cg = c / groups;
     let l = x.h * x.w;
     let mut out = Feat::zeros(c, x.h, x.w);
@@ -834,7 +970,10 @@ fn exp_fast(x: f32) -> f32 {
     let x = x.clamp(-87.0, 87.0);
     let n = (x * std::f32::consts::LOG2_E).round();
     let r = x - n * 0.693_359_4 + n * 2.121_944_4e-4;
-    let p = ((((1.987_569_1e-4 * r + 1.398_2e-3) * r + 8.333_452e-3) * r + 4.166_579_6e-2) * r + 1.666_666_5e-1) * r + 0.5;
+    let p = ((((1.987_569_1e-4 * r + 1.398_2e-3) * r + 8.333_452e-3) * r + 4.166_579_6e-2) * r
+        + 1.666_666_5e-1)
+        * r
+        + 0.5;
     let y = p * r * r + r + 1.0;
     y * f32::from_bits(((n as i32 + 127) as u32) << 23)
 }
@@ -960,45 +1099,58 @@ fn attention(q: &[f32], k: &[f32], v: &[f32], l: usize, c: usize, threads: usize
 }
 
 /// [`attention`] with an explicit score row stride `ls >= l` (tests compare strides bitwise).
-fn attention_with_stride(q: &[f32], k: &[f32], v: &[f32], l: usize, c: usize, threads: usize, ls: usize) -> Vec<f32> {
+fn attention_with_stride(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    l: usize,
+    c: usize,
+    threads: usize,
+    ls: usize,
+) -> Vec<f32> {
     assert!(ls >= l);
     let scale = 1.0 / (c as f32).sqrt();
     let mut out = vec![0f32; l * c];
-    for_each_chunk_mut(&mut out, ATTN_QB * c, threads, &|bi: usize, oblk: &mut [f32]| {
-        let nb = oblk.len() / c;
-        let i0 = bi * ATTN_QB;
-        let mut s = vec![0f32; nb * ls];
-        for j in 0..l {
-            let kj = &k[j * c..][..c];
-            for r in 0..nb {
-                let qi = &q[(i0 + r) * c..][..c];
-                s[r * ls + j] = dot(qi, kj) * scale;
-            }
-        }
-        for r in 0..nb {
-            let row = &mut s[r * ls..][..l];
-            let m = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            let mut sum = 0f32;
-            for x in row.iter_mut() {
-                *x = (*x - m).exp();
-                sum += *x;
-            }
-            let inv = 1.0 / sum;
-            for x in row.iter_mut() {
-                *x *= inv;
-            }
-        }
-        for j in 0..l {
-            let vj = &v[j * c..][..c];
-            for r in 0..nb {
-                let p = s[r * ls + j];
-                let od = &mut oblk[r * c..][..c];
-                for (o, vv) in od.iter_mut().zip(vj) {
-                    *o += p * *vv;
+    for_each_chunk_mut(
+        &mut out,
+        ATTN_QB * c,
+        threads,
+        &|bi: usize, oblk: &mut [f32]| {
+            let nb = oblk.len() / c;
+            let i0 = bi * ATTN_QB;
+            let mut s = vec![0f32; nb * ls];
+            for j in 0..l {
+                let kj = &k[j * c..][..c];
+                for r in 0..nb {
+                    let qi = &q[(i0 + r) * c..][..c];
+                    s[r * ls + j] = dot(qi, kj) * scale;
                 }
             }
-        }
-    });
+            for r in 0..nb {
+                let row = &mut s[r * ls..][..l];
+                let m = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mut sum = 0f32;
+                for x in row.iter_mut() {
+                    *x = (*x - m).exp();
+                    sum += *x;
+                }
+                let inv = 1.0 / sum;
+                for x in row.iter_mut() {
+                    *x *= inv;
+                }
+            }
+            for j in 0..l {
+                let vj = &v[j * c..][..c];
+                for r in 0..nb {
+                    let p = s[r * ls + j];
+                    let od = &mut oblk[r * c..][..c];
+                    for (o, vv) in od.iter_mut().zip(vj) {
+                        *o += p * *vv;
+                    }
+                }
+            }
+        },
+    );
     out
 }
 
@@ -1088,17 +1240,28 @@ fn load_conv(t: &mut Tensors, base: &str, k: usize) -> Result<Conv, String> {
     let (cout, cin) = match shape.as_slice() {
         &[co, ci, kh, kw] if kh == k && kw == k => (co, ci),
         &[co, ci] if k == 1 => (co, ci),
-        _ => return Err(format!("vae: {base}.weight shape {shape:?}, expected [co, ci, {k}, {k}]")),
+        _ => {
+            return Err(format!(
+                "vae: {base}.weight shape {shape:?}, expected [co, ci, {k}, {k}]"
+            ))
+        }
     };
     // `from_tensors` is public: the value vectors must match their shapes, because the kernels
     // read weights, biases and norm parameters through raw pointers sized by the shapes
     // (Winograd output transform, GroupNorm apply).
     if w.len() != cout * cin * k * k {
-        return Err(format!("vae: {base}.weight has {} values, shape {shape:?} needs {}", w.len(), cout * cin * k * k));
+        return Err(format!(
+            "vae: {base}.weight has {} values, shape {shape:?} needs {}",
+            w.len(),
+            cout * cin * k * k
+        ));
     }
     let (bshape, b) = take(t, &format!("{base}.bias"))?;
     if bshape != [cout] || b.len() != cout {
-        return Err(format!("vae: {base}.bias shape {bshape:?} with {} values, expected [{cout}]", b.len()));
+        return Err(format!(
+            "vae: {base}.bias shape {bshape:?} with {} values, expected [{cout}]",
+            b.len()
+        ));
     }
     Ok(Conv::new(w, b, cout, cin, k))
 }
@@ -1107,7 +1270,11 @@ fn load_norm(t: &mut Tensors, base: &str) -> Result<Norm, String> {
     let (ws, w) = take(t, &format!("{base}.weight"))?;
     let (bs, b) = take(t, &format!("{base}.bias"))?;
     if ws.len() != 1 || bs != ws || w.len() != ws[0] || b.len() != ws[0] {
-        return Err(format!("vae: {base} norm shapes {ws:?} / {bs:?} with {} / {} values", w.len(), b.len()));
+        return Err(format!(
+            "vae: {base} norm shapes {ws:?} / {bs:?} with {} / {} values",
+            w.len(),
+            b.len()
+        ));
     }
     Ok(Norm { w, b })
 }
@@ -1124,14 +1291,22 @@ fn load_resblock(t: &mut Tensors, base: &str) -> Result<ResBlock, String> {
     };
     let cin = conv1.cin;
     let cout = conv2.cout;
-    if norm1.w.len() != cin || conv1.cout != conv2.cin || norm2.w.len() != conv1.cout || cout != conv1.cout {
+    if norm1.w.len() != cin
+        || conv1.cout != conv2.cin
+        || norm2.w.len() != conv1.cout
+        || cout != conv1.cout
+    {
         return Err(format!("vae: {base}: inconsistent channel counts"));
     }
     match &shortcut {
         Some(s) if s.cin == cin && s.cout == cout => {}
         Some(_) => return Err(format!("vae: {base}: nin_shortcut channel mismatch")),
         None if cin == cout => {}
-        None => return Err(format!("vae: {base}: channels change ({cin} -> {cout}) without nin_shortcut")),
+        None => {
+            return Err(format!(
+                "vae: {base}: channels change ({cin} -> {cout}) without nin_shortcut"
+            ))
+        }
     }
     Ok(ResBlock {
         norm1,
@@ -1151,7 +1326,9 @@ fn load_attn(t: &mut Tensors, base: &str) -> Result<Attn, String> {
     let c = norm.w.len();
     for conv in [&q, &k, &v, &proj] {
         if conv.cin != c || conv.cout != c {
-            return Err(format!("vae: {base}: attention projections must be {c}x{c}"));
+            return Err(format!(
+                "vae: {base}: attention projections must be {c}x{c}"
+            ));
         }
     }
     Ok(Attn {
@@ -1200,12 +1377,19 @@ impl VaeDecoder {
         let mut up = Vec::with_capacity(n_levels);
         for i in (0..n_levels).rev() {
             let mut blocks = Vec::new();
-            while t.contains_key(&format!("decoder.up.{i}.block.{}.conv1.weight", blocks.len())) {
+            while t.contains_key(&format!(
+                "decoder.up.{i}.block.{}.conv1.weight",
+                blocks.len()
+            )) {
                 let j = blocks.len();
                 blocks.push(load_resblock(&mut t, &format!("decoder.up.{i}.block.{j}"))?);
             }
             let upsample = if i != 0 {
-                Some(load_conv(&mut t, &format!("decoder.up.{i}.upsample.conv"), 3)?)
+                Some(load_conv(
+                    &mut t,
+                    &format!("decoder.up.{i}.upsample.conv"),
+                    3,
+                )?)
             } else {
                 None
             };
@@ -1226,7 +1410,10 @@ impl VaeDecoder {
         for level in &up {
             for b in &level.blocks {
                 if b.conv1.cin != ch {
-                    return Err(format!("vae: up block expects {} input channels, have {ch}", b.conv1.cin));
+                    return Err(format!(
+                        "vae: up block expects {} input channels, have {ch}",
+                        b.conv1.cin
+                    ));
                 }
                 ch = b.conv2.cout;
             }
@@ -1235,12 +1422,17 @@ impl VaeDecoder {
             return Err("vae: norm_out / conv_out channel mismatch".into());
         }
         let mut norm_channels = vec![norm_out.w.len(), mid_attn.norm.w.len()];
-        for r in [&mid1, &mid2].into_iter().chain(up.iter().flat_map(|l| l.blocks.iter())) {
+        for r in [&mid1, &mid2]
+            .into_iter()
+            .chain(up.iter().flat_map(|l| l.blocks.iter()))
+        {
             norm_channels.push(r.norm1.w.len());
             norm_channels.push(r.norm2.w.len());
         }
         if let Some(n) = norm_channels.iter().find(|&&n| n % groups != 0) {
-            return Err(format!("vae: {n} channels not divisible by {groups} groups"));
+            return Err(format!(
+                "vae: {n} channels not divisible by {groups} groups"
+            ));
         }
 
         Ok(VaeDecoder {
@@ -1282,26 +1474,48 @@ impl VaeDecoder {
     }
 
     /// Decodes a latent `[channels][h][w]` (see module docs) into `[3][H][W]` f32.
-    pub fn decode(&self, z: &[f32], channels: usize, h: usize, w: usize, threads: usize) -> Result<Vec<f32>, String> {
-        self.decode_timed(z, channels, h, w, threads).map(|(out, _)| out)
+    pub fn decode(
+        &self,
+        z: &[f32],
+        channels: usize,
+        h: usize,
+        w: usize,
+        threads: usize,
+    ) -> Result<Vec<f32>, String> {
+        self.decode_timed(z, channels, h, w, threads)
+            .map(|(out, _)| out)
     }
 
     /// Same as [`VaeDecoder::decode`], also returning wall-clock time per stage.
     /// Runs the channel-last path (`decoder/nhwc.rs`).
-    pub fn decode_timed(&self, z: &[f32], channels: usize, h: usize, w: usize, threads: usize) -> Result<(Vec<f32>, DecodeTimes), String> {
+    pub fn decode_timed(
+        &self,
+        z: &[f32],
+        channels: usize,
+        h: usize,
+        w: usize,
+        threads: usize,
+    ) -> Result<(Vec<f32>, DecodeTimes), String> {
         self.check_latent(z, channels, h, w)?;
         Ok(self.decode_nhwc(z, channels, h, w, threads))
     }
 
     fn check_latent(&self, z: &[f32], channels: usize, h: usize, w: usize) -> Result<(), String> {
         if channels != self.latent_channels() {
-            return Err(format!("vae decode: {channels} latent channels, decoder expects {}", self.latent_channels()));
+            return Err(format!(
+                "vae decode: {channels} latent channels, decoder expects {}",
+                self.latent_channels()
+            ));
         }
         if h == 0 || w == 0 {
             return Err("vae decode: empty latent".into());
         }
         if z.len() != channels * h * w {
-            return Err(format!("vae decode: latent has {} values, expected {}", z.len(), channels * h * w));
+            return Err(format!(
+                "vae decode: latent has {} values, expected {}",
+                z.len(),
+                channels * h * w
+            ));
         }
         Ok(())
     }
@@ -1394,7 +1608,8 @@ pub struct DecodeTimes {
 
 impl DecodeTimes {
     fn push(&mut self, name: &str, since: Instant) {
-        self.stages.push((name.to_string(), since.elapsed().as_secs_f64()));
+        self.stages
+            .push((name.to_string(), since.elapsed().as_secs_f64()));
     }
 }
 
@@ -1466,7 +1681,10 @@ mod tests {
         let mut seed = 0x9e37_79b9_7f4a_7c15u64;
         for (cin, cout, k, h, w) in shapes {
             let conv = Conv {
-                w: rand_vec(cout * cin * k * k, &mut seed).into_iter().map(|v| v * 0.3).collect(),
+                w: rand_vec(cout * cin * k * k, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 0.3)
+                    .collect(),
                 b: rand_vec(cout, &mut seed),
                 cout,
                 cin,
@@ -1485,17 +1703,35 @@ mod tests {
             };
             let reference = conv.forward_reference(&x, 1);
             let blocked = conv.forward_blocked(&x, 3);
-            assert!(blocked.d.iter().zip(&reference.d).all(|(a, b)| a.to_bits() == b.to_bits()), "blocked kernel is not bitwise equal to the reference");
+            assert!(
+                blocked
+                    .d
+                    .iter()
+                    .zip(&reference.d)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "blocked kernel is not bitwise equal to the reference"
+            );
             let fast = conv.forward(&x, 1);
             assert_eq!(fast.d.len(), reference.d.len());
-            let num: f64 = fast.d.iter().zip(&reference.d).map(|(a, b)| ((a - b) as f64).powi(2)).sum();
+            let num: f64 = fast
+                .d
+                .iter()
+                .zip(&reference.d)
+                .map(|(a, b)| ((a - b) as f64).powi(2))
+                .sum();
             let den: f64 = reference.d.iter().map(|b| (*b as f64).powi(2)).sum();
             let rel = (num / den).sqrt();
-            assert!(rel < 1e-6, "cin={cin} cout={cout} k={k} {h}x{w}: rel RMSE {rel:e}");
+            assert!(
+                rel < 1e-6,
+                "cin={cin} cout={cout} k={k} {h}x{w}: rel RMSE {rel:e}"
+            );
             for threads in [2usize, 5, 12] {
                 let many = conv.forward(&x, threads);
                 assert!(
-                    many.d.iter().zip(&fast.d).all(|(a, b)| a.to_bits() == b.to_bits()),
+                    many.d
+                        .iter()
+                        .zip(&fast.d)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
                     "threads={threads} differs from 1 thread"
                 );
             }
@@ -1505,18 +1741,48 @@ mod tests {
     #[test]
     fn int8_conv_is_close_to_f32_and_thread_invariant() {
         let mut seed = 0x51ed_270b_9f3c_1a77u64;
-        for (cin, cout, h, w) in [(64usize, 16usize, 5usize, 8usize), (128, 64, 4, 40), (64, 72, 3, 16)] {
-            let conv = Conv::new(rand_vec(cout * cin * 9, &mut seed).into_iter().map(|v| v * 0.05).collect(), rand_vec(cout, &mut seed), cout, cin, 3);
-            let x = Feat { c: cin, h, w, d: rand_vec(cin * h * w, &mut seed) };
+        for (cin, cout, h, w) in [
+            (64usize, 16usize, 5usize, 8usize),
+            (128, 64, 4, 40),
+            (64, 72, 3, 16),
+        ] {
+            let conv = Conv::new(
+                rand_vec(cout * cin * 9, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 0.05)
+                    .collect(),
+                rand_vec(cout, &mut seed),
+                cout,
+                cin,
+                3,
+            );
+            let x = Feat {
+                c: cin,
+                h,
+                w,
+                d: rand_vec(cin * h * w, &mut seed),
+            };
             assert!(conv.int8_ok(&x));
             let f = conv.forward_f32(&x, 2);
             let a = conv.forward_int8(&x, 1);
             let b = conv.forward_int8(&x, 5);
-            assert!(a.d.iter().zip(&b.d).all(|(p, q)| p.to_bits() == q.to_bits()), "int8 conv depends on the thread count");
-            let num: f64 = a.d.iter().zip(&f.d).map(|(p, q)| ((p - q) as f64).powi(2)).sum();
+            assert!(
+                a.d.iter()
+                    .zip(&b.d)
+                    .all(|(p, q)| p.to_bits() == q.to_bits()),
+                "int8 conv depends on the thread count"
+            );
+            let num: f64 =
+                a.d.iter()
+                    .zip(&f.d)
+                    .map(|(p, q)| ((p - q) as f64).powi(2))
+                    .sum();
             let den: f64 = f.d.iter().map(|q| (*q as f64).powi(2)).sum();
             let rel = (num / den).sqrt();
-            assert!(rel < 0.03, "cin={cin} cout={cout} {h}x{w}: int8 vs f32 rel RMSE {rel:e}");
+            assert!(
+                rel < 0.03,
+                "cin={cin} cout={cout} {h}x{w}: int8 vs f32 rel RMSE {rel:e}"
+            );
             assert!(rel > 1e-6, "int8 path suspiciously exact: is it running?");
         }
         // shapes the int8 path must refuse
@@ -1556,15 +1822,40 @@ mod tests {
         ];
         let mut seed = 0x1357_9bdf_2468_ace0u64;
         for (cin, cout, k, h, w) in shapes {
-            let conv = Conv::new(rand_vec(cout * cin * k * k, &mut seed).into_iter().map(|v| v * 0.3).collect(), rand_vec(cout, &mut seed), cout, cin, k);
-            let x = Feat { c: cin, h, w, d: rand_vec(cin * h * w, &mut seed) };
-            let res = Feat { c: cout, h, w, d: rand_vec(cout * h * w, &mut seed) };
+            let conv = Conv::new(
+                rand_vec(cout * cin * k * k, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 0.3)
+                    .collect(),
+                rand_vec(cout, &mut seed),
+                cout,
+                cin,
+                k,
+            );
+            let x = Feat {
+                c: cin,
+                h,
+                w,
+                d: rand_vec(cin * h * w, &mut seed),
+            };
+            let res = Feat {
+                c: cout,
+                h,
+                w,
+                d: rand_vec(cout * h * w, &mut seed),
+            };
             let reference = conv.forward_reference(&x, 1);
             let old = conv.forward_f32(&x, 2);
             let xn = t::to_nhwc(&x);
             let new = t::to_planes(&t::conv(&conv, &xn, false, None, 1));
-            assert!(rel_rmse(&new.d, &reference.d) < 1e-6, "cin={cin} cout={cout} k={k} {h}x{w}");
-            assert!(same_bits(&new.d, &old.d), "cin={cin} cout={cout} k={k} {h}x{w}: not bitwise the channel-major GEMM");
+            assert!(
+                rel_rmse(&new.d, &reference.d) < 1e-6,
+                "cin={cin} cout={cout} k={k} {h}x{w}"
+            );
+            assert!(
+                same_bits(&new.d, &old.d),
+                "cin={cin} cout={cout} k={k} {h}x{w}: not bitwise the channel-major GEMM"
+            );
             let mut old_res = old.clone();
             add_inplace(&mut old_res, &res);
             let rn = t::to_nhwc(&res);
@@ -1572,7 +1863,10 @@ mod tests {
                 let many = t::to_planes(&t::conv(&conv, &xn, false, None, threads));
                 assert!(same_bits(&many.d, &new.d), "threads={threads}");
                 let with_res = t::to_planes(&t::conv(&conv, &xn, false, Some(&rn), threads));
-                assert!(same_bits(&with_res.d, &old_res.d), "residual, threads={threads}");
+                assert!(
+                    same_bits(&with_res.d, &old_res.d),
+                    "residual, threads={threads}"
+                );
             }
         }
     }
@@ -1582,9 +1876,30 @@ mod tests {
     fn nhwc_upsample_conv_matches_upsample_then_conv() {
         use nhwc::testing as t;
         let mut seed = 0x0f1e_2d3c_4b5a_6978u64;
-        for (cin, cout, h, w) in [(5usize, 7usize, 3usize, 5usize), (16, 16, 1, 1), (8, 20, 4, 9), (32, 32, 6, 8), (12, 3, 2, 1), (4, 4, 1, 6)] {
-            let conv = Conv::new(rand_vec(cout * cin * 9, &mut seed).into_iter().map(|v| v * 0.3).collect(), rand_vec(cout, &mut seed), cout, cin, 3);
-            let x = Feat { c: cin, h, w, d: rand_vec(cin * h * w, &mut seed) };
+        for (cin, cout, h, w) in [
+            (5usize, 7usize, 3usize, 5usize),
+            (16, 16, 1, 1),
+            (8, 20, 4, 9),
+            (32, 32, 6, 8),
+            (12, 3, 2, 1),
+            (4, 4, 1, 6),
+        ] {
+            let conv = Conv::new(
+                rand_vec(cout * cin * 9, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 0.3)
+                    .collect(),
+                rand_vec(cout, &mut seed),
+                cout,
+                cin,
+                3,
+            );
+            let x = Feat {
+                c: cin,
+                h,
+                w,
+                d: rand_vec(cin * h * w, &mut seed),
+            };
             let want = conv.forward_reference(&upsample_nearest2(&x), 1);
             let xn = t::to_nhwc(&x);
             let got1 = t::conv(&conv, &xn, true, None, 1);
@@ -1608,29 +1923,69 @@ mod tests {
             return;
         }
         let mut seed = 0x2468_ace0_1357_9bdfu64;
-        for (cin, cout, h, w) in [(64usize, 16usize, 5usize, 8usize), (128, 64, 4, 40), (64, 72, 3, 16), (192, 8, 1, 8)] {
-            let conv = Conv::new(rand_vec(cout * cin * 9, &mut seed).into_iter().map(|v| v * 0.05).collect(), rand_vec(cout, &mut seed), cout, cin, 3);
-            let x = Feat { c: cin, h, w, d: rand_vec(cin * h * w, &mut seed) };
-            let res = Feat { c: cout, h, w, d: rand_vec(cout * h * w, &mut seed) };
+        for (cin, cout, h, w) in [
+            (64usize, 16usize, 5usize, 8usize),
+            (128, 64, 4, 40),
+            (64, 72, 3, 16),
+            (192, 8, 1, 8),
+        ] {
+            let conv = Conv::new(
+                rand_vec(cout * cin * 9, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 0.05)
+                    .collect(),
+                rand_vec(cout, &mut seed),
+                cout,
+                cin,
+                3,
+            );
+            let x = Feat {
+                c: cin,
+                h,
+                w,
+                d: rand_vec(cin * h * w, &mut seed),
+            };
+            let res = Feat {
+                c: cout,
+                h,
+                w,
+                d: rand_vec(cout * h * w, &mut seed),
+            };
             let xn = t::to_nhwc(&x);
             assert!(t::int8_ok(&conv, w));
             let old = conv.forward_int8(&x, 2);
             let new = t::to_planes(&t::conv_int8(&conv, &xn, false, None, 1));
-            assert!(same_bits(&new.d, &old.d), "cin={cin} cout={cout} {h}x{w}: not bitwise the channel-major int8 path");
+            assert!(
+                same_bits(&new.d, &old.d),
+                "cin={cin} cout={cout} {h}x{w}: not bitwise the channel-major int8 path"
+            );
             let mut old_res = old.clone();
             add_inplace(&mut old_res, &res);
-            let with_res = t::to_planes(&t::conv_int8(&conv, &xn, false, Some(&t::to_nhwc(&res)), 5));
+            let with_res =
+                t::to_planes(&t::conv_int8(&conv, &xn, false, Some(&t::to_nhwc(&res)), 5));
             assert!(same_bits(&with_res.d, &old_res.d), "residual");
             // fused upsample
             let want = conv.forward_reference(&upsample_nearest2(&x), 1);
             let up1 = t::to_planes(&t::conv_int8(&conv, &xn, true, None, 1));
             let up5 = t::to_planes(&t::conv_int8(&conv, &xn, true, None, 5));
-            assert!(same_bits(&up1.d, &up5.d), "int8 upsample conv depends on the thread count");
+            assert!(
+                same_bits(&up1.d, &up5.d),
+                "int8 upsample conv depends on the thread count"
+            );
             let e = rel_rmse(&up1.d, &want.d);
-            assert!(e < 0.03 && e > 1e-6, "cin={cin} cout={cout} {h}x{w}: int8 upsample conv rel RMSE {e:e}");
+            assert!(
+                e < 0.03 && e > 1e-6,
+                "cin={cin} cout={cout} {h}x{w}: int8 upsample conv rel RMSE {e:e}"
+            );
         }
-        assert!(!t::int8_ok(&Conv::new(vec![0.0; 8 * 32 * 9], vec![0.0; 8], 8, 32, 3), 8));
-        assert!(!t::int8_ok(&Conv::new(vec![0.0; 8 * 64 * 9], vec![0.0; 8], 8, 64, 3), 12));
+        assert!(!t::int8_ok(
+            &Conv::new(vec![0.0; 8 * 32 * 9], vec![0.0; 8], 8, 32, 3),
+            8
+        ));
+        assert!(!t::int8_ok(
+            &Conv::new(vec![0.0; 8 * 64 * 9], vec![0.0; 8], 8, 64, 3),
+            12
+        ));
     }
 
     /// Channel-last GroupNorm (+ SiLU) against the channel-major one (statistics are summed in a
@@ -1639,17 +1994,40 @@ mod tests {
     fn nhwc_group_norm_matches_channel_major() {
         use nhwc::testing as t;
         let mut seed = 0x7777_1234_abcd_0001u64;
-        for (c, groups, h, w) in [(32usize, 32usize, 5usize, 7usize), (64, 32, 8, 8), (24, 4, 3, 1), (6, 3, 2, 5), (128, 32, 4, 4)] {
-            let norm = Norm { w: rand_vec(c, &mut seed), b: rand_vec(c, &mut seed) };
-            let x = Feat { c, h, w, d: rand_vec(c * h * w, &mut seed).into_iter().map(|v| v * 3.0 + 0.7).collect() };
+        for (c, groups, h, w) in [
+            (32usize, 32usize, 5usize, 7usize),
+            (64, 32, 8, 8),
+            (24, 4, 3, 1),
+            (6, 3, 2, 5),
+            (128, 32, 4, 4),
+        ] {
+            let norm = Norm {
+                w: rand_vec(c, &mut seed),
+                b: rand_vec(c, &mut seed),
+            };
+            let x = Feat {
+                c,
+                h,
+                w,
+                d: rand_vec(c * h * w, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 3.0 + 0.7)
+                    .collect(),
+            };
             let xn = t::to_nhwc(&x);
             for silu in [false, true] {
                 let want = group_norm_act(&x, &norm, groups, silu, 2);
                 let a = t::norm_silu(&xn, &norm, groups, silu, false, 1);
                 let b = t::norm_silu(&xn, &norm, groups, silu, true, 5);
-                assert!(same_bits(&a.d[..c * h * w], &b.d[..c * h * w]), "in place / threads");
+                assert!(
+                    same_bits(&a.d[..c * h * w], &b.d[..c * h * w]),
+                    "in place / threads"
+                );
                 let e = rel_rmse(&t::to_planes(&a).d, &want.d);
-                assert!(e < 1e-6, "c={c} groups={groups} silu={silu}: rel RMSE {e:e}");
+                assert!(
+                    e < 1e-6,
+                    "c={c} groups={groups} silu={silu}: rel RMSE {e:e}"
+                );
             }
         }
     }
@@ -1663,11 +2041,40 @@ mod tests {
             return;
         }
         let mut seed = 0x0bad_cafe_1234_5678u64;
-        for (cin, cout, h, w) in [(32usize, 32usize, 2usize, 2usize), (32, 8, 4, 6), (64, 20, 6, 2), (36, 48, 10, 14), (128, 16, 2, 300), (32, 4, 34, 2), (256, 204, 4, 6), (224, 256, 2, 2), (256, 256, 18, 10)] {
+        for (cin, cout, h, w) in [
+            (32usize, 32usize, 2usize, 2usize),
+            (32, 8, 4, 6),
+            (64, 20, 6, 2),
+            (36, 48, 10, 14),
+            (128, 16, 2, 300),
+            (32, 4, 34, 2),
+            (256, 204, 4, 6),
+            (224, 256, 2, 2),
+            (256, 256, 18, 10),
+        ] {
             // the last three have transformed weights above 3 MB: the shared super-band mode
-            let conv = Conv::new(rand_vec(cout * cin * 9, &mut seed).into_iter().map(|v| v * 0.1).collect(), rand_vec(cout, &mut seed), cout, cin, 3);
-            let x = Feat { c: cin, h, w, d: rand_vec(cin * h * w, &mut seed) };
-            let res = Feat { c: cout, h, w, d: rand_vec(cout * h * w, &mut seed) };
+            let conv = Conv::new(
+                rand_vec(cout * cin * 9, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 0.1)
+                    .collect(),
+                rand_vec(cout, &mut seed),
+                cout,
+                cin,
+                3,
+            );
+            let x = Feat {
+                c: cin,
+                h,
+                w,
+                d: rand_vec(cin * h * w, &mut seed),
+            };
+            let res = Feat {
+                c: cout,
+                h,
+                w,
+                d: rand_vec(cout * h * w, &mut seed),
+            };
             let want = conv.forward_reference(&x, 1);
             let xn = t::to_nhwc(&x);
             assert!(t::wino_ok(&conv, h, w));
@@ -1675,16 +2082,31 @@ mod tests {
             let e = rel_rmse(&a.d, &want.d);
             assert!(e < 3e-6, "cin={cin} cout={cout} {h}x{w}: rel RMSE {e:e}");
             let b = t::to_planes(&t::conv_winograd(&conv, &xn, None, 7));
-            assert!(same_bits(&a.d, &b.d), "winograd conv depends on the thread count");
+            assert!(
+                same_bits(&a.d, &b.d),
+                "winograd conv depends on the thread count"
+            );
             let mut want_res = a.clone();
             add_inplace(&mut want_res, &res);
             let c = t::to_planes(&t::conv_winograd(&conv, &xn, Some(&t::to_nhwc(&res)), 3));
             assert!(same_bits(&c.d, &want_res.d), "residual");
         }
         // shapes it must refuse: odd size, few channels
-        assert!(!t::wino_ok(&Conv::new(vec![0.0; 32 * 32 * 9], vec![0.0; 32], 32, 32, 3), 3, 4));
-        assert!(!t::wino_ok(&Conv::new(vec![0.0; 3 * 32 * 9], vec![0.0; 3], 3, 32, 3), 4, 4));
-        assert!(!t::wino_ok(&Conv::new(vec![0.0; 32 * 32], vec![0.0; 32], 32, 32, 1), 4, 4));
+        assert!(!t::wino_ok(
+            &Conv::new(vec![0.0; 32 * 32 * 9], vec![0.0; 32], 32, 32, 3),
+            3,
+            4
+        ));
+        assert!(!t::wino_ok(
+            &Conv::new(vec![0.0; 3 * 32 * 9], vec![0.0; 3], 3, 32, 3),
+            4,
+            4
+        ));
+        assert!(!t::wino_ok(
+            &Conv::new(vec![0.0; 32 * 32], vec![0.0; 32], 32, 32, 1),
+            4,
+            4
+        ));
     }
 
     /// GEMM attention against the dot-product attention of the channel-major path.
@@ -1698,7 +2120,10 @@ mod tests {
             let want = attention(&q, &k, &v, l, c, 2);
             let a = nhwc::testing::attention(&q, &k, &v, l, c, 1);
             let b = nhwc::testing::attention(&q, &k, &v, l, c, 5);
-            assert!(same_bits(&a, &b), "l={l} c={c}: attention depends on the thread count");
+            assert!(
+                same_bits(&a, &b),
+                "l={l} c={c}: attention depends on the thread count"
+            );
             let e = rel_rmse(&a, &want);
             assert!(e < 2e-6, "l={l} c={c}: rel RMSE {e:e}");
         }
@@ -1711,9 +2136,27 @@ mod tests {
     fn bench_nhwc_ab() {
         use nhwc::testing as t;
         let mut seed = 0x1234_5678_9abc_def1u64;
-        for (cin, cout, h, w) in [(512usize, 512usize, 128usize, 128usize), (256, 256, 256, 256), (128, 128, 512, 512)] {
-            let conv = Conv::new(rand_vec(cout * cin * 9, &mut seed).into_iter().map(|v| v * 0.05).collect(), rand_vec(cout, &mut seed), cout, cin, 3);
-            let x = Feat { c: cin, h, w, d: rand_vec(cin * h * w, &mut seed) };
+        for (cin, cout, h, w) in [
+            (512usize, 512usize, 128usize, 128usize),
+            (256, 256, 256, 256),
+            (128, 128, 512, 512),
+        ] {
+            let conv = Conv::new(
+                rand_vec(cout * cin * 9, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 0.05)
+                    .collect(),
+                rand_vec(cout, &mut seed),
+                cout,
+                cin,
+                3,
+            );
+            let x = Feat {
+                c: cin,
+                h,
+                w,
+                d: rand_vec(cin * h * w, &mut seed),
+            };
             let xn = t::to_nhwc(&x);
             let gmac = (cout * cin * 9 * h * w) as f64 / 1e9;
             for _ in 0..3 {
@@ -1746,8 +2189,22 @@ mod tests {
         }
         // upsample + conv: separate (channel-major) against fused (channel-last)
         for (c, h, w) in [(512usize, 128usize, 128usize), (256, 256, 256)] {
-            let conv = Conv::new(rand_vec(c * c * 9, &mut seed).into_iter().map(|v| v * 0.05).collect(), rand_vec(c, &mut seed), c, c, 3);
-            let x = Feat { c, h, w, d: rand_vec(c * h * w, &mut seed) };
+            let conv = Conv::new(
+                rand_vec(c * c * 9, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 0.05)
+                    .collect(),
+                rand_vec(c, &mut seed),
+                c,
+                c,
+                3,
+            );
+            let x = Feat {
+                c,
+                h,
+                w,
+                d: rand_vec(c * h * w, &mut seed),
+            };
             let xn = t::to_nhwc(&x);
             for _ in 0..2 {
                 let t0 = Instant::now();
@@ -1774,9 +2231,16 @@ mod tests {
     #[ignore]
     fn bench_conv_ab() {
         let mut seed = 0x1234_5678_9abc_def1u64;
-        for (cin, cout, k, h, w) in [(512usize, 512usize, 3usize, 128usize, 128usize), (256, 256, 3, 256, 256), (128, 128, 3, 512, 512)] {
+        for (cin, cout, k, h, w) in [
+            (512usize, 512usize, 3usize, 128usize, 128usize),
+            (256, 256, 3, 256, 256),
+            (128, 128, 3, 512, 512),
+        ] {
             let conv = Conv {
-                w: rand_vec(cout * cin * k * k, &mut seed).into_iter().map(|v| v * 0.05).collect(),
+                w: rand_vec(cout * cin * k * k, &mut seed)
+                    .into_iter()
+                    .map(|v| v * 0.05)
+                    .collect(),
                 b: rand_vec(cout, &mut seed),
                 cout,
                 cin,
@@ -1806,11 +2270,26 @@ mod tests {
                 let t0 = Instant::now();
                 let d8 = conv.forward_int8(&x, 12);
                 let t_i8 = t0.elapsed().as_secs_f64();
-                let n8: f64 = d8.d.iter().zip(&a.d).map(|(p, q)| ((p - q) as f64).powi(2)).sum();
+                let n8: f64 =
+                    d8.d.iter()
+                        .zip(&a.d)
+                        .map(|(p, q)| ((p - q) as f64).powi(2))
+                        .sum();
                 let d8den: f64 = a.d.iter().map(|q| (*q as f64).powi(2)).sum();
-                println!("    int8: {t_i8:.4} s = {:.0} GMAC/s (rel RMSE {:.1e})", (cout * cin * k * k * h * w) as f64 / 1e9 / t_i8, (n8 / d8den).sqrt());
-                let same = a.d.iter().zip(&b.d).all(|(p, q)| p.to_bits() == q.to_bits());
-                let num: f64 = c.d.iter().zip(&a.d).map(|(p, q)| ((p - q) as f64).powi(2)).sum();
+                println!(
+                    "    int8: {t_i8:.4} s = {:.0} GMAC/s (rel RMSE {:.1e})",
+                    (cout * cin * k * k * h * w) as f64 / 1e9 / t_i8,
+                    (n8 / d8den).sqrt()
+                );
+                let same =
+                    a.d.iter()
+                        .zip(&b.d)
+                        .all(|(p, q)| p.to_bits() == q.to_bits());
+                let num: f64 =
+                    c.d.iter()
+                        .zip(&a.d)
+                        .map(|(p, q)| ((p - q) as f64).powi(2))
+                        .sum();
                 let den: f64 = a.d.iter().map(|q| (*q as f64).powi(2)).sum();
                 let gmac = (cout * cin * k * k * h * w) as f64 / 1e9;
                 println!(
