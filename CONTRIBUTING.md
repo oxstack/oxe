@@ -9,6 +9,10 @@ The project's contribution guide, measurement rules and task list live in the `o
 5. **Builds fail loudly**: `set -o pipefail`, check the binary's SHA-256 after building, give every test a timeout.
 6. **Privacy**: no weights, no transcripts, no home paths, user or host names, serials or keys in commits or issues.
 
+For a second ARM host, the [portability probe runbook](docs/ARM-PORTABILITY-PROBE.md)
+defines a CPU-feature check and paired real-engine comparison. It is a plan, not a claim
+that another machine has been validated.
+
 Before sending a pull request:
 
 ```sh
