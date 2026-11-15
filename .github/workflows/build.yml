@@ -230,7 +230,7 @@ jobs:
           set +e
           env -i PATH="$PATH" CARGO_HOME="$real/.cargo" RUSTUP_HOME="$real/.rustup" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_DATA_HOME="$root/d" \
-            XDG_CACHE_HOME="$root/k" XDG_RUNTIME_DIR="$root/r" OXA_REQUIRE_BWRAP=1 OXA_PARITY_PROFILE=local \
+            XDG_CACHE_HOME="$root/k" XDG_RUNTIME_DIR="$root/r" OXA_REQUIRE_BWRAP=1 \
             cargo test --profile ci --locked --workspace --doc --no-fail-fast -- --nocapture 2>&1 | tee "$log"
           rc=${PIPESTATUS[0]}
           set -e
