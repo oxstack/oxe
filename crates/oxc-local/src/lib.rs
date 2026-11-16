@@ -2,6 +2,7 @@
 #![cfg(unix)]
 
 pub mod launch_profile;
+pub mod lifecycle;
 pub mod queue;
 
 use nix::errno::Errno;

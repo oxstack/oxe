@@ -58,3 +58,36 @@ Only Tokio's synchronization feature is used by this library. There is no timer,
 executor, background task or thread. Waiting futures carry their own semaphore
 wait nodes; the bounded queue does not allocate a request record for each ticket.
 No production target references this crate until the final wiring slice.
+
+## Model lifecycle (slice 3)
+
+`lifecycle::Lifecycle` adds caller-driven load, switch, explicit unload and idle
+unload. The owner retains the queue lease through startup and stop; a switch
+cannot spawn until the old process has been reaped. `try_request` grants a lease
+only when ready. Retain it through upstream cancellation cleanup; its drop starts
+the idle interval. Idle unload acquires that same lease without waiting. The
+default idle interval is two hours; disabling idle unload does not disable memory
+stops. No request is replayed after a crash.
+
+Launch profiles supply an explicit, qualified required available-memory budget.
+Admission refuses missing/invalid memory, insufficient availability, nonzero
+engine swap or a missing zero-swap limit. The caller supplies fresh samples from
+the engine's cgroup and host; no production memory reader or cgroup setup is
+introduced in this slice. Do not use fabricated samples for real models.
+
+The active memory guard preserves GUARD-2b's behaviour: no-swap violations,
+cgroup/global OOM and pids-limit events stop immediately relative to the
+pre-launch counters. Host available plus free swap below 2 GiB, available below
+256 MiB, or ready PSI full above 20 percent stops after three continuous seconds.
+Loading PSI full above 60 percent has a separate five-second timer. A healthy
+sample resets its timer; read/parse errors stop rather than disabling the guard.
+Memory stops apply during active work too, cancel automatic restart and pending
+switches, and retain process ownership until exit. An explicit subsequent load
+must pass fresh admission. Flash-specific swap-tolerant policy is not supported.
+
+`poll` must run while a process exists, including while generating and while
+stopping; there is no watchdog thread. Health probes must be bounded and identify
+the owned endpoint. The production sampler, authenticated loopback transport,
+launch-profile resolution and oxa timer driver are later slices. The standalone
+`stub_lifecycle` example proves load/idle-unload/reload/memory-stop against the
+real stub executable and synthetic GGUF using explicitly fake memory samples.
