@@ -511,7 +511,10 @@ jobs:
           pat='(ghp_[A-Za-z0-9]{30,}|gho_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|hf_[A-Za-z0-9]{30,}|sk-[A-Za-z0-9_-]{32,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
           # exclusions: synthetic fixtures; the report-issue scrubber test, whose INPUTS are fake key-shaped
           # strings it asserts are removed (exact file, reviewed 2026-11-14; same entry in sanitize-scan.allow)
-          if git grep -nIE "$pat" -- . ':!oxc/tests/fixtures' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs'; then echo "secret-like strings found"; exit 1; fi
+          # Plan item 22: exact test-only fixture of obviously fake OpenAI key/JWT/refresh
+          # shapes; asserts configured secrets disappear from errors and echoed headers.
+          # No real credentials or requests. Keep realistic inputs intact (T3 review).
+          if git grep -nIE "$pat" -- . ':!oxc/tests/fixtures' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs' ':!oxa/oxc-gateway/tests/redaction_openai.rs'; then echo "secret-like strings found"; exit 1; fi
           echo "no secret-like strings in $(git ls-files | wc -l) tracked files"
       - name: SDK-material check (file names, ELF objects, hexagon directories)
         # Self-contained: the exporter's full scan (text notices included) runs at export time.
