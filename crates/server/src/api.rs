@@ -188,6 +188,23 @@ pub fn gen_params(body: &Json, chat: bool) -> Result<GenParams, String> {
     if let Some(v) = body.get("n_predict").and_then(Json::as_i64) {
         p.n_predict = v;
     }
+    if let Some(value) = body.get("thinking_budget").filter(|v| !v.is_null()) {
+        if !chat {
+            return Err("thinking_budget is supported on chat completions only".into());
+        }
+        p.thinking_budget = Some(
+            value
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or("thinking_budget must be a non-negative integer or null")?,
+        );
+        if p.n_predict == 1 {
+            return Err(
+                "thinking_budget needs at least two output tokens (closing marker and answer)"
+                    .into(),
+            );
+        }
+    }
     p.sampling = SamplingParams {
         temperature: num(
             body,

@@ -66,3 +66,8 @@ mod tests_v020_rewrite;
 mod tests_v020_round1;
 #[cfg(test)]
 mod tests_v020_timings;
+
+#[cfg(test)]
+mod tests_thinking_budget;
+
+mod thinking_budget;

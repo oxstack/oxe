@@ -270,6 +270,8 @@ impl<E: Engine> State<E> {
     fn props(&self) -> Json {
         json!({
             "default_generation_settings": {"params": api::generation_settings(&GenParams { n_predict: self.default_max_tokens, ..GenParams::default() }), "n_ctx": self.n_ctx, "max_output_tokens": self.max_output_json()},
+            "thinking_budget": self.tmpl.as_ref().is_some_and(|t| t.supports_thinking)
+                && self.tok.token_id("<think>").is_some() && self.tok.token_id("</think>").is_some(),
             "total_slots": 1,
             "model_alias": self.cfg.model_name,
             "model_path": self.cfg.model_path,
@@ -2106,6 +2108,34 @@ async fn chat_completion<E: Engine>(
         .map(|&c| echo.map_pos(c))
         .collect();
     gp.pre_think = st.pre_think(&prompt, &pc.applied.generation_prompt);
+    if gp.thinking_budget.is_some() {
+        if gp.n_predict == 1 {
+            return bad(
+                "thinking_budget needs at least two output tokens (closing marker and answer)",
+            );
+        }
+        let Some((start, end)) = st.tok.token_id("<think>").zip(st.tok.token_id("</think>")) else {
+            return bad("thinking_budget requires single-token <think> and </think> markers");
+        };
+        if !st.tmpl.as_ref().is_some_and(|t| t.supports_thinking) {
+            return bad("thinking_budget requires a thinking-capable chat template");
+        }
+        if gp.n_predict != 0 && st.n_ctx - prompt.len() < 2 {
+            return bad(
+                "thinking_budget needs room for a closing marker and answer in the context",
+            );
+        }
+        let opened = pc
+            .applied
+            .generation_prompt
+            .rfind("<think>")
+            .is_some_and(|i| !pc.applied.generation_prompt[i..].contains("</think>"));
+        gp.thinking_markers = pc
+            .inputs
+            .enable_thinking
+            .then_some(crate::thinking_budget::Markers { start, end, opened });
+    }
+
     // v0.2.0 H5: a free label for the ledger only (any value; kept to a safe charset there)
     gp.turn_kind = turn_kind
         .map(|k| ledger_label(&k))

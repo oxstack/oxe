@@ -39,6 +39,7 @@ const USAGE: &str = "usage: oxe-server --model PATH [--alias NAME] [--host 127.0
   [--flash-pf-protect-hot 0|1 (F123: protect hot residents inside one batched Flash op; default 0)]
   capabilities: oxe-capability state-preload-v1 (POST /state-cache/preload; the controller's read-only
    binary probe looks for this literal: route strings need not survive LTO as one string)
+  capabilities: oxe-capability thinking-budget-v1 (optional chat request thinking_budget)
   [--ledger PATH (off; one JSON line of numbers per generation, appended, mode 0600)]
   [--api-key-file PATH (or env OXE_API_KEY_FILE; one key per line; every route, /health included, then needs
    \"Authorization: Bearer KEY\")] [--api-key KEY (visible in argv: prefer the file)]

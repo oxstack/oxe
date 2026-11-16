@@ -12,6 +12,10 @@ use tokenizer::{StreamDecoder, Token, Tokenizer};
 pub struct GenParams {
     /// -1 = until EOG or context full
     pub n_predict: i64,
+    /// Optional generated thinking-text token cap; closing marker counts against total output.
+    pub thinking_budget: Option<usize>,
+    /// Resolved from the chat template/tokenizer, never supplied as token ids by the caller.
+    pub thinking_markers: Option<crate::thinking_budget::Markers>,
     pub sampling: SamplingParams,
     pub stop: Vec<String>,
     pub n_probs: usize,
@@ -127,6 +131,8 @@ impl Default for GenParams {
     fn default() -> Self {
         GenParams {
             n_predict: -1,
+            thinking_budget: None,
+            thinking_markers: None,
             sampling: SamplingParams::default(),
             stop: Vec::new(),
             n_probs: 0,
@@ -2787,6 +2793,20 @@ impl<E: Engine> Worker<E> {
             n_cached,
             prompt_ms,
             prefill_only,
+            thinking_budget: p.thinking_budget.zip(p.thinking_markers.clone()).map(
+                |(n, markers)| {
+                    let room = if p.n_predict < 0 {
+                        usize::MAX
+                    } else {
+                        p.n_predict as usize
+                    };
+                    crate::thinking_budget::Budget::new(
+                        markers,
+                        n,
+                        room.min(self.engine.n_ctx() - prompt.len()),
+                    )
+                },
+            ),
             t1,
             spec0,
             greedy,
@@ -2860,10 +2880,14 @@ impl<E: Engine> Worker<E> {
                     tr.push(run.logits.clone());
                 }
             }
-            let t = match run.next_tok.take() {
-                Some(t) => t,
-                None => run.sampler.sample(&run.logits),
+            let forced = run.thinking_budget.as_ref().and_then(|b| b.forced());
+            let t = match (forced, run.next_tok.take()) {
+                (Some(t), _) | (None, Some(t)) => t,
+                (None, None) => run.sampler.sample(&run.logits),
             };
+            if let Some(budget) = run.thinking_budget.as_mut() {
+                budget.accepted(t);
+            }
             run.n_decoded += 1;
             if diag {
                 run.dg.sample_ms += lap(&mut run.tk);
@@ -3209,6 +3233,7 @@ pub struct GenRun {
     n_cached: usize,
     prompt_ms: f64,
     prefill_only: bool,
+    thinking_budget: Option<crate::thinking_budget::Budget>,
     /// start of the decode loop (predicted_ms)
     t1: Instant,
     /// the engine's (drafted, accepted) counters at the loop start
