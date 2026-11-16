@@ -121,7 +121,7 @@ jobs:
       - name: bubblewrap + unprivileged user namespaces
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind / / true
       - name: Toolchain
@@ -581,7 +581,7 @@ jobs:
           persist-credentials: false
       - run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --component rustfmt --no-self-update
       - run: cargo fmt --manifest-path oxa/Cargo.toml --all -- --check
