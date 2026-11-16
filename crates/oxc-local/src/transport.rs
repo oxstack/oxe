@@ -258,7 +258,11 @@ fn drive(
             next_poll = Instant::now() + Duration::from_millis(250);
         }
         match receive.recv_timeout(Duration::from_millis(50)) {
-            Ok(Message::Event(GatewayEvent::Chunk(value))) => {
+            Ok(Message::Event(event)) => {
+                let Some(value) = local_event(event)? else {
+                    done = true;
+                    continue;
+                };
                 if done {
                     return Err(broken("local stream data after completion"));
                 }
@@ -269,7 +273,6 @@ fn drive(
                     on(event);
                 }
             }
-            Ok(Message::Event(GatewayEvent::Done)) => done = true,
             Ok(Message::Comment(text)) => {
                 if let Some(event) =
                     assembler.comment(&text, started.elapsed().as_secs().try_into().unwrap_or(u32::MAX))
@@ -301,6 +304,17 @@ fn drive(
             Err(RecvTimeoutError::Timeout) => (),
             Err(RecvTimeoutError::Disconnected) => return Err(broken("local transport ended unexpectedly")),
         }
+    }
+}
+// Local HTTP has no cloud replay authority. Do not inspect, invoke or serialize
+// private completion events added by other native gateway implementations.
+fn local_event(event: GatewayEvent) -> Result<Option<oxa_proto::Value>, OxaError> {
+    if let GatewayEvent::Chunk(value) = event {
+        Ok(Some(value))
+    } else if matches!(event, GatewayEvent::Done) {
+        Ok(None)
+    } else {
+        Err(broken("unsupported local gateway event"))
     }
 }
 fn aborted() -> OxaError {
