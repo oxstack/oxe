@@ -1,6 +1,9 @@
 //! Model-free lifecycle smoke. Only use a stub engine and synthetic GGUF.
 //! Memory is explicitly faked here; this is not hardware qualification.
+use oxa_engine::StreamOpts;
+use oxa_proto::{CancelToken, ChatRequest, FrozenPrefix};
 use oxc_local::lifecycle::{Lifecycle, MemorySample, Model, Policy, StopReason};
+use oxc_local::transport::{Monitor, Transport};
 use oxc_local::{Config, State};
 use std::io;
 use std::net::TcpListener;
@@ -57,6 +60,8 @@ fn main() -> io::Result<()> {
                 "127.0.0.1".into(),
                 "--port".into(),
                 address.port().to_string().into(),
+                "--alias".into(),
+                "synthetic-stub".into(),
             ],
             startup_timeout: Duration::from_secs(30),
             health_interval: Duration::from_millis(50),
@@ -86,6 +91,35 @@ fn main() -> io::Result<()> {
     };
     owner.load(model.clone(), Instant::now(), Ok(sample()))?;
     wait(&mut owner, State::Ready, sample())?;
+    let prefix = FrozenPrefix {
+        sections: vec![("system".into(), "Synthetic smoke".into())],
+        tools_json: "[]".into(),
+        sha256: [0; 32],
+    };
+    let request = ChatRequest {
+        max_tokens: 4,
+        ..ChatRequest::new(&prefix, &[], "synthetic-stub")
+    };
+    let lease = owner.try_request().map_err(io::Error::other)?;
+    let transport = Transport::new(address, StreamOpts::default()).map_err(io::Error::other)?;
+    let mut increments = 0;
+    let reply = transport
+        .chat(
+            &mut owner,
+            lease,
+            &request,
+            &mut Monitor {
+                cancel: &CancelToken::new(),
+                memory: &mut || Ok(sample()),
+                healthy: &mut || health(),
+            },
+            &mut |_| {
+                increments += 1;
+            },
+        )
+        .map_err(io::Error::other)?;
+    assert!(reply.usage.completion > 0);
+    assert!(increments > 0);
     let active = owner.try_request().map_err(io::Error::other)?;
     std::thread::sleep(Duration::from_millis(150));
     owner.poll(Instant::now(), Ok(sample()), health)?;
@@ -100,7 +134,7 @@ fn main() -> io::Result<()> {
     wait(&mut owner, State::Stopped, pressure)?;
     assert_eq!(owner.status().stop_reason, Some(StopReason::MemoryPressure));
     println!(
-        "PASS: stub load, active lease, idle unload, reload, memory stop; owner inline bytes {}",
+        "PASS: stub typed chat/stream, load, active lease, idle unload, reload, memory stop; owner inline bytes {}",
         std::mem::size_of::<Lifecycle>()
     );
     Ok(())

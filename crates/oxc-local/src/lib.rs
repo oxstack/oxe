@@ -4,6 +4,7 @@
 pub mod launch_profile;
 pub mod lifecycle;
 pub mod queue;
+pub mod transport;
 
 use nix::errno::Errno;
 use nix::sys::signal::{killpg, Signal};

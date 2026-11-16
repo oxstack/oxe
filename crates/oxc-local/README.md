@@ -91,3 +91,30 @@ the owned endpoint. The production sampler, authenticated loopback transport,
 launch-profile resolution and oxa timer driver are later slices. The standalone
 `stub_lifecycle` example proves load/idle-unload/reload/memory-stop against the
 real stub executable and synthetic GGUF using explicitly fake memory samples.
+
+## Typed chat transport (slice 4)
+
+`transport::Transport` accepts the same borrowed `oxa_proto::ChatRequest` used by
+the native gateway. It reuses oxa-engine's pure request/header builder, bounded
+SSE reader, decoded `GatewayEvent` chunks, reply assembler and HTTP error
+classification. There is one serialization at the actual engine HTTP boundary;
+no intermediate JSON request is reconstructed. Endpoints are numeric loopback
+addresses, with no proxy, redirect, DNS configuration or controller fallback.
+Only `/v1/chat/completions` is sent. Status comes from the lifecycle, and the
+caller supplies bounded health/memory probes for the owned process.
+
+One scoped I/O worker and one queued event exist during a request; delivery stays
+on the calling thread. The caller drives lifecycle checks every 250 ms during
+streaming, including silent prefill. Cancellation is observed within the 50 ms
+receive wait plus the existing socket cancellation bound. No generation is
+retried. Buffered events and HTTP error bodies are capped at 1 MiB, and encoded
+requests at 16 MiB; the default HTTP client's limits are unchanged.
+
+The transport consumes the request lease. Success releases it only after worker
+completion and full reply assembly. Failure or callback panic closes the socket
+and transfers the lease into lifecycle stop/reap ownership. Continue polling
+until Stopped; returning a failure does not let a new request overlap unfinished
+generation. This conservative first path stops the child after any sent request
+fails. Endpoint authentication and production construction remain slice 5 work.
+The stub example now also executes a typed chat and receives streamed output;
+its fake memory still makes it a model-free protocol/lifecycle proof only.

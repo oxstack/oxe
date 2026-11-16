@@ -69,6 +69,7 @@ pub enum StopReason {
     Idle,
     MemoryPressure,
     MemoryUnavailable,
+    RequestInterrupted,
 }
 
 /// Borrowed status never probes, starts a process, or opens a model file.
@@ -84,7 +85,7 @@ pub struct Status<'a> {
 /// Generation owns the same exclusion as lifecycle operations. Drop only after
 /// upstream completion/cancellation; release starts the idle interval.
 pub struct RequestLease {
-    _lease: Lease,
+    lease: Option<Lease>,
     clock: Arc<Mutex<Clock>>,
 }
 impl Drop for RequestLease {
@@ -112,7 +113,7 @@ impl RequestGate {
             return Err(AdmissionError::Full);
         }
         Ok(RequestLease {
-            _lease: lease,
+            lease: Some(lease),
             clock: self.clock.clone(),
         })
     }
@@ -232,6 +233,31 @@ impl Lifecycle {
             ready: self.ready.clone(),
             clock: self.clock.clone(),
         }
+    }
+    pub(crate) fn owns(&self, request: &RequestLease) -> bool {
+        Arc::ptr_eq(&self.clock, &request.clock) && request.lease.is_some()
+    }
+    /// Transfer interrupted generation ownership back to the lifecycle. Poll
+    /// through Stopped before admitting more work; even a failed stop retains
+    /// the permit so another request cannot race a still-running generation.
+    pub fn interrupt(&mut self, mut request: RequestLease, now: Instant) -> io::Result<()> {
+        if !self.owns(&request) || self.control.is_some() {
+            return Err(io::Error::other("request lease does not own this engine"));
+        }
+        self.control = request.lease.take();
+        self.next = None;
+        let reason = match self.stop_reason {
+            Some(reason @ (StopReason::MemoryPressure | StopReason::MemoryUnavailable)) => reason,
+            _ => StopReason::RequestInterrupted,
+        };
+        self.stop(now, reason)?;
+        if self.status().state == State::Stopped {
+            self.supervisor = None;
+            self.model = None;
+            self.guard = None;
+            self.control = None;
+        }
+        Ok(())
     }
     /// Load/switch only when exclusive. The owner keeps the lease through readiness.
     /// A loaded name reuses its frozen launch profile; unload before replacing it.
@@ -437,7 +463,7 @@ mod tests {
             observed: now,
         }));
         let active = RequestLease {
-            _lease: queue.try_acquire().unwrap(),
+            lease: Some(queue.try_acquire().unwrap()),
             clock: clock.clone(),
         };
         // Deterministically schedule a real request release immediately before
