@@ -15,7 +15,8 @@ pub const LOCAL_SETTING: &str = "oxa.engine.inProcessLocal";
 
 /// Only pass the user settings' oxa.local subtree and private agent directory.
 /// Merged project settings must never select a binary, arguments or environment.
-/// This function performs no file, credential, model, process or network I/O.
+/// Discovery does not inspect binaries/weights, credentials or sockets or start a process.
+/// With no binary override, only the OS-reported oxa executable path is queried.
 pub fn configured_engine(
     local: Option<&Value>,
     private_dir: PathBuf,
@@ -35,7 +36,10 @@ pub fn configured_engine(
     }) {
         return Err(invalid());
     }
-    let binary = PathBuf::from(local.get("binary").and_then(Value::as_str).ok_or_else(invalid)?);
+    let binary = match local.get("binary") {
+        Some(value) => PathBuf::from(value.as_str().ok_or_else(invalid)?),
+        None => sibling_binary(&std::env::current_exe().map_err(|_| invalid())?)?,
+    };
     let entries = local
         .get("models")
         .and_then(Value::as_object)
@@ -127,6 +131,19 @@ pub fn configured_engine(
             launch: Arc::new(move |port| {
                 let profile =
                     from_user_settings(&user, &layout, &alias_owned, port).map_err(|_| invalid())?;
+                // Check only at cold load/switch, before creating child authentication.
+                // Discovery never inspects weights or runs the engine.
+                if !profile.model.is_file() {
+                    return Err(OxaError::new(codes::NOT_FOUND,
+                        "Local weights are missing; set oxa.local.models.<alias>.model to an existing GGUF path. No download is attempted."));
+                }
+                use std::os::unix::fs::PermissionsExt;
+                if !std::fs::metadata(&profile.binary)
+                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                {
+                    return Err(OxaError::new(codes::NOT_FOUND,
+                        "Local engine binary is missing or not executable; install oxe-server beside oxa or set oxa.local.binary."));
+                }
                 Ok(Config {
                     executable: profile.binary,
                     arguments: profile.arguments,
@@ -146,6 +163,13 @@ pub fn configured_engine(
         });
     }
     Ok(Arc::new(LocalEngine::new(models, private_dir, opts, policy)?))
+}
+fn sibling_binary(executable: &std::path::Path) -> Result<PathBuf, OxaError> {
+    executable
+        .parent()
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join("oxe-server"))
+        .ok_or_else(invalid)
 }
 fn invalid() -> OxaError {
     OxaError::new(codes::INVALID, "Invalid user local configuration in oxa.local.")
@@ -190,6 +214,77 @@ mod tests {
         assert_eq!(info.max_output, 64);
         assert!(!info.caps.remote);
         assert!(!private.exists());
+    }
+    #[test]
+    fn absent_binary_uses_installed_sibling_without_launching() {
+        let env = TestEnv::new();
+        let mut local = settings();
+        local.as_object_mut().unwrap().remove("binary");
+        let private = env.work().join("private");
+        let engine = configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
+        assert_eq!(engine.info(None).unwrap().model, "synthetic");
+        assert!(!private.exists());
+    }
+    #[test]
+    fn missing_weights_are_reported_before_child_authentication_or_launch() {
+        use oxa_proto::{CancelToken, ChatRequest, FrozenPrefix};
+        let env = TestEnv::new();
+        let private = env.work().join("private");
+        let engine = configured_engine(Some(&settings()), private.clone(), StreamOpts::default()).unwrap();
+        let prefix = FrozenPrefix {
+            sections: vec![],
+            tools_json: "[]".into(),
+            sha256: [0; 32],
+        };
+        let error = engine
+            .chat(
+                &ChatRequest::new(&prefix, &[], "synthetic"),
+                &CancelToken::new(),
+                &mut |_| panic!("missing weights produced output"),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, codes::NOT_FOUND);
+        assert!(error.message.contains("weights"));
+        assert!(!private.exists());
+    }
+    #[test]
+    fn binary_location_is_a_pure_sibling_not_a_path_or_cwd_search() {
+        assert_eq!(
+            sibling_binary(std::path::Path::new("/opt/example/bin/oxa")).unwrap(),
+            PathBuf::from("/opt/example/bin/oxe-server")
+        );
+        assert!(sibling_binary(std::path::Path::new("relative/oxa")).is_err());
+    }
+    #[test]
+    fn missing_or_nonexecutable_binary_has_install_guidance_before_launch() {
+        let env = TestEnv::new();
+        env.write(
+            "work/synthetic.gguf",
+            "Synthetic metadata placeholder; never loaded",
+        );
+        env.write("work/not-executable", "Synthetic placeholder; never executed");
+        for binary in [env.work().join("missing-oxe"), env.work().join("not-executable")] {
+            let mut local = settings();
+            local["binary"] = serde_json::json!(binary);
+            local["models"]["synthetic"]["model"] = serde_json::json!(env.work().join("synthetic.gguf"));
+            let private = env.work().join("private");
+            let engine = configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
+            let prefix = oxa_proto::FrozenPrefix {
+                sections: vec![],
+                tools_json: "[]".into(),
+                sha256: [0; 32],
+            };
+            let error = engine
+                .chat(
+                    &oxa_proto::ChatRequest::new(&prefix, &[], "synthetic"),
+                    &oxa_proto::CancelToken::new(),
+                    &mut |_| panic!("missing engine generated output"),
+                )
+                .unwrap_err();
+            assert_eq!(error.code, codes::NOT_FOUND);
+            assert!(error.message.contains("install oxe-server beside oxa"));
+            assert!(!private.exists());
+        }
     }
     #[test]
     fn malformed_limits_owned_auth_and_interpreter_launches_refuse() {

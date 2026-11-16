@@ -237,6 +237,9 @@ impl Lifecycle {
             stop_reason: self.stop_reason,
         }
     }
+    pub(crate) fn loaded_model(&self) -> Option<Model> {
+        self.model.clone()
+    }
     pub fn try_request(&self) -> Result<RequestLease, AdmissionError> {
         self.requests().try_acquire()
     }
