@@ -108,6 +108,9 @@ pub struct RequestGate {
     clock: Arc<Mutex<Clock>>,
 }
 impl RequestGate {
+    pub fn waiting(&self) -> usize {
+        self.queue.waiting()
+    }
     fn granted(&self, lease: Lease) -> Result<RequestLease, AdmissionError> {
         if !self.ready.load(Ordering::Acquire) {
             return Err(AdmissionError::Full);
@@ -122,6 +125,14 @@ impl RequestGate {
     }
     pub async fn acquire(&self) -> Result<RequestLease, AdmissionError> {
         self.granted(self.queue.acquire().await?)
+    }
+    /// Reserve the same FIFO slot for load/switch followed by generation.
+    /// Unlike acquire(), this permits an unloaded engine; hand it to load_reserved.
+    pub async fn acquire_operation(&self) -> Result<RequestLease, AdmissionError> {
+        Ok(RequestLease {
+            lease: Some(self.queue.acquire().await?),
+            clock: self.clock.clone(),
+        })
     }
 }
 
@@ -191,6 +202,7 @@ pub struct Lifecycle {
     model: Option<Model>,
     next: Option<Model>,
     control: Option<Lease>,
+    retain_ready: bool,
     guard: Option<Guard>,
     clock: Arc<Mutex<Clock>>,
     policy: Policy,
@@ -206,6 +218,7 @@ impl Lifecycle {
             model: None,
             next: None,
             control: None,
+            retain_ready: false,
             guard: None,
             clock: Arc::new(Mutex::new(Clock {
                 last_use: now,
@@ -245,6 +258,7 @@ impl Lifecycle {
             return Err(io::Error::other("request lease does not own this engine"));
         }
         self.control = request.lease.take();
+        self.retain_ready = false;
         self.next = None;
         let reason = match self.stop_reason {
             Some(reason @ (StopReason::MemoryPressure | StopReason::MemoryUnavailable)) => reason,
@@ -263,7 +277,47 @@ impl Lifecycle {
     /// A loaded name reuses its frozen launch profile; unload before replacing it.
     pub fn load(&mut self, model: Model, now: Instant, memory: io::Result<MemorySample>) -> io::Result<()> {
         let lease = self.queue.try_acquire().map_err(io::Error::other)?;
+        self.load_inner(lease, model, now, memory, false)
+    }
+    /// Keep the admitted ticket through model readiness, then take_ready_request
+    /// transfers that very lease into generation without admitting a competitor.
+    pub fn load_reserved(
+        &mut self,
+        mut request: RequestLease,
+        model: Model,
+        now: Instant,
+        memory: io::Result<MemorySample>,
+    ) -> io::Result<()> {
+        if !self.owns(&request) {
+            return Err(io::Error::other("foreign model-operation lease"));
+        }
+        let lease = request.lease.take().unwrap();
+        self.load_inner(lease, model, now, memory, true)
+    }
+    pub fn take_ready_request(&mut self) -> Option<RequestLease> {
+        if self.status().state != State::Ready || !self.retain_ready {
+            return None;
+        }
+        self.retain_ready = false;
+        let lease = self.control.take()?;
+        Some(RequestLease {
+            lease: Some(lease),
+            clock: self.clock.clone(),
+        })
+    }
+    fn load_inner(
+        &mut self,
+        lease: Lease,
+        model: Model,
+        now: Instant,
+        memory: io::Result<MemorySample>,
+        retain_ready: bool,
+    ) -> io::Result<()> {
         if self.status().state == State::Ready && self.status().model == Some(model.name.as_str()) {
+            if retain_ready {
+                self.control = Some(lease);
+                self.retain_ready = true;
+            }
             return Ok(());
         }
         if self.control.is_some() {
@@ -276,6 +330,7 @@ impl Lifecycle {
         // Validate launch policy before evicting the old model.
         let candidate = Supervisor::new(model.config.clone())?;
         self.control = Some(lease);
+        self.retain_ready = retain_ready;
         self.stop_reason = None;
         if self.supervisor.as_ref().is_some_and(|s| s.pid().is_some()) {
             self.next = Some(model);
@@ -305,6 +360,7 @@ impl Lifecycle {
         result
     }
     pub fn unload(&mut self, now: Instant) -> io::Result<()> {
+        self.retain_ready = false;
         if self.control.is_none() {
             self.control = Some(self.queue.try_acquire().map_err(io::Error::other)?);
         }
@@ -404,12 +460,14 @@ impl Lifecycle {
                     }
                 } else {
                     self.control = None;
+                    self.retain_ready = false;
                 }
             }
             State::Ready => {
                 self.ready.store(true, Ordering::Release);
-                if self.control.take().is_some() {
+                if self.control.is_some() && !self.retain_ready {
                     self.clock.lock().unwrap_or_else(|e| e.into_inner()).last_use = now;
+                    self.control = None;
                 }
                 if let Some(timeout) = self.policy.idle_timeout {
                     if let Some(lease) = idle_lease(now, &self.clock, timeout, || self.queue.try_acquire()) {

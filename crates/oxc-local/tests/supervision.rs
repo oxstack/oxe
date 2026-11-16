@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 fn config(script: &str) -> Config {
     Config {
+        environment: Default::default(),
         executable: "/bin/sh".into(),
         arguments: vec!["-c".into(), script.into()],
         startup_timeout: Duration::from_secs(10),

@@ -7,6 +7,7 @@ fn model(name: &str) -> Model {
         name: name.into(),
         required_available_bytes: 4096,
         config: Config {
+            environment: Default::default(),
             executable: "/bin/sleep".into(),
             arguments: vec!["60".into()],
             startup_timeout: Duration::from_secs(10),
@@ -440,4 +441,30 @@ fn exhausted_spawn_failure_releases_control_before_returning_error() {
     owner
         .load(model("two"), now + Duration::from_secs(2), Ok(memory()))
         .unwrap();
+}
+
+#[test]
+fn admitted_ticket_covers_cold_load_and_generation_without_a_fifo_gap() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let now = Instant::now();
+    let mut owner = Lifecycle::new(1, Policy::default());
+    let gate = owner.requests();
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut admission = Box::pin(gate.acquire_operation());
+    let Poll::Ready(Ok(lease)) = admission.as_mut().poll(&mut cx) else {
+        panic!("cold admission")
+    };
+    owner
+        .load_reserved(lease, model("one"), now, Ok(memory()))
+        .unwrap();
+    let mut waiting = Box::pin(gate.acquire_operation());
+    assert!(waiting.as_mut().poll(&mut cx).is_pending());
+    poll(&mut owner, now, memory());
+    assert_eq!(owner.status().state, State::Ready);
+    assert!(waiting.as_mut().poll(&mut cx).is_pending());
+    let request = owner.take_ready_request().unwrap();
+    assert!(waiting.as_mut().poll(&mut cx).is_pending());
+    drop(request);
+    assert!(matches!(waiting.as_mut().poll(&mut cx), Poll::Ready(Ok(_))));
 }

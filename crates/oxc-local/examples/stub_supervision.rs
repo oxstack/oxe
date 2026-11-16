@@ -47,6 +47,7 @@ fn main() -> io::Result<()> {
     );
     let address = TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let mut s = Supervisor::new(Config {
+        environment: Default::default(),
         executable,
         arguments: vec![
             "--engine".into(),

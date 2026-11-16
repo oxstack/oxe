@@ -27,6 +27,7 @@ fn owner() -> Lifecycle {
                 name: "fake-model".into(),
                 required_available_bytes: 4096,
                 config: Config {
+                    environment: Default::default(),
                     executable: "/bin/sleep".into(),
                     arguments: vec!["60".into()],
                     startup_timeout: Duration::from_secs(5),

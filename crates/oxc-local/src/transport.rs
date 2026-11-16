@@ -19,6 +19,7 @@ const MAX_EVENT: usize = 1024 * 1024;
 pub struct Transport {
     url: Url,
     opts: StreamOpts,
+    bearer: Option<String>,
 }
 /// Caller-owned cancellation and bounded process/memory probes. No hidden reader.
 pub struct Monitor<'a> {
@@ -42,7 +43,15 @@ impl Transport {
                 base_path: String::new(),
             },
             opts,
+            bearer: None,
         })
+    }
+    pub(crate) fn with_bearer(mut self, token: &str) -> Result<Self, OxaError> {
+        if token.is_empty() || !token.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Err(OxaError::new(codes::INVALID, "invalid child authentication"));
+        }
+        self.bearer = Some(token.into());
+        Ok(self)
     }
 
     /// Borrow the gateway's shared ChatRequest, encoding only at the actual engine
@@ -81,7 +90,10 @@ impl Transport {
                 "local chat request exceeds its size limit",
             ));
         }
-        let headers = build_headers(&request.hints);
+        let mut headers = build_headers(&request.hints);
+        if let Some(token) = &self.bearer {
+            headers.push(("Authorization", format!("Bearer {token}")));
+        }
         let mut active = Active {
             owner,
             lease: Some(lease),
@@ -170,7 +182,15 @@ impl Transport {
         if result.is_ok() {
             drop(active.lease.take());
         }
-        result
+        result.map_err(|mut error| {
+            if let Some(token) = &self.bearer {
+                error.message = error.message.replace(token, "[redacted]");
+                if let Some(hint) = error.hint.as_mut() {
+                    *hint = hint.replace(token, "[redacted]");
+                }
+            }
+            error
+        })
     }
 }
 

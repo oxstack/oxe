@@ -50,6 +50,7 @@ fn main() -> io::Result<()> {
         name: "synthetic-stub".into(),
         required_available_bytes: 4096,
         config: Config {
+            environment: Default::default(),
             executable,
             arguments: vec![
                 "--engine".into(),
