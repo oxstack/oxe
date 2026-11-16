@@ -444,10 +444,12 @@ impl<S> PrefixCache<S> {
     /// out. None when there is nothing live or the copy would exceed the park budget (the caller
     /// then relies on the state store's park write).
     pub fn hold_live<E: Engine<Snapshot = S>>(&mut self, eng: &mut E) -> Option<Held<S>> {
-        if self.tokens.is_empty()
-            || self.park_budget == 0
-            || eng.state_size_hint() > self.park_budget
-        {
+        // the state copy, the checkpoints that move with it and what suspended runs already hold
+        let need = eng
+            .state_size_hint()
+            .saturating_add(self.live_snap_bytes())
+            .saturating_add(self.reserved);
+        if self.tokens.is_empty() || self.park_budget == 0 || need > self.park_budget {
             return None;
         }
         let mut state = Vec::with_capacity(eng.state_size_hint());
@@ -552,8 +554,15 @@ impl<S> PrefixCache<S> {
     fn park_now<E: Engine<Snapshot = S>>(&mut self, eng: &mut E, keep: usize) -> Result<()> {
         // LONG-CTX: a state that cannot fit the budget is not copied at all (it used to be built,
         // then dropped: a transient full-state copy, 2.75 GiB at 128K f16)
+        // the checkpoints that go with it count too (they are in RAM beside the copy)
+        let going: usize = self
+            .snaps
+            .iter()
+            .filter(|s| s.pos > keep)
+            .map(|s| s.bytes)
+            .sum();
         let hint = eng.state_size_hint();
-        if hint.saturating_add(self.reserved) > self.park_budget {
+        if hint.saturating_add(going).saturating_add(self.reserved) > self.park_budget {
             return Ok(());
         }
         let t0 = std::time::Instant::now();

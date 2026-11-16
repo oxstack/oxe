@@ -231,6 +231,8 @@ pub struct StubEngine {
     /// state, so it survives a save/load between other sequences, unlike the popped `scripts`);
     /// empty = the popped scripts as before
     pub scripts_by_first: Vec<(u32, Vec<u32>)>,
+    /// number of `save_state` calls (tests: a state copy that was made at all)
+    pub saves: usize,
 }
 
 /// Stub snapshot: the token prefix it was taken at (checked on restore).
@@ -257,6 +259,7 @@ impl StubEngine {
             prefill_sleep_per_token: std::time::Duration::ZERO,
             decode_sleep: std::time::Duration::ZERO,
             scripts_by_first: Vec::new(),
+            saves: 0,
         }
     }
 
@@ -385,6 +388,7 @@ impl Engine for StubEngine {
         Some(format!("stub vocab={}", self.n_vocab))
     }
     fn save_state(&mut self, w: &mut dyn std::io::Write) -> Result<()> {
+        self.saves += 1;
         let e = |e: std::io::Error| EngineError(e.to_string());
         for &t in &self.tokens {
             w.write_all(&t.to_le_bytes()).map_err(e)?;

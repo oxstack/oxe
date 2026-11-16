@@ -1353,6 +1353,50 @@ fn parked_sessions_logic() {
     assert_eq!(c.parked_lengths().len(), n_parked);
 }
 
+/// A live session whose state copy fits the park budget but not together with its checkpoints is
+/// not copied at all (the copy used to be made, then thrown away), and a held session counts the
+/// checkpoints that move with it and the runs already held (`reserved`) against the budget.
+#[test]
+fn park_precheck_counts_checkpoints_and_hold_counts_reserved() {
+    let live = |eng: &mut StubEngine, c: &mut PrefixCache<<StubEngine as Engine>::Snapshot>| {
+        let p: Vec<u32> = (1..=50).collect();
+        eng.prefill(&p[..49]).unwrap();
+        c.appended(&p[..49]);
+        c.checkpoint(eng).unwrap();
+        eng.prefill(&p[49..]).unwrap();
+        c.appended(&p[49..]);
+        c.prompt_len = 50;
+    };
+    // the state copy alone (208 bytes) fits; with the checkpoint (196 bytes) it does not
+    let mut eng = StubEngine::new(1000, 400, 399, vec![]);
+    let mut c: PrefixCache<<StubEngine as Engine>::Snapshot> = PrefixCache::new(8);
+    live(&mut eng, &mut c);
+    assert!(c.live_snap_bytes() > 0);
+    c.park_budget = eng.state_size_hint() + c.live_snap_bytes() - 1;
+    c.park_whole(&mut eng).unwrap();
+    assert_eq!(eng.saves, 0, "a copy that cannot fit is not made");
+    assert!(c.parked_lengths().is_empty());
+    c.park_budget += 1;
+    c.park_whole(&mut eng).unwrap();
+    assert_eq!(c.parked_lengths(), vec![50]);
+
+    // hold: checkpoints and already held bytes count
+    let mut eng = StubEngine::new(1000, 400, 399, vec![]);
+    let mut c: PrefixCache<<StubEngine as Engine>::Snapshot> = PrefixCache::new(8);
+    live(&mut eng, &mut c);
+    let need = eng.state_size_hint() + c.live_snap_bytes();
+    c.park_budget = need - 1;
+    assert!(c.hold_live(&mut eng).is_none());
+    assert_eq!(eng.saves, 0);
+    c.park_budget = need + 10;
+    c.reserved = 11;
+    assert!(c.hold_live(&mut eng).is_none(), "reserved bytes count");
+    assert_eq!(eng.saves, 0);
+    c.reserved = 10;
+    let h = c.hold_live(&mut eng).expect("fits exactly");
+    assert_eq!(h.bytes(), need);
+}
+
 /// Agent-client-like: the build agent's session, then a title request (another system prompt, no
 /// tools), then the build agent's next turn. Parked: the next turn re-evaluates only the
 /// tool result, not the whole conversation.
