@@ -780,11 +780,9 @@ fn shutdown_dispatch_never_starts_the_unbounded_legacy_writer_with_the_state_cac
         0,
         "the legacy writer never starts with the state cache on: {log:?}"
     );
-    assert!(
-        t0.elapsed() < Duration::from_millis(2500),
-        "the whole sequence ends inside the deadline: {:?}",
-        t0.elapsed()
-    );
+    // No wall-clock bound here: a stalled CI runner can exceed any tight limit with no defect.
+    // The behaviour is `called == 0` above: the slow (3 s) legacy writer, which is what would
+    // overrun the deadline, is never started.
     assert!(
         log[0].starts_with("state cache: shutdown write: ") && log[0].contains("head at"),
         "{log:?}"

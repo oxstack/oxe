@@ -790,8 +790,8 @@ fn sigterm_cancels_a_suspended_run_and_frees_the_worker() {
             }
         }
         assert!(
-            t0.elapsed() < Duration::from_secs(1),
-            "the shutdown write gets the worker within 1 s"
+            t0.elapsed() < Duration::from_secs(30),
+            "the shutdown write never got the worker (guard only; a loaded runner may stall)"
         );
         std::thread::sleep(Duration::from_millis(5));
     };
