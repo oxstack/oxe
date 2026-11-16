@@ -1447,7 +1447,9 @@ impl<E: Engine> Worker<E> {
             st.drop_session(a);
         }
         if !optional {
-            st.enforce(Some(&sid));
+            if st.used_bytes() > st.budget {
+                st.enforce_cancellable(Some(&sid), cancel);
+            }
             return rep;
         }
         let mut added = false;
@@ -1501,7 +1503,7 @@ impl<E: Engine> Worker<E> {
         if stop() || mode != PersistMode::Reply {
             return rep;
         }
-        let freed = st.enforce(Some(&sid));
+        let freed = st.enforce_cancellable(Some(&sid), cancel);
         if freed > 0 {
             eprintln!(
                 "oxe-server: state cache: evicted {} MiB (budget {} MiB)",
@@ -1702,7 +1704,7 @@ impl<E: Engine> Worker<E> {
             rep.bytes += r2.bytes;
             rep.note = r2.note;
         } else if let Some(st) = self.states.as_mut() {
-            st.enforce(Some(&s.manifest.sid));
+            st.enforce_cancellable(Some(&s.manifest.sid), cancel);
         }
         rep
     }
@@ -1769,7 +1771,11 @@ impl<E: Engine> Worker<E> {
             return;
         }
         let t0 = Instant::now();
-        let r = self.persist(p.session.as_deref(), PersistMode::Progress, None);
+        let r = self.persist(
+            p.session.as_deref(),
+            PersistMode::Progress,
+            p.cancel.as_deref(),
+        );
         self.progress_mark = n;
         if r.head.is_some() {
             eprintln!(

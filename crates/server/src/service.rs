@@ -139,6 +139,10 @@ impl<E: Engine> State<E> {
             .filter(|t| t.contains("<|im_start|>"))
             .map(|_| tok.encode("<|im_start|>assistant", false, true))
             .filter(|d| d.len() >= 2);
+        let mut echo = crate::echo::EchoStore::new(crate::echo::EchoConfig::from_env());
+        if let Some(store) = &worker.states {
+            echo.track_disk_usage(store.usage.clone());
+        }
         let im_end = tok.token_id("<|im_end|>");
         let speculative = speculative_json(
             worker.engine.spec_max_depth(),
@@ -167,9 +171,7 @@ impl<E: Engine> State<E> {
             sse_keepalive: sse_keepalive_from_env(),
             default_max_tokens: default_max_tokens_from_env(n_ctx),
             speculative,
-            echo: Mutex::new(crate::echo::EchoStore::new(
-                crate::echo::EchoConfig::from_env(),
-            )),
+            echo: Mutex::new(echo),
             asst_delim,
             im_end,
             state_cache,
@@ -938,7 +940,7 @@ pub async fn handle_hints<E: Engine>(
                         }
                     }
                     let s = w.states.as_ref().unwrap();
-                    return Ok(json!({"budget_bytes": s.budget, "used_bytes": s.used_bytes(), "freed_bytes": freed, "legacy_stores": if w.legacy_off.is_some() { "off" } else { "on" }}));
+                    return Ok(json!({"budget_bytes": s.budget, "used_bytes": s.refresh_usage(), "freed_bytes": freed, "legacy_stores": if w.legacy_off.is_some() { "off" } else { "on" }}));
                 }
                 let scope = b.get("scope").and_then(Json::as_str).unwrap_or("all").to_string();
                 let s = w.states.as_mut().unwrap();
@@ -953,7 +955,7 @@ pub async fn handle_hints<E: Engine>(
                         Some(h) if !s.hint_in_use(h) => echo.drop_hint_hash(h),
                         _ => 0,
                     };
-                    return Ok(json!({"freed_bytes": freed, "used_bytes": s.used_bytes(), "ram_states": ram, "legacy_entries": legacy, "echo_records": echo_n}));
+                    return Ok(json!({"freed_bytes": freed, "used_bytes": s.refresh_usage(), "ram_states": ram, "legacy_entries": legacy, "echo_records": echo_n}));
                 }
                 if scope == "hint" {
                     // v0.2.0 EG5: every session CREATED under this exact request hint (`X-Oxe-Session`),
@@ -978,7 +980,7 @@ pub async fn handle_hints<E: Engine>(
                     }
                     let s = w.states.as_ref().unwrap();
                     let echo_n = if s.hint_in_use(&h) { 0 } else { echo.drop_hint_hash(&h) };
-                    return Ok(json!({"freed_bytes": freed, "used_bytes": s.used_bytes(), "sessions": purged, "released": released, "ram_states": ram, "legacy_entries": legacy, "echo_records": echo_n}));
+                    return Ok(json!({"freed_bytes": freed, "used_bytes": s.refresh_usage(), "sessions": purged, "released": released, "ram_states": ram, "legacy_entries": legacy, "echo_records": echo_n}));
                 }
                 let freed = match (scope.as_str(), other_model) {
                     ("model", Some(key)) => {
@@ -992,7 +994,7 @@ pub async fn handle_hints<E: Engine>(
                     }
                     _ => s.clear(&scope, None).map_err(|e| (400, e))?,
                 };
-                let used = s.used_bytes();
+                let used = s.refresh_usage();
                 let mut legacy = 0;
                 if other_model.is_none() {
                     // the RAM side of the same scope: live state, parked sessions, echo records, and the

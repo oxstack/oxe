@@ -484,9 +484,16 @@ fn append_line(p: &std::path::Path, line: &str) {
 struct EchoIo {
     all: u64,
     groups: HashMap<String, u64>,
+    usage: Option<crate::state_store::DiskUsage>,
 }
 
 impl EchoIo {
+    fn refresh(&self, path: &std::path::Path) {
+        if let Some(usage) = &self.usage {
+            usage.refresh(path);
+        }
+    }
+
     fn epoch(&self, group: &str) -> (u64, u64) {
         (self.all, self.groups.get(group).copied().unwrap_or(0))
     }
@@ -530,6 +537,8 @@ impl PendingAppend {
             return false;
         }
         append_line(&self.path, &self.line);
+        // Include unhinted groups and partial failed appends, without waiting for a manifest.
+        io.refresh(&self.path);
         true
     }
 }
@@ -575,6 +584,11 @@ impl EchoStore {
             compactions: 0,
             io: Default::default(),
         }
+    }
+
+    /// Share accounting with the state store, including off-lock echo appends.
+    pub(crate) fn track_disk_usage(&mut self, usage: crate::state_store::DiskUsage) {
+        self.io.lock().unwrap_or_else(|p| p.into_inner()).usage = Some(usage);
     }
 
     /// Set the identity mixed into every key (drops records made under another identity).
@@ -821,7 +835,7 @@ impl EchoStore {
             }
             Ok(())
         })();
-        match r {
+        let rewritten = match r {
             Ok(()) => {
                 self.compactions += 1;
                 true
@@ -831,7 +845,10 @@ impl EchoStore {
                 eprintln!("oxe-server: echo records: compaction failed: {e}");
                 false
             }
-        }
+        };
+        _io.refresh(&pending);
+        _io.refresh(&p);
+        rewritten
     }
 
     /// M3: keep records on disk under `dir` (0700, files 0600) and read back the ones of this
@@ -892,7 +909,9 @@ impl EchoStore {
             };
             if !text.is_empty() && !text.ends_with('\n') {
                 // a line torn by a kill: end it, or the next record would be appended to it and lost
+                let io = self.io.lock().unwrap_or_else(|p| p.into_inner());
                 append_line(&p, "\n");
+                io.refresh(&p);
             }
             let fi = files.len();
             let mut foreign = false;
@@ -965,7 +984,9 @@ impl EchoStore {
         drop(open);
         for (fi, ((p, foreign), live)) in files.iter().zip(live).enumerate() {
             if live == 0 && !foreign && !capped.get(fi).copied().unwrap_or(false) {
+                let io = self.io.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = std::fs::remove_file(p);
+                io.refresh(p);
             }
         }
         Ok(n)
@@ -1088,12 +1109,13 @@ impl EchoStore {
     /// Drop every record of one session (eviction group), on disk too.
     fn drop_group(&mut self, group: &str) {
         // a deferred append of this group that has not run yet must not bring the file back (N4)
-        self.io
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .invalidate(group);
-        if let Some(p) = self.group_file(group) {
-            let _ = std::fs::remove_file(p);
+        {
+            let mut io = self.io.lock().unwrap_or_else(|p| p.into_inner());
+            io.invalidate(group);
+            if let Some(p) = self.group_file(group) {
+                let _ = std::fs::remove_file(&p);
+                io.refresh(&p);
+            }
         }
         self.next_check.remove(group);
         for v in self.by_key.values_mut() {
@@ -1133,12 +1155,14 @@ impl EchoStore {
             self.drop_group(&g);
         }
         if let Some(d) = &self.dir {
-            if h.len() == 32
-                && h.bytes().all(|b| b.is_ascii_hexdigit())
-                && std::fs::remove_file(d.join(format!("{h}.jsonl"))).is_ok()
-            {
-                // the removal is durable before the clear answers (no resurrection after a crash)
-                crate::state_store::fsync_dir(d);
+            if h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()) {
+                let io = self.io.lock().unwrap_or_else(|p| p.into_inner());
+                let path = d.join(format!("{h}.jsonl"));
+                if std::fs::remove_file(&path).is_ok() {
+                    // the removal is durable before the clear answers (no resurrection after a crash)
+                    crate::state_store::fsync_dir(d);
+                }
+                io.refresh(&path);
             }
         }
         n0 - self.n_records()
@@ -1170,6 +1194,7 @@ impl EchoStore {
             for de in rd.flatten() {
                 if de.path().extension().and_then(|e| e.to_str()) == Some("jsonl") {
                     let _ = std::fs::remove_file(de.path());
+                    _io.refresh(&de.path());
                 }
             }
         }

@@ -435,7 +435,73 @@ pub struct StoreStats {
     pub evicted_bytes: u64,
 }
 
+/// Cached sizes, shared with off-lock writers. Only startup and explicit cache management
+/// reconcile external changes; normal writes replace a path's size (never double-count a shared
+/// block or an overwritten snapshot). No file descriptors or state payloads are retained.
+#[derive(Clone, Default)]
+pub(crate) struct DiskUsage(std::sync::Arc<std::sync::Mutex<DiskFiles>>);
+
+#[derive(Default)]
+struct DiskFiles {
+    bytes: u64,
+    sizes: HashMap<PathBuf, u64>,
+}
+
+impl DiskFiles {
+    fn set(&mut self, path: PathBuf, size: Option<u64>) {
+        if let Some(old) = self.sizes.remove(&path) {
+            self.bytes = self.bytes.saturating_sub(old);
+        }
+        if let Some(size) = size {
+            self.bytes += size;
+            self.sizes.insert(path, size);
+        }
+    }
+}
+
+impl DiskUsage {
+    fn lock(&self) -> std::sync::MutexGuard<'_, DiskFiles> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn set(&self, path: &Path, size: Option<u64>) {
+        self.lock().set(path.to_path_buf(), size);
+    }
+
+    pub(crate) fn refresh(&self, path: &Path) {
+        match fs::symlink_metadata(path) {
+            Ok(m) if m.is_file() => self.set(path, Some(m.len())),
+            Ok(_) => self.set(path, None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.set(path, None),
+            Err(_) => {}
+        }
+    }
+
+    fn resync(&self, root: &Path) {
+        fn scan(p: &Path, files: &mut DiskFiles) {
+            let Ok(rd) = read_dir(p) else { return };
+            for d in rd.flatten() {
+                match d.file_type() {
+                    Ok(t) if t.is_dir() => scan(&d.path(), files),
+                    Ok(t) if t.is_file() => {
+                        if let Ok(m) = d.metadata() {
+                            files.set(d.path(), Some(m.len()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Serialize with off-lock publication: its final size update is idempotent even if
+        // the scan already saw the renamed file.
+        let mut files = self.lock();
+        *files = DiskFiles::default();
+        scan(root, &mut files);
+    }
+}
+
 pub struct StateStore {
+    pub(crate) usage: DiskUsage,
     pub root: PathBuf,
     pub dir: PathBuf,
     pub ident: Identity,
@@ -520,8 +586,22 @@ impl Kill {
 }
 
 /// Remove a file (one kill step). True when it is gone now.
-fn rm(k: &Kill, p: &Path) -> bool {
-    k.step().is_ok() && fs::remove_file(p).is_ok()
+fn rm(k: &Kill, usage: &DiskUsage, p: &Path) -> bool {
+    if k.step().is_err() {
+        return false;
+    }
+    match fs::remove_file(p) {
+        Ok(()) => {
+            usage.set(p, None);
+            true
+        }
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                usage.set(p, None);
+            }
+            false
+        }
+    }
 }
 
 /// Write a file atomically: `<tmp>.pending` (0600, O_NOFOLLOW) streamed through a 4 MiB
@@ -530,8 +610,10 @@ fn rm(k: &Kill, p: &Path) -> bool {
 /// memory floor), and `header(len, sum)` (HDR bytes, or 0 for a plain file) is written over the
 /// placeholder at the start before the fsync. Returns (final path, payload length, checksum).
 /// Kill steps: payload written, fsync'd, renamed.
+#[allow(clippy::too_many_arguments)]
 fn atomic_stream(
     k: &Kill,
+    usage: &DiskUsage,
     dir: &Path,
     tmp: &str,
     hdr_len: u64,
@@ -541,6 +623,7 @@ fn atomic_stream(
 ) -> Result<(PathBuf, u64, u64), String> {
     use std::io::{Seek, SeekFrom};
     let pending = dir.join(format!("{tmp}.pending"));
+    let mut published = None;
     let r = (|| -> Result<(PathBuf, u64, u64), String> {
         let f = fs::OpenOptions::new()
             .write(true)
@@ -581,18 +664,26 @@ fn atomic_stream(
         k.step()?;
         let path = dir.join(final_name(sum));
         fs::rename(&pending, &path).map_err(io)?;
+        published = Some((path.clone(), hdr_len + len));
         k.step()?;
         fsync_dir(dir);
         Ok((path, len, sum))
     })();
-    if matches!(&r, Err(e) if e != KILLED) {
-        let _ = fs::remove_file(&pending);
+    if let Some((path, size)) = published {
+        usage.set(&path, Some(size));
+        usage.set(&pending, None);
+    } else if r.is_err() {
+        if !matches!(&r, Err(e) if e == KILLED) {
+            let _ = fs::remove_file(&pending);
+        }
+        // A kill or a failed unlink may leave a partial file: count it until a sweep succeeds.
+        usage.refresh(&pending);
     }
     r
 }
 
 /// [`atomic_stream`] of a small plain file at `path` (manifests, identity.json).
-fn atomic_write(k: &Kill, path: &Path, data: &[u8]) -> Result<(), String> {
+fn atomic_write(k: &Kill, usage: &DiskUsage, path: &Path, data: &[u8]) -> Result<(), String> {
     let dir = path.parent().ok_or("no parent")?;
     let name = path
         .file_name()
@@ -601,6 +692,7 @@ fn atomic_write(k: &Kill, path: &Path, data: &[u8]) -> Result<(), String> {
         .to_string();
     atomic_stream(
         k,
+        usage,
         dir,
         &name,
         0,
@@ -748,9 +840,17 @@ impl StateStore {
             .and_then(|b| serde_json::from_slice::<Json>(&b).ok())
             != Some(idj.clone())
         {
-            atomic_write(&Kill::default(), &idp, idj.to_string().as_bytes())?;
+            atomic_write(
+                &Kill::default(),
+                &DiskUsage::default(),
+                &idp,
+                idj.to_string().as_bytes(),
+            )?;
         }
+        let usage = DiskUsage::default();
+        usage.resync(root);
         let mut st = StateStore {
+            usage,
             root: root.to_path_buf(),
             dir,
             ident,
@@ -793,7 +893,7 @@ impl StateStore {
     }
 
     fn load_manifests(&mut self) {
-        let Ok(rd) = fs::read_dir(self.dir.join("sessions")) else {
+        let Ok(rd) = read_dir(self.dir.join("sessions")) else {
             return;
         };
         for de in rd.flatten() {
@@ -815,7 +915,7 @@ impl StateStore {
                 }
                 // unreadable or another identity's: a bad manifest is a miss, never a guess
                 _ => {
-                    rm(&self.kill, &p);
+                    rm(&self.kill, &self.usage, &p);
                 }
             }
         }
@@ -825,9 +925,23 @@ impl StateStore {
     /// write on its way are kept: `inflight`).
     pub fn sweep(&mut self) -> u64 {
         if self.mutant == 3 {
-            return sweep_dir(&self.dir, &self.manifests, &self.kill, &Default::default());
+            return sweep_dir(
+                &self.dir,
+                &self.manifests,
+                &self.kill,
+                &self.usage,
+                &Default::default(),
+                &|| false,
+            );
         }
-        sweep_dir(&self.dir, &self.manifests, &self.kill, &self.inflight)
+        sweep_dir(
+            &self.dir,
+            &self.manifests,
+            &self.kill,
+            &self.usage,
+            &self.inflight,
+            &|| false,
+        )
     }
 
     /// Remove the directories of STALE identities of the same model: another store format
@@ -837,7 +951,7 @@ impl StateStore {
     /// age them out (v0.1.3 integration decision). Returns the bytes freed (logged).
     pub fn orphan_sweep(&mut self) -> u64 {
         let mut freed = 0;
-        let Ok(rd) = fs::read_dir(&self.root) else {
+        let Ok(rd) = read_dir(&self.root) else {
             return 0;
         };
         for de in rd.flatten() {
@@ -856,6 +970,16 @@ impl StateStore {
             if same_model && id.as_ref().is_some_and(|v| stale_identity(v, &self.ident)) {
                 let b = dir_bytes(&p);
                 if fs::remove_dir_all(&p).is_ok() {
+                    let mut files = self.usage.lock();
+                    let removed: Vec<PathBuf> = files
+                        .sizes
+                        .keys()
+                        .filter(|f| f.starts_with(&p))
+                        .cloned()
+                        .collect();
+                    for f in removed {
+                        files.set(f, None);
+                    }
                     freed += b;
                     eprintln!(
                         "oxe-server: state cache: removed an older identity of this model ({} MiB)",
@@ -867,15 +991,22 @@ impl StateStore {
         freed
     }
 
-    /// Bytes of every model's state under the root (the budget is one over all models).
+    /// Cached bytes of every model's state under the root (one budget over all models).
     pub fn used_bytes(&self) -> u64 {
-        dir_bytes(&self.root)
+        self.usage.lock().bytes
+    }
+
+    /// Reconcile external writers/deletions at an explicit cache-management boundary.
+    pub fn refresh_usage(&self) -> u64 {
+        self.usage.resync(&self.root);
+        self.used_bytes()
     }
 
     /// Bytes per model directory (model_key -> bytes).
     pub fn usage(&self) -> Json {
+        self.usage.resync(&self.root);
         let mut models = serde_json::Map::new();
-        if let Ok(rd) = fs::read_dir(&self.root) {
+        if let Ok(rd) = read_dir(&self.root) {
             for de in rd
                 .flatten()
                 .filter(|d| d.file_type().is_ok_and(|t| t.is_dir()))
@@ -1037,7 +1168,7 @@ impl StateStore {
             Ok(())
         })();
         if let Err(e) = r {
-            rm(&self.kill, &p);
+            rm(&self.kill, &self.usage, &p);
             for m in self.manifests.values_mut() {
                 m.snaps.retain(|x| !(x.key == s.key && x.c == s.c));
             }
@@ -1060,7 +1191,7 @@ impl StateStore {
     }
 
     fn drop_bad_block(&mut self, h: &str, c: &str) {
-        rm(&self.kill, &self.block_path(h, c));
+        rm(&self.kill, &self.usage, &self.block_path(h, c));
         for m in self.manifests.values_mut() {
             if let Some(i) = m.blocks.iter().position(|(x, y)| x == h && y == c) {
                 m.blocks.truncate(i);
@@ -1083,11 +1214,16 @@ impl StateStore {
 
     fn write_manifest(&self, m: &Manifest) -> Result<(), String> {
         let b = m.to_json(&self.ident.hash).to_string();
-        atomic_write(&self.kill, &self.manifest_path(&m.sid), b.as_bytes())
+        atomic_write(
+            &self.kill,
+            &self.usage,
+            &self.manifest_path(&m.sid),
+            b.as_bytes(),
+        )
     }
 
     fn remove_session(&mut self, sid: &str) {
-        remove_manifest_in(&self.dir, &mut self.manifests, sid, &self.kill);
+        remove_manifest_in(&self.dir, &mut self.manifests, sid, &self.kill, &self.usage);
     }
 
     fn free_space_ok(&self) -> bool {
@@ -1153,6 +1289,7 @@ impl StateStore {
         let data: &[u8] = buf;
         atomic_stream(
             &self.kill,
+            &self.usage,
             &sub,
             &format!("{h}.w.kv"),
             HDR,
@@ -1212,6 +1349,7 @@ impl StateStore {
         let dir = self.dir.join("snaps");
         let (_, len, sum) = atomic_stream(
             &self.kill,
+            &self.usage,
             &dir,
             &format!("{key}.w.st"),
             HDR,
@@ -1351,12 +1489,14 @@ impl StateStore {
 
     /// Set a new budget and evict down to it at once; returns the bytes freed.
     pub fn set_budget(&mut self, bytes: u64) -> u64 {
+        self.usage.resync(&self.root);
         self.budget = bytes;
         self.enforce(None)
     }
 
     /// Clear: `all` (every model under the root), `model` (this model) or one `session`.
     pub fn clear(&mut self, scope: &str, sid: Option<&str>) -> Result<u64, String> {
+        self.usage.resync(&self.root);
         let before = self.used_bytes();
         match scope {
             "session" => {
@@ -1373,13 +1513,13 @@ impl StateStore {
                     self.remove_session(&s);
                 }
                 self.sweep();
-                if let Ok(rd) = fs::read_dir(self.dir.join("echo")) {
+                if let Ok(rd) = read_dir(self.dir.join("echo")) {
                     for d in rd.flatten() {
                         let _ = fs::remove_file(d.path());
                     }
                 }
                 if scope == "all" {
-                    if let Ok(rd) = fs::read_dir(&self.root) {
+                    if let Ok(rd) = read_dir(&self.root) {
                         for d in rd.flatten().filter(|d| {
                             d.path() != self.dir && d.file_type().is_ok_and(|t| t.is_dir())
                         }) {
@@ -1393,6 +1533,7 @@ impl StateStore {
             }
             _ => return Err("scope must be all, model or session".into()),
         }
+        self.usage.resync(&self.root);
         Ok(before.saturating_sub(self.used_bytes()))
     }
 
@@ -1403,6 +1544,25 @@ impl StateStore {
     /// or cut goes only with its session); a block shared with a kept session of its identity
     /// stays. `keep`: a session never evicted now (the one just written). Returns bytes freed.
     pub fn enforce(&mut self, keep: Option<&str>) -> u64 {
+        self.enforce_cancellable(keep, None)
+    }
+
+    /// Budget maintenance yields between sessions and eviction steps when a request arrives.
+    /// Already-published manifests and their referenced files remain valid when interrupted.
+    pub fn enforce_cancellable(
+        &mut self,
+        keep: Option<&str>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> u64 {
+        self.enforce_until(keep, &|| {
+            cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        })
+    }
+
+    fn enforce_until(&mut self, keep: Option<&str>, stop: &dyn Fn() -> bool) -> u64 {
+        if stop() {
+            return 0;
+        }
         let before = self.used_bytes();
         let now = now_s();
         // audit v0.1.2 N3: a last use in the future (the wall clock stepped back) would read as age
@@ -1415,6 +1575,9 @@ impl StateStore {
             .map(|m| m.sid.clone())
             .collect();
         for sid in future {
+            if stop() {
+                break;
+            }
             if let Some(m) = self.manifests.get_mut(&sid) {
                 m.atime = now;
             }
@@ -1427,25 +1590,47 @@ impl StateStore {
             .map(|m| m.sid.clone())
             .collect();
         for s in &expired {
+            if stop() {
+                break;
+            }
             self.remove_session(s);
         }
-        // every time (P2 review): each turn replaces the head snapshot (63-68 MiB); unswept, the
-        // old ones filled the budget and whole live sessions were evicted before them
+        // Retire replaced heads before choosing a live session to evict. This sweep visits the
+        // in-memory size index, not the directory tree (Progress can defer it while under budget).
         if self.mutant != 1 {
-            self.sweep();
+            let empty = Default::default();
+            let inflight = if self.mutant == 3 {
+                &empty
+            } else {
+                &*self.inflight
+            };
+            sweep_dir(
+                &self.dir,
+                &self.manifests,
+                &self.kill,
+                &self.usage,
+                inflight,
+                stop,
+            );
         }
         let mut used = self.used_bytes();
-        if used > self.budget {
+        if used > self.budget && !stop() {
             let mut tiers = vec![Tier {
                 dir: self.dir.clone(),
                 id_hash: self.ident.hash.clone(),
                 manifests: std::mem::take(&mut self.manifests),
             }];
             if self.global_budget {
-                for mut t in foreign_tiers(&self.root, &self.dir) {
+                for mut t in foreign_tiers(&self.root, &self.dir, stop) {
+                    if stop() {
+                        break;
+                    }
                     for m in t.manifests.values_mut().filter(|m| m.atime > now) {
+                        if stop() {
+                            break;
+                        }
                         m.atime = now;
-                        let _ = write_manifest_in(&t.dir, &t.id_hash, m, &self.kill);
+                        let _ = write_manifest_in(&t.dir, &t.id_hash, m, &self.kill, &self.usage);
                     }
                     // their TTL too: an older epoch's sessions are nobody else's to expire
                     let gone: Vec<String> = t
@@ -1455,15 +1640,30 @@ impl StateStore {
                         .map(|m| m.sid.clone())
                         .collect();
                     for s in &gone {
-                        remove_manifest_in(&t.dir, &mut t.manifests, s, &self.kill);
+                        if stop() {
+                            break;
+                        }
+                        remove_manifest_in(&t.dir, &mut t.manifests, s, &self.kill, &self.usage);
                     }
-                    if !gone.is_empty() {
-                        sweep_dir(&t.dir, &t.manifests, &self.kill, &self.inflight);
-                    }
+                    // A cancelled eviction may have published a manifest removal (or snapshot
+                    // thinning) without unlinking its files. Reclaim those indexed orphans before
+                    // selecting another live session, even when no manifest expires this pass.
+                    sweep_dir(
+                        &t.dir,
+                        &t.manifests,
+                        &self.kill,
+                        &self.usage,
+                        &self.inflight,
+                        stop,
+                    );
                     tiers.push(t);
                 }
                 used = self.used_bytes();
             }
+            let mut eviction: Vec<Eviction> = tiers
+                .iter()
+                .map(|t| Eviction::new(t, &self.usage))
+                .collect();
             let pinned = |ti: usize, m: &Manifest| {
                 (ti == 0 && Some(m.sid.as_str()) == keep) || now.saturating_sub(m.atime) < PIN_SECS
             };
@@ -1475,14 +1675,13 @@ impl StateStore {
             // An optional snapshot saves Cost(pos) - Cost(next point below it in its session); a
             // session saves Cost(n_tokens). A session's head (its deepest state), anchor and cut
             // points go only with the whole session.
-            while used > self.budget {
+            while used > self.budget && !stop() {
                 let need = (used - self.budget) as f64;
                 let mut best: Option<(f64, usize, String, Option<usize>)> = None;
                 for (ti, t) in tiers.iter().enumerate() {
-                    let refc = t.refcounts();
                     for m in t.manifests.values().filter(|m| !pinned(ti, m)) {
                         let rec = recency(m, now);
-                        let own = t.own_bytes(m, &refc).max(1) as f64;
+                        let own = eviction[ti].own.get(&m.sid).copied().unwrap_or(0).max(1) as f64;
                         let mut cands = vec![(cost_ms(m.n_tokens) * rec / own.min(need), None)];
                         let head = m.snaps.iter().map(|x| x.pos).max().unwrap_or(0);
                         for x in m
@@ -1512,18 +1711,23 @@ impl StateStore {
                 }
                 let Some((_, ti, sid, pos)) = best else { break };
                 let t = &mut tiers[ti];
+                let old = t.manifests[&sid].clone();
                 match pos {
-                    None => remove_manifest_in(&t.dir, &mut t.manifests, &sid, &self.kill),
+                    None => {
+                        remove_manifest_in(&t.dir, &mut t.manifests, &sid, &self.kill, &self.usage)
+                    }
                     Some(p) => {
                         let mut m2 = t.manifests[&sid].clone();
                         m2.snaps.retain(|x| x.pos != p);
-                        if write_manifest_in(&t.dir, &t.id_hash, &m2, &self.kill).is_err() {
+                        if write_manifest_in(&t.dir, &t.id_hash, &m2, &self.kill, &self.usage)
+                            .is_err()
+                        {
                             break;
                         }
-                        t.manifests.insert(sid, m2);
+                        t.manifests.insert(sid.clone(), m2);
                     }
                 }
-                sweep_dir(&t.dir, &t.manifests, &self.kill, &self.inflight);
+                eviction[ti].removed(t, &old, &self.kill, &self.usage, &self.inflight, stop);
                 used = self.used_bytes();
             }
             self.manifests = std::mem::take(&mut tiers[0].manifests);
@@ -1542,9 +1746,16 @@ fn snap_path_in(dir: &Path, key: &str, c: &str) -> PathBuf {
     dir.join("snaps").join(format!("{key}.{c}.st"))
 }
 
-fn write_manifest_in(dir: &Path, id_hash: &str, m: &Manifest, k: &Kill) -> Result<(), String> {
+fn write_manifest_in(
+    dir: &Path,
+    id_hash: &str,
+    m: &Manifest,
+    k: &Kill,
+    usage: &DiskUsage,
+) -> Result<(), String> {
     atomic_write(
         k,
+        usage,
         &dir.join("sessions").join(format!("{}.json", m.sid)),
         m.to_json(id_hash).to_string().as_bytes(),
     )
@@ -1552,12 +1763,18 @@ fn write_manifest_in(dir: &Path, id_hash: &str, m: &Manifest, k: &Kill) -> Resul
 
 /// Drop session `sid` of the store at `dir`: its manifest, and its echo file (`echo/<hint hash>.jsonl`,
 /// one scheme with echo.rs and the controller's state_cache.py) with the last manifest naming its hint.
-fn remove_manifest_in(dir: &Path, manifests: &mut HashMap<String, Manifest>, sid: &str, k: &Kill) {
+fn remove_manifest_in(
+    dir: &Path,
+    manifests: &mut HashMap<String, Manifest>,
+    sid: &str,
+    k: &Kill,
+    usage: &DiskUsage,
+) {
     let gone = manifests.remove(sid);
     // a removed manifest or echo file must not come back after a crash (a cleared session would be
     // resurrected): the directory is fsync'd after the unlink. Blocks and snapshots are not: one
     // that comes back is named by no manifest and the next sweep removes it.
-    if rm(k, &dir.join("sessions").join(format!("{sid}.json"))) {
+    if rm(k, usage, &dir.join("sessions").join(format!("{sid}.json"))) {
         fsync_dir(&dir.join("sessions"));
     }
     if let Some(h) = gone.and_then(|m| m.hint) {
@@ -1565,7 +1782,7 @@ fn remove_manifest_in(dir: &Path, manifests: &mut HashMap<String, Manifest>, sid
             && !manifests
                 .values()
                 .any(|m| m.hint.as_deref() == Some(h.as_str()))
-            && rm(k, &dir.join("echo").join(format!("{h}.jsonl")))
+            && rm(k, usage, &dir.join("echo").join(format!("{h}.jsonl")))
         {
             fsync_dir(&dir.join("echo"));
         }
@@ -1578,7 +1795,9 @@ fn sweep_dir(
     dir: &Path,
     manifests: &HashMap<String, Manifest>,
     kill: &Kill,
+    usage: &DiskUsage,
     inflight: &std::sync::Mutex<HashSet<PathBuf>>,
+    stop: &dyn Fn() -> bool,
 ) -> u64 {
     let mut want: HashSet<PathBuf> = HashSet::new();
     for m in manifests.values() {
@@ -1590,39 +1809,34 @@ fn sweep_dir(
         }
     }
     let busy = inflight.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let files: Vec<(PathBuf, u64)> = usage
+        .lock()
+        .sizes
+        .iter()
+        .filter(|(p, _)| p.starts_with(dir))
+        .map(|(p, size)| (p.clone(), *size))
+        .collect();
     let mut freed = 0;
-    let mut visit = |p: PathBuf| {
+    for (p, size) in files {
+        if stop() {
+            break;
+        }
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let ours = name.ends_with(".pending")
-            || ((name.ends_with(".kv") || name.ends_with(".st")) && !want.contains(&p));
-        if ours && !busy.contains(&p) {
-            if let Ok(md) = fs::symlink_metadata(&p) {
-                if md.is_file() && rm(kill, &p) {
-                    freed += md.len();
-                }
-            }
+        let parent = p.parent();
+        let data = parent == Some(dir.join("snaps").as_path())
+            || parent.and_then(Path::parent) == Some(dir.join("blocks").as_path());
+        // Match the original sweep's scope: echo writes and unknown nested directories are
+        // not ours to collect (their pending files need not be registered in `inflight`).
+        let pending = data || parent == Some(dir) || parent == Some(dir.join("sessions").as_path());
+        let ours = (pending && name.ends_with(".pending"))
+            || (data && (name.ends_with(".kv") || name.ends_with(".st")) && !want.contains(&p));
+        if ours
+            && !busy.contains(&p)
+            && fs::symlink_metadata(&p).is_ok_and(|m| m.is_file())
+            && rm(kill, usage, &p)
+        {
+            freed += size;
         }
-    };
-    if let Ok(rd) = fs::read_dir(dir.join("blocks")) {
-        for sub in rd.flatten() {
-            if let Ok(rd2) = fs::read_dir(sub.path()) {
-                rd2.flatten().for_each(|d| visit(d.path()));
-            }
-        }
-    }
-    if let Ok(rd) = fs::read_dir(dir.join("snaps")) {
-        rd.flatten().for_each(|d| visit(d.path()));
-    }
-    if let Ok(rd) = fs::read_dir(dir.join("sessions")) {
-        rd.flatten()
-            .filter(|d| d.path().to_string_lossy().ends_with(".pending"))
-            .for_each(|d| visit(d.path()));
-    }
-    // audit v0.1.2 N5: an `identity.json.pending` left by a kill during open's identity write
-    if let Ok(rd) = fs::read_dir(dir) {
-        rd.flatten()
-            .filter(|d| d.path().to_string_lossy().ends_with(".pending"))
-            .for_each(|d| visit(d.path()));
     }
     freed
 }
@@ -1639,35 +1853,112 @@ struct Tier {
     manifests: HashMap<String, Manifest>,
 }
 
-impl Tier {
-    fn refcounts(&self) -> HashMap<(String, String), usize> {
-        let mut r = HashMap::new();
-        for m in self.manifests.values() {
-            for b in &m.blocks {
-                *r.entry(b.clone()).or_insert(0) += 1;
+/// Per-enforcement reference counts and exclusive byte values. Dropping a reference touches
+/// only that item's paths and, when a shared path becomes exclusive, its remaining owner.
+struct Eviction {
+    refs: HashMap<PathBuf, HashSet<String>>,
+    own: HashMap<String, u64>,
+}
+
+fn manifest_files(dir: &Path, m: &Manifest) -> HashSet<PathBuf> {
+    m.blocks
+        .iter()
+        .map(|(h, c)| block_path_in(dir, h, c))
+        .chain(m.snaps.iter().map(|s| snap_path_in(dir, &s.key, &s.c)))
+        .collect()
+}
+
+impl Eviction {
+    fn new(t: &Tier, usage: &DiskUsage) -> Self {
+        let mut refs: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        for m in t.manifests.values() {
+            for p in manifest_files(&t.dir, m) {
+                refs.entry(p).or_default().insert(m.sid.clone());
             }
         }
-        r
+        let files = usage.lock();
+        // Preserve the value policy: all of a session's snapshots plus its exclusive blocks.
+        let mut own: HashMap<String, u64> = t
+            .manifests
+            .values()
+            .map(|m| (m.sid.clone(), m.snaps.iter().map(|s| s.bytes).sum()))
+            .collect();
+        for (p, owners) in &refs {
+            if owners.len() == 1 && p.extension().is_some_and(|e| e == "kv") {
+                *own.entry(owners.iter().next().unwrap().clone())
+                    .or_insert(0) += files.sizes.get(p).copied().unwrap_or(0);
+            }
+        }
+        Self { refs, own }
     }
 
-    /// bytes only this session holds (its blocks no other session of this identity names, its snapshots)
-    fn own_bytes(&self, m: &Manifest, refc: &HashMap<(String, String), usize>) -> u64 {
-        m.blocks
-            .iter()
-            .filter(|b| refc.get(*b).copied().unwrap_or(0) <= 1)
-            .filter_map(|(h, c)| fs::metadata(block_path_in(&self.dir, h, c)).ok())
-            .map(|x| x.len())
-            .sum::<u64>()
-            + m.snaps.iter().map(|s| s.bytes).sum::<u64>()
+    fn removed(
+        &mut self,
+        tier: &Tier,
+        old: &Manifest,
+        kill: &Kill,
+        usage: &DiskUsage,
+        inflight: &std::sync::Mutex<HashSet<PathBuf>>,
+        stop: &dyn Fn() -> bool,
+    ) {
+        let new = tier.manifests.get(&old.sid);
+        let kept = new
+            .map(|m| manifest_files(&tier.dir, m))
+            .unwrap_or_default();
+        let busy = inflight.lock().unwrap_or_else(|p| p.into_inner());
+        for p in manifest_files(&tier.dir, old).difference(&kept) {
+            if stop() {
+                break;
+            }
+            let size = usage.lock().sizes.get(p).copied().unwrap_or(0);
+            let owners = self.refs.get_mut(p).unwrap();
+            let block = p.extension().is_some_and(|e| e == "kv");
+            let lost = if block {
+                if owners.len() == 1 {
+                    size
+                } else {
+                    0
+                }
+            } else {
+                old.snaps
+                    .iter()
+                    .filter(|s| snap_path_in(&tier.dir, &s.key, &s.c) == *p)
+                    .map(|s| s.bytes)
+                    .sum()
+            };
+            let own = self.own.entry(old.sid.clone()).or_default();
+            *own = own.saturating_sub(lost);
+            owners.remove(&old.sid);
+            match owners.len() {
+                0 => {
+                    if !busy.contains(p) && fs::symlink_metadata(p).is_ok_and(|m| m.is_file()) {
+                        rm(kill, usage, p);
+                    }
+                }
+                1 if block => {
+                    *self
+                        .own
+                        .entry(owners.iter().next().unwrap().clone())
+                        .or_default() += size;
+                }
+                _ => {}
+            }
+        }
+        if new.is_none() {
+            self.own.remove(&old.sid);
+        }
     }
 }
 
 /// The other identities' stores under `root` (identity.json + their readable manifests; nothing is
 /// deleted while reading: a foreign file this engine cannot parse is not its to judge).
-fn foreign_tiers(root: &Path, own: &Path) -> Vec<Tier> {
+fn foreign_tiers(root: &Path, own: &Path, stop: &dyn Fn() -> bool) -> Vec<Tier> {
     let mut v = Vec::new();
-    let Ok(rd) = fs::read_dir(root) else { return v };
+    let Ok(rd) = read_dir(root) else { return v };
     for de in rd.flatten() {
+        if stop() {
+            break;
+        }
         let p = de.path();
         if p == own || !de.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
@@ -1684,8 +1975,11 @@ fn foreign_tiers(root: &Path, own: &Path) -> Vec<Tier> {
             continue;
         };
         let mut manifests = HashMap::new();
-        if let Ok(rd2) = fs::read_dir(p.join("sessions")) {
+        if let Ok(rd2) = read_dir(p.join("sessions")) {
             for d in rd2.flatten() {
+                if stop() {
+                    break;
+                }
                 let mp = d.path();
                 if mp.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
@@ -1767,6 +2061,7 @@ impl Write for Cancellable<'_, '_> {
 /// [`StateStore::stage_snap`]) and put on disk without it ([`Staged::write`]); the worker commits the
 /// manifest afterwards (`Worker::commit_staged`). Holds no engine or store reference.
 pub struct Staged {
+    usage: DiskUsage,
     pub dir: PathBuf,
     pub id_hash: String,
     /// (chain hash, block index, checksum hex, payload; None = that file is on disk already)
@@ -1828,6 +2123,7 @@ impl Staged {
             .unwrap_or_else(|p| p.into_inner())
             .extend(paths.iter().cloned());
         Staged {
+            usage: st.usage.clone(),
             dir: st.dir.clone(),
             id_hash: st.ident.hash.clone(),
             blocks,
@@ -1864,6 +2160,7 @@ impl Staged {
             let name = format!("{h}.{c}.kv");
             let (_, len, sum) = atomic_stream(
                 &k,
+                &self.usage,
                 &sub,
                 &format!("{h}.{}.kv", self.tag),
                 HDR,
@@ -1880,6 +2177,7 @@ impl Staged {
         let name = format!("{}.{}.st", self.head_key, self.head_c);
         let (_, len, sum) = atomic_stream(
             &k,
+            &self.usage,
             &self.dir.join("snaps"),
             &format!("{}.{}.st", self.head_key, self.tag),
             HDR,
@@ -1934,9 +2232,20 @@ impl SessionMatch {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static DIRECTORY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn read_dir(p: impl AsRef<Path>) -> std::io::Result<fs::ReadDir> {
+    #[cfg(test)]
+    DIRECTORY_READS.with(|n| n.set(n.get() + 1));
+    fs::read_dir(p)
+}
+
 /// Bytes of regular files under `p` (symlinks not followed).
 pub fn dir_bytes(p: &Path) -> u64 {
-    let Ok(rd) = fs::read_dir(p) else { return 0 };
+    let Ok(rd) = read_dir(p) else { return 0 };
     rd.flatten()
         .map(|d| match d.file_type() {
             Ok(t) if t.is_dir() => dir_bytes(&d.path()),
@@ -2032,4 +2341,367 @@ pub fn session_id(id_hash: &str, tokens: &[u32], anchor_pos: usize) -> String {
 /// Error type adapter for the worker.
 pub fn eng_err(e: EngineError) -> String {
     e.0
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    use crate::tests_state::{fill, tmp};
+
+    #[test]
+    fn enforce_does_not_walk_directories_under_or_over_budget() {
+        let root = tmp("budget-no-walk");
+        let mut w = fill(&root, 1 << 40, &[1100, 1200, 1300]);
+        let st = w.states.as_mut().unwrap();
+        st.global_budget = false;
+        DIRECTORY_READS.with(|n| n.set(0));
+        st.enforce(None);
+        assert_eq!(DIRECTORY_READS.with(|n| n.get()), 0, "under budget");
+
+        for m in st.manifests.values_mut() {
+            m.atime = now_s() - PIN_SECS - 1;
+        }
+        st.budget = st.used_bytes() / 2;
+        DIRECTORY_READS.with(|n| n.set(0));
+        assert!(st.enforce(None) > 0);
+        assert!(st.used_bytes() <= st.budget);
+        assert_eq!(
+            DIRECTORY_READS.with(|n| n.get()),
+            0,
+            "multi-session eviction"
+        );
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unhinted_chat_echo_is_accounted_without_management_resync() {
+        use crate::tests_state::{call, files, sys};
+        use crate::tests_state_p2b::server_echo;
+        use std::sync::atomic::Ordering;
+
+        let root = tmp("budget-unhinted-echo");
+        let srv = server_echo(&root, vec![], 1 << 40);
+        let (code, result) = call(
+            &srv,
+            "POST",
+            "/v1/chat/completions",
+            json!({"messages": [
+                {"role": "system", "content": sys()},
+                {"role": "user", "content": "Synthetic question"}
+            ], "max_tokens": 3, "temperature": 0}),
+        )
+        .await;
+        assert_eq!(code, 200, "{result}");
+        let start = std::time::Instant::now();
+        while srv.persist_done.load(Ordering::SeqCst) == 0 {
+            assert!(start.elapsed().as_secs() < 30, "persist did not finish");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let w = srv.worker.lock().unwrap();
+        let st = w.states.as_ref().unwrap();
+        assert!(!st.manifests.is_empty());
+        assert!(st.manifests.values().all(|m| m.hint.is_none()));
+        assert!(!files(&st.dir.join("echo"), ".jsonl").is_empty());
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn echo_accounting_tracks_deferred_appends_compaction_and_removal() {
+        use crate::echo::TurnEnd;
+        use crate::tests_state_p2b::server_echo;
+
+        let root = tmp("budget-echo-lifecycle");
+        let srv = server_echo(&root, vec![], 1 << 40);
+        let check = || {
+            let w = srv.worker.lock().unwrap();
+            let st = w.states.as_ref().unwrap();
+            assert!(st.manifests.is_empty(), "echo accounting needs no manifest");
+            assert_eq!(st.used_bytes(), dir_bytes(&root));
+            st.used_bytes()
+        };
+        let baseline = check();
+        for hint in [None, Some("synthetic")] {
+            srv.echo.lock().unwrap().cfg.compact_bytes = 0;
+            for _ in 0..5 {
+                let (_, pending) = srv.echo.lock().unwrap().record_deferred(
+                    &[1, 2, 3],
+                    &[2],
+                    99,
+                    &chat::ChatMsg {
+                        content: "synthetic".into(),
+                        ..Default::default()
+                    },
+                    &[4, 99],
+                    TurnEnd::Eog,
+                    hint,
+                );
+                let pending = pending.unwrap();
+                check(); // a deferred append has not changed disk usage yet
+                assert!(pending.write());
+                assert!(check() > baseline);
+            }
+            let before = check();
+            let mut echo = srv.echo.lock().unwrap();
+            let group = hint
+                .map(|h| format!("s:{h}"))
+                .unwrap_or_else(|| format!("k:{}", crate::echo::prefix_key(echo.identity(), &[1])));
+            echo.cfg.compact_bytes = 1;
+            assert!(echo.maybe_compact(&group));
+            assert!(check() < before, "compaction subtracts replaced bytes");
+            let h = hint_hash(hint.unwrap_or(&group));
+            assert_eq!(echo.drop_hint_hash(&h), 1);
+            assert_eq!(check(), baseline);
+        }
+        // Invalidation refuses an outstanding append, without inventing accounted bytes.
+        let (_, pending) = srv.echo.lock().unwrap().record_deferred(
+            &[1, 2, 3],
+            &[2],
+            99,
+            &Default::default(),
+            &[4, 99],
+            TurnEnd::Eog,
+            None,
+        );
+        srv.echo.lock().unwrap().clear();
+        assert!(!pending.unwrap().write());
+        assert_eq!(check(), baseline);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_foreign_eviction_reclaims_orphans_before_evicting_live_sessions() {
+        use crate::tests_state::{ident, open};
+
+        let root = tmp("budget-cancel-foreign");
+        let mut foreign = fill(&root, 1 << 40, &[600, 3000]);
+        let other = foreign.states.as_mut().unwrap();
+        for mut m in other.manifests.values().cloned().collect::<Vec<_>>() {
+            m.atime = now_s() - PIN_SECS - 1;
+            m.snaps.retain(|s| s.class == "head");
+            other.put_manifest(m).unwrap();
+        }
+        other.sweep();
+        let victim = other.manifests.values().min_by_key(|m| m.n_tokens).unwrap();
+        let survivor = other.manifests.values().max_by_key(|m| m.n_tokens).unwrap();
+        let kept = manifest_files(&other.dir, survivor);
+        let orphans: HashSet<_> = manifest_files(&other.dir, victim)
+            .difference(&kept)
+            .cloned()
+            .collect();
+        assert!(!orphans.is_empty());
+        let removed_manifest = other.manifest_path(&victim.sid);
+        let kept_manifest = other.manifest_path(&survivor.sid);
+        let reclaim: u64 = orphans.iter().map(|p| fs::metadata(p).unwrap().len()).sum();
+        let mut st = open(&root, ident("other-synthetic", ""), 1 << 40);
+        st.global_budget = true;
+        st.budget = st.used_bytes() - reclaim - fs::metadata(&removed_manifest).unwrap().len();
+
+        assert!(st.enforce_until(None, &|| !removed_manifest.exists()) > 0);
+        assert!(!removed_manifest.exists());
+        assert!(
+            orphans.iter().all(|p| p.is_file()),
+            "cancel before file cleanup"
+        );
+        assert!(st.used_bytes() > st.budget);
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        st.enforce(None);
+        assert!(
+            orphans.iter().all(|p| !p.exists()),
+            "resume foreign cleanup"
+        );
+        assert!(kept_manifest.is_file(), "do not evict another live session");
+        assert!(kept.iter().all(|p| p.is_file()), "keep shared files");
+        assert!(st.used_bytes() <= st.budget);
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn accounting_tracks_rewrites_shared_files_and_failed_writes() {
+        use crate::engine::StubEngine;
+        use crate::tests_state::{ident, open};
+
+        for kill_at in [None, Some(0), Some(1), Some(2)] {
+            let root = tmp(&format!("budget-writes-{kill_at:?}"));
+            let mut st = open(&root, ident("synthetic", ""), 1 << 40);
+            let mut eng = StubEngine::new(4096, 300, 0, vec![]);
+            eng.prefill(&vec![1; BLOCK + 1]).unwrap();
+            let h = "a".repeat(64);
+            let key = "b".repeat(64);
+            let c = st.write_block(&mut eng, &h, 0, &mut Vec::new()).unwrap();
+            let before = st.used_bytes();
+            st.write_block(&mut eng, &h, 0, &mut Vec::new()).unwrap();
+            assert_eq!(st.used_bytes(), before, "shared block counted once");
+            let (snap_c, _) = st.write_snap(&mut eng, &key, BLOCK + 1, None).unwrap();
+            let before = st.used_bytes();
+            st.write_snap(&mut eng, &key, BLOCK + 1, None).unwrap();
+            assert_eq!(st.used_bytes(), before, "snapshot overwrite counted once");
+            assert!(st.has_block(&h, &c) && st.has_snap(&key, &snap_c));
+            assert_eq!(st.used_bytes(), dir_bytes(&root));
+
+            st.kill.at = kill_at.map(|n| st.kill.taken() + n);
+            let result = st.write_snap(&mut eng, &"c".repeat(64), BLOCK + 1, None);
+            assert_eq!(result.is_err(), kill_at.is_some());
+            assert_eq!(
+                st.used_bytes(),
+                dir_bytes(&root),
+                "including a torn pending or renamed file"
+            );
+            st.kill.at = None;
+            st.sweep();
+            assert_eq!(st.used_bytes(), dir_bytes(&root));
+            assert!(!st.has_block(&h, &c), "unreferenced block swept");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn staged_writes_share_accounting_before_commit_and_after_abandonment() {
+        use crate::generate::GenParams;
+        use crate::tests_state_p2b::{gen, toks, worker};
+
+        let root = tmp("budget-staged");
+        let mut w = worker(&root);
+        w.persist_every = 0;
+        gen(
+            &mut w,
+            &toks(1300, 4),
+            &GenParams {
+                n_predict: 3,
+                ..Default::default()
+            },
+        );
+        let staged = w.stage_persist(Some("synthetic")).unwrap();
+        staged.write().unwrap();
+        let st = w.states.as_mut().unwrap();
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        let before = st.used_bytes();
+        staged.write().unwrap();
+        assert_eq!(st.used_bytes(), before, "same staged paths counted once");
+        st.sweep();
+        assert_eq!(st.used_bytes(), before, "inflight files kept");
+        staged.release();
+        assert!(st.sweep() > 0, "abandoned staged files reclaimed");
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clearing_a_foreign_model_resyncs_the_returned_usage() {
+        use crate::tests_state::{call, ident, open, server};
+        let root = tmp("budget-clear-foreign");
+        let foreign_id = ident("foreign-synthetic", "");
+        let foreign = open(&root, foreign_id.clone(), 1 << 40);
+        let srv = server(&root, vec![], ident("synthetic", ""), 1 << 40);
+        let (code, result) = call(
+            &srv,
+            "POST",
+            "/state-cache/clear",
+            json!({"scope": "model", "model": foreign_id.model_key()}),
+        )
+        .await;
+        assert_eq!(code, 200, "{result}");
+        assert!(!foreign.dir.exists());
+        assert!(result["freed_bytes"].as_u64().unwrap() > 0);
+        assert_eq!(result["used_bytes"], dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn indexed_sweeps_keep_the_original_directory_scope() {
+        use crate::tests_state::{ident, open};
+        let root = tmp("budget-sweep-scope");
+        let mut st = open(&root, ident("synthetic", ""), 1 << 40);
+        let echo_pending = st.dir.join("echo/record.pending");
+        let unknown = st.dir.join("snaps/nested");
+        mkdir(&unknown).unwrap();
+        let unknown = unknown.join("unknown.st");
+        atomic_write(&st.kill, &st.usage, &echo_pending, b"in progress").unwrap();
+        atomic_write(&st.kill, &st.usage, &unknown, b"not ours").unwrap();
+        assert_eq!(st.sweep(), 0);
+        assert!(echo_pending.is_file() && unknown.is_file());
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn management_resyncs_external_changes_without_following_symlinks() {
+        use crate::tests_state::{ident, open};
+        let root = tmp("budget-resync");
+        let st = open(&root, ident("synthetic", ""), 1 << 40);
+        let before = st.used_bytes();
+        let outside = tmp("budget-outside");
+        fs::write(outside.join("data"), b"not cache data").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        fs::create_dir(root.join("foreign")).unwrap();
+        fs::write(root.join("foreign/data"), [0; 123]).unwrap();
+        assert_eq!(st.used_bytes(), before, "normal reads use the counter");
+        assert_eq!(st.usage()["used_bytes"], before + 123);
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn cancellation_between_evictions_keeps_remaining_manifests_and_can_resume() {
+        let root = tmp("budget-cancel");
+        let mut w = fill(&root, 1 << 40, &[1100, 1200, 1300]);
+        let st = w.states.as_mut().unwrap();
+        st.global_budget = false;
+        let mut manifests: Vec<Manifest> = st.manifests.values().cloned().collect();
+        for m in &mut manifests {
+            m.atime = now_s() - PIN_SECS - 1;
+            m.snaps.retain(|s| s.class == "head");
+            st.put_manifest(m.clone()).unwrap();
+        }
+        st.sweep();
+        let paths: Vec<PathBuf> = manifests.iter().map(|m| st.manifest_path(&m.sid)).collect();
+        st.budget = 0;
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        assert_eq!(st.enforce_cancellable(None, Some(&cancelled)), 0);
+        assert_eq!(st.manifests.len(), 3);
+        // Deterministic arrival of a request just after the first session eviction.
+        assert!(st.enforce_until(None, &|| paths.iter().any(|p| !p.exists())) > 0);
+        assert_eq!(st.manifests.len(), 2);
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        for m in st.manifests.values() {
+            assert!(m.blocks.iter().all(|(h, c)| st.has_block(h, c)));
+            assert!(m.snaps.iter().all(|s| st.has_snap(&s.key, &s.c)));
+        }
+        st.enforce(None);
+        assert!(st.manifests.is_empty());
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn progress_defers_maintenance_until_the_cached_budget_is_exceeded() {
+        use crate::engine::StubEngine;
+        use crate::generate::PersistMode;
+        let root = tmp("budget-progress");
+        let mut w = fill(&root, 1 << 40, &[1100]);
+        let key = "d".repeat(64);
+        let st = w.states.as_mut().unwrap();
+        let mut other = StubEngine::new(4096, 300, 0, vec![]);
+        let (c, _) = st.write_snap(&mut other, &key, 0, None).unwrap();
+        let more = vec![5; BLOCK];
+        w.engine.prefill(&more).unwrap();
+        w.cache.appended(&more);
+        DIRECTORY_READS.with(|n| n.set(0));
+        assert!(w.persist(None, PersistMode::Progress, None).head.is_some());
+        let st = w.states.as_mut().unwrap();
+        assert!(st.has_snap(&key, &c), "under budget: no maintenance pass");
+        assert_eq!(DIRECTORY_READS.with(|n| n.get()), 0);
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        st.budget = st.used_bytes() - 1;
+        w.engine.prefill(&more).unwrap();
+        w.cache.appended(&more);
+        assert!(w.persist(None, PersistMode::Progress, None).head.is_some());
+        let st = w.states.as_ref().unwrap();
+        assert!(!st.has_snap(&key, &c), "over budget: orphan reclaimed");
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
 }
