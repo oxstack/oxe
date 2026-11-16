@@ -1657,7 +1657,6 @@ async fn completion<E: Engine>(
     ephemeral: bool,
     snapshot_keep: bool,
 ) -> Reply {
-    let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
     }
@@ -1670,7 +1669,6 @@ async fn completion<E: Engine>(
     }
     gp.ephemeral = ephemeral;
     gp.session = session.clone();
-    gp.req_no = Some(req_no);
     let prompt_json = b
         .get("prompt")
         .cloned()
@@ -1687,6 +1685,9 @@ async fn completion<E: Engine>(
     if prompt.len() >= st.n_ctx {
         return Reply::Json(400, api::exceed_context_json(prompt.len(), st.n_ctx));
     }
+    // validated: only now does this request preempt the background jobs and take a number
+    let req_no = st.preempt_idle();
+    gp.req_no = Some(req_no);
     // H4 on a raw prompt: there are no messages, so the point is the prompt end
     gp.snap_keep = snapshot_keep;
     gp.snap_at = snapshot_keep.then_some(prompt.len());
@@ -1817,7 +1818,6 @@ async fn v1_completion<E: Engine>(
     if let Err(j) = api::check_n(&b) {
         return Reply::Json(400, j);
     }
-    let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
     }
@@ -1892,7 +1892,6 @@ async fn v1_completion<E: Engine>(
     }
     gp.ephemeral = ephemeral;
     gp.session = session.clone();
-    gp.req_no = Some(req_no);
     let t_tok = std::time::Instant::now();
     let prompt = match st.tokenize_prompt(&prompt_json, true) {
         Ok(p) => p,
@@ -1913,6 +1912,9 @@ async fn v1_completion<E: Engine>(
     if prompt.len() >= st.n_ctx {
         return Reply::Json(400, api::exceed_context_json(prompt.len(), st.n_ctx));
     }
+    // validated: only now does this request preempt the background jobs and take a number
+    let req_no = st.preempt_idle();
+    gp.req_no = Some(req_no);
     gp.snap_keep = snapshot_keep;
     gp.snap_at = snapshot_keep.then_some(prompt.len());
     let stream = b.get("stream").and_then(Json::as_bool).unwrap_or(false);
@@ -2040,7 +2042,6 @@ async fn chat_completion<E: Engine>(
     if let Err(j) = api::check_n(&b) {
         return Reply::Json(400, j);
     }
-    let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
     }
@@ -2149,6 +2150,8 @@ async fn chat_completion<E: Engine>(
         .and_then(Json::as_str)
         == Some("user");
     gp.session = session.clone();
+    // validated: only now does this request preempt the background jobs and take a number
+    let req_no = st.preempt_idle();
     gp.req_no = Some(req_no);
     // H4: the exact end of the last message (`snapshot_point`); none for an ephemeral request
     gp.snap_keep = snapshot_keep && !ephemeral;

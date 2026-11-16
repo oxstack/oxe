@@ -279,3 +279,75 @@ async fn props_advertise_count_only_and_keep_the_other_hints() {
         "{p}"
     );
 }
+
+/// A request that is refused by validation (400) must not stop the background persist / idle
+/// re-prefill / preload of the live session, nor consume a request number; a valid request still
+/// does both.
+#[tokio::test(flavor = "multi_thread")]
+async fn rejected_requests_leave_background_jobs_and_request_count_alone() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let st = srv(false, &["ok"], None);
+    let arm = || {
+        let f = Arc::new(AtomicBool::new(false));
+        *st.idle.lock().unwrap() = Some(f.clone());
+        *st.persist.lock().unwrap() = Some(f.clone());
+        *st.preload.lock().unwrap() = Some(f.clone());
+        f
+    };
+    let bad: Vec<(&str, Json)> = vec![
+        (
+            "/v1/chat/completions",
+            body(
+                false,
+                false,
+                json!({"response_format": {"type": "json_object"}}),
+            ),
+        ),
+        (
+            "/v1/chat/completions",
+            body(false, false, json!({"temperature": "hot"})),
+        ),
+        (
+            "/v1/chat/completions",
+            body(false, false, json!({"thinking_budget": 1, "max_tokens": 1})),
+        ),
+        (
+            "/v1/chat/completions",
+            json!({"messages": [{"role": "bogus", "content": 5}]}),
+        ),
+        (
+            "/completion",
+            json!({"prompt": "hi", "grammar": "root ::= x"}),
+        ),
+        ("/completion", json!({"prompt": "hi", "temperature": "hot"})),
+        (
+            "/v1/completions",
+            json!({"prompt": "hi", "response_format": {"type": "json_object"}}),
+        ),
+        ("/v1/completions", json!({"prompt": "hi", "suffix": "x"})),
+        ("/v1/completions", json!({"prompt": "hi", "logprobs": 9})),
+    ];
+    for (path, b) in &bad {
+        let flag = arm();
+        let reqs = st.reqs.load(Ordering::SeqCst);
+        let (c, j) = call(&st, "POST", path, b.clone()).await;
+        assert_eq!(c, 400, "{path} {b}: {j}");
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "{path} {b}: a refused request cancelled the background jobs"
+        );
+        assert_eq!(st.reqs.load(Ordering::SeqCst), reqs, "{path} {b}");
+    }
+    let flag = arm();
+    let reqs = st.reqs.load(Ordering::SeqCst);
+    let (c, j) = call(
+        &st,
+        "POST",
+        "/v1/chat/completions",
+        body(false, false, json!({})),
+    )
+    .await;
+    assert_eq!(c, 200, "{j}");
+    assert!(flag.load(Ordering::SeqCst), "a valid request preempts");
+    assert_eq!(st.reqs.load(Ordering::SeqCst), reqs + 1);
+}
