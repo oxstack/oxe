@@ -47,6 +47,18 @@ caller and child must already be in an inherited no-swap cgroup; this library
 does not change system configuration or weaken the policy to make loading work.
 Flash-specific swap-tolerant policy is not supported.
 
+Per-model `mtp_max_context` (positive u32) and `sampled_mtp` (boolean) select the
+native MTP launch controls. By the v0.2.1 owner decision (#763), canonical alias
+`ornith-35b-a3b-local` defaults to cutoff 32768 with sampled MTP on, and
+`qwen3.6-35b-a3b-local` to cutoff 16384 with sampled MTP on. These retain the
+published profile crossovers; they do not change engine numerics or kernel defaults.
+Other aliases, including Flash, acquire neither default. Custom aliases can set
+both controls explicitly. Set `sampled_mtp: false` to omit the sampled flag.
+Explicit literal `--mtp-max-ctx`/`--mtp-sampled` arguments remain usable and are
+not duplicated; do not combine a literal flag with its structured counterpart.
+Model context/output limits and literal `--ctx-size` remain separately explicit.
+The existing one-owner load/unload/idle lifecycle is unchanged.
+
 Construction and typed discovery open no model, authentication file or socket and
 start no thread. Load creates fresh private child authentication under the agent
 directory, writes it without reading a credential store, and retains an anchored

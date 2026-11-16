@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-/// An installed model's explicit launch choices, without inferred tuning defaults.
+/// An installed model's explicit paths and literal base arguments.
 #[derive(Clone)]
 pub struct InstalledModel {
     pub model: PathBuf,
@@ -75,12 +75,13 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-/// Resolve `oxa.local.models.<alias>.{binary,model,arguments,environment}`.
+/// Resolve user-only per-model paths, literal arguments, environment and MTP controls.
 ///
 /// Missing values use the supplied layout. Arguments replace, rather than append to, the
 /// installed argument list; environment entries override the explicit base. As in the old
 /// native launch path, inherited GGML_/LLAMA_ tuning is removed before explicit overrides.
-/// No cache directory, numerical default, interpreter or shell trampoline is introduced.
+/// The two shipped MoE aliases get the owner-selected sampled-MTP/cutoff profile.
+/// Other engine tuning, cache directories and interpreter/shell trampolines are not inferred.
 pub fn from_user_settings(
     user: &Value,
     layout: &InstalledLayout,
@@ -101,10 +102,12 @@ pub fn from_user_settings(
     let selected = object(models.and_then(|v| v.get(alias)))?;
     let empty = Map::new();
     let selected = selected.unwrap_or(&empty);
-    if selected
-        .keys()
-        .any(|k| !matches!(k.as_str(), "binary" | "model" | "arguments" | "environment"))
-    {
+    if selected.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "binary" | "model" | "arguments" | "environment" | "mtp_max_context" | "sampled_mtp"
+        )
+    }) {
         return Err(Error::Settings);
     }
     let binary = path(selected.get("binary"), &layout.binary, Error::Binary)?;
@@ -124,6 +127,42 @@ pub fn from_user_settings(
             .collect::<Result<Vec<_>, _>>()?,
         _ => return Err(Error::Arguments),
     };
+    // Preserve the published per-model crossover; the owner enables sampled MTP
+    // for these two shipped MoE aliases in the Rust-only release (#763).
+    let default_cutoff = match alias {
+        "ornith-35b-a3b-local" => Some(32768),
+        "qwen3.6-35b-a3b-local" => Some(16384),
+        _ => None,
+    };
+    let cutoff = match selected.get("mtp_max_context") {
+        None => default_cutoff,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| *v > 0)
+                .ok_or(Error::Settings)?,
+        ),
+    };
+    let sampled = match selected.get("sampled_mtp") {
+        None => default_cutoff.is_some(),
+        Some(value) => value.as_bool().ok_or(Error::Settings)?,
+    };
+    // The native parser accepts these controls only as separate argv words.
+    if extra
+        .iter()
+        .any(|word| word.starts_with("--mtp-max-ctx=") || word.starts_with("--mtp-sampled="))
+    {
+        return Err(Error::Arguments);
+    }
+    let has_flag = |flag: &str| extra.iter().any(|word| word.split('=').next() == Some(flag));
+    let raw_cutoff = has_flag("--mtp-max-ctx");
+    let raw_sampled = has_flag("--mtp-sampled");
+    if raw_cutoff && selected.contains_key("mtp_max_context")
+        || raw_sampled && selected.contains_key("sampled_mtp")
+    {
+        return Err(Error::Arguments);
+    }
     let mut arguments: Vec<OsString> = vec![
         "--host".into(),
         "127.0.0.1".into(),
@@ -147,6 +186,12 @@ pub fn from_user_settings(
             return Err(Error::OwnedArgument);
         }
         arguments.push(word.into());
+    }
+    if let Some(cutoff) = cutoff.filter(|_| !raw_cutoff) {
+        arguments.extend(["--mtp-max-ctx".into(), cutoff.to_string().into()]);
+    }
+    if sampled && !raw_sampled {
+        arguments.push("--mtp-sampled".into());
     }
     let mut environment: BTreeMap<String, String> = layout
         .environment
