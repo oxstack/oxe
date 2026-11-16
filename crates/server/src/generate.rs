@@ -244,7 +244,8 @@ pub struct Timings {
     pub tokenize_ms: f64,
     /// the restore phase of `prefill_head`: from its start to the end of the cache / disk restore
     pub restore_ms: f64,
-    /// the summed wall time of the checkpoints this request took on the request path
+    /// the summed wall time of the checkpoints this request took on the request path, and of the
+    /// state-store write of the session it cut back (`park_to_states`)
     pub ckpt_ms: f64,
 }
 
@@ -2119,12 +2120,13 @@ impl<E: Engine> Worker<E> {
     /// Bring the engine to `prompt[..n-1]` (prefix cache, disk stores, grid checkpoints, cancel
     /// checks); returns n_cached. The caller evaluates the last token.
     fn prefill_head(&mut self, prompt: &[Token], p: &GenParams) -> Result<usize, GenError> {
-        self.park_to_states(prompt, p);
+        let park_ms = self.park_to_states(prompt, p);
         self.live_hint = p.session.clone();
         self.state_dirty = true;
         self.snaps_pending = true;
         let t_resume = Instant::now();
-        self.req_ckpt_ms = 0.0;
+        // the park write of the session being left is request-path time too
+        self.req_ckpt_ms = park_ms;
         let unpark0 = self.cache.stats.unpark_ms;
         // P2b preload: the state the preload loaded is adopted when this prompt continues it
         let pre = self.adopt_preloaded(prompt, p.cache_prompt);
@@ -2322,20 +2324,23 @@ impl<E: Engine> Worker<E> {
     /// keeping, at most `--state-snaps`) into the state store first, on the request path, so the
     /// parked session keeps its resume points (a post-reply write a request cut short, an idle
     /// gap too short for the checkpoints). Nothing to do after a complete post-reply write.
-    fn park_to_states(&mut self, prompt: &[Token], p: &GenParams) {
+    ///
+    /// Returns the wall time (ms) the write took on the request path (0 when nothing ran); the
+    /// request reports it in `timings.ckpt_ms` (issue #584).
+    fn park_to_states(&mut self, prompt: &[Token], p: &GenParams) -> f64 {
         if !self.park_write
             || !p.cache_prompt
             || !(self.state_dirty || self.snaps_pending)
             || self.engine.kv_row_bytes() == 0
         {
-            return;
+            return 0.0;
         }
         let Some(st) = self.states.as_ref() else {
-            return;
+            return 0.0;
         };
         let n = self.cache.tokens.len();
         if st.budget == 0 || n < st.min_tokens || self.preloaded.is_some() {
-            return;
+            return 0.0;
         }
         let lcp = self
             .cache
@@ -2345,14 +2350,16 @@ impl<E: Engine> Worker<E> {
             .take_while(|(a, b)| a == b)
             .count();
         if lcp >= n {
-            return;
+            return 0.0;
         }
         let t0 = Instant::now();
         let live = self.live_hint.clone();
         let r = self.persist(live.as_deref(), PersistMode::Reply, p.cancel.as_deref());
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
         if r.head.is_some() || r.snaps > 0 {
-            eprintln!("oxe-server: state cache: the session being left was written first ({}, {} snapshots) in {:.0} ms", r.line(), r.snaps, t0.elapsed().as_secs_f64() * 1e3);
+            eprintln!("oxe-server: state cache: the session being left was written first ({}, {} snapshots) in {ms:.0} ms", r.line(), r.snaps);
         }
+        ms
     }
 
     /// SX-2 idle re-prefill: prefill `hist` (the conversation in the form the next request will
@@ -2656,7 +2663,7 @@ impl<E: Engine> Worker<E> {
                 cache_prompt: true,
                 ..Default::default()
             };
-            self.park_to_states(&[], &local);
+            let _ = self.park_to_states(&[], &local);
             self.cache.park_whole(&mut self.engine)?;
         }
         // nothing a preload put into the engine survives the load below
@@ -2706,7 +2713,7 @@ impl<E: Engine> Worker<E> {
                 cache_prompt: true,
                 ..Default::default()
             };
-            self.park_to_states(&[], &local);
+            let _ = self.park_to_states(&[], &local);
             return None;
         }
         Some(HeldLocal {
