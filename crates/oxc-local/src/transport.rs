@@ -317,6 +317,7 @@ fn local_event(event: GatewayEvent) -> Result<Option<oxa_proto::Value>, OxaError
         Err(broken("unsupported local gateway event"))
     }
 }
+
 fn aborted() -> OxaError {
     OxaError::new(codes::ABORTED, "local request cancelled")
 }
@@ -325,4 +326,26 @@ fn down() -> OxaError {
 }
 fn broken(message: &str) -> OxaError {
     OxaError::new(codes::STREAM_BROKEN, message)
+}
+
+#[cfg(test)]
+mod private_completion_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    #[test]
+    fn cloud_completion_authority_is_refused_without_invoking_its_binder() {
+        let called = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&called);
+        let event = GatewayEvent::DoneWithHistory(Arc::new(move |_| {
+            called.store(true, Ordering::SeqCst);
+            panic!("synthetic_private_authority must never run in local transport");
+        }));
+        let error = local_event(event).unwrap_err();
+        assert_eq!(error.code, codes::STREAM_BROKEN);
+        assert!(!observed.load(Ordering::SeqCst));
+        assert!(!error.message.contains("synthetic_private_authority"));
+    }
 }

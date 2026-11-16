@@ -608,7 +608,7 @@ jobs:
             env -i PATH="$PATH" HOME="$gateway_test_home" OXC_SECRET_OWNER_PATH="$gateway_owner_fixture" CARGO_HOME="$gateway_cargo_home" RUSTUP_HOME="$gateway_rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             bash -ec '
               cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features -p oxa-engine --profile ci
-              cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxa-cli --test in_process_cloud --profile ci
+              cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxa-cli --test in_process_cloud --test in_process_openai --profile ci
             '
 
   gate:
