@@ -38,3 +38,23 @@ unless the owner polls; this is an integration obligation, not a hidden thread.
 Footprint: no extra threads, timers, sockets or allocations before construction;
 construction stores configuration only. No background work when stopped. The
 production binary is unchanged because it has no dependency on this crate.
+
+## Request lease (slice 2)
+
+`queue::RequestQueue` owns one engine semaphore and bounded waiting capacity.
+Acquisition is FIFO from first poll; overflow returns `Full` immediately. Dropping
+an acquisition future removes its ticket, frees capacity and transfers any grant
+to the next waiter. A retry joins the back. Clones share the same lease/queue.
+`close` permanently refuses new work and wakes waiters while the active owner
+retains its lease for cleanup. Zero waiting capacity permits only immediate work.
+
+The lease covers generation, upstream cancellation cleanup, load and unload.
+Cancellation of the downstream consumer must not release it before upstream has
+stopped; the transport slice will enforce this lifetime. `waiting()` is an
+approximate status count, including grants not yet resumed, never an idle/unload
+admission check. Idle unload must first acquire the same lease without waiting.
+
+Only Tokio's synchronization feature is used by this library. There is no timer,
+executor, background task or thread. Waiting futures carry their own semaphore
+wait nodes; the bounded queue does not allocate a request record for each ticket.
+No production target references this crate until the final wiring slice.

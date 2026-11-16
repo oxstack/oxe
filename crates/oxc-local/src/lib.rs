@@ -1,6 +1,8 @@
 //! Caller-driven ownership of one local engine. No daemon or background thread.
 #![cfg(unix)]
 
+pub mod queue;
+
 use nix::errno::Errno;
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
