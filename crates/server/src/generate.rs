@@ -307,6 +307,8 @@ pub struct Worker<E: Engine> {
     /// requests (temperature > 0). A draft is used only when the seeded sampler draws that same
     /// token from the verified row, so the output at a fixed seed equals speculation off.
     pub mtp_sampled: bool,
+    /// diagnostic env knobs, read once when the worker is built
+    pub diag: DiagKnobs,
     /// repetition-loop watchdog (`--repeat-watchdog N`, 0 = off): stop with finish_reason
     /// "length" when the last N generated tokens end in a loop (see [`repeat_loop`])
     pub repeat_watchdog: usize,
@@ -804,6 +806,32 @@ fn ends_with_partial_stop(text: &str, stops: &[String]) -> bool {
     })
 }
 
+/// Diagnostic env knobs of the decode loop, read once at [`Worker::new`] (not per request):
+/// `OXE_SERVER_LEGACY` (A/B diagnostic: the pre-fast-path loop and full re-parse of the reply),
+/// `OXE_TIMING_DIAG` (per-request split on stderr) and `OXE_TIMING_DIAG_WARMUP` (default 16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiagKnobs {
+    pub legacy: bool,
+    pub timing: bool,
+    pub timing_warmup: usize,
+}
+
+impl DiagKnobs {
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+        DiagKnobs {
+            legacy: get("OXE_SERVER_LEGACY").is_some(),
+            timing: get("OXE_TIMING_DIAG").is_some(),
+            timing_warmup: get("OXE_TIMING_DIAG_WARMUP")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16),
+        }
+    }
+
+    pub fn from_env() -> Self {
+        Self::from_lookup(|k| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned()))
+    }
+}
+
 impl<E: Engine> Worker<E> {
     pub fn new(engine: E, max_snapshots: usize) -> Self {
         // turn checkpoints use only the slots beyond the 4 anchor/query/tail checkpoints need
@@ -824,6 +852,7 @@ impl<E: Engine> Worker<E> {
             mtp_guard: None,
             mtp_guard_trips: 0,
             mtp_sampled: false,
+            diag: DiagKnobs::from_env(),
             msg_split: false,
             warm: None,
             states: None,
@@ -2772,19 +2801,16 @@ impl<E: Engine> Worker<E> {
         // argmax (same lowest-id tie-break as sampling::argmax) instead of copying the row
         // and scanning it again
         // OXE_SERVER_LEGACY=1 (A/B diagnostic only): the pre-fast-path loop (row copy + host argmax)
-        let legacy = std::env::var_os("OXE_SERVER_LEGACY").is_some();
+        let legacy = self.diag.legacy;
         // penalties / logit_bias read an adjusted row: the sampler path (no engine argmax, no MTP)
         let fast = greedy && p.n_probs == 0 && !legacy && !p.sampling.adjusts_logits();
         // speculation depth for this request (MTP auto-tune): see [`GenRun::depth_at`]
         let max_d = self.engine.spec_max_depth();
         // OXE_TIMING_DIAG=1: per-request split of the decode loop (ms): engine calls, logits
         // copies, sampler, text (piece, UTF-8, stop strings), emit (on_partial: JSON + SSE send)
-        let diag = std::env::var_os("OXE_TIMING_DIAG").is_some();
+        let diag = self.diag.timing;
         let dg = DiagSplit {
-            warmup: std::env::var("OXE_TIMING_DIAG_WARMUP")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(16),
+            warmup: self.diag.timing_warmup,
             ..Default::default()
         };
         Ok(GenRun {

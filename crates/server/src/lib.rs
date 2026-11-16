@@ -33,6 +33,8 @@ mod tests_hotfix;
 #[cfg(test)]
 mod tests_lan_share;
 #[cfg(test)]
+mod tests_leftovers;
+#[cfg(test)]
 mod tests_long_append;
 #[cfg(test)]
 mod tests_mtp_sampled;

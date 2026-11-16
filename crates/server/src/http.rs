@@ -46,10 +46,19 @@ impl Body for RBody {
 }
 
 const MAX_BODY: usize = 64 << 20;
+/// Most a body buffer is reserved up front from `Content-Length` (a client may claim more than it
+/// sends); past it the buffer grows as data arrives, up to [`MAX_BODY`].
+pub const PREALLOC_MAX: usize = 4 << 20;
 
-async fn collect(mut b: Incoming) -> Result<Vec<u8>, String> {
+/// Initial buffer size for a body whose `Content-Length` header value is `cl`.
+pub fn body_capacity(cl: Option<&str>) -> usize {
+    cl.and_then(|v| v.trim().parse::<usize>().ok())
+        .map_or(0, |n| n.min(PREALLOC_MAX).min(MAX_BODY))
+}
+
+async fn collect(mut b: Incoming, capacity: usize) -> Result<Vec<u8>, String> {
     use std::future::poll_fn;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(capacity);
     loop {
         let f = poll_fn(|cx| Pin::new(&mut b).poll_frame(cx)).await;
         match f {
@@ -385,7 +394,12 @@ async fn answer<E: Engine>(
     let hints = crate::service::Hints {
         snapshot_keep: snapshot_keep(req.headers()),
     };
-    let body = match collect(req.into_body()).await {
+    let capacity = body_capacity(
+        req.headers()
+            .get(hyper::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok()),
+    );
+    let body = match collect(req.into_body(), capacity).await {
         Ok(b) => b,
         Err(e) => return json_resp(400, &crate::api::error_json(400, &e)),
     };
