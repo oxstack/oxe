@@ -35,6 +35,8 @@ mod tests_lan_share;
 #[cfg(test)]
 mod tests_long_append;
 #[cfg(test)]
+mod tests_mtp_sampled;
+#[cfg(test)]
 mod tests_oxe_state;
 #[cfg(test)]
 mod tests_state;

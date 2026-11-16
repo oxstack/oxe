@@ -62,6 +62,7 @@ const USAGE: &str = "usage: oxe-server --model PATH [--alias NAME] [--host 127.0
   [--pf-pfg-fold 16|32|QK:PV (16:32) --pf-pfg-ch N (128; 32..256, multiple of 32) --pf-pfg-tb 8|16|32 (16)
    --pf-pfg-mk ld1r|elem (ld1r): pfg kernel parameters (env OXE_PF_PFG_FOLD / _CH / _TB / _MK)]
   [--mtp-max-ctx N (no MTP speculation at or beyond context position N; decided per verify)]
+  [--mtp-sampled (MTP speculation also for sampled requests, temperature > 0; same tokens at a fixed seed; default off)]
   [--attn-out legacy|pb (env OXE_ATTN_OUT; default legacy): V^T . p kernel of the tiled decode / verify
    attention; pb = position-blocked oxe_dot_f16_tile_pb, bit-identical, not in the state identity]
   (per request: \"speculative\": false turns speculation off, \"spec_draft_n_max\": n sets the depth)
@@ -184,6 +185,8 @@ fn main() {
     let mut mtp_tune: Option<String> = None;
     // F82: no MTP speculation at or beyond this context position (--mtp-max-ctx N; unset = no cap)
     let mut mtp_max_ctx: Option<usize> = None;
+    // #462: MTP speculation for sampled requests too (default off until measured on hardware)
+    let mut mtp_sampled = false;
     let mut prefix_dir: Option<String> = None;
     let mut prefix_max: u64 = 4 << 30;
     let mut prefix_min: usize = 1024;
@@ -606,6 +609,10 @@ fn main() {
             // llama-server's KV cache types (were ignored): f16 (default) or q8_0 per K and V
             "--cache-type-k" | "-ctk" => cache_k = need(i),
             "--cache-type-v" | "-ctv" => cache_v = need(i),
+            "--mtp-sampled" => {
+                mtp_sampled = true;
+                used = 1
+            }
             "--mtp" => {
                 spec_mtp = Some(true);
                 used = 1
@@ -925,6 +932,7 @@ fn main() {
                 repeat_watchdog,
                 None,
                 None,
+                false,
                 access,
             )
         }
@@ -1125,6 +1133,7 @@ fn main() {
                 repeat_watchdog,
                 table,
                 mtp_max_ctx,
+                mtp_sampled,
                 access,
             )
         }
@@ -1203,6 +1212,7 @@ fn main() {
                 repeat_watchdog,
                 None,
                 None,
+                false,
                 access,
             )
         }
@@ -1286,12 +1296,14 @@ fn serve<E: Engine>(
     repeat_watchdog: usize,
     spec_table: Option<server::generate::SpecTable>,
     mtp_max_ctx: Option<usize>,
+    mtp_sampled: bool,
     mut access: server::http::Access,
 ) {
     let mut w = Worker::new(eng, sess.checkpoints);
     w.ubatch = ubatch;
     w.spec_table = spec_table;
     w.mtp_max_ctx = mtp_max_ctx;
+    w.mtp_sampled = mtp_sampled;
     w.mtp_guard = server::mtp_guard::MtpGuard::from_env();
     if w.mtp_guard.is_some() {
         eprintln!(

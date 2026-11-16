@@ -297,6 +297,10 @@ pub struct Worker<E: Engine> {
     pub mtp_guard: Option<crate::mtp_guard::MtpGuard>,
     /// guard trips over all generations (tests, the ledger)
     pub mtp_guard_trips: u64,
+    /// #462 (`--mtp-sampled`, default off until measured): MTP speculation also for sampled
+    /// requests (temperature > 0). A draft is used only when the seeded sampler draws that same
+    /// token from the verified row, so the output at a fixed seed equals speculation off.
+    pub mtp_sampled: bool,
     /// repetition-loop watchdog (`--repeat-watchdog N`, 0 = off): stop with finish_reason
     /// "length" when the last N generated tokens end in a loop (see [`repeat_loop`])
     pub repeat_watchdog: usize,
@@ -813,6 +817,7 @@ impl<E: Engine> Worker<E> {
             mtp_max_ctx: None,
             mtp_guard: None,
             mtp_guard_trips: 0,
+            mtp_sampled: false,
             msg_split: false,
             warm: None,
             states: None,
@@ -2752,9 +2757,11 @@ impl<E: Engine> Worker<E> {
 
         let t1 = Instant::now();
         let spec0 = self.engine.spec_counters();
-        // MTP speculation (greedy only): rows the engine already computed for tokens it
-        // appended speculatively, consumed one by one as the loop reaches them
+        // MTP speculation: rows the engine already computed for tokens it appended
+        // speculatively, consumed one by one as the loop reaches them (greedy; sampled too with
+        // --mtp-sampled: the sampler draws from each row as without speculation)
         let greedy = p.sampling.temperature <= 0.0;
+        let spec_ok = greedy || self.mtp_sampled;
         // greedy fast path: nothing reads the logits row (no n_probs), so take the engine's own
         // argmax (same lowest-id tie-break as sampling::argmax) instead of copying the row
         // and scanning it again
@@ -2783,6 +2790,7 @@ impl<E: Engine> Worker<E> {
             t1,
             spec0,
             greedy,
+            spec_ok,
             legacy,
             fast,
             max_d,
@@ -2978,14 +2986,14 @@ impl<E: Engine> Worker<E> {
                         run.last_drafted = 0;
                     }
                     if popped.is_some() {
-                        // the sampler left the greedy path: drop the unused speculation
+                        // the sampler left the draft path: drop the unused speculation
                         self.engine.spec_rewind(1 + run.spec_used)?;
                         run.spec_q.clear();
                     }
                     let mut depth = run.depth_at(p, self.engine.n_past());
                     // MTP guard: while it refuses, this token is decoded without speculation (`decode`
                     // keeps the MTP state following every token, so drafting can come back)
-                    if depth > 0 && run.greedy && popped.is_none() {
+                    if depth > 0 && run.spec_ok && popped.is_none() {
                         if let Some(g) = run.guard.as_mut() {
                             if !g.allow() {
                                 depth = 0;
@@ -2997,7 +3005,7 @@ impl<E: Engine> Worker<E> {
                         run.cur_depth = depth;
                     }
                     let drafted0 = self.engine.spec_counters().0;
-                    let spec = if run.greedy && popped.is_none() && depth > 0 {
+                    let spec = if run.spec_ok && popped.is_none() && depth > 0 {
                         if run.fast {
                             self.engine.decode_spec_argmax(t)?.map(|(e, g)| {
                                 (e, g.into_iter().map(NextRow::Argmax).collect::<Vec<_>>())
@@ -3206,6 +3214,8 @@ pub struct GenRun {
     /// the engine's (drafted, accepted) counters at the loop start
     spec0: (u64, u64),
     greedy: bool,
+    /// this request may speculate (greedy, or sampled with `Worker::mtp_sampled`)
+    spec_ok: bool,
     legacy: bool,
     fast: bool,
     max_d: usize,

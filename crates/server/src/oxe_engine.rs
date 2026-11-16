@@ -13,8 +13,8 @@
 //! - Snapshots hold the recurrent state + position (+ the MTP's h of the last position);
 //!   the KV cache stays in place.
 //! - M3.1 MTP (`--spec-type draft-mtp --spec-draft-n-max N`, default per model, see
-//!   [`default_mtp_depth`]): greedy requests go through [`Engine::decode_spec`]; output is
-//!   bit-identical to MTP off.
+//!   [`default_mtp_depth`]): greedy requests (and sampled ones with `--mtp-sampled`) go through
+//!   [`Engine::decode_spec`]; output is bit-identical to MTP off.
 
 use crate::engine::{Engine, EngineError, Result};
 use model::engine::{Engine as Core, EngineConfig, EngineOptions, RecurrentSnapshot};
