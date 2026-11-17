@@ -1,0 +1,129 @@
+name: lane
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['agent/**', 'codex/**', 'air/**', 'runner/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lane-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTUP_TOOLCHAIN: '1.99.1'
+  CARGO_BUILD_JOBS: '3'
+  CARGO_TERM_COLOR: never
+
+jobs:
+  plan:
+    name: lane plan
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      workspaces: ${{ steps.select.outputs.workspaces }}
+      packages: ${{ steps.select.outputs.packages }}
+      has_tests: ${{ steps.select.outputs.has_tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Runner queue time
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I tools/ci/lane_queue.py --job-name 'lane plan'
+      - name: Selector and CI policy controls
+        run: python3 -I -m unittest discover -s tools/ci/tests
+      - name: Select the branch diff against main
+        id: select
+        run: python3 -I tools/ci/lane_select.py --base origin/main
+
+  test:
+    name: lane (${{ matrix.workspace }}, ${{ matrix.runner }})
+    needs: plan
+    if: needs.plan.outputs.has_tests == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        workspace: ${{ fromJSON(needs.plan.outputs.workspaces) }}
+        exclude:
+          # Native engine CPU qualification stays on the existing Oryon runner.
+          - workspace: engine
+            runner: ubuntu-24.04-arm
+    env:
+      PACKAGES_JSON: ${{ toJSON(fromJSON(needs.plan.outputs.packages)[matrix.workspace]) }}
+      LANE_JOB_NAME: lane (${{ matrix.workspace }}, ${{ matrix.runner }})
+      LANE_WORKSPACE: ${{ matrix.workspace }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Runner queue time
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I tools/ci/lane_queue.py --job-name "$LANE_JOB_NAME"
+      - name: Isolated toolchain and disk-backed caches
+        shell: bash
+        run: |
+          lane_cache="$HOME/.cache/ox-llm-lane"
+          mkdir -p "$lane_cache"/{home,cargo,rustup,scratch,tools,artifacts}
+          export HOME="$lane_cache/home" CARGO_HOME="$lane_cache/cargo" RUSTUP_HOME="$lane_cache/rustup"
+          export TMPDIR="$lane_cache/scratch" LANE_TOOLS_DIR="$lane_cache/tools" LANE_ARTIFACTS_DIR="$lane_cache/artifacts"
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/$LANE_WORKSPACE/target"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+          for name in HOME CARGO_HOME RUSTUP_HOME TMPDIR CARGO_TARGET_DIR LANE_TOOLS_DIR LANE_ARTIFACTS_DIR; do
+            echo "$name=${!name}" >> "$GITHUB_ENV"
+          done
+          host=$(rustup run "$RUSTUP_TOOLCHAIN" rustc -vV | sed -n 's/^host: //p')
+          echo "$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN-$host/bin" >> "$GITHUB_PATH"
+      - name: Cargo registry and target cache key
+        id: rust-key
+        run: python3 -I tools/ci/rust_cache_key.py --variant "lane-$LANE_WORKSPACE-${{ runner.arch }}" "$LANE_WORKSPACE"
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: cache
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            ${{ env.CARGO_TARGET_DIR }}
+          key: lane-${{ steps.rust-key.outputs.key }}
+          restore-keys: lane-${{ steps.rust-key.outputs.prefix }}
+      - name: Rebuild tracked workspace sources after restoring targets
+        run: git ls-files -z -- oxa engine oxc-rs | xargs -0 -r touch -c --
+      - name: Required sandbox and syscall tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-all --ro-bind / / true
+      - name: Pinned nextest
+        run: tools/ci/install_nextest.sh "$LANE_TOOLS_DIR"
+      - name: Affected crates with release-relevant features
+        env:
+          WORKSPACE: ${{ matrix.workspace }}
+        run: python3 -I tools/ci/lane_run.py --workspace "$WORKSPACE" --packages-json "$PACKAGES_JSON"
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Branch-scoped lane caches never write the required workflows' main cache keys.
+        if: success() && github.event_name != 'merge_group' && github.ref != 'refs/heads/main' && (startsWith(github.ref, 'refs/heads/agent/') || startsWith(github.ref, 'refs/heads/codex/') || startsWith(github.ref, 'refs/heads/air/') || startsWith(github.ref, 'refs/heads/runner/')) && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            ${{ env.CARGO_TARGET_DIR }}
+          key: lane-${{ steps.rust-key.outputs.key }}
+      - name: Cache result
+        if: always()
+        run: echo 'Cargo registry/target cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
