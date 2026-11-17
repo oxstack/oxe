@@ -115,6 +115,27 @@ jobs:
         env:
           WORKSPACE: ${{ matrix.workspace }}
         run: python3 -I tools/ci/lane_run.py --workspace "$WORKSPACE" --packages-json "$PACKAGES_JSON"
+      - name: CLI share-key controls when share code changes
+        if: matrix.workspace == 'oxa' && contains(fromJSON(env.PACKAGES_JSON), 'oxa-cli')
+        shell: bash
+        run: |
+          base=$(git merge-base origin/main HEAD)
+          if git diff --quiet "$base" HEAD -- \
+            'oxa/oxa-cli/**' 'oxa/oxc-gateway/src/share/**' .github/workflows/lane.yml; then
+            echo 'CLI share-key controls: no affected share paths.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          share_home=$(mktemp -d "$TMPDIR/share-keys.XXXXXX")
+          trap 'rm -rf -- "$share_home"' EXIT
+          mkdir -p "$share_home"/{config,data,state,cache,runtime,tmp}
+          cd oxa
+          env -i PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" \
+            RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
+            CARGO_BUILD_JOBS=3 HOME="$share_home" TMPDIR="$share_home/tmp" \
+            XDG_CONFIG_HOME="$share_home/config" XDG_DATA_HOME="$share_home/data" \
+            XDG_STATE_HOME="$share_home/state" XDG_CACHE_HOME="$share_home/cache" \
+            XDG_RUNTIME_DIR="$share_home/runtime" OXA_REQUIRE_BWRAP=1 \
+            cargo test --locked --profile ci -p oxa-cli --features share --test share_keys
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Branch-scoped lane caches never write the required workflows' main cache keys.
         if: success() && github.event_name != 'merge_group' && github.ref != 'refs/heads/main' && (startsWith(github.ref, 'refs/heads/agent/') || startsWith(github.ref, 'refs/heads/codex/') || startsWith(github.ref, 'refs/heads/air/') || startsWith(github.ref, 'refs/heads/runner/')) && steps.cache.outputs.cache-hit != 'true'
