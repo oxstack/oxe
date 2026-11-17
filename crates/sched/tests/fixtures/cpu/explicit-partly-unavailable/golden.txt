@@ -1,0 +1,4 @@
+cpus = [0, 3]
+notes =
+cpus [8] in the requested list are not online
+cpus [2] in the requested list are outside the process affinity mask

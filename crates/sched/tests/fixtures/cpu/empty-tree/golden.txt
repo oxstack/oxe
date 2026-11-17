@@ -1,0 +1,1 @@
+error = no cpu is both online and inside the process affinity mask

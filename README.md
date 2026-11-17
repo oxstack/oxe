@@ -96,7 +96,7 @@ The pinned revisions and SHA-256 of every model are listed in [`oxc/dependencies
 
 ## Build from source
 
-Linux ARM64, Rust stable, GCC 16. `.cargo/config.toml` sets `target-cpu=oryon-1`; change it for other cores.
+Linux ARM64, Rust stable, GCC 16. `.cargo/config.toml` sets `target-cpu=oryon-1`; change it for other cores (the per-target setting and the owner gate are in [`docs/CPU-TARGET-AND-PLACEMENT.md`](docs/CPU-TARGET-AND-PLACEMENT.md)).
 
 ```sh
 CARGO_BUILD_JOBS=2 nice -n 19 cargo build --release -p server -p oxe-cli

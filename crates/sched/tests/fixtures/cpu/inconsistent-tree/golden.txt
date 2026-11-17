@@ -1,0 +1,3 @@
+cpus = [0, 1, 2]
+notes =
+platform data for [3] is inconsistent; those cpus are not candidates

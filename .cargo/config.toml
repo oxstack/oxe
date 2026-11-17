@@ -1,7 +1,10 @@
 [build]
 jobs = 1
 # Oryon code generation on aarch64 only (O-174: an x86_64 build is the stub-engine server for CI;
-# the aarch64 flags are exactly the ones [build] carried before, so aarch64 output is unchanged)
+# the aarch64 flags are exactly the ones [build] carried before, so aarch64 output is unchanged).
+# This explicit per-target setting is the release identity; a per-machine target (another target-cpu,
+# or CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS) is a separate, owner-qualified change
+# (engine N2, issue #913: docs/CPU-TARGET-AND-PLACEMENT.md).
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "target-cpu=oryon-1"]
 [env]
