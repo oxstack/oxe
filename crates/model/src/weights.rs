@@ -11,6 +11,13 @@
 //! and never touch the GGUF again. The source GGUF's pages are released (madvise + fadvise
 //! DONTNEED) as each tensor is repacked. `Backing::Anon` copies the cache file into an
 //! anonymous THP-advised arena instead (the M0 configuration, for A/B speed runs).
+//!
+//! Cache location: `LoadOptions::cache_dir` (CLI `--cache-dir D`) selects the directory
+//! explicitly; otherwise `$XDG_CACHE_HOME/local-ai/snapdragon-engine` (or
+//! `$HOME/.cache/local-ai/snapdragon-engine`) is used. The cache is never moved or copied to
+//! another volume automatically, and the opt-in fault-in (N8) only reads the existing file.
+//! Fault-in is off by default; when enabled it touches every base page of the verified mapping
+//! on bounded workers/chunks and reports its own phase timing.
 
 use crate::desc::qtype;
 use crate::plan::{Plan, Tid};
@@ -20,8 +27,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::*};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::*};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Bump when the arena layout or any repack format changes.
 pub const LAYOUT_VERSION: &str = "w1";
@@ -602,6 +610,279 @@ pub fn model_sha256_opt(path: &Path, dir: &Path, from_env: bool) -> Result<Strin
     Ok(sha)
 }
 
+// ------------------------------------------------------------------ load timing
+
+/// Monotonic source for load phase timings. Tests use a deterministic fixture clock.
+pub trait Clock {
+    fn now(&self) -> Duration;
+}
+
+/// The real clock: elapsed time since the load started.
+pub struct MonotonicClock {
+    t0: Instant,
+}
+
+impl MonotonicClock {
+    pub fn new() -> Self {
+        Self { t0: Instant::now() }
+    }
+}
+
+impl Default for MonotonicClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clock for MonotonicClock {
+    fn now(&self) -> Duration {
+        self.t0.elapsed()
+    }
+}
+
+/// One recorded load phase: `[start, end)` on the load clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhaseSpan {
+    pub label: &'static str,
+    pub start: Duration,
+    pub end: Duration,
+}
+
+impl PhaseSpan {
+    pub fn seconds(&self) -> f64 {
+        self.end.saturating_sub(self.start).as_secs_f64()
+    }
+    fn overlaps(&self, o: &PhaseSpan) -> bool {
+        self.start < o.end && o.start < self.end
+    }
+}
+
+/// Phase timings of one load. A span that intersects another span is labelled `overlapping`
+/// and is never added into [`LoadTimingReport::exclusive_total`]: overlapping work is not
+/// summed into a duration claim.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LoadTimingReport {
+    pub spans: Vec<PhaseSpan>,
+}
+
+impl LoadTimingReport {
+    /// Does span `i` intersect any other recorded span?
+    pub fn overlapping(&self, i: usize) -> bool {
+        let s = &self.spans[i];
+        self.spans
+            .iter()
+            .enumerate()
+            .any(|(j, o)| j != i && s.overlaps(o))
+    }
+    /// Sum of the spans that overlap nothing (exclusive phases only).
+    pub fn exclusive_total(&self) -> Duration {
+        self.spans
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.overlapping(*i))
+            .map(|(_, s)| s.end.saturating_sub(s.start))
+            .sum()
+    }
+    /// First start to last end.
+    pub fn wall(&self) -> Duration {
+        match (
+            self.spans.iter().map(|s| s.start).min(),
+            self.spans.iter().map(|s| s.end).max(),
+        ) {
+            (Some(a), Some(b)) => b.saturating_sub(a),
+            _ => Duration::ZERO,
+        }
+    }
+    /// One line per span: `label 0.001 s exclusive|overlapping`.
+    pub fn lines(&self) -> Vec<String> {
+        (0..self.spans.len())
+            .map(|i| {
+                let s = &self.spans[i];
+                format!(
+                    "{} {:.3} s {}",
+                    s.label,
+                    s.seconds(),
+                    if self.overlapping(i) {
+                        "overlapping"
+                    } else {
+                        "exclusive"
+                    }
+                )
+            })
+            .collect()
+    }
+}
+
+/// Records [`PhaseSpan`]s on a [`Clock`].
+pub struct LoadTiming<C: Clock> {
+    clock: C,
+    spans: Vec<PhaseSpan>,
+}
+
+impl<C: Clock> LoadTiming<C> {
+    pub fn new(clock: C) -> Self {
+        Self {
+            clock,
+            spans: Vec::new(),
+        }
+    }
+    pub fn now(&self) -> Duration {
+        self.clock.now()
+    }
+    /// Close a phase that started at `start` (the clock's current time is its end).
+    pub fn record(&mut self, label: &'static str, start: Duration) {
+        self.spans.push(PhaseSpan {
+            label,
+            start,
+            end: self.clock.now(),
+        });
+    }
+    pub fn finish(self) -> LoadTimingReport {
+        LoadTimingReport { spans: self.spans }
+    }
+}
+
+// ------------------------------------------------------------------ fault-in
+
+/// Base page size used for fault-in coverage (touching one byte in a base page faults the
+/// whole page in, including a huge page's base pages).
+const FAULT_IN_PAGE: usize = 4096;
+/// Bounded fault-in: at most this many workers and this many bytes per chunk.
+pub const FAULT_IN_MAX_THREADS: usize = 4;
+pub const FAULT_IN_MAX_CHUNK: usize = 4 << 20;
+
+/// Opt-in bounded read-only fault-in of the verified weight mapping (N8). Default off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FaultIn {
+    pub threads: usize,
+    pub chunk: usize,
+}
+
+impl FaultIn {
+    /// Clamp to the bounded worker/chunk counts: 1..=4 workers, 4 KiB..=4 MiB per chunk,
+    /// page-aligned so chunks partition whole pages.
+    pub fn new(threads: usize, chunk: usize) -> Self {
+        Self {
+            threads: threads.clamp(1, FAULT_IN_MAX_THREADS),
+            chunk: chunk.clamp(FAULT_IN_PAGE, FAULT_IN_MAX_CHUNK) & !(FAULT_IN_PAGE - 1),
+        }
+    }
+}
+
+/// Chunk plan: `chunks()` chunks of at most `chunk` bytes covering `len` exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FaultInPlan {
+    len: usize,
+    chunk: usize,
+}
+
+impl FaultInPlan {
+    fn new(len: usize, chunk: usize) -> Self {
+        Self {
+            len,
+            chunk: chunk.clamp(FAULT_IN_PAGE, FAULT_IN_MAX_CHUNK) & !(FAULT_IN_PAGE - 1),
+        }
+    }
+    fn chunks(&self) -> usize {
+        self.len.div_ceil(self.chunk)
+    }
+    fn chunk(&self, i: usize) -> (usize, usize) {
+        let off = i * self.chunk;
+        (off, self.chunk.min(self.len - off))
+    }
+    fn pages(&self) -> usize {
+        self.len.div_ceil(FAULT_IN_PAGE)
+    }
+}
+
+/// What a fault-in covered. `skipped` is set for an anonymous arena, which the chunked copy
+/// already made resident.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FaultInReport {
+    pub bytes: u64,
+    pub chunks: u64,
+    pub pages: u64,
+    pub threads: usize,
+    pub chunk: usize,
+    pub skipped: bool,
+}
+
+/// Touch every base page of `m` once, in bounded chunks on bounded workers, so the verified
+/// mapping is resident before decode. Read-only: nothing is written. `cancel` is checked
+/// before each chunk; a cancelled fault-in returns an error and publishes nothing.
+fn fault_in_mapping(
+    m: &Mapping,
+    fi: FaultIn,
+    cancel: Option<&AtomicBool>,
+) -> Result<FaultInReport, String> {
+    let plan = FaultInPlan::new(m.len(), fi.chunk);
+    let next = AtomicUsize::new(0);
+    let pages = AtomicU64::new(0);
+    let cancelled = AtomicBool::new(false);
+    let base = m.base() as usize;
+    std::thread::scope(|s| {
+        for _ in 0..fi.threads {
+            s.spawn(|| loop {
+                if cancel.is_some_and(|c| c.load(Relaxed)) {
+                    cancelled.store(true, Relaxed);
+                    break;
+                }
+                let i = next.fetch_add(1, Relaxed);
+                if i >= plan.chunks() {
+                    break;
+                }
+                let (off, len) = plan.chunk(i);
+                let mut p = off;
+                while p < off + len {
+                    // SAFETY: p is inside the mapping; a volatile read keeps the touch.
+                    unsafe { std::ptr::read_volatile((base + p) as *const u8) };
+                    p += FAULT_IN_PAGE;
+                }
+                pages.fetch_add(len.div_ceil(FAULT_IN_PAGE) as u64, Relaxed);
+            });
+        }
+    });
+    if cancelled.load(Relaxed) {
+        return Err("fault-in cancelled".into());
+    }
+    let touched = pages.load(Relaxed);
+    if touched != plan.pages() as u64 {
+        return Err(format!(
+            "fault-in touched {touched} pages, expected {}",
+            plan.pages()
+        ));
+    }
+    Ok(FaultInReport {
+        bytes: m.len() as u64,
+        chunks: plan.chunks() as u64,
+        pages: touched,
+        threads: fi.threads,
+        chunk: fi.chunk,
+        skipped: false,
+    })
+}
+
+/// Fault-in a file-backed mapping after re-checking that the file still covers it: a cache
+/// file truncated after the mapping was made is refused here instead of faulting into SIGBUS.
+fn fault_in_file_mapping(
+    m: &Mapping,
+    f: &File,
+    fi: FaultIn,
+    cancel: Option<&AtomicBool>,
+) -> Result<FaultInReport, String> {
+    let flen = f
+        .metadata()
+        .map_err(|e| format!("fault-in stat: {e}"))?
+        .len();
+    if flen < m.len() as u64 {
+        return Err(format!(
+            "cache file is {flen} bytes but the verified mapping is {}; refusing fault-in",
+            m.len()
+        ));
+    }
+    fault_in_mapping(m, fi, cancel)
+}
+
 // ------------------------------------------------------------------ store
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -636,6 +917,12 @@ pub struct LoadOptions {
     /// these options (a sidecar MTP head): its sha is computed from its own bytes, so its weight
     /// cache and the session identity carry the head's sha (W4-4 b).
     pub sha_from_env: bool,
+    /// Opt-in bounded read-only fault-in of the verified mapping (N8). `None` (default) leaves
+    /// the load exactly as before: pages are faulted in by the first decode that reads them.
+    pub fault_in: Option<FaultIn>,
+    /// Cooperative cancellation for the opt-in fault-in (checked before each chunk). A cancelled
+    /// load returns an error before any weight pointer is published.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Default for LoadOptions {
@@ -649,6 +936,8 @@ impl Default for LoadOptions {
             thp_collapse: false,
             mlock: false,
             sha_from_env: true,
+            fault_in: None,
+            cancel: None,
         }
     }
 }
@@ -662,6 +951,10 @@ pub struct LoadInfo {
     pub verified_tensors: usize,
     pub backing: String,
     pub model_sha256: String,
+    /// Phase timings of this load (exclusive/overlapping labels; see [`LoadTimingReport`]).
+    pub timing: LoadTimingReport,
+    /// The opt-in fault-in report, when fault-in was requested.
+    pub fault_in: Option<FaultInReport>,
 }
 
 pub struct WeightStore {
@@ -712,10 +1005,19 @@ impl WeightStore {
         tag: &str,
     ) -> Result<WeightStore, String> {
         let t0 = Instant::now();
+        let mut timing = LoadTiming::new(MonotonicClock::new());
         let tensors = g.header.tensors.clone();
+        let t = timing.now();
         for &id in &ids {
             layout_for(&tensors[id], Some(id) == embd)?;
         }
+        let (offs, total) = arena_layout(&tensors, &ids)?;
+        for &id in &ids {
+            checked_geometry(&tensors[id])?;
+        }
+        timing.record("validate", t);
+
+        let t = timing.now();
         let dir = cache_dir(opt.cache_dir.as_deref())?;
         let sha = model_sha256_opt(&g.path, &dir, opt.sha_from_env)?;
         let eid = engine_id();
@@ -725,11 +1027,6 @@ impl WeightStore {
             model_sha256: sha.clone(),
             ..Default::default()
         };
-        let (offs, total) = arena_layout(&tensors, &ids)?;
-        for &id in &ids {
-            checked_geometry(&tensors[id])?;
-        }
-
         let mut hdr = None;
         if path.exists() {
             match open_cache(&path, &eid, &sha, g.file_bytes) {
@@ -740,30 +1037,38 @@ impl WeightStore {
                 }
             }
         }
+        timing.record("lookup", t);
+
         let built = hdr.is_none();
         let (map, hdr) = match hdr {
             Some((f, h)) => {
+                let t = timing.now();
                 drop(g); // warm load: the GGUF is not needed at all
                 let len = (h.data_off + h.total) as usize;
                 let m = Mapping::file(&f, len, false).map_err(|e| format!("mmap cache: {e}"))?;
+                timing.record("map", t);
                 (m, h)
             }
             None => {
-                let tb = Instant::now();
+                let t = timing.now();
                 let h = build_cache(
                     &g, &tensors, &ids, embd, &offs, total, &path, &eid, &sha, opt,
                 )?;
                 drop(g); // unmap the GGUF (its pages were already released per tensor)
-                info.built_seconds = tb.elapsed().as_secs_f64();
+                info.built_seconds = (timing.now() - t).as_secs_f64();
+                timing.record("build", t);
+                let t = timing.now();
                 let f = open_ro_nofollow(&path)?;
                 // drop the written pages so the verification reads what is on disk
                 fadvise_dontneed(&f, 0, 0);
                 let len = (h.data_off + h.total) as usize;
                 let m = Mapping::file(&f, len, false).map_err(|e| format!("mmap cache: {e}"))?;
+                timing.record("map", t);
                 (m, h)
             }
         };
         info.cache_hit = !built;
+        let t = timing.now();
         // entries must match the plan's layout exactly (and the arena its size: every ref below
         // points into [base, base + total))
         if hdr.total != total as u64 {
@@ -811,6 +1116,7 @@ impl WeightStore {
         verify_entries(&map, &hdr, &sel, opt.threads)?;
         info.verify_seconds = tv.elapsed().as_secs_f64();
         info.verified_tensors = sel.len();
+        timing.record("validate", t);
 
         let (arena, data_off) = match opt.backing {
             Backing::File => {
@@ -826,6 +1132,7 @@ impl WeightStore {
                 // cache file in chunks with pread and drop each chunk's page cache right after,
                 // so the peak stays ~ the arena size instead of arena + whole file mapping
                 // (27.68 GiB peak for Ornith with the old full-map copy).
+                let t = timing.now();
                 drop(map);
                 let f = File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
                 fadvise_dontneed(&f, 0, 0); // the verify sample's pages
@@ -838,6 +1145,7 @@ impl WeightStore {
                     hdr.total as usize,
                     opt.threads.clamp(1, 4),
                 )?;
+                timing.record("copy", t);
                 info.backing = "anon".into();
                 (a, 0)
             }
@@ -846,11 +1154,34 @@ impl WeightStore {
             lock_arena(&arena)?;
             info.backing += "+mlock";
         }
+        // N8: opt-in bounded read-only fault-in of the verified mapping. Default off; a failure
+        // or cancellation returns before any weight pointer is published.
+        if let Some(fi) = opt.fault_in {
+            let t = timing.now();
+            let report = match opt.backing {
+                Backing::File => {
+                    let f = open_ro_nofollow(&path)?;
+                    fault_in_file_mapping(&arena, &f, fi, opt.cancel.as_deref())?
+                }
+                // The chunked copy already made the anonymous arena resident.
+                Backing::Anon => FaultInReport {
+                    threads: fi.threads,
+                    chunk: fi.chunk,
+                    skipped: true,
+                    ..Default::default()
+                },
+            };
+            timing.record("fault-in", t);
+            info.fault_in = Some(report);
+        }
+        let t = timing.now();
         let base = arena.base() as usize + data_off;
         let mut refs = vec![None; tensors.len()];
         for &(id, off) in &offs {
             refs[id] = Some(make_ref(&tensors[id], Some(id) == embd, base + off)?);
         }
+        timing.record("ready", t);
+        info.timing = timing.finish();
         Ok(WeightStore {
             refs,
             arena,
@@ -1679,5 +2010,203 @@ mod n1_tests {
             bytes: 34,
         };
         let _ = w.f32();
+    }
+}
+
+#[cfg(test)]
+mod n8_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// Deterministic fixture clock: tests advance it by hand, so phase labels and totals are
+    /// exact and never depend on wall time.
+    struct FakeClock(Cell<Duration>);
+
+    impl FakeClock {
+        fn new() -> Self {
+            Self(Cell::new(Duration::ZERO))
+        }
+        fn advance(&self, ms: u64) {
+            self.0.set(self.0.get() + Duration::from_millis(ms));
+        }
+    }
+
+    impl Clock for FakeClock {
+        fn now(&self) -> Duration {
+            self.0.get()
+        }
+    }
+
+    impl Clock for &FakeClock {
+        fn now(&self) -> Duration {
+            self.0.get()
+        }
+    }
+
+    fn scratch(tag: &str, bytes: &[u8]) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("oxe-n8-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("cache.bin");
+        std::fs::write(&p, bytes).unwrap();
+        (dir, p)
+    }
+
+    /// Bounded worker/chunk counts: no per-page threads, no unbounded chunk.
+    #[test]
+    fn fault_in_bounds_workers_and_chunks() {
+        let fi = FaultIn::new(64, 1);
+        assert_eq!(fi.threads, FAULT_IN_MAX_THREADS);
+        assert_eq!(fi.chunk, FAULT_IN_PAGE);
+        let fi = FaultIn::new(0, usize::MAX);
+        assert_eq!(fi.threads, 1);
+        assert_eq!(fi.chunk, FAULT_IN_MAX_CHUNK);
+        // chunks are page-aligned so they partition whole pages
+        let fi = FaultIn::new(2, 3 * FAULT_IN_PAGE + 7);
+        assert_eq!(fi.chunk, 3 * FAULT_IN_PAGE);
+    }
+
+    /// Chunk boundaries: the chunks cover `[0, len)` exactly, in order, with no gap or overlap.
+    #[test]
+    fn fault_in_chunks_partition_the_mapping_exactly() {
+        for len in [
+            0usize,
+            1,
+            FAULT_IN_PAGE - 1,
+            FAULT_IN_PAGE,
+            FAULT_IN_PAGE + 1,
+            1 << 20,
+            (1 << 20) + 1,
+            5 << 20,
+        ] {
+            let plan = FaultInPlan::new(len, 1 << 20);
+            let mut covered = 0usize;
+            for i in 0..plan.chunks() {
+                let (off, l) = plan.chunk(i);
+                assert_eq!(
+                    off, covered,
+                    "len {len}: chunk {i} starts at the previous end"
+                );
+                assert!(l > 0 && l <= plan.chunk, "len {len}: chunk {i} length {l}");
+                covered += l;
+            }
+            assert_eq!(covered, len, "len {len}: chunks cover the mapping exactly");
+            assert_eq!(plan.pages(), len.div_ceil(FAULT_IN_PAGE));
+        }
+    }
+
+    /// Every base page is touched once and the file (and mapping) content is unchanged.
+    #[test]
+    fn fault_in_touches_every_page_and_leaves_the_file_unchanged() {
+        let len = 3 * FAULT_IN_PAGE + 100;
+        let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        let (dir, path) = scratch("cover", &bytes);
+        let f = open_ro_nofollow(&path).unwrap();
+        let m = Mapping::file(&f, len, false).unwrap();
+        let r = fault_in_file_mapping(&m, &f, FaultIn::new(2, FAULT_IN_PAGE), None).unwrap();
+        assert_eq!(r.bytes, len as u64);
+        assert_eq!(r.chunks, 4);
+        assert_eq!(r.pages, 4);
+        assert_eq!((r.threads, r.chunk), (2, FAULT_IN_PAGE));
+        assert!(!r.skipped);
+        assert_eq!(
+            m.slice(0, len),
+            &bytes[..],
+            "fault-in must not change the mapping"
+        );
+        drop(m);
+        drop(f);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes,
+            "fault-in must not write"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A cache file truncated after the mapping is refused before any page beyond EOF is
+    /// touched (that touch would be SIGBUS, not an error).
+    #[test]
+    fn fault_in_refuses_a_truncated_cache_file() {
+        let len = 2 * FAULT_IN_PAGE;
+        let bytes = vec![7u8; len];
+        let (dir, path) = scratch("trunc", &bytes);
+        let f = open_ro_nofollow(&path).unwrap();
+        let m = Mapping::file(&f, len, false).unwrap();
+        let t = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        t.set_len((len - 1) as u64).unwrap();
+        let e = fault_in_file_mapping(&m, &f, FaultIn::new(1, FAULT_IN_PAGE), None).unwrap_err();
+        assert!(e.contains("refusing fault-in"), "{e}");
+        drop(m);
+        drop(f);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Cancellation is checked before the first chunk: nothing is touched and the file stays
+    /// exactly as it was.
+    #[test]
+    fn fault_in_cancels_before_touching_anything() {
+        let len = 4 * FAULT_IN_PAGE;
+        let bytes = vec![3u8; len];
+        let (dir, path) = scratch("cancel", &bytes);
+        let f = open_ro_nofollow(&path).unwrap();
+        let m = Mapping::file(&f, len, false).unwrap();
+        let cancel = AtomicBool::new(true);
+        let e = fault_in_file_mapping(&m, &f, FaultIn::new(2, FAULT_IN_PAGE), Some(&cancel))
+            .unwrap_err();
+        assert_eq!(e, "fault-in cancelled");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        drop(m);
+        drop(f);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Overlapping spans are labelled `overlapping` and are never summed into the exclusive
+    /// total; contiguous spans are all exclusive and their total is the wall time.
+    #[test]
+    fn timing_labels_exclusive_and_overlapping_spans() {
+        let clock = FakeClock::new();
+        let mut t = LoadTiming::new(&clock);
+        let start = t.now();
+        clock.advance(10);
+        t.record("lookup", start); // [0, 10]
+        let start = t.now();
+        clock.advance(5);
+        t.record("map", start); // [10, 15]
+        let start = t.now();
+        clock.advance(20);
+        t.record("fault-in", start); // [15, 35]
+        let r = t.finish();
+        assert!(!r.overlapping(0) && !r.overlapping(1) && !r.overlapping(2));
+        assert_eq!(r.exclusive_total(), Duration::from_millis(35));
+        assert_eq!(r.wall(), Duration::from_millis(35));
+        assert_eq!(
+            r.lines().join("|"),
+            "lookup 0.010 s exclusive|map 0.005 s exclusive|fault-in 0.020 s exclusive"
+        );
+
+        // A span that starts inside another one overlaps it: both are labelled overlapping and
+        // neither is added to the exclusive total (no summed overlapping duration claim).
+        let clock = FakeClock::new();
+        let mut t = LoadTiming::new(&clock);
+        let start = t.now();
+        clock.advance(10);
+        t.record("lookup", start); // [0, 10]
+        let start = t.now();
+        clock.advance(5);
+        t.record("map", start); // [10, 15]
+        let start = Duration::from_millis(12);
+        clock.advance(17);
+        t.record("fault-in", start); // [12, 32]
+        let r = t.finish();
+        assert!(!r.overlapping(0));
+        assert!(r.overlapping(1) && r.overlapping(2));
+        assert_eq!(r.exclusive_total(), Duration::from_millis(10));
+        assert_eq!(r.wall(), Duration::from_millis(32));
+        assert_eq!(
+            r.lines().join("|"),
+            "lookup 0.010 s exclusive|map 0.005 s overlapping|fault-in 0.020 s overlapping"
+        );
+        // the exclusive total is not the sum of every span
+        assert_ne!(r.exclusive_total(), Duration::from_millis(35));
     }
 }

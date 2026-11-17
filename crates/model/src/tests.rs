@@ -227,6 +227,8 @@ fn mini_opts(dir: &std::path::Path) -> LoadOptions {
         thp_collapse: false,
         mlock: false,
         sha_from_env: true,
+        fault_in: None,
+        cancel: None,
     }
 }
 
@@ -294,6 +296,84 @@ fn mini_gguf_weight_cache() {
     }
     let r = WeightStore::load(gguf::Gguf::open(&path).unwrap(), &plan, &opt);
     assert!(r.is_err(), "corruption must be detected");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// N8: the opt-in fault-in covers the verified cache mapping exactly, leaves the cache file
+/// byte-identical, reports its own phase, and a cancelled load publishes nothing.
+#[test]
+fn mini_gguf_fault_in_is_bounded_and_read_only() {
+    let (dir, path) = mini_paths("faultin");
+    let mut opt = mini_opts(&dir);
+    // hash the mini file itself: independent of the process-wide OXE_MODEL_SHA256 other tests set
+    opt.sha_from_env = false;
+    opt.fault_in = Some(crate::weights::FaultIn::new(2, 4096));
+    let g = gguf::Gguf::open(&path).unwrap();
+    let desc = ModelDesc::from_header(&g.header).unwrap();
+    let plan = Plan::build(&g.header, &desc, 2, 256).unwrap();
+    let ws = WeightStore::load(g, &plan, &opt).unwrap();
+    let info = &ws.info;
+    let cache_path = info.cache_path.clone();
+    let before = std::fs::read(&cache_path).unwrap();
+    let f = info.fault_in.expect("fault-in report");
+    assert!(!f.skipped);
+    assert_eq!(
+        f.bytes,
+        before.len() as u64,
+        "fault-in covers the whole mapping"
+    );
+    assert_eq!(f.chunks, f.bytes.div_ceil(f.chunk as u64));
+    assert_eq!(f.pages, f.bytes.div_ceil(4096));
+    assert!(f.threads <= 4 && f.chunk <= 4 << 20);
+    let labels: Vec<&str> = info.timing.spans.iter().map(|s| s.label).collect();
+    assert!(labels.contains(&"fault-in"), "{labels:?}");
+    for i in 0..info.timing.spans.len() {
+        assert!(!info.timing.overlapping(i), "phase {} overlaps", labels[i]);
+    }
+    assert!(info.timing.exclusive_total() <= info.timing.wall());
+    drop(ws);
+    assert_eq!(
+        std::fs::read(&cache_path).unwrap(),
+        before,
+        "fault-in must not write the cache"
+    );
+    // a cancelled fault-in fails the load before any weight pointer is published
+    let mut cancelled = opt.clone();
+    cancelled.cancel = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+        true,
+    )));
+    let r = WeightStore::load(gguf::Gguf::open(&path).unwrap(), &plan, &cancelled);
+    assert!(r.is_err(), "a cancelled fault-in must fail the load");
+    assert_eq!(std::fs::read(&cache_path).unwrap(), before);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A cache file truncated or with a malformed header after it was written is refused by the
+/// header/length check and rebuilt, never mapped short.
+#[test]
+fn mini_gguf_malformed_or_truncated_cache_is_refused_and_rebuilt() {
+    let (dir, path) = mini_paths("truncated");
+    let mut opt = mini_opts(&dir);
+    opt.sha_from_env = false;
+    let g = gguf::Gguf::open(&path).unwrap();
+    let desc = ModelDesc::from_header(&g.header).unwrap();
+    let plan = Plan::build(&g.header, &desc, 2, 256).unwrap();
+    let ws = WeightStore::load(g, &plan, &opt).unwrap();
+    let cache_path = ws.info.cache_path.clone();
+    drop(ws);
+    let len = std::fs::metadata(&cache_path).unwrap().len();
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&cache_path)
+        .unwrap();
+    f.set_len(len - 4096).unwrap();
+    drop(f);
+    let ws = WeightStore::load(gguf::Gguf::open(&path).unwrap(), &plan, &opt).unwrap();
+    assert!(
+        !ws.info.cache_hit,
+        "a truncated cache must be rebuilt, not used"
+    );
+    assert_eq!(std::fs::metadata(&cache_path).unwrap().len(), len);
     std::fs::remove_dir_all(&dir).ok();
 }
 

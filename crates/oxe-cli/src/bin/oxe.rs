@@ -43,6 +43,10 @@
 //!
 //! Common: --cpu-list 0-7 (default) | --threads N (cpus 0..N), --ctx 4096, --weights file|anon,
 //! --verify sample|full|none, --cache-dir D, --thp-collapse, --profile, --out FILE (bench JSON).
+//! --fault-in [--fault-in-threads N --fault-in-chunk-kib K]: opt-in bounded read-only fault-in of
+//! the verified weight mapping (default off; N8). The cache directory is chosen explicitly with
+//! --cache-dir D, else $XDG_CACHE_HOME/local-ai/snapdragon-engine (or $HOME/.cache/...); fault-in
+//! never moves or copies the cache to another volume.
 #[cfg(feature = "npu-device")]
 #[path = "../expert_dma.rs"]
 mod expert_dma;
@@ -80,6 +84,7 @@ const BOOL_FLAGS: &[&str] = &[
     "check-args",
     "dry-run",
     "plain-steps",
+    "fault-in",
 ];
 
 struct Args {
@@ -145,6 +150,9 @@ impl Args {
             "rows",
             "work",
             "cache-dir",
+            "fault-in",
+            "fault-in-threads",
+            "fault-in-chunk-kib",
             "cpu-list",
             "ctx",
             "depths",
@@ -274,6 +282,14 @@ impl Args {
             thp_collapse: self.flag("thp-collapse"),
             mlock: self.flag("mlock"),
             sha_from_env: true,
+            // N8: opt-in bounded read-only fault-in of the verified mapping (default off)
+            fault_in: self.flag("fault-in").then(|| {
+                model::weights::FaultIn::new(
+                    self.num("fault-in-threads", 2) as usize,
+                    (self.num("fault-in-chunk-kib", 1024) as usize) << 10,
+                )
+            }),
+            cancel: None,
         }
     }
     fn model(&self) -> PathBuf {
@@ -502,6 +518,19 @@ struct Setup {
     pool: Pool,
 }
 
+/// N8: load phase timings (exclusive/overlapping labels) and the opt-in fault-in report.
+fn load_phases(info: &model::weights::LoadInfo) -> serde_json::Value {
+    json!({
+        "phases": info.timing.lines(),
+        "exclusive_seconds": info.timing.exclusive_total().as_secs_f64(),
+        "wall_seconds": info.timing.wall().as_secs_f64(),
+        "fault_in": info.fault_in.map(|f| json!({
+            "bytes": f.bytes, "chunks": f.chunks, "pages": f.pages,
+            "threads": f.threads, "chunk": f.chunk, "skipped": f.skipped,
+        })),
+    })
+}
+
 fn setup(a: &Args, n_ctx: usize) -> Setup {
     let cpus = a.cpus();
     let t0 = Instant::now();
@@ -560,6 +589,27 @@ fn setup(a: &Args, n_ctx: usize) -> Setup {
         cpus.len(),
         cpus
     );
+    // phase lines are opt-in (or the cache diagnostic command): the default load output is
+    // unchanged; the JSON receipts always carry them
+    if a.flag("fault-in") || a.cmd == "cache" {
+        for line in info.timing.lines() {
+            eprintln!("load phase: {line}");
+        }
+    }
+    if let Some(f) = info.fault_in {
+        eprintln!(
+            "load: fault-in {} ({} chunks, {} pages, {} threads, {} KiB chunks)",
+            if f.skipped {
+                "skipped (anon arena already resident)".to_string()
+            } else {
+                format!("{:.2} GiB", f.bytes as f64 / (1u64 << 30) as f64)
+            },
+            f.chunks,
+            f.pages,
+            f.threads,
+            f.chunk >> 10
+        );
+    }
     let pool = Pool::new(
         &cpus,
         Duration::from_micros(a.num("idle-spin-us", 200) as u64),
@@ -1409,6 +1459,9 @@ fn cmd_prefill_bench(a: &Args) {
             "out",
             "weights",
             "cache-dir",
+            "fault-in",
+            "fault-in-threads",
+            "fault-in-chunk-kib",
             "verify",
             "state-file",
             "npu-prefill",
@@ -2568,6 +2621,7 @@ fn cmd_bench(a: &Args) {
         "load": { "seconds": s.loaded.ws.load_seconds, "cache_hit": info.cache_hit, "backing": info.backing,
                   "cache_path": info.cache_path, "built_seconds": info.built_seconds, "shared_expert_owned_bytes": s.loaded.ws.shared_expert_bytes(),
                   "verified_tensors": info.verified_tensors, "weights_bytes": s.loaded.ws.repacked_bytes },
+        "load_phases": load_phases(info),
         "memory_kb": mem,
         "profile": phases,
         "profile_sub": profile_sub,
@@ -2847,6 +2901,7 @@ fn cmd_cache(a: &Args) {
         json!({ "cache_path": info.cache_path, "cache_hit": info.cache_hit, "model_sha256": info.model_sha256,
                 "built_seconds": info.built_seconds, "verify_seconds": info.verify_seconds,
                 "verified_tensors": info.verified_tensors, "weights_bytes": s.loaded.ws.repacked_bytes,
+                "load_phases": load_phases(info),
                 "memory_kb": memory_report().into_iter().map(|(k, v)| (k, json!(v))).collect::<serde_json::Map<_, _>>() })
     );
 }
@@ -3010,6 +3065,7 @@ fn cmd_bench_mtp(a: &Args) {
         "generated_ids": gen, "generated_hash": sha_ids(&gen),
         "load": { "seconds": s.loaded.ws.load_seconds, "cache_hit": info.cache_hit, "backing": info.backing,
                   "cache_path": info.cache_path, "weights_bytes": s.loaded.ws.repacked_bytes, "mtp_bytes": mw.bytes() },
+        "load_phases": load_phases(info),
         "memory_kb": mem,
         "kernel_cflags": kernels_sys::KERNEL_CFLAGS,
     });
