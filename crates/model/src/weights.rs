@@ -534,7 +534,7 @@ pub fn cache_dir(override_dir: Option<&Path>) -> Result<PathBuf, String> {
     // SAFETY: trivial libc call.
     let uid = unsafe { libc::getuid() };
     if !md.is_dir() || md.uid() != uid || md.mode() & 0o022 != 0 {
-        return Err(format!("unsafe cache dir {} (must be a directory owned by uid {uid}, not group/other-writable)", dir.display()));
+        return Err(format!("unsafe cache dir {} (must be a directory owned by the current user, not group/other-writable)", dir.display()));
     }
     Ok(dir)
 }
