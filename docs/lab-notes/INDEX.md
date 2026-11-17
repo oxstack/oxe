@@ -16,6 +16,7 @@ The engine notes carry their measurements inline and have no public receipt of t
 | [M3-MTP.md](M3-MTP.md) | 2026-11-11 | Exact MTP speculative decoding, merged: Qwen3.6 33.07 to 43.05 tok/s at depth 2 (+30%); Ornith flat at depth 1. | none (in-note) |
 | [M3-PREFILL.md](M3-PREFILL.md) | 2026-11-11 | Batched prefill bit-identical to llama.cpp's batched prefill at 64, 512 and 2048 tokens on both models (gate passed). | none (in-note) |
 | [P1-SESSIONS.md](P1-SESSIONS.md) | 2026-11-11 | Design for turn checkpoints and parked sessions at 32K (gate: exact, no OOM at 28 GiB). The lab-side setup is in the lab note MOE-BATCH1. | none (design) |
+| [LC8-V-THP-QUALIFICATION.md](LC8-V-THP-QUALIFICATION.md) | 2026-11-17 | **Plan only**, no measurement: protocol, acceptance fields and decision rules for qualifying the LC-8 V^T THP-off switch (Qwen first, A/A startup noise floor, Ornith decode as the cost). | none (plan) |
 | [ECHO-WRITE-OFFLOAD.md](ECHO-WRITE-OFFLOAD.md) | 2026-11-17 | Qualification packet for issue #883: move the echo append fsync off the reply path by completing the N4 deferred-append seam. Design and test plan only; no implementation, no measurement. | none (design) |
 | `PROGRESS-M1.md` (working log) | 2026-11-10 | Working log for Flash M1 (real forward pass against production); strategy and checkpoints. | none (in-note) |
 | `PROGRESS-M3.md` (working log) | 2026-11-10 | Working log for the Flash fast decode path, starting from 196 ms/token at M1; spawned the PF, T2 and PROD logs. | none (in-note) |

@@ -417,7 +417,8 @@ fn vma_flags(addr: usize) -> Option<String> {
 }
 
 /// LC-8: OXE_KV_V_THP=0 ([`crate::engine::set_kv_v_thp`]) advises the V^T region MADV_NOHUGEPAGE
-/// (VmFlags `nh`, not `hg`), the default keeps it THP (`hg`); results are the same bits.
+/// (VmFlags `nh`, not `hg`), the default keeps it THP (`hg`); results are the same bits. The
+/// effective line names the arm, so a receipt keeps the setting it was measured with.
 #[test]
 fn lc8_v_region_thp_switch() {
     let (dir, plan, ws, _, pool) = long_parts("lc8", 1, false);
@@ -425,7 +426,19 @@ fn lc8_v_region_thp_switch() {
     let on = long_engine(&plan, &ws, N_CTX, KvType::F16, 0, None);
     let (a, len) = on.v_region();
     let f_on = vma_flags(a + len / 2).expect("smaps entry of the V^T region");
+    // A measurement receipt has to name its arm: the switch is process-global, so the effective
+    // line (every `oxe bench --out` row, the server start-up log) must carry it, not just the env.
+    let line_on = crate::engine::effective_switches();
+    assert!(
+        line_on.contains(" kv_v_thp=1 "),
+        "default arm not named in the effective line: {line_on}"
+    );
     crate::engine::set_kv_v_thp(false);
+    let line_off = crate::engine::effective_switches();
+    assert!(
+        line_off.contains(" kv_v_thp=0 "),
+        "OXE_KV_V_THP=0 arm not named in the effective line: {line_off}"
+    );
     let off = long_engine(&plan, &ws, N_CTX, KvType::F16, 0, None);
     crate::engine::set_kv_v_thp(true);
     let (a2, len2) = off.v_region();

@@ -793,13 +793,14 @@ pub fn effective_switches() -> String {
         .collect();
     env.sort();
     format!(
-        "pf_tiles={} pf_group={group} pf_group_unaligned={} dec_attn_pad={} dec_fused_dn={} dec_vl={} kv_vpad={} env=[{}]",
+        "pf_tiles={} pf_group={group} pf_group_unaligned={} dec_attn_pad={} dec_fused_dn={} dec_vl={} kv_vpad={} kv_v_thp={} env=[{}]",
         pf_tiles(),
         pf_group_unaligned() as u8,
         dec_attn_pad_default() as u8,
         dec_fused_dn_default() as u8,
         std::env::var("OXE_VL").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
         kv_vpad(),
+        kv_v_thp() as u8,
         env.join(" ")
     )
 }
