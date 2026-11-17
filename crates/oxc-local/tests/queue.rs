@@ -220,3 +220,97 @@ fn queue_clones_serialize_concurrent_engine_work() {
     assert_eq!(queue.waiting(), 0);
     assert!(queue.try_acquire().is_ok());
 }
+
+#[test]
+fn queued_owner_runs_before_guest_without_preempting_active_guest() {
+    let queue = RequestQueue::new(3);
+    let active_guest = ready(poll(Box::pin(queue.acquire_guest()).as_mut())).unwrap();
+    let mut guest = Box::pin(queue.acquire_guest());
+    let mut first_owner = Box::pin(queue.acquire());
+    let mut second_owner = Box::pin(queue.acquire());
+
+    assert!(poll(guest.as_mut()).is_pending());
+    assert!(poll(first_owner.as_mut()).is_pending());
+    assert!(poll(second_owner.as_mut()).is_pending());
+
+    drop(active_guest);
+    assert!(poll(guest.as_mut()).is_pending());
+    assert!(poll(second_owner.as_mut()).is_pending());
+    let first = ready(poll(first_owner.as_mut())).unwrap();
+    drop(first);
+    assert!(poll(guest.as_mut()).is_pending());
+    let second = ready(poll(second_owner.as_mut())).unwrap();
+    drop(second);
+    assert!(ready(poll(guest.as_mut())).is_ok());
+}
+
+#[test]
+fn guests_preserve_owner_capacity_and_fifo_after_cancellation() {
+    let queue = RequestQueue::new(3);
+    let active = queue.try_acquire().unwrap();
+    let mut first_guest = Box::pin(queue.acquire_guest());
+    let mut second_guest = Box::pin(queue.acquire_guest());
+    assert!(poll(first_guest.as_mut()).is_pending());
+    assert!(poll(second_guest.as_mut()).is_pending());
+    assert!(matches!(
+        poll(Box::pin(queue.acquire_guest()).as_mut()),
+        Poll::Ready(Err(AdmissionError::Full))
+    ));
+    let mut owner = Box::pin(queue.acquire());
+    assert!(poll(owner.as_mut()).is_pending());
+    assert_eq!(queue.waiting(), 3);
+
+    drop(first_guest);
+    let mut retry = Box::pin(queue.acquire_guest());
+    assert!(poll(retry.as_mut()).is_pending());
+    drop(active);
+    assert!(poll(second_guest.as_mut()).is_pending());
+    drop(owner); // Return the semaphore grant without constructing an owner lease.
+    assert!(poll(retry.as_mut()).is_pending());
+    let guest = ready(poll(second_guest.as_mut())).unwrap();
+    assert!(poll(retry.as_mut()).is_pending());
+    drop(guest);
+    assert!(ready(poll(retry.as_mut())).is_ok());
+}
+
+#[test]
+fn guest_shutdown_wakes_both_the_head_and_other_waiters() {
+    let queue = RequestQueue::new(3);
+    let active = queue.try_acquire().unwrap();
+    let mut head = Box::pin(queue.acquire_guest());
+    let mut tail = Box::pin(queue.acquire_guest());
+    assert!(poll(head.as_mut()).is_pending());
+    assert!(poll(tail.as_mut()).is_pending());
+    queue.close();
+    assert!(matches!(
+        poll(head.as_mut()),
+        Poll::Ready(Err(AdmissionError::Closed))
+    ));
+    assert!(matches!(
+        poll(tail.as_mut()),
+        Poll::Ready(Err(AdmissionError::Closed))
+    ));
+    assert_eq!(queue.waiting(), 0);
+    drop(active);
+}
+
+#[test]
+fn cancellation_of_granted_owner_wakes_guest_without_polling() {
+    let queue = RequestQueue::new(2);
+    let active = queue.try_acquire().unwrap();
+    let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+    let waker = Waker::from(wakes.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut guest = Box::pin(queue.acquire_guest());
+    let mut owner = Box::pin(queue.acquire());
+
+    assert!(guest.as_mut().poll(&mut context).is_pending());
+    assert!(poll(owner.as_mut()).is_pending());
+    drop(active);
+    assert!(guest.as_mut().poll(&mut context).is_pending());
+
+    let observed = wakes.0.load(Ordering::SeqCst);
+    drop(owner);
+    assert!(wakes.0.load(Ordering::SeqCst) > observed);
+    assert!(ready(guest.as_mut().poll(&mut context)).is_ok());
+}
