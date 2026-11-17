@@ -44,13 +44,23 @@ pub struct MemorySample {
     pub pids_max_events: u64,
 }
 #[derive(Debug)]
-pub(crate) struct AdmissionRefusal {
-    available: u64,
-    required: u64,
+pub(crate) enum AdmissionRefusal {
+    Allocation {
+        available: u64,
+        required: u64,
+    },
+    Policy {
+        required: u64,
+        swap_limit_zero: bool,
+        swap_current_bytes: u64,
+    },
 }
 impl std::fmt::Display for AdmissionRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Local engine memory admission refused: available={} bytes, required={} bytes (allocation budget including margin); reduce configured context or free memory.", self.available, self.required)
+        match self {
+            Self::Allocation { available, required } => write!(f, "Local engine memory admission refused: available={available} bytes, required={required} bytes (allocation budget including margin); reduce configured context or free memory."),
+            Self::Policy { required, swap_limit_zero, swap_current_bytes } => write!(f, "Local engine memory admission refused: required={required} (must be >0), memory.swap.max_zero={swap_limit_zero} (must be true), memory.swap.current={swap_current_bytes} (must be 0)."),
+        }
     }
 }
 impl std::error::Error for AdmissionRefusal {}
@@ -62,19 +72,34 @@ impl MemorySample {
         }
         Ok(self)
     }
-    fn admit(self, required: u64) -> io::Result<Self> {
+    fn admit_host(self, required: u64) -> io::Result<Self> {
         let sample = self.validate()?;
         if required > 0 && sample.available_bytes < required {
             return Err(io::Error::new(
                 io::ErrorKind::OutOfMemory,
-                AdmissionRefusal {
+                AdmissionRefusal::Allocation {
                     available: sample.available_bytes,
                     required,
                 },
             ));
         }
-        if required == 0 || !sample.swap_limit_zero || sample.swap_current_bytes != 0 {
-            return Err(io::Error::other("local engine memory admission refused"));
+        if required == 0 {
+            return Err(io::Error::other(AdmissionRefusal::Policy {
+                required,
+                swap_limit_zero: sample.swap_limit_zero,
+                swap_current_bytes: sample.swap_current_bytes,
+            }));
+        }
+        Ok(sample)
+    }
+    fn admit(self, required: u64) -> io::Result<Self> {
+        let sample = self.admit_host(required)?;
+        if !sample.swap_limit_zero || sample.swap_current_bytes != 0 {
+            return Err(io::Error::other(AdmissionRefusal::Policy {
+                required,
+                swap_limit_zero: sample.swap_limit_zero,
+                swap_current_bytes: sample.swap_current_bytes,
+            }));
         }
         Ok(sample)
     }
@@ -215,6 +240,7 @@ fn sustained(since: &mut Option<Instant>, now: Instant, high: bool, duration: Du
 /// The caller supplies bounded authenticated health I/O and fresh memory samples.
 pub struct Lifecycle {
     queue: RequestQueue,
+    pub(crate) platform: Option<Arc<dyn crate::platform::PlatformLauncher>>,
     ready: Arc<AtomicBool>,
     supervisor: Option<Supervisor>,
     model: Option<Model>,
@@ -222,6 +248,8 @@ pub struct Lifecycle {
     control: Option<Lease>,
     retain_ready: bool,
     guard: Option<Guard>,
+    scope: Option<String>,
+    pub(crate) launcher_micros: u64,
     clock: Arc<Mutex<Clock>>,
     policy: Policy,
     stop_reason: Option<StopReason>,
@@ -231,6 +259,7 @@ impl Lifecycle {
         let now = Instant::now();
         Self {
             queue: RequestQueue::new(max_waiters),
+            platform: None,
             ready: Arc::new(AtomicBool::new(false)),
             supervisor: None,
             model: None,
@@ -238,6 +267,8 @@ impl Lifecycle {
             control: None,
             retain_ready: false,
             guard: None,
+            scope: None,
+            launcher_micros: 0,
             clock: Arc::new(Mutex::new(Clock {
                 last_use: now,
                 observed: now,
@@ -347,7 +378,7 @@ impl Lifecycle {
         if model.name.is_empty() || model.name.len() > 128 || model.name.chars().any(char::is_control) {
             return Err(io::Error::other("invalid local model name"));
         }
-        let sample = memory?.admit(model.required_available_bytes)?;
+        let sample = self.admit(memory?, model.required_available_bytes)?;
         // Validate launch policy before evicting the old model.
         let candidate = Supervisor::new(model.config.clone())?;
         self.control = Some(lease);
@@ -361,15 +392,66 @@ impl Lifecycle {
         }
         Ok(())
     }
+    fn admit(&self, sample: MemorySample, required: u64) -> io::Result<MemorySample> {
+        if self.platform.is_some() {
+            sample.admit_host(required)
+        } else {
+            sample.admit(required)
+        }
+    }
+    fn attach(&mut self, now: Instant) -> io::Result<()> {
+        if let (Some(platform), Some(pid)) = (&self.platform, self.status().pid) {
+            let gated = self.supervisor.as_ref().is_some_and(Supervisor::gated);
+            let ready = self.supervisor.as_mut().unwrap().await_gate();
+            match ready
+                .and_then(|()| platform.attach(pid, gated, self.supervisor.as_ref().unwrap().deadline))
+                .and_then(|attached| {
+                    crate::platform::no_swap(attached.sample)?;
+                    self.supervisor.as_mut().unwrap().release()?;
+                    Ok(attached)
+                }) {
+                Ok(attached) => {
+                    self.guard = Some(Guard::new(attached.sample, now));
+                    self.scope = attached.scope;
+                    self.launcher_micros = self
+                        .supervisor
+                        .as_ref()
+                        .unwrap()
+                        .launch_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u64::MAX as u128) as u64;
+                }
+                Err(error) => {
+                    self.supervisor.take(); // owned Drop kills the group and reaps before lease release
+                    self.model = None;
+                    self.guard = None;
+                    self.control = None;
+                    return Err(
+                        if error
+                            .get_ref()
+                            .is_some_and(|e| e.is::<crate::platform::Predicate>())
+                        {
+                            error
+                        } else {
+                            crate::platform::refused("engine child cgroup v2 memory/pids metadata readable")
+                        },
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
     fn install(
         &mut self,
         model: Model,
-        supervisor: Supervisor,
+        mut supervisor: Supervisor,
         sample: MemorySample,
         now: Instant,
     ) -> io::Result<()> {
         self.ready.store(false, Ordering::Release);
         self.model = Some(model);
+        supervisor.platform = self.platform.clone();
         self.supervisor = Some(supervisor);
         self.guard = Some(Guard::new(sample, now));
         self.stop_reason = None;
@@ -378,7 +460,8 @@ impl Lifecycle {
         if supervisor.state() == State::Failed {
             self.control = None;
         }
-        result
+        result?;
+        self.attach(now)
     }
     pub fn unload(&mut self, now: Instant) -> io::Result<()> {
         self.retain_ready = false;
@@ -403,6 +486,19 @@ impl Lifecycle {
         }
         Ok(())
     }
+    pub(crate) fn memory_policy(&self) -> Option<&'static str> {
+        (self.platform.is_some() && self.status().pid.is_some()).then_some(if self.scope.is_some() {
+            "scope"
+        } else {
+            "inherited"
+        })
+    }
+    pub(crate) fn reap(&mut self, now: Instant) -> io::Result<()> {
+        if let Some(supervisor) = &mut self.supervisor {
+            supervisor.reap(now)?;
+        }
+        Ok(())
+    }
     pub fn poll(
         &mut self,
         now: Instant,
@@ -412,10 +508,12 @@ impl Lifecycle {
         self.clock.lock().unwrap_or_else(|e| e.into_inner()).observed = now;
         let sample = memory.and_then(MemorySample::validate);
         let state = self.status().state;
-        if matches!(
-            state,
-            State::Starting | State::Ready | State::Backoff | State::Stopping
-        ) {
+        if !(self.platform.is_some() && self.status().pid.is_none())
+            && matches!(
+                state,
+                State::Starting | State::Ready | State::Backoff | State::Stopping
+            )
+        {
             let decision = match (&mut self.guard, &sample) {
                 (Some(guard), Ok(sample)) => {
                     let loading = if state == State::Stopping {
@@ -448,12 +546,13 @@ impl Lifecycle {
             let admitted = sample.as_ref().ok().is_some_and(|s| {
                 self.model
                     .as_ref()
-                    .is_some_and(|m| s.admit(m.required_available_bytes).is_ok())
+                    .is_some_and(|m| self.admit(*s, m.required_available_bytes).is_ok())
             });
             if !admitted {
                 self.stop(now, StopReason::MemoryUnavailable)?;
             }
         }
+        let previous_pid = self.status().pid;
         if let Some(s) = &mut self.supervisor {
             let result = s.poll(now, healthy);
             if s.state() == State::Failed {
@@ -461,13 +560,16 @@ impl Lifecycle {
             }
             result?;
         }
+        if self.status().pid.is_some() && self.status().pid != previous_pid {
+            self.attach(now)?;
+        }
         match self.status().state {
             State::Stopped => {
                 self.supervisor = None;
                 self.model = None;
                 self.guard = None;
                 if let Some(next) = self.next.take() {
-                    let admitted = sample.and_then(|s| s.admit(next.required_available_bytes));
+                    let admitted = sample.and_then(|s| self.admit(s, next.required_available_bytes));
                     match admitted {
                         Ok(sample) => {
                             let supervisor = Supervisor::new(next.config.clone())?;

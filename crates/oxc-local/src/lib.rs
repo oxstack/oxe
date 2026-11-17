@@ -9,6 +9,7 @@ pub mod launch_profile;
 pub mod lifecycle;
 pub mod memory;
 pub mod native;
+pub mod platform;
 
 pub mod queue;
 pub mod transport;
@@ -72,9 +73,11 @@ pub enum Failure {
 pub struct Supervisor {
     config: Config,
     child: Option<Child>,
+    pub(crate) platform: Option<std::sync::Arc<dyn platform::PlatformLauncher>>,
     state: State,
     deadline: Instant,
     next_health: Instant,
+    pub(crate) launch_started: Instant,
     bad_health: u32,
     restarts: u32,
     wanted: bool,
@@ -99,9 +102,11 @@ impl Supervisor {
         Ok(Self {
             config,
             child: None,
+            platform: None,
             state: State::Stopped,
             deadline: now,
             next_health: now,
+            launch_started: now,
             bad_health: 0,
             restarts: 0,
             wanted: false,
@@ -132,16 +137,32 @@ impl Supervisor {
     }
 
     fn spawn(&mut self, now: Instant) -> io::Result<()> {
-        let result = Command::new(&self.config.executable)
-            .args(&self.config.arguments)
-            // Ambient model/provider settings and credentials must not cross this boundary.
-            .env_clear()
-            .envs(&self.config.environment)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn();
+        self.launch_started = Instant::now();
+        let result = (|| {
+            let gated = self
+                .platform
+                .as_ref()
+                .map(|p| p.requires_scope())
+                .transpose()?
+                .unwrap_or(false);
+            let mut command = if gated {
+                let mut command = gate_command()?;
+                command.arg(platform::CHILD_GATE).arg(&self.config.executable);
+                command
+            } else {
+                Command::new(&self.config.executable)
+            };
+            command
+                .args(&self.config.arguments)
+                // Ambient model/provider settings and credentials must not cross this boundary.
+                .env_clear()
+                .envs(&self.config.environment)
+                .stdin(if gated { Stdio::piped() } else { Stdio::null() })
+                .stdout(if gated { Stdio::piped() } else { Stdio::null() })
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+        })();
         match result {
             Ok(child) => {
                 self.child = Some(child);
@@ -158,6 +179,45 @@ impl Supervisor {
                 Err(error)
             }
         }
+    }
+
+    pub(crate) fn gated(&self) -> bool {
+        self.child.as_ref().is_some_and(|c| c.stdin.is_some())
+    }
+    pub(crate) fn await_gate(&mut self) -> io::Result<()> {
+        use nix::fcntl::{fcntl, FcntlArg, OFlag};
+        use std::io::Read;
+        if let Some(mut pipe) = self.child.as_mut().and_then(|child| child.stdout.take()) {
+            let flags = OFlag::from_bits_truncate(fcntl(&pipe, FcntlArg::F_GETFL)?);
+            fcntl(&pipe, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+            let mut ready = [0];
+            loop {
+                match pipe.read(&mut ready) {
+                    Ok(1) if ready == [0x6b] => return Ok(()),
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < self.deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    _ => {
+                        return Err(platform::refused(
+                            "owned child gate ready before startup deadline",
+                        ))
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn release(&mut self) -> io::Result<()> {
+        use std::io::Write;
+        platform::before_startup_deadline(self.deadline)?;
+        if let Some(pipe) = self.child.as_mut().and_then(|child| child.stdin.take()) {
+            let mut pipe = pipe;
+            pipe.write_all(&[0xa7])
+                .map_err(|_| platform::refused("owned child scope gate released"))?;
+        }
+        Ok(())
     }
 
     /// Cancels automatic restarts, including during backoff.
@@ -203,9 +263,7 @@ impl Supervisor {
         }
     }
 
-    /// Advances lifecycle, checking exit before health. Probe errors count as unhealthy.
-    /// Never retries a generation request. Caller must bound probe I/O time.
-    pub fn poll(&mut self, now: Instant, mut healthy: impl FnMut() -> io::Result<bool>) -> io::Result<State> {
+    pub(crate) fn reap(&mut self, now: Instant) -> io::Result<()> {
         if let Some(child) = self.child.as_mut() {
             if child.try_wait()?.is_some() {
                 // Clean up descendants even if the engine leader died first. Do this
@@ -218,6 +276,13 @@ impl Supervisor {
                 self.after_exit(now);
             }
         }
+        Ok(())
+    }
+
+    /// Advances lifecycle, checking exit before health. Probe errors count as unhealthy.
+    /// Never retries a generation request. Caller must bound probe I/O time.
+    pub fn poll(&mut self, now: Instant, mut healthy: impl FnMut() -> io::Result<bool>) -> io::Result<State> {
+        self.reap(now)?;
         match self.state {
             State::Backoff if now >= self.deadline => self.spawn(now)?,
             State::Starting | State::Ready => {
@@ -250,6 +315,19 @@ impl Supervisor {
     }
 }
 
+fn gate_command() -> io::Result<Command> {
+    #[cfg(target_os = "linux")]
+    {
+        // Resolve in the forked child while it still runs this image. Never turn
+        // this kernel reference back into a replaceable workspace pathname.
+        Ok(Command::new("/proc/self/exe"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(platform::refused("Linux executable-image scope gate available"))
+    }
+}
+
 impl Drop for Supervisor {
     fn drop(&mut self) {
         if self.child.is_some() {
@@ -257,6 +335,116 @@ impl Drop for Supervisor {
             if let Some(child) = self.child.as_mut() {
                 let _ = child.wait();
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod platform_retry_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    struct Policy(AtomicBool);
+    impl platform::PlatformLauncher for Policy {
+        fn requires_scope(&self) -> io::Result<bool> {
+            if self.0.load(Ordering::SeqCst) {
+                Err(platform::refused("child policy metadata readable"))
+            } else {
+                Ok(false)
+            }
+        }
+        fn attach(&self, _: u32, _: bool, _: Instant) -> io::Result<platform::Attachment> {
+            panic!("no child may be attached after launch refusal")
+        }
+    }
+
+    #[test]
+    fn policy_lookup_failure_exhausts_backoff_instead_of_looping_forever() {
+        let env = oxa_fake::TestEnv::new();
+        let now = Instant::now();
+        let backoff = Duration::from_secs(1);
+        let mut s = Supervisor::new(Config {
+            executable: env.work().join("nonexistent-engine"),
+            arguments: Vec::new(),
+            environment: Default::default(),
+            startup_timeout: Duration::from_secs(1),
+            health_interval: Duration::from_secs(1),
+            unhealthy_limit: 1,
+            term_grace: Duration::ZERO,
+            restart_backoff: backoff,
+            max_restarts: 1,
+        })
+        .unwrap();
+        let policy = Arc::new(Policy(AtomicBool::new(false)));
+        s.platform = Some(policy.clone());
+        // The ordinary spawn-error path enters bounded backoff.
+        assert!(s.start(now).is_err());
+        assert_eq!(s.state(), State::Backoff);
+        policy.0.store(true, Ordering::SeqCst);
+        assert_eq!(s.poll(now, || panic!("no live engine")).unwrap(), State::Backoff);
+        let error = s.poll(now + backoff, || panic!("no live engine")).unwrap_err();
+        assert!(error.to_string().contains("child policy metadata readable"));
+        assert_eq!(s.state(), State::Failed);
+        assert_eq!(s.last_failure(), Some(Failure::Spawn));
+        assert!(!s.wanted);
+        assert_eq!(s.pid(), None);
+        assert_eq!(
+            s.poll(now + backoff * 2, || panic!("no live engine")).unwrap(),
+            State::Failed
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod gate_image_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn gate_reexec_keeps_running_image_after_replace_or_unlink() {
+        const MODE: &str = "OXA_TEST_GATE_IMAGE";
+        const TEST: &str = "gate_image_tests::gate_reexec_keeps_running_image_after_replace_or_unlink";
+        if let Ok(mode) = std::env::var(MODE) {
+            if mode == "probe" {
+                return;
+            }
+            // Capture the actual shared launch command before the hostile pathname change.
+            let mut command = gate_command().unwrap();
+            let host = std::env::current_exe().unwrap();
+            std::fs::remove_file(&host).unwrap();
+            if mode == "replace" {
+                std::fs::write(&host, "#!/bin/sh\nexit 91\n").unwrap();
+                std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            assert!(
+                command
+                    .args(["--exact", TEST])
+                    .env_clear()
+                    .env(MODE, "probe")
+                    .status()
+                    .unwrap()
+                    .success(),
+                "must execute the running image, never the replaced path"
+            );
+            return;
+        }
+        let env = oxa_fake::TestEnv::new();
+        for mode in ["replace", "unlink"] {
+            let host = env.work().join(format!("gate-host-{mode}"));
+            std::fs::copy(std::env::current_exe().unwrap(), &host).unwrap();
+            assert!(
+                Command::new(&host)
+                    .args(["--exact", TEST])
+                    .env_clear()
+                    .env(MODE, mode)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "{mode} must retain the original executable image"
+            );
         }
     }
 }

@@ -16,6 +16,10 @@ fn footprint(label: &str) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    // This executable embeds the native factory, so it also owns the child entry hook.
+    if let Some(result) = oxc_local::platform::child_entry(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        return result;
+    }
     let mut args = std::env::args_os().skip(1);
     let binary = PathBuf::from(args.next().expect("absolute stub engine"));
     let model = PathBuf::from(args.next().expect("synthetic GGUF"));

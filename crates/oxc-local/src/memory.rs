@@ -5,6 +5,7 @@ use std::{
     path::{Component, PathBuf},
 };
 
+#[derive(Clone)]
 pub struct MemorySource {
     proc_root: PathBuf,
     cgroup_root: PathBuf,
@@ -18,8 +19,27 @@ impl Default for MemorySource {
     }
 }
 impl MemorySource {
+    #[cfg(test)]
+    pub(crate) fn test_roots(proc_root: PathBuf, cgroup_root: PathBuf) -> Self {
+        Self {
+            proc_root,
+            cgroup_root,
+        }
+    }
     pub fn sample(&self) -> io::Result<MemorySample> {
-        let membership = fs::read_to_string(self.proc_root.join("self/cgroup"))?;
+        self.sample_process("self")
+    }
+    pub fn sample_child(&self, pid: u32) -> io::Result<MemorySample> {
+        self.sample_process(&pid.to_string())
+    }
+    pub(crate) fn child_in_scope(&self, pid: u32, unit: &str) -> io::Result<bool> {
+        let membership = fs::read_to_string(self.proc_root.join(pid.to_string()).join("cgroup"))?;
+        Ok(membership
+            .lines()
+            .any(|line| line.starts_with("0::/") && line.ends_with(&format!("/{unit}"))))
+    }
+    fn sample_process(&self, process: &str) -> io::Result<MemorySample> {
+        let membership = fs::read_to_string(self.proc_root.join(process).join("cgroup"))?;
         let relative = membership
             .lines()
             .find_map(|line| line.strip_prefix("0::"))

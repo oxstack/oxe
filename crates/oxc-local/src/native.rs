@@ -38,13 +38,29 @@ pub struct LocalStatus {
     pub pid: Option<u32>,
     pub waiting: usize,
     pub stop_reason: Option<StopReason>,
+    pub memory_policy: Option<&'static str>,
+    pub launcher_micros: Option<u64>,
 }
 trait Sample: Send + Sync {
     fn sample(&self) -> io::Result<MemorySample>;
+    fn child(&self, _pid: Option<u32>) -> io::Result<MemorySample> {
+        self.sample()
+    }
+    fn platform(&self) -> Option<Arc<dyn crate::platform::PlatformLauncher>> {
+        None
+    }
 }
 impl Sample for MemorySource {
     fn sample(&self) -> io::Result<MemorySample> {
         self.sample()
+            .map_err(|_| crate::platform::refused("host memory/PSI and cgroup v2 metadata readable"))
+    }
+    fn child(&self, pid: Option<u32>) -> io::Result<MemorySample> {
+        pid.map_or_else(|| self.sample(), |pid| self.sample_child(pid))
+    }
+    #[cfg(target_os = "linux")]
+    fn platform(&self) -> Option<Arc<dyn crate::platform::PlatformLauncher>> {
+        Some(Arc::new(crate::platform::LinuxLauncher(self.clone())))
     }
 }
 
@@ -162,7 +178,8 @@ impl LocalEngine {
                 return Err(invalid());
             }
         }
-        let lifecycle = Lifecycle::new(32, policy);
+        let mut lifecycle = Lifecycle::new(32, policy);
+        lifecycle.platform = source.platform();
         let status = snapshot(&lifecycle);
         let gate = lifecycle.requests();
         Ok(Self {
@@ -294,6 +311,13 @@ impl Engine for LocalEngine {
             images: model.images,
         })
     }
+    fn local_memory_status(&self, model: &str) -> Option<(u32, &'static str, u64)> {
+        let status = self.status();
+        (model.is_empty() || status.model.as_deref() == Some(model))
+            .then_some(status.pid.zip(status.memory_policy))
+            .flatten()
+            .map(|(pid, policy)| (pid, policy, status.launcher_micros.unwrap_or(0)))
+    }
     fn count_tokens(&self, _text: &str) -> Result<u32, OxaError> {
         Err(OxaError::unsupported(
             "exact local token counts before model load",
@@ -369,14 +393,8 @@ impl Engine for LocalEngine {
             .lifecycle
             .load_reserved(operation, launch, Instant::now(), memory)
             .map_err(|error| {
-                if let Some(refusal) = error
-                    .get_ref()
-                    .and_then(|e| e.downcast_ref::<crate::lifecycle::AdmissionRefusal>())
-                {
-                    OxaError::new(codes::ENGINE_DOWN, refusal.to_string())
-                } else {
-                    down()
-                }
+                startup_diagnostic(&error)
+                    .map_or_else(down, |message| OxaError::new(codes::ENGINE_DOWN, message))
             });
         publish(&self.inner, &state.lifecycle);
         if let Err(error) = loading {
@@ -400,7 +418,9 @@ impl Engine for LocalEngine {
                     let _ = state.lifecycle.unload(Instant::now());
                     state.target = None;
                     publish(&self.inner, &state.lifecycle);
-                    return Err(if error.kind() == io::ErrorKind::Unsupported {
+                    return Err(if let Some(message) = startup_diagnostic(&error) {
+                        OxaError::new(codes::ENGINE_DOWN, message)
+                    } else if error.kind() == io::ErrorKind::Unsupported {
                         OxaError::new(
                             codes::ENGINE_DOWN,
                             concat!(
@@ -435,7 +455,7 @@ impl Engine for LocalEngine {
             request,
             &mut Monitor {
                 cancel,
-                memory: &mut || self.inner.source.sample(),
+                memory: &mut || self.inner.source.child(pid),
                 healthy: &mut || endpoint.health(pid, false),
             },
             on,
@@ -480,12 +500,13 @@ fn advance(inner: &Inner, state: &mut RuntimeState) -> io::Result<()> {
     let RuntimeState {
         lifecycle, endpoints, ..
     } = state;
+    lifecycle.reap(Instant::now())?;
     let status = lifecycle.status();
     let endpoint = status.model.and_then(|alias| endpoints.get(alias));
     let pid = status.pid;
     let starting = status.state == State::Starting;
     let result = lifecycle
-        .poll(Instant::now(), inner.source.sample(), || {
+        .poll(Instant::now(), inner.source.child(pid), || {
             endpoint.map_or(Ok(false), |e| e.health(pid, starting))
         })
         .map(|_| ());
@@ -506,6 +527,17 @@ fn advance(inner: &Inner, state: &mut RuntimeState) -> io::Result<()> {
         result
     }
 }
+fn startup_diagnostic(error: &io::Error) -> Option<String> {
+    let detail = error.get_ref()?;
+    detail
+        .downcast_ref::<crate::lifecycle::AdmissionRefusal>()
+        .map(ToString::to_string)
+        .or_else(|| {
+            detail
+                .downcast_ref::<crate::platform::Predicate>()
+                .map(ToString::to_string)
+        })
+}
 fn snapshot(lifecycle: &Lifecycle) -> LocalStatus {
     let status = lifecycle.status();
     LocalStatus {
@@ -514,6 +546,8 @@ fn snapshot(lifecycle: &Lifecycle) -> LocalStatus {
         pid: status.pid,
         waiting: status.waiting,
         stop_reason: status.stop_reason,
+        memory_policy: lifecycle.memory_policy(),
+        launcher_micros: lifecycle.memory_policy().map(|_| lifecycle.launcher_micros),
     }
 }
 fn publish(inner: &Inner, lifecycle: &Lifecycle) {
@@ -708,6 +742,104 @@ mod tests {
         assert!(error.message.contains("available=8589934592"));
         assert!(error.message.contains("required=8589934593"));
         assert_eq!(engine.status().pid, None);
+    }
+    #[test]
+    fn swap_policy_refusal_reaches_caller_with_predicates_and_never_spawns() {
+        struct PolicyMemory(bool, u64);
+        impl Sample for PolicyMemory {
+            fn sample(&self) -> io::Result<MemorySample> {
+                let mut sample = Memory {
+                    fail: AtomicBool::new(false),
+                }
+                .sample()?;
+                sample.swap_limit_zero = self.0;
+                sample.swap_current_bytes = self.1;
+                Ok(sample)
+            }
+        }
+        for (zero, current, predicate) in [
+            (false, 0, "memory.swap.max_zero=false (must be true)"),
+            (true, 64, "memory.swap.current=64 (must be 0)"),
+        ] {
+            let env = TestEnv::new();
+            let mut engine = engine(&env, Policy::default());
+            Arc::get_mut(&mut engine.inner).unwrap().source = Arc::new(PolicyMemory(zero, current));
+            let error = engine
+                .chat(
+                    &ChatRequest::new(&prefix(), &[], "fake-model"),
+                    &CancelToken::new(),
+                    &mut |_| panic!("unadmitted generation"),
+                )
+                .unwrap_err();
+            assert_eq!(error.code, codes::ENGINE_DOWN);
+            assert!(error.message.contains(predicate), "{}", error.message);
+            assert_eq!(engine.status().pid, None);
+        }
+    }
+    #[test]
+    fn scope_policy_is_visible_and_refused_child_is_reaped_before_queue_reuse() {
+        struct Scope {
+            bad: bool,
+            pid: std::sync::atomic::AtomicU32,
+        }
+        impl crate::platform::PlatformLauncher for Scope {
+            fn attach(&self, pid: u32, _gated: bool, _: Instant) -> io::Result<crate::platform::Attachment> {
+                self.pid.store(pid, Ordering::Release);
+                let mut sample = Memory {
+                    fail: AtomicBool::new(false),
+                }
+                .sample()?;
+                sample.swap_limit_zero = !self.bad;
+                Ok(crate::platform::Attachment {
+                    sample,
+                    scope: Some("synthetic.scope".into()),
+                })
+            }
+        }
+        for bad in [true, false] {
+            let env = TestEnv::new();
+            let engine = engine(&env, Policy::default());
+            let scope = Arc::new(Scope {
+                bad,
+                pid: std::sync::atomic::AtomicU32::new(0),
+            });
+            engine.inner.state.lock().unwrap().lifecycle.platform = Some(scope.clone());
+            let result = engine.chat(
+                &ChatRequest::new(&prefix(), &[], "fake-model"),
+                &CancelToken::new(),
+                &mut |_| {},
+            );
+            if bad {
+                assert!(result
+                    .unwrap_err()
+                    .message
+                    .contains("engine child memory.swap.max == 0"));
+                assert!(engine.gate.try_acquire().is_err()); // unloaded, not a stale ready permit
+            } else {
+                result.unwrap();
+                assert_eq!(
+                    engine
+                        .local_memory_status("fake-model")
+                        .map(|(pid, policy, _)| (pid, policy)),
+                    Some((scope.pid.load(Ordering::Acquire), "scope"))
+                );
+                assert_eq!(engine.local_memory_status("other-model"), None);
+                engine
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .lifecycle
+                    .unload(Instant::now())
+                    .unwrap();
+                engine.inner.wake.notify_all();
+                until(&engine, State::Stopped);
+            }
+            assert_eq!(engine.status().pid, None);
+            assert_eq!(engine.local_memory_status("fake-model"), None);
+            assert!(wait_operation(&engine.gate, &CancelToken::new()).is_ok());
+            assert!(!PathBuf::from(format!("/proc/{}", scope.pid.load(Ordering::Acquire))).exists());
+        }
     }
     fn prefix() -> FrozenPrefix {
         FrozenPrefix {
