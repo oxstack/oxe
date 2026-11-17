@@ -1,13 +1,13 @@
 #!/bin/sh
-# Preserve cargo fmt --check, using the caller's workspace and installed formatter tools.
+# Checkout-local done check. Hosted CI selects its workspace and runs Cargo directly.
 set -eu
 
 is_workspace() {
     [ -f "$1/Cargo.toml" ] && grep -q '^\[workspace\]' "$1/Cargo.toml"
 }
 
-# A physical caller path keeps symlinked members in their own workspace. Only a caller
-# outside every workspace uses the helper checkout's oxa (or sole) workspace.
+# A physical caller path keeps symlinked members in their own workspace. A standalone
+# package owns its check. Other callers use the helper checkout's oxa (or sole) workspace.
 helper=$0
 case $helper in
     */*) ;;
@@ -16,12 +16,17 @@ esac
 checkout=$(CDPATH= cd -P -- "${helper%/*}/../.." && pwd -P)
 dir=$(pwd -P)
 workspace=
+package=
 while :; do
     if is_workspace "$dir"; then workspace=$dir; break; fi
+    if [ -z "$package" ] && [ -f "$dir/Cargo.toml" ] && grep -q '^\[package\]' "$dir/Cargo.toml"; then
+        package=$dir
+    fi
     [ "$dir" = / ] && break
     dir=${dir%/*}
     [ -n "$dir" ] || dir=/
 done
+workspace=${workspace:-$package}
 if [ -z "$workspace" ]; then
     if is_workspace "$checkout/oxa"; then
         workspace=$checkout/oxa
