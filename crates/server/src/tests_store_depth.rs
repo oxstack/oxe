@@ -136,17 +136,29 @@ fn shutdown_writes_the_points_a_cut_reply_write_left() {
     w2.persist_every = 0;
     let r2 = gen(&mut w2, &prompt, &turn_params());
     assert_eq!((r2.timings.cache_n, r2.timings.resume_src), (deep, "disk"));
-    // a deadline already too close: no optional file is started (the head and manifest stay bounded)
+    // Force the late decision only after mandatory blocks/head/manifest commit.
+    // A short real deadline can instead expire during a mandatory block write
+    // on a loaded runner, before this optional-write control is reached (#829).
     let dir2 = tmp("depth-shutdown-late");
     let mut w3 = worker(&dir2);
     w3.persist_every = 0;
     gen(&mut w3, &prompt, &turn_params());
-    let r4 = w3.persist(
-        None,
-        PersistMode::Shutdown(Instant::now() + Duration::from_millis(100)),
-        None,
+    w3.test_optional_write_late = true;
+    let r4 = w3.persist(None, PersistMode::Reply, None);
+    assert_eq!(
+        (r4.head, r4.snaps),
+        (Some(w3.cache.tokens.len()), 0),
+        "{r4:?}"
     );
-    assert_eq!((r4.head.is_some(), r4.snaps), (true, 0), "{r4:?}");
+    assert_eq!(
+        r4.note.as_deref(),
+        Some("optional snapshots cut by a request")
+    );
+    // There really were optional points to cut; releasing the seam writes them.
+    w3.test_optional_write_late = false;
+    let r5 = w3.persist(None, PersistMode::Reply, None);
+    assert_eq!(r5.head, Some(w3.cache.tokens.len()), "{r5:?}");
+    assert!(r5.snaps > 0, "{r5:?}");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&dir2);
 }

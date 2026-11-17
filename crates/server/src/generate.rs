@@ -387,6 +387,9 @@ pub struct Worker<E: Engine> {
     /// test hook (usize::MAX in production): the optional snapshot writes of one persist stop after
     /// this many files, as when a request arrives between them
     pub opt_write_limit: usize,
+    /// Test-only late decision at the mandatory/optional write boundary.
+    #[cfg(test)]
+    pub test_optional_write_late: bool,
     /// audit v0.1.2 N2: how far past the shutdown deadline a snapshot file already started may run
     /// before it is cut inside the file (5 s: the 2.5 s deadline + 5 s stays inside the
     /// controller's 10 s unload grace); a test hook too
@@ -879,6 +882,8 @@ impl<E: Engine> Worker<E> {
             live_hint: None,
             legacy_writes: true,
             opt_write_limit: usize::MAX,
+            #[cfg(test)]
+            test_optional_write_late: false,
             shutdown_file_grace: std::time::Duration::from_secs(5),
             held_bytes: 0,
             restore_bps: (0.83e9, 0.64e9),
@@ -1455,7 +1460,13 @@ impl<E: Engine> Worker<E> {
         let mut added = false;
         let mut cut = false;
         // a shutdown starts an optional file only while one fits before its deadline
+        #[cfg(test)]
+        let test_optional_write_late = self.test_optional_write_late;
         let late = || {
+            #[cfg(test)]
+            if test_optional_write_late {
+                return true;
+            }
             deadline.is_some_and(|d| Instant::now() + std::time::Duration::from_millis(250) >= d)
         };
         for (k, (r, idx)) in todo.into_iter().enumerate() {
