@@ -1,6 +1,7 @@
 //! Caller-driven ownership of one local engine. No daemon or background thread.
 #![cfg(unix)]
 
+mod admission;
 mod child_auth;
 mod configured;
 pub use configured::{configured_engine, LOCAL_SETTING};

@@ -468,3 +468,15 @@ fn admitted_ticket_covers_cold_load_and_generation_without_a_fifo_gap() {
     drop(request);
     assert!(matches!(waiting.as_mut().poll(&mut cx), Poll::Ready(Ok(_))));
 }
+
+#[test]
+fn insufficient_allocation_budget_reports_available_and_required_before_spawn() {
+    let now = Instant::now();
+    let mut owner = Lifecycle::new(1, Policy::default());
+    let mut low = memory();
+    low.available_bytes = 4095;
+    let error = owner.load(model("one"), now, Ok(low)).unwrap_err();
+    assert!(error.to_string().contains("available=4095"));
+    assert!(error.to_string().contains("required=4096"));
+    assert_eq!(owner.status().pid, None);
+}

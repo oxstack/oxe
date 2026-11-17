@@ -22,7 +22,7 @@ fn main() -> io::Result<()> {
     let private = PathBuf::from(args.next().expect("throwaway private directory"));
     assert!(args.next().is_none());
     let local = serde_json::json!({"binary":binary,"models":{"synthetic":{"model":model,"arguments":["--engine","stub","--ctx-size","4096"]}},
-        "limits":{"synthetic":{"context_window":4096,"max_output":64,"required_available_bytes":1048576}},"idle_unload_seconds":0.1});
+        "limits":{"synthetic":{"context_window":4096,"max_output":64,"allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}},"idle_unload_seconds":0.1});
     let engine = oxc_local::configured_engine(Some(&local), private.clone(), StreamOpts::default())
         .map_err(io::Error::other)?;
     assert_eq!(engine.info(None).map_err(io::Error::other)?.n_ctx, 4096);

@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 pub struct Model {
     pub name: String,
     pub config: Config,
-    /// Qualified peak plus host reserve. No size is guessed from model file length.
+    /// Full resident weights plus anonymous allocations and explicit margin; derived at cold launch.
+    /// No size is guessed from model file length.
     pub required_available_bytes: u64,
 }
 
@@ -42,6 +43,18 @@ pub struct MemorySample {
     pub host_oom_kills: u64,
     pub pids_max_events: u64,
 }
+#[derive(Debug)]
+pub(crate) struct AdmissionRefusal {
+    available: u64,
+    required: u64,
+}
+impl std::fmt::Display for AdmissionRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Local engine memory admission refused: available={} bytes, required={} bytes (allocation budget including margin); reduce configured context or free memory.", self.available, self.required)
+    }
+}
+impl std::error::Error for AdmissionRefusal {}
+
 impl MemorySample {
     fn validate(self) -> io::Result<Self> {
         if !self.psi_full_avg10.is_finite() || !(0.0..=100.0).contains(&self.psi_full_avg10) {
@@ -51,11 +64,16 @@ impl MemorySample {
     }
     fn admit(self, required: u64) -> io::Result<Self> {
         let sample = self.validate()?;
-        if required == 0
-            || sample.available_bytes < required
-            || !sample.swap_limit_zero
-            || sample.swap_current_bytes != 0
-        {
+        if required > 0 && sample.available_bytes < required {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                AdmissionRefusal {
+                    available: sample.available_bytes,
+                    required,
+                },
+            ));
+        }
+        if required == 0 || !sample.swap_limit_zero || sample.swap_current_bytes != 0 {
             return Err(io::Error::other("local engine memory admission refused"));
         }
         Ok(sample)

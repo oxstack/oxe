@@ -1,6 +1,6 @@
 //! User-only local factory. The caller has already selected the default-off setting.
 use crate::launch_profile::{from_user_settings, InstalledLayout, InstalledModel};
-use crate::lifecycle::Policy;
+use crate::lifecycle::{Model, Policy};
 use crate::native::{LocalEngine, LocalModel};
 use crate::Config;
 use oxa_engine::StreamOpts;
@@ -92,15 +92,22 @@ pub fn configured_engine(
     for alias in entries.keys() {
         let value = &limits[alias];
         let fields = value.as_object().ok_or_else(invalid)?;
+        if fields.contains_key("required_available_bytes") {
+            return Err(crate::admission::invalid());
+        }
         if fields.keys().any(|k| {
             !matches!(
                 k.as_str(),
-                "context_window" | "max_output" | "required_available_bytes" | "thinking" | "images"
+                "context_window" | "max_output" | "allocation_budget" | "thinking" | "images"
             )
         }) {
             return Err(invalid());
         }
-        let profile = from_user_settings(&user, &layout, alias, 1).map_err(|_| invalid())?;
+        let context = limit(value, "context_window")?;
+        let budget = value["allocation_budget"].clone();
+        crate::admission::required(&budget, context, 0)?;
+        let mut profile = from_user_settings(&user, &layout, alias, 1).map_err(|_| invalid())?;
+        crate::admission::bind_context(&mut profile.arguments, context)?;
         if profile.arguments.iter().any(|word| {
             word.to_str().is_some_and(|word| {
                 matches!(
@@ -120,23 +127,17 @@ pub fn configured_engine(
         let user = user.clone();
         models.push(LocalModel {
             alias: alias.clone(),
-            context_window: limit(value, "context_window")?,
+            context_window: context,
             max_output: limit(value, "max_output")?,
-            required_available_bytes: value["required_available_bytes"]
-                .as_u64()
-                .filter(|v| *v > 0)
-                .ok_or_else(invalid)?,
             thinking: optional_bool(value, "thinking")?,
             images: optional_bool(value, "images")?,
             launch: Arc::new(move |port| {
-                let profile =
+                let mut profile =
                     from_user_settings(&user, &layout, &alias_owned, port).map_err(|_| invalid())?;
+                crate::admission::bind_context(&mut profile.arguments, context)?;
                 // Check only at cold load/switch, before creating child authentication.
                 // Discovery never inspects weights or runs the engine.
-                if !profile.model.is_file() {
-                    return Err(OxaError::new(codes::NOT_FOUND,
-                        "Local weights are missing; set oxa.local.models.<alias>.model to an existing GGUF path. No download is attempted."));
-                }
+                let required = required_for_weights(&profile.model, &budget, context)?;
                 use std::os::unix::fs::PermissionsExt;
                 if !std::fs::metadata(&profile.binary)
                     .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -144,7 +145,10 @@ pub fn configured_engine(
                     return Err(OxaError::new(codes::NOT_FOUND,
                         "Local engine binary is missing or not executable; install oxe-server beside oxa or set oxa.local.binary."));
                 }
-                Ok(Config {
+                if profile.arguments.windows(2).any(|pair| pair[0] == "--engine" && pair[1] == "flash") {
+                    return Err(OxaError::unsupported("Flash streaming-budget admission in the resident local factory"));
+                }
+                Ok(Model { name: alias_owned.clone(), required_available_bytes: required, config: Config {
                     executable: profile.binary,
                     arguments: profile.arguments,
                     environment: profile
@@ -158,11 +162,16 @@ pub fn configured_engine(
                     term_grace: Duration::from_secs(3),
                     restart_backoff: Duration::from_secs(1),
                     max_restarts: 1,
-                })
+                }})
             }),
         });
     }
     Ok(Arc::new(LocalEngine::new(models, private_dir, opts, policy)?))
+}
+fn required_for_weights(model: &std::path::Path, budget: &Value, context: u32) -> Result<u64, OxaError> {
+    let weights = std::fs::metadata(model).ok().filter(|m| m.is_file()).ok_or_else(||
+        OxaError::new(codes::NOT_FOUND, "Local weights are missing; set oxa.local.models.<alias>.model to an existing GGUF path. No download is attempted."))?;
+    crate::admission::required(budget, context, weights.len())
 }
 fn sibling_binary(executable: &std::path::Path) -> Result<PathBuf, OxaError> {
     executable
@@ -202,7 +211,38 @@ mod tests {
     use super::*;
     use oxa_fake::TestEnv;
     fn settings() -> Value {
-        serde_json::json!({"binary":"/synthetic/oxe-server", "models":{"synthetic":{"model":"/synthetic/model.gguf","arguments":["--engine","stub"]}},"limits":{"synthetic":{"context_window":4096,"max_output":64,"required_available_bytes":1048576}}})
+        serde_json::json!({"binary":"/synthetic/oxe-server", "models":{"synthetic":{"model":"/synthetic/model.gguf","arguments":["--engine","stub"]}},"limits":{"synthetic":{"context_window":4096,"max_output":64,"allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}})
+    }
+    #[test]
+    fn opaque_total_without_allocation_components_refuses_clearly() {
+        let env = TestEnv::new();
+        let mut old = settings();
+        old["limits"]["synthetic"]
+            .as_object_mut()
+            .unwrap()
+            .remove("allocation_budget");
+        old["limits"]["synthetic"]["required_available_bytes"] = serde_json::json!(1048576);
+        let error = match configured_engine(Some(&old), env.work().join("private"), StreamOpts::default()) {
+            Ok(_) => panic!("opaque total accepted without allocation components"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains("allocation_budget"));
+    }
+    #[test]
+    fn cold_weights_requirement_uses_current_full_file_length_without_reading_contents() {
+        let env = TestEnv::new();
+        let path = env.work().join("synthetic-sparse.gguf");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(22_700_000_000).unwrap();
+        let budget = serde_json::json!({"kv_bytes_per_position":22528,"scratch_bytes":1048576,"mtp_state_bytes":1048576,"margin_bytes":1048576});
+        let first = required_for_weights(&path, &budget, 16384).unwrap();
+        assert_eq!(first, 22_700_000_000 + 369_098_752 + 3 * 1048576);
+        file.set_len(22_800_000_000).unwrap();
+        assert_eq!(
+            required_for_weights(&path, &budget, 16384).unwrap(),
+            first + 100_000_000
+        );
+        assert!(required_for_weights(&env.work(), &budget, 16384).is_err());
     }
     #[test]
     fn metadata_factory_never_opens_launch_paths_or_private_storage() {

@@ -31,7 +31,12 @@ The following is synthetic test configuration, not a qualified real-model budget
         "synthetic": {
           "context_window": 4096,
           "max_output": 64,
-          "required_available_bytes": 1048576
+          "allocation_budget": {
+            "kv_bytes_per_position": 1,
+            "scratch_bytes": 0,
+            "mtp_state_bytes": 0,
+            "margin_bytes": 1044480
+          }
         }
       }
     }
@@ -39,8 +44,46 @@ The following is synthetic test configuration, not a qualified real-model budget
 }
 ```
 
-For real use, supply the installed model's actual context/output limits and a
-qualified required-availability budget including the host reserve. Startup defaults
+For real use, supply the installed model's actual context/output limits and qualified
+allocation bounds for its context, KV format, thread teams, lanes and MTP settings.
+The example above is synthetic stub data, not usable real-model admission data.
+The production factory requires every `allocation_budget` component (unsigned bytes)
+and a positive margin; full weights residency is added by the factory, not user-discounted.
+The former opaque `required_available_bytes` setting refuses
+with migration guidance. Missing/unknown fields, invalid values and anonymous-budget
+overflow fail closed during discovery. Full-size addition is checked at cold launch
+before authentication or process creation.
+
+Admission requires `MemAvailable >= weights file size + KV + scratch + MTP state + margin`:
+
+- `C = ceil(context_window / 256) * 256` matches native context allocation rounding.
+- `KV = C * kv_bytes_per_position`. Include the MTP attention layer in this coefficient
+  once, not again in `mtp_state_bytes`. Owner-audited Qwen f16 K+V is 22,528 B/position:
+  131,072 positions cost 2,952,790,016 B = 2.75 GiB; 16,384 cost 369,098,752 B = 0.34375 GiB.
+- `scratch_bytes` bounds the non-KV peak for this launch: decode/prefill team scratch,
+  lanes, recurrent state, pads, retained buffers and other non-MTP allocations.
+  `mtp_state_bytes` covers additional non-KV MTP state. Requalify these bounds when
+  context, threads, lanes, KV format or arguments change; zero is only an explicit
+  qualified absence, never a fallback for missing data.
+- Weights are fully resident: the current regular GGUF file's metadata length is
+  added at cold load/switch. Qwen's file-backed mmap is not treated as a reclaimable
+  working-set discount: evicting experts causes disk reads per token. This path never
+  uses the legacy fixed file-size-plus-3-GiB formula. Discovery stats no model.
+- `margin_bytes` is the explicitly stated remaining safety/host margin, not a hidden
+  constant. No real-model scratch/MTP/margin defaults are guessed here.
+
+The engine already describes its allocations in `CtxMem`/`ctx_mem_with_auto` and
+`CtxMem::total` (`engine/crates/model/src/engine.rs`): its recurrent slots, lanes,
+per-decode-thread and both retained prefill teams must be included in the supplied
+bounds. This crate does not import or duplicate the model engine's allocation planner.
+Flash streaming admission is separate and is not inferred by this resident factory;
+an explicit `--engine flash` refuses here rather than receiving the resident formula.
+The memory budget and actual `--ctx-size N`/`-c N` must match `context_window`;
+missing context argv is supplied explicitly, duplicates/conflicts refuse. Low available
+memory reports available/required bytes and advises reducing context or freeing memory.
+Existing no-swap, PSI/OOM/pid and runtime-pressure stops remain enabled.
+
+Startup defaults
 to 180 seconds; `startup_timeout_seconds` can select another positive duration.
 Idle unload defaults to two hours; `idle_unload_seconds: null` disables only idle
 unload. Missing or unsafe memory metadata still refuses or stops the child. The
@@ -72,7 +115,7 @@ Before admitting generation, the owned/authenticated child's `/props` must carry
 an engine-version diagnostic and retains teardown ownership. The probe is bounded
 and runs on startup/restart, not each resident health poll; no engine CLI or source
 change is required. A resident model reuses its frozen launch snapshot if files
-change; a later cold load validates the paths again.
+change; a later cold load validates the paths and current file size again.
 
 Construction and typed discovery open no model, authentication file or socket and
 start no thread. Load creates fresh private child authentication under the agent

@@ -3,7 +3,7 @@ use crate::child_auth::ChildAuth;
 use crate::lifecycle::{Lifecycle, MemorySample, Model, Policy, RequestGate, RequestLease, StopReason};
 use crate::memory::MemorySource;
 use crate::transport::{Monitor, Transport};
-use crate::{Config, State};
+use crate::State;
 use oxa_engine::{http_request, HttpRequest, StreamOpts, Url};
 use oxa_proto::{
     codes, AssistantTurn, CancelToken, ChatRequest, Engine, EngineCaps, EngineInfo, OxaError, StreamEvent,
@@ -21,15 +21,14 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-pub type Launch = Arc<dyn Fn(u16) -> Result<Config, OxaError> + Send + Sync>;
+pub type Launch = Arc<dyn Fn(u16) -> Result<Model, OxaError> + Send + Sync>;
 pub struct LocalModel {
     pub alias: String,
     pub context_window: u32,
     pub max_output: u32,
-    pub required_available_bytes: u64,
     pub thinking: Option<bool>,
     pub images: Option<bool>,
-    /// Pure, trusted launch resolution for the selected ephemeral loopback port.
+    /// Trusted cold-launch resolution, including the current full-resident weights size.
     pub launch: Launch,
 }
 #[derive(Clone, Debug)]
@@ -156,7 +155,6 @@ impl LocalEngine {
                 || model.context_window == 0
                 || model.max_output == 0
                 || model.max_output > model.context_window
-                || model.required_available_bytes == 0
             {
                 return Err(invalid());
             }
@@ -225,7 +223,11 @@ impl LocalEngine {
         let address = TcpListener::bind("127.0.0.1:0")
             .and_then(|listener| listener.local_addr())
             .map_err(|_| down())?;
-        let mut config = (model.launch)(address.port())?;
+        let mut launch = (model.launch)(address.port())?;
+        if launch.name != model.alias || launch.required_available_bytes == 0 {
+            return Err(invalid());
+        }
+        let config = &mut launch.config;
         if config.arguments.iter().any(|a| {
             a.to_str()
                 .is_some_and(|a| matches!(a.split('=').next().unwrap_or(""), "--api-key" | "--api-key-file"))
@@ -260,11 +262,7 @@ impl LocalEngine {
                 agent,
                 version_mismatch: AtomicBool::new(false),
             },
-            Model {
-                name: model.alias.clone(),
-                config,
-                required_available_bytes: model.required_available_bytes,
-            },
+            launch,
         ))
     }
 }
@@ -370,7 +368,16 @@ impl Engine for LocalEngine {
         let loading = state
             .lifecycle
             .load_reserved(operation, launch, Instant::now(), memory)
-            .map_err(|_| down());
+            .map_err(|error| {
+                if let Some(refusal) = error
+                    .get_ref()
+                    .and_then(|e| e.downcast_ref::<crate::lifecycle::AdmissionRefusal>())
+                {
+                    OxaError::new(codes::ENGINE_DOWN, refusal.to_string())
+                } else {
+                    down()
+                }
+            });
         publish(&self.inner, &state.lifecycle);
         if let Err(error) = loading {
             if state.lifecycle.status().state != State::Backoff {
@@ -596,6 +603,7 @@ fn redact(mut error: OxaError, token: &str) -> OxaError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Config;
     use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
     use oxa_proto::{Finish, FrozenPrefix, WireMsg};
     struct Memory {
@@ -632,30 +640,33 @@ mod tests {
                     alias: alias.into(),
                     context_window: 1048576,
                     max_output: 1024,
-                    required_available_bytes: 4096,
                     thinking: None,
                     images: Some(false),
                     launch: Arc::new(move |port| {
-                        Ok(Config {
-                            executable: std::env::current_exe().map_err(|_| down())?,
-                            arguments: vec![
-                                "--exact".into(),
-                                "native::tests::owned_fake_child_streams_and_unloads".into(),
-                                "--nocapture".into(),
-                            ],
-                            environment: [
-                                ("SYNTHETIC_LOCAL_CHILD".into(), "1".into()),
-                                ("SYNTHETIC_LOCAL_PORT".into(), port.to_string().into()),
-                                ("SYNTHETIC_LOCAL_ALIAS".into(), alias_owned.clone().into()),
-                                ("SYNTHETIC_LOCAL_BUILD".into(), version.clone().into()),
-                            ]
-                            .into(),
-                            startup_timeout: Duration::from_secs(5),
-                            health_interval: Duration::from_millis(50),
-                            unhealthy_limit: 2,
-                            term_grace: Duration::from_millis(100),
-                            restart_backoff: Duration::from_millis(100),
-                            max_restarts: 0,
+                        Ok(Model {
+                            name: alias_owned.clone(),
+                            required_available_bytes: 4096,
+                            config: Config {
+                                executable: std::env::current_exe().map_err(|_| down())?,
+                                arguments: vec![
+                                    "--exact".into(),
+                                    "native::tests::owned_fake_child_streams_and_unloads".into(),
+                                    "--nocapture".into(),
+                                ],
+                                environment: [
+                                    ("SYNTHETIC_LOCAL_CHILD".into(), "1".into()),
+                                    ("SYNTHETIC_LOCAL_PORT".into(), port.to_string().into()),
+                                    ("SYNTHETIC_LOCAL_ALIAS".into(), alias_owned.clone().into()),
+                                    ("SYNTHETIC_LOCAL_BUILD".into(), version.clone().into()),
+                                ]
+                                .into(),
+                                startup_timeout: Duration::from_secs(5),
+                                health_interval: Duration::from_millis(50),
+                                unhealthy_limit: 2,
+                                term_grace: Duration::from_millis(100),
+                                restart_backoff: Duration::from_millis(100),
+                                max_restarts: 0,
+                            },
                         })
                     }),
                 }
@@ -674,6 +685,29 @@ mod tests {
             }),
         )
         .unwrap()
+    }
+    #[test]
+    fn admission_refusal_reaches_caller_with_numbers_and_never_spawns() {
+        let env = TestEnv::new();
+        let mut engine = engine(&env, Policy::default());
+        let model = engine.models.get_mut("fake-model").unwrap();
+        let launch = model.launch.clone();
+        model.launch = Arc::new(move |port| {
+            let mut admitted = launch(port)?;
+            admitted.required_available_bytes = 8589934593;
+            Ok(admitted)
+        });
+        let error = engine
+            .chat(
+                &ChatRequest::new(&prefix(), &[], "fake-model"),
+                &CancelToken::new(),
+                &mut |_| panic!("unadmitted generation"),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, codes::ENGINE_DOWN);
+        assert!(error.message.contains("available=8589934592"));
+        assert!(error.message.contains("required=8589934593"));
+        assert_eq!(engine.status().pid, None);
     }
     fn prefix() -> FrozenPrefix {
         FrozenPrefix {
