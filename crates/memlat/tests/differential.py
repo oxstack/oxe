@@ -1,7 +1,7 @@
-"""Run both real commands in the SAME private ESP/module/sys/lock fixtures.
+"""Replay the native boot command in private ESP/module/sys/lock fixtures.
 
 No root, hardware, real /boot, real module tree, EFI variables or network.
-Python is a test oracle only and never installed by the Rust package.
+The expected results come from hosted runs of the legacy Python command.
 """
 import hashlib
 import json
@@ -15,7 +15,7 @@ import tempfile
 
 REPO = Path(__file__).resolve().parents[3]
 RUST = str(Path(sys.argv[1]).resolve())
-PYTHON = str(REPO / 'oxc/tools/memlat_boot.py')
+FIXTURE = '/tmp/oxa-memlat-fixture'
 AUTO = 'Local AI memlat (newer-kernel)'
 COMMENT = 'Auto-rebuilt Yoga MEMLAT; stock fallback Omarchy/linux-omarchy'
 BASE = '''default_entry: Local AI memlat test (fixture)
@@ -49,22 +49,27 @@ def uki():
 def snapshot(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
 
-def execute(root, implementation, args):
-    # All host boot-related roots are covered before either subject starts.
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+def snapshot_digest(files):
+    manifest = {name: digest(data) for name, data in files.items()}
+    return digest(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode())
+
+def execute(root, args):
+    # The same boot-related roots are covered as in the reference capture.
     command = ['bwrap', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
-               '--tmpfs', '/tmp', '--bind', str(root), str(root),
+               '--tmpfs', '/tmp', '--bind', str(root), FIXTURE,
                '--bind', str(root/'esp'), '/boot', '--ro-bind', str(root/'sys'), '/sys',
                '--ro-bind', str(root/'modules'), '/usr/lib/modules',
                '--bind', str(root/'locks'), '/run/lock', '--unshare-net',
-               '--setenv', 'HOME', str(root/'home'), '--setenv', 'PATH', str(root/'bin')+':/usr/bin:/bin']
-    implementation = [str(root/'oracle/local-ai-memlat-boot') if x == PYTHON else x for x in implementation]
-    command += implementation + args + ([] if args in (['--help'], ['bogus'], ['enable','extra'], ['--policy']) else ['--policy', '/boot/policy.json'])
+               '--setenv', 'HOME', FIXTURE+'/home', '--setenv', 'PATH', FIXTURE+'/bin:/usr/bin:/bin']
+    command += [RUST] + args + ([] if args in (['--help'], ['bogus'], ['enable','extra'], ['--policy']) else ['--policy', '/boot/policy.json'])
     return subprocess.run(command, capture_output=True, timeout=30)
 
 def fixture(root, case):
-    for name in ('esp/EFI/Linux', 'esp/EFI/LocalAI', 'modules/fixture-kernel/build', 'sys/firmware/efi/efivars', 'locks', 'bin', 'home', 'oracle'):
+    for name in ('esp/EFI/Linux', 'esp/EFI/LocalAI', 'modules/fixture-kernel/build', 'sys/firmware/efi/efivars', 'locks', 'bin', 'home'):
         (root/name).mkdir(parents=True, exist_ok=True)
-    shutil.copy2(PYTHON,root/'oracle/local-ai-memlat-boot')
     (root/'sys/firmware/efi/efivars/SecureBoot-fixture').write_bytes(b'\0'*5)
     (root/'modules/fixture-kernel/build/.config').write_text('CONFIG_SCMI_QCOM_MEMLAT_DEVFREQ=y\n')
     (root/'esp/EFI/Linux/stock.efi').write_bytes(uki())
@@ -82,7 +87,7 @@ def fixture(root, case):
                   stock_sha256=hashlib.sha256(uki()).hexdigest(), modules='/usr/lib/modules/fixture-kernel',
                   memlat_image='/boot/EFI/LocalAI/qualified.efi', memlat_sha256=hashlib.sha256(b'qualified memlat fixture').hexdigest(),
                   pending='/boot/pending', image_directory='/boot/EFI/LocalAI', boot_root='/boot',
-                  builder=str(REPO/'oxc/tools/memlat.py'), overlay='/boot/overlay.dtso', stock_dtb='/boot/stock.dtb',
+                  builder=FIXTURE+'/oracle/memlat.py', overlay='/boot/overlay.dtso', stock_dtb='/boot/stock.dtb',
                   notification_user='fixture', notification_uid=999999)
     text = BASE
     if case in ('adopted', 'lookalike', 'outside', 'duplicate', 'rebuild-adopted'):
@@ -157,32 +162,29 @@ SCENARIOS = [
     ('crlf', [['prepare-update'], ['rebuild']]),
     ('ordinary', [['--help'], ['bogus'], ['enable','extra'], ['--policy']]),
 ]
+receipt = json.loads(Path(__file__).with_name('boot-oracle.json').read_text())
+assert receipt['version'] == 1
+assert len(receipt['steps']) == sum(len(actions) for _, actions in SCENARIOS)
+steps = iter(receipt['steps'])
 with tempfile.TemporaryDirectory(prefix='memlat-differential-') as directory:
-    root=Path(directory)
-    count=0
+    root = Path(directory)
     for case, actions in SCENARIOS:
         for p in list(root.iterdir()):
             shutil.rmtree(p) if p.is_dir() else p.unlink()
         fixture(root, case)
         for args in actions:
-            before=snapshot(root/'esp')
-            py=execute(root, ['/usr/bin/python3', PYTHON], args)
-            expected=snapshot(root/'esp')
-            shutil.rmtree(root/'esp'); (root/'esp').mkdir()
-            for name, data in before.items():
-                p=root/'esp'/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
-            rust=execute(root, [RUST], args)
-            actual=snapshot(root/'esp')
-            assert py.stderr == rust.stderr, (case,args,py.stderr,rust.stderr)
-            expected_code = 2 if args in (['bogus'], ['enable','extra'], ['--policy']) else 1 if case in ('duplicate','remember','include','duplicate-cmdline') or (case in ('modules','hash','bad-image') and args[0]=='enable') or (case in ('build-failure','secure-boot','signed','missing-driver','overflow-dtb') and args[0]=='rebuild') or (args[0]=='enable' and '--force' in args) else 0
-            assert py.returncode == expected_code, (case,args,expected_code,py.returncode,py.stdout,py.stderr)
-            assert py.returncode==rust.returncode, (case,args,py.returncode,rust.returncode,py.stderr,rust.stderr)
-            if args == ['--help']: assert py.stdout == rust.stdout, (py.stdout,rust.stdout)
-            if py.returncode == 0:
-                assert py.stdout.splitlines()[-1] == rust.stdout.splitlines()[-1], (case,args,py.stdout,rust.stdout)
-            assert actual==expected, (case,args, {k for k in actual.keys()|expected.keys() if actual.get(k)!=expected.get(k)},py.stdout,rust.stdout,py.stderr,rust.stderr)
-            count+=1
-    print(f'{count} actual-command differential steps passed')
+            expected = next(steps)
+            before = snapshot_digest(snapshot(root/'esp'))
+            assert (case, args, before) == (expected['case'], expected['args'], expected['before']), (case, args, before, expected)
+            result = execute(root, args)
+            assert result.returncode == expected['exit'], (case, args, result)
+            assert digest(result.stderr) == expected['stderr'], (case, args, result.stderr)
+            if expected['stdout'] is not None:
+                stdout = result.stdout if args == ['--help'] else result.stdout.splitlines()[-1]
+                assert digest(stdout) == expected['stdout'], (case, args, result.stdout)
+            after = snapshot_digest(snapshot(root/'esp'))
+            assert after == expected['after'], (case, args, after, expected['after'], result)
+    print(f"{len(receipt['steps'])} captured actual-command fixture steps passed")
 
 # Exercise the real release staging script against a source-layout fixture.
 with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:

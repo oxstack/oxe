@@ -1,6 +1,6 @@
-//! Actual command exit codes and exact on-disk bytes against the Python oracle.
+//! Actual command results and on-disk bytes against the captured boot oracle.
 #[test]
-fn python_and_rust_same_boot_fixtures() {
+fn native_command_matches_captured_boot_fixtures() {
     let home = oxc_memlat::Temporary::directory("memlat-differential-home-").unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let result = std::process::Command::new("python3")
@@ -10,11 +10,12 @@ fn python_and_rust_same_boot_fixtures() {
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &home.path)
         .output()
-        .expect("execute Python differential fixture runner");
+        .expect("execute boot fixture runner");
     assert!(
         result.status.success(),
         "{}\n{}",
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+    print!("{}", String::from_utf8_lossy(&result.stdout));
 }
