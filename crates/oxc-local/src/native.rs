@@ -2,6 +2,7 @@
 use crate::child_auth::ChildAuth;
 use crate::lifecycle::{Lifecycle, MemorySample, Model, Policy, RequestGate, RequestLease, StopReason};
 use crate::memory::MemorySource;
+use crate::queue::AdmissionError;
 use crate::transport::{Monitor, Transport};
 use crate::State;
 use oxa_engine::{http_request, HttpRequest, StreamOpts, Url};
@@ -370,8 +371,29 @@ impl Engine for LocalEngine {
         cancel: &CancelToken,
         on: &mut dyn FnMut(StreamEvent),
     ) -> Result<AssistantTurn, OxaError> {
+        self.chat_with_lease(request, cancel, on, self.gate.acquire_operation())
+    }
+}
+impl LocalEngine {
+    /// Run a validated guest request through the owner's native engine lifecycle.
+    pub fn chat_guest(
+        &self,
+        request: &ChatRequest<'_>,
+        cancel: &CancelToken,
+        on: &mut dyn FnMut(StreamEvent),
+    ) -> Result<AssistantTurn, OxaError> {
+        self.chat_with_lease(request, cancel, on, self.gate.acquire_guest_operation())
+    }
+
+    fn chat_with_lease(
+        &self,
+        request: &ChatRequest<'_>,
+        cancel: &CancelToken,
+        on: &mut dyn FnMut(StreamEvent),
+        acquire: impl Future<Output = Result<RequestLease, AdmissionError>>,
+    ) -> Result<AssistantTurn, OxaError> {
         let model = self.models.get(request.model).ok_or_else(invalid)?;
-        let operation = wait_operation(&self.gate, cancel)?;
+        let operation = wait_operation(acquire, cancel)?;
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         self.ensure_driver(&mut state)?;
         if cancel.is_cancelled() {
@@ -591,14 +613,17 @@ impl Wake for Signal {
         self.wake.notify_one();
     }
 }
-fn wait_operation(gate: &RequestGate, cancel: &CancelToken) -> Result<RequestLease, OxaError> {
+fn wait_operation(
+    acquire: impl Future<Output = Result<RequestLease, AdmissionError>>,
+    cancel: &CancelToken,
+) -> Result<RequestLease, OxaError> {
     let signal = Arc::new(Signal {
         ready: Mutex::new(false),
         wake: Condvar::new(),
     });
     let waker = Waker::from(signal.clone());
     let mut context = Context::from_waker(&waker);
-    let mut acquire = std::pin::pin!(gate.acquire_operation());
+    let mut acquire = std::pin::pin!(acquire);
     let mut cancelled = std::pin::pin!(cancel.cancelled());
     loop {
         *signal.ready.lock().unwrap_or_else(|e| e.into_inner()) = false;
@@ -837,7 +862,7 @@ mod tests {
             }
             assert_eq!(engine.status().pid, None);
             assert_eq!(engine.local_memory_status("fake-model"), None);
-            assert!(wait_operation(&engine.gate, &CancelToken::new()).is_ok());
+            assert!(wait_operation(engine.gate.acquire_operation(), &CancelToken::new()).is_ok());
             assert!(!PathBuf::from(format!("/proc/{}", scope.pid.load(Ordering::Acquire))).exists());
         }
     }
@@ -929,6 +954,36 @@ mod tests {
         assert_eq!(std::fs::read_dir(env.work().join("private")).unwrap().count(), 0);
         drop(engine);
     }
+    #[test]
+    fn guest_admission_cancellation_leaves_owner_lease_held() {
+        let env = TestEnv::new();
+        let engine = engine(&env, Policy::default());
+        let active = wait_operation(engine.gate.acquire_operation(), &CancelToken::new()).unwrap();
+        let cancel = CancelToken::new();
+        std::thread::scope(|scope| {
+            let guest = scope.spawn(|| {
+                engine.chat_guest(
+                    &ChatRequest::new(&prefix(), &[], "fake-model"),
+                    &cancel,
+                    &mut |_| panic!("guest ran while the owner held the engine lease"),
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while engine.gate.waiting() == 0 && !guest.is_finished() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let waiting = engine.gate.waiting();
+            cancel.cancel();
+            assert_eq!(guest.join().unwrap().unwrap_err().code, codes::ABORTED);
+            assert_eq!(waiting, 1, "guest must join the owner's engine queue");
+        });
+        assert_eq!(engine.gate.waiting(), 0);
+        assert!(matches!(engine.gate.try_acquire(), Err(AdmissionError::Full)));
+        assert_eq!(engine.status().state, State::Stopped);
+        drop(active);
+        assert!(wait_operation(engine.gate.acquire_operation(), &CancelToken::new()).is_ok());
+    }
+
     #[test]
     fn cancellation_reaps_the_child_before_a_fresh_request_reuses_the_queue() {
         let env = TestEnv::new();

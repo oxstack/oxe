@@ -158,10 +158,13 @@ impl RequestGate {
         if !self.ready.load(Ordering::Acquire) {
             return Err(AdmissionError::Full);
         }
-        Ok(RequestLease {
+        Ok(self.operation(lease))
+    }
+    fn operation(&self, lease: Lease) -> RequestLease {
+        RequestLease {
             lease: Some(lease),
             clock: self.clock.clone(),
-        })
+        }
     }
     pub fn try_acquire(&self) -> Result<RequestLease, AdmissionError> {
         self.granted(self.queue.try_acquire()?)
@@ -172,10 +175,11 @@ impl RequestGate {
     /// Reserve the same FIFO slot for load/switch followed by generation.
     /// Unlike acquire(), this permits an unloaded engine; hand it to load_reserved.
     pub async fn acquire_operation(&self) -> Result<RequestLease, AdmissionError> {
-        Ok(RequestLease {
-            lease: Some(self.queue.acquire().await?),
-            clock: self.clock.clone(),
-        })
+        Ok(self.operation(self.queue.acquire().await?))
+    }
+    /// Reserve the same load/generation lease at guest priority.
+    pub async fn acquire_guest_operation(&self) -> Result<RequestLease, AdmissionError> {
+        Ok(self.operation(self.queue.acquire_guest().await?))
     }
 }
 

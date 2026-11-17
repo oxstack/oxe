@@ -24,6 +24,15 @@ pub fn configured_engine(
     private_dir: PathBuf,
     opts: StreamOpts,
 ) -> Result<Arc<dyn Engine>, OxaError> {
+    configured_local_engine(local, private_dir, opts).map(|engine| engine as Arc<dyn Engine>)
+}
+
+/// Build the same user-only native engine while retaining its guest entry point.
+pub fn configured_local_engine(
+    local: Option<&Value>,
+    private_dir: PathBuf,
+    opts: StreamOpts,
+) -> Result<Arc<LocalEngine>, OxaError> {
     let local = local.and_then(Value::as_object).ok_or_else(invalid)?;
     if local.keys().any(|k| {
         !matches!(
