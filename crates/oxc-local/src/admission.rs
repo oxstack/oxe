@@ -40,12 +40,12 @@ pub(crate) fn required(value: &Value, context: u32, weights_bytes: u64) -> Resul
 }
 
 /// Bind the allocation calculation to the actual native context, including -c.
-/// No duplicate/last-wins or unsupported equals-form authority is accepted.
+/// No duplicate/last-wins or unsupported attached/equals-form authority is accepted.
 pub(crate) fn bind_context(arguments: &mut Vec<OsString>, context: u32) -> Result<(), OxaError> {
     let mut found = false;
     for (index, word) in arguments.iter().enumerate() {
         let Some(word) = word.to_str() else { continue };
-        if word.starts_with("--ctx-size=") || word.starts_with("-c=") {
+        if word.starts_with("--ctx-size=") || (word.starts_with("-c") && word != "-c") {
             return Err(context_error());
         }
         if matches!(word, "--ctx-size" | "-c") {
@@ -127,6 +127,25 @@ mod tests {
         assert!(required(&value, 16384, 0).is_err());
     }
     #[test]
+    fn attached_context_is_rejected_without_adding_another_authority() {
+        for attached in ["-c16384", "-c131072", "-c=16384", "--ctx-size=16384"] {
+            for separated in [vec![], vec!["-c", "16384"], vec!["--ctx-size", "16384"]] {
+                for attached_first in [true, false] {
+                    let mut words: Vec<OsString> = separated.iter().map(OsString::from).collect();
+                    if attached_first {
+                        words.insert(0, attached.into());
+                    } else {
+                        words.push(attached.into());
+                    }
+                    let original = words.clone();
+                    let error = bind_context(&mut words, 16384).unwrap_err();
+                    assert_eq!(error.code, codes::INVALID);
+                    assert_eq!(words, original, "rejected argv must not be normalized");
+                }
+            }
+        }
+    }
+    #[test]
     fn launched_context_is_explicit_and_cannot_diverge_from_budget() {
         let mut words = vec!["--engine".into(), "stub".into()];
         bind_context(&mut words, 16384).unwrap();
@@ -144,7 +163,12 @@ mod tests {
             vec!["-c", "131072"],
             vec!["--ctx-size=16384"],
             vec!["--ctx-size", "16384", "-c", "16384"],
+            vec!["-c", "16384", "--ctx-size", "16384"],
+            vec!["--ctx-size", "16384", "--ctx-size", "16384"],
+            vec!["-c", "16384", "-c", "16384"],
+            vec!["-c", "16384", "--ctx-size", "131072"],
             vec!["--ctx-size"],
+            vec!["-c"],
         ] {
             assert!(bind_context(&mut words.into_iter().map(OsString::from).collect(), 16384).is_err());
         }

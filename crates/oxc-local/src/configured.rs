@@ -145,7 +145,9 @@ pub fn configured_engine(
                     return Err(OxaError::new(codes::NOT_FOUND,
                         "Local engine binary is missing or not executable; install oxe-server beside oxa or set oxa.local.binary."));
                 }
-                if profile.arguments.windows(2).any(|pair| pair[0] == "--engine" && pair[1] == "flash") {
+                if profile.arguments.windows(2).any(|pair| pair[0] == "--engine" && pair[1] == "flash")
+                    || profile.arguments.iter().any(|word| word == "--engine=flash")
+                {
                     return Err(OxaError::unsupported("Flash streaming-budget admission in the resident local factory"));
                 }
                 Ok(Model { name: alias_owned.clone(), required_available_bytes: required, config: Config {
@@ -286,6 +288,82 @@ mod tests {
         assert_eq!(error.code, codes::NOT_FOUND);
         assert!(error.message.contains("weights"));
         assert!(!private.exists());
+    }
+    #[test]
+    fn configured_context_forms_refuse_before_launch_or_private_storage() {
+        let env = TestEnv::new();
+        let private = env.work().join("private");
+        for arguments in [
+            serde_json::json!(["-c16384"]),
+            serde_json::json!(["-c4096"]),
+            serde_json::json!(["-c=4096"]),
+            serde_json::json!(["--ctx-size=4096"]),
+            serde_json::json!(["-c", "16384"]),
+            serde_json::json!(["--ctx-size", "16384"]),
+            serde_json::json!(["-c", "4096", "--ctx-size", "4096"]),
+            serde_json::json!(["--ctx-size", "4096", "-c", "16384"]),
+            serde_json::json!(["--ctx-size", "4096", "-c4096"]),
+        ] {
+            let mut local = settings();
+            local["models"]["synthetic"]["arguments"] = arguments.clone();
+            let error = match configured_engine(Some(&local), private.clone(), StreamOpts::default()) {
+                Ok(_) => panic!("unsupported context accepted: {arguments}"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, codes::INVALID);
+            assert!(error.message.contains("context must match one"));
+            assert!(!private.exists());
+        }
+        for arguments in [
+            serde_json::json!([]),
+            serde_json::json!(["-c", "4096"]),
+            serde_json::json!(["--ctx-size", "4096"]),
+        ] {
+            let mut local = settings();
+            local["models"]["synthetic"]["arguments"] = arguments;
+            let engine = configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
+            assert_eq!(engine.info(Some("synthetic")).unwrap().n_ctx, 4096);
+            assert!(!private.exists());
+        }
+    }
+    #[test]
+    fn flash_spellings_refuse_before_child_authentication_or_spawn() {
+        use std::os::unix::fs::PermissionsExt;
+        let env = TestEnv::new();
+        env.write("work/synthetic.gguf", "Synthetic placeholder; never loaded");
+        env.write("work/oxe-server", "Synthetic placeholder; must never execute");
+        let binary = env.work().join("oxe-server");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let prefix = oxa_proto::FrozenPrefix {
+            sections: vec![],
+            tools_json: "[]".into(),
+            sha256: [0; 32],
+        };
+        for arguments in [
+            serde_json::json!(["--engine", "flash"]),
+            serde_json::json!(["--engine=flash"]),
+        ] {
+            let mut local = settings();
+            local["binary"] = serde_json::json!(binary);
+            local["models"]["synthetic"]["model"] = serde_json::json!(env.work().join("synthetic.gguf"));
+            local["models"]["synthetic"]["arguments"] = arguments.clone();
+            let private = env.work().join("private");
+            let engine = configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
+            assert!(!private.exists());
+            let error = engine
+                .chat(
+                    &oxa_proto::ChatRequest::new(&prefix, &[], "synthetic"),
+                    &oxa_proto::CancelToken::new(),
+                    &mut |_| panic!("Flash refusal generated output"),
+                )
+                .unwrap_err();
+            assert_eq!(error.code, codes::UNSUPPORTED_IN_OXA, "{arguments}");
+            assert_eq!(
+                error.message,
+                "Flash streaming-budget admission in the resident local factory is not supported in oxa"
+            );
+            assert!(!private.exists(), "{arguments} reached child authentication");
+        }
     }
     #[test]
     fn binary_location_is_a_pure_sibling_not_a_path_or_cwd_search() {
