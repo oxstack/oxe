@@ -1,0 +1,57 @@
+name: Go first-pass review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, labeled]
+    branches: [main]
+
+# Advisory only: do not add this job to the required checks.
+# Trusted repository maintainers with Write access govern GO_REVIEW_ENABLED,
+# GO_REVIEW_MAX_PER_DAY, and the advisory quota and deduplication markers.
+# This trust covers only the default-off, fixed-price Go allowance. Metered
+# spend and required review and CI gates retain their existing controls.
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: >-
+      vars.GO_REVIEW_ENABLED == 'true' &&
+      github.repository == 'oxstack/ox-llm' &&
+      github.event.repository.default_branch == 'main' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.base.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-review' || github.event.label.name == 'two-review') &&
+      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
+       contains(github.event.pull_request.labels.*.name, 'ok-to-review'))
+    # Serialize quota reads and reservations across admitted jobs, not skipped label events.
+    concurrency:
+      group: go-review-daily-quota
+      queue: max
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      # Pin the helper to the protected main commit in the event.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Review the exact head through OpenCode Go OIDC
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # JSON list; second model runs only for two-review label/core paths. Unset: DeepSeek only.
+          GO_REVIEW_MODELS: ${{ vars.GO_REVIEW_MODELS }}
+          GO_REVIEW_MAX_PER_DAY: ${{ vars.GO_REVIEW_MAX_PER_DAY }}
+          OPENCODE_CI_CLIENT_ID: ${{ vars.OPENCODE_CI_CLIENT_ID }}
+        run: |
+          if [ ! -f tools/ci/go_review.py ]; then
+            echo 'Trusted base has no review helper yet; bootstrap review deferred.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 -I tools/ci/go_review.py
