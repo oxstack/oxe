@@ -203,8 +203,10 @@ with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:
     templates = ('05-local-ai-memlat-fallback.hook', '20-local-ai-memlat-fallback',
                  '85-local-ai-memlat-rebuild', '99-z-local-ai-memlat-rebuild.hook')
     template_source = root/'oxc/packaging/memlat'
-    for name in (*templates, 'oxc-memlat-shutdown.service'):
+    for name in templates:
         shutil.copy2(REPO/'oxc/packaging/memlat'/name, template_source/name)
+    # Independent exclusion control: retirement of the real unit must not break this fixture.
+    (template_source/'oxc-memlat-shutdown.service').write_text('[Service]\nExecStart=/usr/bin/false\n')
     (root/'engine/tools/ci/crate_licenses.py').write_text('# fixture collector; no external packages\n')
     (root/'engine/vendor/ggml-subset/LICENSE').write_text('synthetic license fixture\n')
     (root/'LICENSE').write_text('synthetic license fixture\n')
