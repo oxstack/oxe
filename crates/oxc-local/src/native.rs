@@ -663,7 +663,7 @@ fn redact(mut error: OxaError, token: &str) -> OxaError {
 mod tests {
     use super::*;
     use crate::Config;
-    use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+    use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
     use oxa_proto::{Finish, FrozenPrefix, WireMsg};
     struct Memory {
         fail: AtomicBool,
@@ -885,11 +885,21 @@ mod tests {
         if std::env::var("SYNTHETIC_LOCAL_CHILD").as_deref() == Ok("1") {
             let port = std::env::var("SYNTHETIC_LOCAL_PORT").unwrap().parse().unwrap();
             let model = std::env::var("SYNTHETIC_LOCAL_ALIAS").unwrap();
-            let _server = FakeServer::start(
+            let turns = if std::env::var_os("SYNTHETIC_LOCAL_OVERFLOW").is_some() {
+                vec![ScriptTurn::fault(Fault::StreamError {
+                    queued: 0,
+                    status: 400,
+                    error_type: "exceed_context_size_error".into(),
+                    event: false,
+                })]
+            } else {
                 vec![
                     ScriptTurn::tool("read-note", "read", "{\"path\":\"note.txt\"}"),
                     ScriptTurn::text("Synthetic task finished"),
-                ],
+                ]
+            };
+            let _server = FakeServer::start(
+                turns,
                 FakeOpts {
                     port,
                     model,
@@ -954,6 +964,40 @@ mod tests {
         assert_eq!(std::fs::read_dir(env.work().join("private")).unwrap().count(), 0);
         drop(engine);
     }
+
+    #[test]
+    fn owned_child_in_stream_overflow_reaches_caller_without_output() {
+        let env = TestEnv::new();
+        let mut engine = engine(&env, Policy::default());
+        let model = engine.models.get_mut("fake-model").unwrap();
+        let launch = model.launch.clone();
+        model.launch = Arc::new(move |port| {
+            let mut child = launch(port)?;
+            child
+                .config
+                .environment
+                .insert("SYNTHETIC_LOCAL_OVERFLOW".into(), "1".into());
+            Ok(child)
+        });
+
+        let mut events = Vec::new();
+        let error = engine
+            .chat(
+                &ChatRequest::new(&prefix(), &[], "fake-model"),
+                &CancelToken::new(),
+                &mut |event| events.push(event),
+            )
+            .expect_err("owned child sent a context overflow inside the stream");
+        assert_eq!(error.code, codes::CONTEXT_OVERFLOW, "{error}");
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                StreamEvent::Text(_) | StreamEvent::Reasoning(_) | StreamEvent::ToolArgs { .. }
+            )),
+            "overflow emitted reply data: {events:?}"
+        );
+    }
+
     #[test]
     fn guest_admission_cancellation_leaves_owner_lease_held() {
         let env = TestEnv::new();
