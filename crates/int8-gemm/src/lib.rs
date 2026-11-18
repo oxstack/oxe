@@ -57,10 +57,35 @@
 
 use std::ops::Range;
 
+/// Build flags the C kernels were compiled with (`build.rs`; "none (not aarch64: kernels not built)"
+/// on a target that has no kernels).
+pub const KERNEL_CFLAGS: &str = env!("OXE_INT8_GEMM_CFLAGS");
+
+/// The kernel entry points: `extern "C"` on aarch64 (the C objects built by `build.rs`); on any
+/// other target a Rust stub of the same signature that refuses by panicking, because no kernel
+/// exists there and a fabricated result would silently corrupt the numerics. Same guard as
+/// `kernels-sys` (`ffi_decls!`), and `build.rs` compiles nothing on such a target.
+macro_rules! kernel_decls {
+    ($( $(#[$m:meta])* pub fn $name:ident ( $($arg:ident : $ty:ty),* $(,)? ) $(-> $ret:ty)? ; )*) => {
+        #[cfg(target_arch = "aarch64")]
+        extern "C" {
+            $( $(#[$m])* pub fn $name($($arg: $ty),*) $(-> $ret)?; )*
+        }
+        $(
+            #[cfg(not(target_arch = "aarch64"))]
+            #[allow(unused_variables, clippy::missing_safety_doc, clippy::too_many_arguments)]
+            $(#[$m])*
+            pub unsafe extern "C" fn $name($($arg: $ty),*) $(-> $ret)? {
+                panic!("int8-gemm: {} is an aarch64 kernel; this build has none", stringify!($name))
+            }
+        )*
+    };
+}
+
 pub mod raw {
     //! The C micro-kernels (csrc/i8g_kernels.c). All pointers are to packed data as described in
     //! the crate docs; `steps` counts k-steps of 8.
-    extern "C" {
+    kernel_decls! {
         pub fn i8g_dot8x8(x: *const i8, w: *const i8, steps: usize, out: *mut i32);
         pub fn i8g_udot8x8(x: *const u8, w: *const i8, steps: usize, out: *mut i32);
         pub fn i8g_tile8x8(
@@ -716,3 +741,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests_v013_review.rs"]
 mod tests_v013_review;
+
+#[cfg(test)]
+#[path = "target_arch_tests.rs"]
+mod target_arch_tests;

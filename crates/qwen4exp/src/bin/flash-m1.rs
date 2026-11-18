@@ -221,7 +221,7 @@ fn cmd_ref(a: &Args, model_dir: &Path) {
     let out = json!({
         "kind": "flash-m1-ref",
         "engine_commit": qwen4exp::ENGINE_COMMIT,
-        "ggml_prod_cpu_sha256": env!("OXF_GGML_PROD_CPU_SHA"),
+        "ggml_prod_cpu_sha256": qwen4exp::ggml_prod_cpu_sha256(),
         "prompt_tokens": prompt.len(),
         "generated": ans.len(),
         "want_generated": want_ans.len(),
@@ -525,7 +525,7 @@ fn cmd_stream(a: &Args, model_dir: &Path) {
     let out = json!({
         "kind": "flash-m1-stream",
         "engine_commit": qwen4exp::ENGINE_COMMIT,
-        "ggml_prod_cpu_sha256": env!("OXF_GGML_PROD_CPU_SHA"),
+        "ggml_prod_cpu_sha256": qwen4exp::ggml_prod_cpu_sha256(),
         "prompt_tokens": prompt.len(),
         "generated": ans.len(),
         "want_generated": want_ans.len(),

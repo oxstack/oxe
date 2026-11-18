@@ -23,7 +23,7 @@ pub const H_DIM: usize = crate::model::N_EMBD * crate::model::N_HC;
 /// Largest verify width (the 4-node expert op's row cap).
 pub const MAX_VERIFY: usize = 16;
 
-extern "C" {
+kernel_decls! {
     fn fg_verify(
         c: *mut FgCtx,
         tokens: *const i32,

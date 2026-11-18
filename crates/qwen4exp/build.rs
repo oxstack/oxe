@@ -7,6 +7,17 @@ use std::process::Command;
 const CPU_ARCH: &str = "-march=armv8.6-a+dotprod+i8mm+fp16+bf16+nosve+nosme";
 
 fn main() {
+    // Everything below is aarch64-only: the Flash C subset and the prefill tiles are compiled with
+    // -march=armv8.6-a, the graph port with -mcpu=oryon-1, and the graph port is linked against a
+    // pre-existing PRODUCTION ggml archive. On any other target nothing is compiled, no archive is
+    // looked for, and no ld/objcopy/ar runs; every fg_* / oxf_* entry point is a stub that refuses
+    // (kernel_decls! in src/lib.rs), so a non-aarch64 build checks and cannot fabricate results.
+    // Same guard as kernels-sys' and int8-gemm's build.rs. aarch64: unchanged.
+    record_git_commit();
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("aarch64") {
+        println!("cargo:rustc-env=OXF_KERNEL_CFLAGS=none (not aarch64: Flash kernels not built)");
+        return;
+    }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let v = root.join("vendor/ggml-flash");
     let g = v.join("generated");
@@ -147,6 +158,11 @@ fn main() {
     println!("cargo:rustc-env=OXF_GGML_PROD_CPU_SHA={cpu_sha}");
     println!("cargo:rerun-if-changed={}", v.display());
     println!("cargo:rustc-env=OXF_KERNEL_CFLAGS=-O3 -DNDEBUG -std=gnu11 {CPU_ARCH}");
+}
+
+/// Record the engine commit (plus "-dirty") in the M0 report; runs on every target, so a
+/// non-aarch64 build keeps the `ENGINE_COMMIT` constant defined.
+fn record_git_commit() {
     let rev = Command::new("git")
         .args(["rev-parse", "--short=12", "HEAD"])
         .output()

@@ -54,7 +54,7 @@ pub struct FgExpertCall {
     pub dst_nb2: usize,
 }
 
-extern "C" {
+kernel_decls! {
     fn fg_vec_dot_type(t: i32) -> i32;
     fn fg_row_size(t: i32, n: i64) -> usize;
     fn fg_from_float(vdt: i32, x: *const f32, y: *mut c_void, n: i64);

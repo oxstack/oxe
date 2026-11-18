@@ -5,8 +5,9 @@ name: checks
 # Path-aware PRs and merge queue: tools/ci/paths.py classifies the files a ready PR changes
 # (base...head) or a queued group changes (merge_group.base_sha..head_sha). Every queued tree
 # additionally runs the complete oxa workspace, including tests that read docs/assets. Outputs: engine/ and fuzz/oxe/ -> `engine` (clippy, x86_64 stub server tests,
-# ARM engine and Flash builds, oxe fuzz smoke); oxa/ and fuzz/oxa/ -> `oxa` (clippy, the oxa test
-# archive and shards, the ARM oxa build, oxa fuzz smoke); oxc/ -> `lab`, `cli` and `gateway`;
+# the x86_64 engine workspace check, ARM engine and Flash builds, oxe fuzz smoke); oxa/ and
+# fuzz/oxa/ -> `oxa` (clippy, the oxa test archive and shards, the ARM oxa build, oxa fuzz smoke);
+# oxc/ -> `lab`, `cli` and `gateway`;
 # oxc-rs/ and conformance/ -> `cli`; oxa/oxc-gateway/ -> `gateway`.
 # The shared gateway selects oxa to check its in-process consumer.
 # Anything else (.github/, tools/, packaging/, root files, a new directory) and an empty group
@@ -356,6 +357,88 @@ jobs:
           path: ~/.cache/pip
           key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
 
+  engine-x86-workspace:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    # O394/O395 (#912, engine N1): the engine workspace as seen from a non-aarch64 target. int8-gemm
+    # and qwen4exp used to enter their ARM C builds unconditionally (-march=armv8.6-a, -mcpu=oryon-1,
+    # a pre-existing production ggml archive), so nothing could check the workspace off aarch64. Both
+    # build scripts now return before any compiler or archive access and their kernel entry points
+    # refuse instead of returning fabricated results. Verify on GitHub-hosted x86_64 with an
+    # isolated HOME/XDG.
+    name: engine workspace check, non-aarch64 (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      # The isolated HOME must exist before any step that uses it (git included).
+      - name: Isolated HOME and XDG
+        run: |
+          ci_home="${RUNNER_TEMP:?}/home"
+          mkdir -p "$ci_home"/{.cargo,.rustup,.cache,.config,.local/share}
+          {
+            printf 'HOME=%s\n' "$ci_home"
+            printf 'CARGO_HOME=%s/.cargo\n' "$ci_home"
+            printf 'RUSTUP_HOME=%s/.rustup\n' "$ci_home"
+            printf 'XDG_CACHE_HOME=%s/.cache\n' "$ci_home"
+            printf 'XDG_CONFIG_HOME=%s/.config\n' "$ci_home"
+            printf 'XDG_DATA_HOME=%s/.local/share\n' "$ci_home"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+          {
+            echo "target: $(uname -m)-$(uname -s) $(uname -r)"
+            rustc -vV
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Prior non-aarch64 failure (what the guards skip)
+        working-directory: engine
+        # The first two lines reproduce, without the guard, the two ways the old build scripts failed
+        # off aarch64: the host compiler refuses the ARM -march=armv8.6-a flags, and there is no
+        # production ggml archive in an isolated HOME for qwen4exp to find (its build script panicked).
+        run: |
+          if cc -march=armv8.6-a+dotprod+i8mm+fp16+nosve+nosme -O3 -DNDEBUG -std=gnu11 \
+                -c crates/int8-gemm/csrc/i8g_kernels.c -o /dev/null 2> cc.err; then
+            echo "::error::the x86_64 compiler accepted an ARM -march=armv8.6-a"
+            exit 1
+          fi
+          head -n 3 cc.err | sed 's/^/cc: /'
+          rm -f cc.err
+          test ! -e "$HOME/.cache/local-ai/snapdragon-engine/ggml-prod/lib/libggml-cpu.a"
+          echo "prior failure reproduced: ARM -march rejected by the host compiler, production ggml archive absent" >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo check --workspace (no kernel is compiled)
+        working-directory: engine
+        # Compiled C is absent by design on this target: kernels-sys, int8-gemm and qwen4exp return
+        # from their build scripts before cc, ld, objcopy or ar. Everything else is target-neutral
+        # Rust, including the crates that link int8-gemm (image-dit, image-flow, image-vae).
+        run: |
+          cargo check --locked --workspace
+          echo "engine workspace check (x86_64): ok" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Unsupported kernel entry points refuse (model-free negative control)
+        working-directory: engine
+        # Every raw entry point of int8-gemm (the GEMM tiles, the sink kernels and the float attention
+        # kernels) must refuse on this target: the test calls each one with null pointers, which the
+        # stub never dereferences, and requires the refusal message. No model, no device, no fixture.
+        run: |
+          cargo test --locked -p int8-gemm --lib -- unsupported_target_refuses_every_entry_point
+      - name: Apple aarch64 is still a documented blocker
+        # An architecture guard alone does not prove Apple aarch64 compatibility: the kernel builds
+        # need GCC-16/fedora flags (-mcpu=oryon-1), the vendored ggml build's Linux assumptions and
+        # qwen4exp's io_uring. Recorded here so a green x86_64 check is not read as a green macOS one.
+        run: |
+          {
+            echo "Outstanding Apple aarch64 blockers (unchanged by this job):"
+            echo "- -mcpu=oryon-1 and the vendored ggml/Flash C builds assume Linux aarch64 GCC;"
+            echo "- qwen4exp uses io_uring through raw Linux syscalls;"
+            echo "- production flags/numerics are unchanged and need the maintained hardware batch."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   fuzz-oxa:
     # Task 61: the stable smoke of the oxa cargo-fuzz targets (seconds; no nightly/sanitizer).
     name: oxa fuzz smoke (x86_64)
@@ -616,7 +699,7 @@ jobs:
     # the scans must succeed; every classifier output must be literally 'true' or 'false'.
     name: gate
     if: always()
-    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, native-controller-cli, fuzz-oxa, fuzz-oxe, lab-shards, lab, build, gateway]
+    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, engine-x86-workspace, native-controller-cli, fuzz-oxa, fuzz-oxe, lab-shards, lab, build, gateway]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:

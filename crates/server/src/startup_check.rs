@@ -248,6 +248,7 @@ const KNOWN: &[(&str, Kind)] = &[
     ("OXE_NUMERICS_GOLDEN_UNLISTED", Kind::Any),
     ("OXE_SCHED_PANIC_CHILD", Kind::Any),
     ("OXE_KERNEL_CFLAGS", Kind::Any),
+    ("OXE_INT8_GEMM_CFLAGS", Kind::Any),
     ("OXE_KBENCH_THREADS", Kind::Any),
     ("OXE_KBENCH_REPS", Kind::Any),
     ("OXE_KBENCH_CPUS", Kind::Any),

@@ -62,7 +62,7 @@ pub enum FgCtx {}
 pub enum GgmlTensor {}
 pub type ExpertFn = unsafe extern "C" fn(call: *const crate::stream::FgExpertCall, ud: *mut c_void);
 
-extern "C" {
+kernel_decls! {
     fn fg_model_new(
         refs: *const FgTensorRef,
         n: c_int,

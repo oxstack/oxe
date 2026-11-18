@@ -21,7 +21,9 @@ pub type VecDot = unsafe extern "C" fn(
 
 use std::ffi::c_void;
 
-extern "C" {
+// The vendored Flash kernels: no object exists on a non-aarch64 target, so every entry point
+// refuses there (kernel_decls! in lib.rs).
+kernel_decls! {
     pub fn oxf_vec_dot_q6_K_q8_K(
         n: c_int,
         s: *mut f32,

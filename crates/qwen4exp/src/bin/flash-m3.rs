@@ -763,7 +763,7 @@ fn run(a: &Args) {
         "kind": "flash-m3-run",
         "path": if exact { "exact" } else { "fast" },
         "engine_commit": qwen4exp::ENGINE_COMMIT,
-        "ggml_prod_cpu_sha256": env!("OXF_GGML_PROD_CPU_SHA"),
+        "ggml_prod_cpu_sha256": qwen4exp::ggml_prod_cpu_sha256(),
         "expert_tile": st.batch_tile,
         "prefill_io": {"pf_order": st.pf_order, "pf_order_last": st.pf_order_last, "pf_readahead": st.pf_readahead, "pf_readahead_auto": st.pf_readahead_auto, "pf_ra_warm": st.pf_ra_warm,
                        "readahead_issued": st.counters.readahead.load(Relaxed), "warm_passes": st.counters.ra_warm_passes.load(Relaxed),
@@ -1112,7 +1112,7 @@ fn prefill(a: &Args) {
         rows.push(row);
     }
     let out = json!({
-        "kind": "flash-m3-prefill", "engine_commit": qwen4exp::ENGINE_COMMIT, "ggml_prod_cpu_sha256": env!("OXF_GGML_PROD_CPU_SHA"),
+        "kind": "flash-m3-prefill", "engine_commit": qwen4exp::ENGINE_COMMIT, "ggml_prod_cpu_sha256": qwen4exp::ggml_prod_cpu_sha256(),
         "experts": if mapped { "mapped" } else { "streamed" },
         "expert_tile": st.batch_tile,
         "prefill_io": {"pf_order": st.pf_order, "pf_order_last": st.pf_order_last, "pf_readahead": st.pf_readahead, "pf_readahead_auto": st.pf_readahead_auto, "pf_ra_warm": st.pf_ra_warm,

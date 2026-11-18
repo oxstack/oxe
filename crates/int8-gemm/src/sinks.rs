@@ -2,9 +2,10 @@
 //! int8 codes, SiLU gate, RMS-norm scale + RoPE). Each NEON kernel (csrc/i8g_sinks.c) has a scalar
 //! definition here and is tested BITWISE against it.
 
-/// The C kernels (csrc/i8g_sinks.c). Lengths are checked by the safe wrappers below.
+/// The C kernels (csrc/i8g_sinks.c). Lengths are checked by the safe wrappers below. On a target
+/// without the kernels each entry point refuses (see `kernel_decls!` in lib.rs).
 pub mod raw {
-    extern "C" {
+    kernel_decls! {
         /// Quantise `n` floats (n % 8 == 0, n >= 8) as one chunk; codes of x[8s..8s+8) go to
         /// `dst + s * stride` (bytes). Returns the chunk scale.
         pub fn i8g_quant_chunk(x: *const f32, n: usize, dst: *mut i8, stride: isize) -> f32;

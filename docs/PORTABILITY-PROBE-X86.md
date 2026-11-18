@@ -17,8 +17,8 @@ Everything that computes is AArch64 (NEON, dotprod, i8mm, fp16, bf16). Build fla
 | `kernels-sys` hand-written ops | `csrc/oxe_ops.cpp` 1420, `oxe_pfg.cpp` 545, `oxe_pfa2x.cpp` 323, `oxe_isa_roof.cpp` 491, `oxe_pf_tiles.inc` 867, `oxe_vl_q5k.inc` 154 | No. `#include <arm_neon.h>`; `vendor/ggml-subset/compat.h` has `#error` on non-AArch64 |
 | Vendored ggml subset (llama.cpp CPU backend) | `vendor/ggml-subset/generated/repack_subset.cpp` 3954, `quants_subset.c` 372, upstream `vec.cpp` 713, `vec.h` 1709, `simd-mappings.h` 1379 | Upstream ggml has AVX2/AVX-512 paths in `simd-mappings.h`/`vec.h`, but the extracted subset (repack, quants) is the ARM `arm_quants` path only. Reusing upstream's x86 files is possible, not turnkey |
 | Flash vendored kernels | `vendor/ggml-flash/generated/arm_quants_subset.c` 1704, `expert-r4.c` 487, `oxf_kernels.c` | No (ARM quant dot products, R4 repack) |
-| `int8-gemm` | `csrc/i8g_kernels.c` 320, `i8g_fattn.c` 275 | No (NEON/i8mm) |
-| `qwen4exp` (Flash graph) | `csrc/flash_graph.cpp` 2732, `flash_fuse_*.inc` ~2250, `pf_attn.cpp` 523, `pf_kernels.c` 237, `pf_expert*.c` ~370, `flash_mtp.inc` 605 | No |
+| `int8-gemm` | `csrc/i8g_kernels.c` 320, `i8g_fattn.c` 275 | No (NEON/i8mm). Off aarch64 the build script compiles nothing and every entry point is a refusing stub |
+| `qwen4exp` (Flash graph) | `csrc/flash_graph.cpp` 2732, `flash_fuse_*.inc` ~2250, `pf_attn.cpp` 523, `pf_kernels.c` 237, `pf_expert*.c` ~370, `flash_mtp.inc` 605 | No. Off aarch64 nothing is compiled or linked and `fg_*`/`oxf_*` are refusing stubs (the production ggml archive is never read) |
 | `oxn` tiles/NPU | `src/tiles.rs` 1328, `oxn-cpu-shared-bw.rs` | Snapdragon NPU/shared-memory path; not applicable |
 | `model` crate (Rust) | `src/engine.rs`, `load.rs` | Partial. `engine.rs:72-91` feature detection and `:201-225` `cntvct_el0`/`cntfrq_el0` timer have `cfg(not(aarch64))` fallbacks (monotonic clock). `load.rs:24` **refuses to load a model** unless aarch64 |
 | `kernels-sys` build/FFI | `build.rs` returns early on non-aarch64; `src/lib.rs` `ffi_decls!` makes every entry point a refusing stub | Yes, by design (O-174) |
@@ -32,7 +32,9 @@ Everything that computes is AArch64 (NEON, dotprod, i8mm, fp16, bf16). Build fla
 
 ## 3. `cargo check` of the "real" engine on x86_64
 - **Passes:** `cargo check -p server --all-targets` (about 25 s warm; re-run on this head). `kernels-sys`, `model` and `server` pass only because `kernels-sys/build.rs` compiles nothing off-aarch64, so this is not a real build.
-- **Fails (link/build category: C compiler flags):** `cargo check --workspace` and `cargo check --workspace --all-targets` both stop at the `int8-gemm` and `qwen4exp` build scripts (`--all-targets` does not exclude them, and cargo stops at the first failure unless `--keep-going` is given). They have no architecture guard and pass `-march=armv8.6-a+...` to host GCC: `cc1: error: bad value 'armv8.6-a+dotprod+i8mm+fp16+nosve+nosme' for '-march=' switch` (qwen4exp: `...+bf16+nosve+nosme`). `-p server` does not depend on them. This is a hygiene gap compared with `kernels-sys`, not fixed here.
+- **Failed at the time of this probe (link/build category: C compiler flags):** `cargo check --workspace` and `cargo check --workspace --all-targets` both stopped at the `int8-gemm` and `qwen4exp` build scripts (`--all-targets` does not exclude them, and cargo stops at the first failure unless `--keep-going` is given). They had no architecture guard and passed `-march=armv8.6-a+...` to host GCC: `cc1: error: bad value 'armv8.6-a+dotprod+i8mm+fp16+nosve+nosme' for '-march=' switch` (qwen4exp: `...+bf16+nosve+nosme`). `-p server` does not depend on them.
+- **Since the architecture guards (N1, #912):** both build scripts return before any compiler, `ld`/`objcopy`/`ar` or production-ggml-archive access on a target other than aarch64, and every kernel entry point of both crates is a refusing stub (`kernel_decls!`), so no result is fabricated. The x86_64 workspace check runs in CI on an x86_64 Linux host (`engine-x86-workspace` in `checks.yml`, GitHub-hosted runner, isolated HOME/XDG, no model). This is a *check*, not a portable backend: the kernels still exist for aarch64 only, and `kernels-sys`'s `model::load` still refuses to open a model off aarch64.
+- **Apple aarch64 is not covered by an architecture guard.** `aarch64-apple-darwin` passes the guard and then meets the Linux/GCC assumptions below; nothing here claims a working macOS build.
 - Forcing the sources through host g++/gcc with `-fsyntax-only` (to see what would come next, not via cargo):
   - Missing intrinsics header: `fatal error: arm_neon.h: No such file or directory` in `oxe_ops.cpp:516`, `pf_kernels.c:30`, `i8g_kernels.c:11`.
   - cfg gate: `vendor/ggml-subset/compat.h:10: #error "kernels-sys targets AArch64 with NEON (Snapdragon X Elite)"`.
@@ -64,5 +66,22 @@ Per the owner note, this is where an x86 user benefits. Options: Vulkan (works o
 - Second ARM: CPU kernels (existing code, needs a measurement on a second ARM core).
 - Apple Silicon/Asahi: GPU/accelerator access (see issue note); out of scope for this machine.
 
-## Hygiene findings (no fix made)
-- `int8-gemm/build.rs` and `qwen4exp/build.rs` should return early on non-aarch64 like `kernels-sys/build.rs`, so `cargo check --workspace` works on x86_64.
+## Apple aarch64 remaining blockers (not changed by N1)
+An architecture guard is necessary, not sufficient. On `aarch64-apple-darwin` the guard lets the ARM
+C builds through, where these blockers remain:
+- **Compiler identity and flags.** The kernels are bit-matched to Fedora 44 GCC 16 and use
+  `-march=armv8.6-a+dotprod+i8mm+fp16+bf16+nosve+nosme`; the qwen4exp graph port uses
+  `-mcpu=oryon-1` (an Oryon tuning the Apple/LLVM toolchain does not accept) and `-fopenmp`.
+  Changing those flags changes the numerics, so this is a production decision, not a build tweak.
+- **Vendored ggml assumptions.** `vendor/ggml-subset/compat.h` `#error`s outside Linux aarch64 GCC,
+  and the production ggml archive qwen4exp links (`tools/sync_ggml_prod.sh`, `OXF_GGML_PROD`) is a
+  Linux build artifact; there is no Apple equivalent.
+- **Linux syscalls.** qwen4exp's expert cache is a raw `io_uring` implementation (`libc::SYS_io_uring_*`),
+  which has no macOS counterpart, and the engine's scheduler uses `sched_setaffinity`.
+- **Link behaviour.** `qwen4exp/build.rs` builds one relocatable object with `ld -r`/`objcopy`/`ar`
+  and private-symbol rewriting; that pipeline is ELF-specific.
+
+## Hygiene findings
+- `int8-gemm/build.rs` and `qwen4exp/build.rs` now return early on non-aarch64 like
+  `kernels-sys/build.rs` (N1, #912), so `cargo check --workspace` works on x86_64. Their entry points
+  refuse instead of returning fabricated results, and hosted CI holds the check.

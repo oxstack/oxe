@@ -2,9 +2,10 @@
 //! f16 operands and f32 accumulation (FMLAL). Layouts are documented in csrc/i8g_fattn.c; the
 //! driver lives in `image-dit` (`attn_float`). f16 values are passed as their raw `u16` bits.
 
-/// The C kernels (csrc/i8g_fattn.c). See the C file for the exact layouts.
+/// The C kernels (csrc/i8g_fattn.c). See the C file for the exact layouts. On a target without the
+/// kernels each entry point refuses (see `kernel_decls!` in lib.rs).
 pub mod raw {
-    extern "C" {
+    kernel_decls! {
         pub fn i8g_fattn_qk_f32(
             qt: *const f32,
             kt: *const f32,
