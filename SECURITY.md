@@ -9,7 +9,7 @@ Read `docs/threat-model.md` first. Report a finding only if this change weakens 
 Treat as **high** severity:
 - a secret (API key, ChatGPT token, OpenCode/GitHub token, share key) printed, logged, stored outside its 0600 store, sent to the wrong host, or reachable by model tools;
 - a project file or model output able to change user-only settings, enable a feature flag, or bypass the sandbox or network guard;
-- metered spend that bypasses reservation or settlement, is not recorded in the ledger, or exceeds a **configured** daily cap (no configured cap means no cap check; that is owner policy, not a finding);
+- metered spend that bypasses reservation or settlement, is not recorded in the ledger, or exceeds a **configured** daily cap (no configured cap means no cap check, for the owner and for authenticated allowlisted share guests alike; that is owner policy, not a finding. Guest authority, guest tokens and guest request quotas must still hold);
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
 - new `unsafe`/FFI/process/network code in the engine without bounds checks.
 
