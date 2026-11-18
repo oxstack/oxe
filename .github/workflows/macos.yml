@@ -1,0 +1,70 @@
+name: oxa macOS (non-required)
+# Native arm64 build of the oxa-cli binary (#795). Not required, not in the merge queue, not in
+# the gate. The job is expected to be red until the macOS sandbox slices land; that is the signal.
+
+on:
+  push:
+    branches: ['agent/**', 'codex/**', 'air/**', 'runner/**', 'main']
+    paths:
+      - 'oxa/**'
+      - 'packaging/macos/**'
+      - 'tools/lab/dev-update-macos.sh'
+      - '.github/workflows/macos.yml'
+  pull_request:
+    paths:
+      - 'oxa/**'
+      - 'packaging/macos/**'
+      - 'tools/lab/dev-update-macos.sh'
+      - '.github/workflows/macos.yml'
+  workflow_call:
+    inputs:
+      version:
+        description: release tag requested by the calling workflow; empty for pushes and pull requests
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: oxa-cli build (macOS arm64, non-required)
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '3'
+      RUST_VERSION: '1.99.1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Isolated environment and toolchain
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          # HOME, cargo, rustup and temp dirs live under the runner temp dir, never inside the
+          # checkout: KeyFile::prepare refuses any path with a .git ancestor. Resolve symlinks
+          # (macOS /var is /private/var) so canonical paths match the real ones.
+          root=$(mktemp -d "$RUNNER_TEMP/oxa-macos.XXXXXX")
+          root=$(cd "$root" && pwd -P)
+          mkdir -p "$root/home" "$root/cargo" "$root/rustup" "$root/tmp"
+          export HOME="$root/home" CARGO_HOME="$root/cargo" RUSTUP_HOME="$root/rustup" TMPDIR="$root/tmp"
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          for name in HOME CARGO_HOME RUSTUP_HOME TMPDIR; do
+            echo "$name=${!name}" >> "$GITHUB_ENV"
+          done
+          echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
+          echo "$RUSTUP_HOME/toolchains/$RUST_VERSION-aarch64-apple-darwin/bin" >> "$GITHUB_PATH"
+      - name: Build oxa-cli binary
+        working-directory: oxa
+        run: cargo build --profile ci --locked -p oxa-cli --bin oxa
+      - name: Check binary exists
+        working-directory: oxa
+        shell: bash
+        run: |
+          test -x target/ci/oxa
+          file target/ci/oxa
