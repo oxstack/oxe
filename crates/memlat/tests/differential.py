@@ -190,13 +190,21 @@ with tempfile.TemporaryDirectory(prefix='memlat-differential-') as directory:
 with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:
     root=Path(directory)/'source'
     for name in ('packaging/release', 'engine/target/release', 'oxa/target/release',
-                 'oxc/tools', 'engine/tools/ci', 'engine/vendor/ggml-subset'):
+                 'oxc/tools', 'oxc/src/oxc/runtime', 'oxc/packaging/memlat', 'engine/tools/ci',
+                 'engine/vendor/ggml-subset'):
         (root/name).mkdir(parents=True,exist_ok=True)
     shutil.copy2(REPO/'packaging/release/stage.py',root/'packaging/release/stage.py')
     for product,name in (('engine','oxe'),('engine','oxe-server'),('oxa','oxa')):
         (root/product/'target/release'/name).write_text('#!/bin/sh\nexit 0\n')
     shutil.copy2(RUST,root/'oxa/target/release/local-ai-memlat-boot')
     (root/'oxc/tools/memlat_boot.py').write_text('raise RuntimeError("legacy fixture must not ship")\n')
+    for name in ('controller.py', 'oxc', 'studio'):
+        (root/'oxc/src/oxc/runtime'/name).write_text('# synthetic legacy payload\n')
+    templates = ('05-local-ai-memlat-fallback.hook', '20-local-ai-memlat-fallback',
+                 '85-local-ai-memlat-rebuild', '99-z-local-ai-memlat-rebuild.hook')
+    template_source = root/'oxc/packaging/memlat'
+    for name in (*templates, 'oxc-memlat-shutdown.service'):
+        shutil.copy2(REPO/'oxc/packaging/memlat'/name, template_source/name)
     (root/'engine/tools/ci/crate_licenses.py').write_text('# fixture collector; no external packages\n')
     (root/'engine/vendor/ggml-subset/LICENSE').write_text('synthetic license fixture\n')
     (root/'LICENSE').write_text('synthetic license fixture\n')
@@ -205,5 +213,15 @@ with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:
     installed=destination/'usr/bin/local-ai-memlat-boot'
     assert installed.read_bytes()==Path(RUST).read_bytes()
     assert installed.stat().st_mode & 0o777 == 0o755
+    staged_templates = destination/'usr/share/ox-llm/memlat'
+    assert {path.name for path in staged_templates.iterdir()} == set(templates)
+    for name in templates:
+        staged = staged_templates/name
+        assert staged.read_bytes() == (template_source/name).read_bytes()
+        assert staged.stat().st_mode & 0o777 == 0o644
+    assert not list(destination.rglob('oxc-memlat-shutdown.service'))
     assert not list(destination.rglob('memlat_boot.py'))
-    print('actual release stage preserves native helper bytes/mode and excludes Python tool')
+    for legacy in ('usr/share/ox-llm/oxc', 'usr/bin/oxc', 'usr/bin/oxc-diagnostics'):
+        path = destination / legacy
+        assert not path.exists() and not path.is_symlink(), f'legacy payload staged: {legacy}'
+    print('actual release stage preserves native helper and inert templates, excludes Python and service')

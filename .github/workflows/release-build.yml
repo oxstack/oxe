@@ -70,9 +70,14 @@ jobs:
           echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
           echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
           mkdir -p /build/first /build/second dist
-          git archive --format=tar --prefix="ox-llm-$commit/" HEAD | gzip -n -9 > "dist/ox-llm-$commit.tar.gz"
-          git archive HEAD | tar -xf - -C /build/first
-          git archive HEAD | tar -xf - -C /build/second
+          source_archive="dist/ox-llm-$commit.tar.gz"
+          git archive --format=tar --prefix="ox-llm-$commit/" HEAD -- . \
+            ':(exclude)oxc/src' ':(exclude)oxc/tests' ':(exclude)oxc/tools' \
+            ':(exclude)oxc/packaging/flash-qos/oxc-flash-qos' \
+            ':(exclude,glob)oxc/**/*.py' | gzip -n -9 > "$source_archive"
+          for build in first second; do
+            tar -xzf "$source_archive" --strip-components=1 -C "/build/$build"
+          done
       - name: Build twice in different directories; compare complete payload hashes
         run: |
           for build in first second; do
@@ -100,6 +105,10 @@ jobs:
           trap 'rm -rf "$extracted" "$sandbox"' EXIT
           tar -xzf "$artifact" -C "$extracted"
           test -x "$extracted/usr/bin/oxa"
+          for legacy in usr/share/ox-llm/oxc usr/bin/oxc usr/bin/oxc-diagnostics; do
+            test ! -e "$extracted/$legacy" && test ! -L "$extracted/$legacy" || exit 1
+          done
+          test -z "$(find "$extracted" \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
           receipt="$GITHUB_WORKSPACE/dist/NO-PYTHON-PROOF.txt"
           { printf 'source=%s\n' "$GITHUB_SHA"; sha256sum "$artifact" | cut -d' ' -f1;
             (cd "$extracted/usr/bin" && sha256sum oxa); } > "$receipt"
