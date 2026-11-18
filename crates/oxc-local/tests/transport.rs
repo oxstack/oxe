@@ -1,6 +1,8 @@
 use oxa_engine::StreamOpts;
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn};
-use oxa_proto::{codes, CancelToken, ChatRequest, Finish, FrozenPrefix, StreamEvent, ToolCall};
+use oxa_proto::{
+    codes, AssistantTurn, CancelToken, ChatRequest, Finish, FrozenPrefix, StreamEvent, ToolCall, WireMsg,
+};
 use oxc_local::lifecycle::{Lifecycle, MemorySample, Model, Policy};
 use oxc_local::transport::{Monitor, Transport};
 use oxc_local::{Config, State};
@@ -69,6 +71,105 @@ fn stopped(owner: &mut Lifecycle) {
         assert!(Instant::now() < deadline);
         std::thread::yield_now();
     }
+}
+
+fn reply_from_local_transport(
+    server: &FakeServer,
+    request: &ChatRequest<'_>,
+) -> (AssistantTurn, Vec<StreamEvent>) {
+    let mut owner = owner();
+    let lease = owner.try_request().unwrap();
+    let mut events = Vec::new();
+    let reply = transport(server)
+        .chat(
+            &mut owner,
+            lease,
+            request,
+            &mut Monitor {
+                cancel: &CancelToken::new(),
+                memory: &mut memory,
+                healthy: &mut || Ok(true),
+            },
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+    (reply, events)
+}
+
+#[test]
+fn local_transport_delivers_prefill_comments_as_typed_progress() {
+    // Use the fake child's deterministic prefill response to exercise comment
+    // forwarding without timing assumptions or advertising H6 on the factory.
+    let server = FakeServer::start(
+        vec![],
+        FakeOpts {
+            controller: false,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let prefix = prefix();
+    let request = ChatRequest {
+        max_tokens: 0,
+        ..ChatRequest::new(&prefix, &[], "fake-model")
+    };
+    let (reply, events) = reply_from_local_transport(&server, &request);
+    assert!(reply.usage.prompt > 0);
+    assert_eq!(
+        events,
+        [StreamEvent::Prefill {
+            done: reply.usage.prompt,
+            total: reply.usage.prompt,
+            secs: 0,
+        }]
+    );
+}
+
+#[test]
+fn local_transport_returns_length_when_generation_fills_the_context() {
+    let prefix = prefix();
+    let messages = [WireMsg::user("Synthetic question")];
+    let prompt = oxa_fake::cache_bytes(&prefix.system_text(), &prefix.tools_json, &messages).len() as u32;
+    let context_window = prompt + 20;
+    let server = FakeServer::start(
+        vec![ScriptTurn::text(&"x".repeat(40))],
+        FakeOpts {
+            n_ctx: context_window,
+            controller: false,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let request = ChatRequest {
+        max_tokens: context_window,
+        ..ChatRequest::new(&prefix, &messages, "fake-model")
+    };
+
+    let (reply, _) = reply_from_local_transport(&server, &request);
+    assert_eq!(server.requests()[0].max_tokens, context_window);
+    assert_eq!(reply.finish, Finish::Length);
+    assert_eq!((reply.usage.prompt, reply.usage.completion), (prompt, 20));
+}
+
+#[test]
+fn local_transport_starts_a_new_reply_after_trailing_assistant_history() {
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("A new synthetic answer")],
+        FakeOpts {
+            controller: false,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let messages = [
+        WireMsg::user("Synthetic question"),
+        WireMsg::assistant("The earlier answer"),
+    ];
+
+    let (reply, _) =
+        reply_from_local_transport(&server, &ChatRequest::new(&prefix(), &messages, "fake-model"));
+    assert_eq!(server.requests()[0].messages, messages);
+    assert_eq!(reply.msg.content.as_deref(), Some("A new synthetic answer"));
 }
 
 #[test]
