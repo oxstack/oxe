@@ -6,7 +6,7 @@ permissions:
   contents: read
 concurrency:
   group: dev-build
-  cancel-in-progress: true
+  cancel-in-progress: false
 defaults:
   run:
     shell: bash
@@ -90,6 +90,17 @@ jobs:
           cp "$BUNDLE" "dist/ox-llm-$VERSION.provenance.jsonl"
           # Only a genuine 404 permits creation; auth/network failures fail closed.
           missing() { grep -q 'HTTP 404' "$1"; }
+          # Publish only forward: this commit must still be on main and must be
+          # newer than (or equal to) the commit the dev tag points at. Runs are
+          # serialized by the concurrency group, so nothing races this check.
+          on_main=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)
+          case "$on_main" in ahead|identical) ;; *) echo "::notice::$GITHUB_SHA is not on main ($on_main); not publishing"; exit 0;; esac
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/dev" --jq .object.sha > dev-sha 2> dev-error; then
+            forward=$(gh api "repos/$GITHUB_REPOSITORY/compare/$(cat dev-sha)...$GITHUB_SHA" --jq .status)
+            case "$forward" in ahead|identical) ;; *) echo "::notice::dev already at a newer commit ($forward); not publishing"; exit 0;; esac
+          else
+            missing dev-error || { cat dev-error >&2; exit 1; }
+          fi
           release="repos/$GITHUB_REPOSITORY/releases/tags/dev"
           if ! gh api "$release" > release.json 2> release-error; then
             missing release-error || { cat release-error >&2; exit 1; }
@@ -97,7 +108,6 @@ jobs:
               --prerelease --latest=false --title 'Development build'
           fi
           gh release upload dev dist/* --repo "$GITHUB_REPOSITORY" --clobber
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$GITHUB_SHA"
           ref="repos/$GITHUB_REPOSITORY/git/refs/tags/dev"
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/dev" > /dev/null 2> ref-error; then
             gh api --method PATCH "$ref" -f sha="$GITHUB_SHA" -F force=true > /dev/null
