@@ -1,0 +1,115 @@
+name: dev-build
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: dev-build
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  version:
+    if: github.repository == 'oxstack/ox-llm'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: version
+        run: |
+          version=$(python3 -I -c 'import tomllib; print(tomllib.load(open("oxa/Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*$ ]]
+          echo "version=v$version-dev.${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+  build:
+    needs: version
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+  publish:
+    needs: [version, build]
+    if: github.repository == 'oxstack/ox-llm' && github.ref == 'refs/heads/main' && !github.event.repository.private
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-build-*
+          path: combined
+      - name: Keep both qualified payloads and architecture-specific proof receipts
+        run: |
+          set -euo pipefail
+          mkdir dist
+          for arch in aarch64 x86_64; do
+            source="combined/release-build-$arch"
+            (cd "$source" && sha256sum -c SHA256SUMS)
+            cp "$source/ox-llm-$VERSION-linux-$arch.tar.gz" "$source/ox-llm-$VERSION-linux-$arch.sbom.cdx.json" dist/
+            for proof in REPRODUCIBILITY TOOLCHAIN NO-PYTHON-PROOF; do
+              cp "$source/$proof.txt" "dist/ox-llm-$VERSION-linux-$arch.$proof.txt"
+            done
+          done
+          python3 -I - <<'PY'
+          import pathlib, tarfile
+          for path in pathlib.Path('dist').glob('*.tar.gz'):
+              with tarfile.open(path) as archive:
+                  names = set()
+                  for member in archive.getmembers():
+                      name = pathlib.PurePosixPath(member.name)
+                      assert name.parts[0] == 'usr' and '..' not in name.parts, 'unsafe payload path'
+                      assert member.isdir() or member.isfile(), 'unsupported payload entry'
+                      assert not str(name).startswith('usr/share/ox-llm/oxc/'), 'Python controller payload'
+                      if member.isfile() and name.parent == pathlib.PurePosixPath('usr/bin'):
+                          assert archive.extractfile(member).read(4) == b'\x7fELF', 'non-native product executable'
+                          names.add(name.name)
+                  assert 'oxa' in names, 'missing native oxa'
+          PY
+          (cd dist && sha256sum -- * > SHA256SUMS && sha256sum -c SHA256SUMS)
+          cp dist/SHA256SUMS "dist/SHA256SUMS-$VERSION"
+      - name: Provenance for the exact dev assets and checksums
+        id: provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Advance only the rolling dev prerelease
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE" "dist/ox-llm-$VERSION.provenance.jsonl"
+          # Only a genuine 404 permits creation; auth/network failures fail closed.
+          missing() { grep -q 'HTTP 404' "$1"; }
+          release="repos/$GITHUB_REPOSITORY/releases/tags/dev"
+          if ! gh api "$release" > release.json 2> release-error; then
+            missing release-error || { cat release-error >&2; exit 1; }
+            gh release create dev --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --prerelease --latest=false --title 'Development build'
+          fi
+          gh release upload dev dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$GITHUB_SHA"
+          ref="repos/$GITHUB_REPOSITORY/git/refs/tags/dev"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/dev" > /dev/null 2> ref-error; then
+            gh api --method PATCH "$ref" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            missing ref-error || { cat ref-error >&2; exit 1; }
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/dev -f sha="$GITHUB_SHA" > /dev/null
+          fi
+          printf 'Qualified main commit: %s\nVersion: %s\nRun: %s/%s/actions/runs/%s\n' \
+            "$GITHUB_SHA" "$VERSION" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > notes.md
+          gh release edit dev --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft=false \
+            --prerelease --latest=false --title "Development $VERSION" --notes-file notes.md
+          # Publication is committed above. Remove superseded assets, never another tag/release.
+          gh api "$release" --jq '.assets[].name' | while IFS= read -r asset; do
+            test -f "dist/$asset" || gh release delete-asset dev --repo "$GITHUB_REPOSITORY" --yes -- "$asset"
+          done
