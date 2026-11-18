@@ -184,6 +184,7 @@ fn typed_request_streams_tools_usage_and_text_without_controller_routes() {
             text: Some("Local λ answer".into()),
             tool_calls: vec![tool.clone()],
             finish: Finish::ToolCalls,
+            fault: Some(Fault::Queued { count: 2, pos: false }),
             ..ScriptTurn::text("")
         }],
         FakeOpts {
@@ -219,7 +220,18 @@ fn typed_request_streams_tools_usage_and_text_without_controller_routes() {
         .unwrap();
     assert_eq!(reply.finish, Finish::ToolCalls);
     assert_eq!(reply.msg.tool_calls, vec![tool]);
-    assert!(events.iter().any(|e| matches!(e, StreamEvent::Text(_))));
+    assert!(
+        matches!(
+            events.as_slice(),
+            [
+                StreamEvent::Queued { pos: None, wait_s: 0 },
+                StreamEvent::Queued { pos: None, wait_s: 1 },
+                StreamEvent::Text(_),
+                ..
+            ]
+        ),
+        "child keepalives must reach the caller before reply text: {events:?}"
+    );
     assert!(reply.usage.prompt > 0);
     assert_eq!(server.requests().len(), 1);
     for (method, path) in [
