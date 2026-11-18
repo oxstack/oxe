@@ -885,18 +885,23 @@ mod tests {
         if std::env::var("SYNTHETIC_LOCAL_CHILD").as_deref() == Ok("1") {
             let port = std::env::var("SYNTHETIC_LOCAL_PORT").unwrap().parse().unwrap();
             let model = std::env::var("SYNTHETIC_LOCAL_ALIAS").unwrap();
-            let turns = if std::env::var_os("SYNTHETIC_LOCAL_OVERFLOW").is_some() {
-                vec![ScriptTurn::fault(Fault::StreamError {
+            let turns = match std::env::var("SYNTHETIC_LOCAL_CASE").as_deref() {
+                Ok("overflow") => vec![ScriptTurn::fault(Fault::StreamError {
                     queued: 0,
                     status: 400,
                     error_type: "exceed_context_size_error".into(),
                     event: false,
-                })]
-            } else {
-                vec![
+                })],
+                Ok("continuation") => vec![
+                    ScriptTurn::text("First synthetic answer"),
+                    ScriptTurn::text("Second synthetic answer"),
+                    ScriptTurn::text("Third synthetic answer"),
+                ],
+                Err(_) => vec![
                     ScriptTurn::tool("read-note", "read", "{\"path\":\"note.txt\"}"),
                     ScriptTurn::text("Synthetic task finished"),
-                ]
+                ],
+                Ok(case) => panic!("unknown synthetic local case: {case}"),
             };
             let _server = FakeServer::start(
                 turns,
@@ -965,10 +970,8 @@ mod tests {
         drop(engine);
     }
 
-    #[test]
-    fn owned_child_in_stream_overflow_reaches_caller_without_output() {
-        let env = TestEnv::new();
-        let mut engine = engine(&env, Policy::default());
+    fn engine_for_case(env: &TestEnv, case: &'static str) -> LocalEngine {
+        let mut engine = engine(env, Policy::default());
         let model = engine.models.get_mut("fake-model").unwrap();
         let launch = model.launch.clone();
         model.launch = Arc::new(move |port| {
@@ -976,10 +979,44 @@ mod tests {
             child
                 .config
                 .environment
-                .insert("SYNTHETIC_LOCAL_OVERFLOW".into(), "1".into());
+                .insert("SYNTHETIC_LOCAL_CASE".into(), case.into());
             Ok(child)
         });
+        engine
+    }
 
+    #[test]
+    fn owned_child_plain_continuation_keeps_the_prompt_cache() {
+        let env = TestEnv::new();
+        let engine = engine_for_case(&env, "continuation");
+        let prefix = prefix();
+        let chat = |messages: &[WireMsg]| {
+            let mut request = ChatRequest::new(&prefix, messages, "fake-model");
+            request.hints.session = "plain-continuation";
+            engine.chat(&request, &CancelToken::new(), &mut |_| {}).unwrap()
+        };
+
+        let mut messages = vec![WireMsg::user("First synthetic question")];
+        let mut reply = chat(&messages);
+        assert_eq!(reply.usage.cached, 0);
+        let pid = engine.status().pid.unwrap();
+
+        for question in ["Second synthetic question", "Third synthetic question"] {
+            assert!(reply.usage.completion > 0);
+            let expected = reply.usage.prompt + reply.usage.completion - 1;
+            messages.push(reply.msg);
+            messages.push(WireMsg::user(question));
+            reply = chat(&messages);
+            assert!(!reply.usage.cached_missing);
+            assert_eq!(reply.usage.cached, expected, "{question}");
+            assert_eq!(engine.status().pid, Some(pid));
+        }
+    }
+
+    #[test]
+    fn owned_child_in_stream_overflow_reaches_caller_without_output() {
+        let env = TestEnv::new();
+        let engine = engine_for_case(&env, "overflow");
         let mut events = Vec::new();
         let error = engine
             .chat(
