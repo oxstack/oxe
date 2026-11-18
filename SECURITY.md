@@ -18,4 +18,6 @@ Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursio
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
 
+The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
+
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
