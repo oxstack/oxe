@@ -16,13 +16,14 @@ the same external `dtc` and `fdtoverlay` tools. BLAKE2b checksums use coreutils
 `b2sum`; SHA-256 uses the workspace's existing `sha2` crate. Missing tools refuse
 rebuild while retaining STOCK; no runtime Python dependency is introduced.
 
-The 19 named Rust behavior tests correspond to the 19 Python tests. The
-additional differential test runs the actual Python and Rust commands against
-identical synthetic menus/policies/images and compares exit codes and exact ESP
-file bytes after every command. Each subject runs in mandatory bubblewrap with
-private `/boot`, `/sys`, `/usr/lib/modules`, `/run/lock`, and HOME, with no network.
-DTC commands use synthetic executable fixtures; no real firmware, modules or ESP
-is used. Python remains a test oracle only, excluded from the installed helper.
+The 19 named Rust behavior tests correspond to the 19 legacy Python tests.
+The differential suite runs the actual Rust command over 28 scenarios and
+52 steps and compares its exit status, selected output and ESP file digests
+with the captured [boot oracle](tests/boot-oracle.json). The test tooling uses
+Python to prepare synthetic fixtures and compares results in mandatory
+bubblewrap with private `/boot`, `/sys`, `/usr/lib/modules`, `/run/lock`, and HOME,
+with no network. DTC commands use synthetic executable fixtures. The installed
+Rust helper requires no Python.
 
 Boot-default tooling requires the orchestrator's source review before merge.
 Laptop installation and hardware validation require the owner's explicit approval.
