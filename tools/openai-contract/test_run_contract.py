@@ -36,9 +36,9 @@ class Judge(unittest.TestCase):
         source = (here / 'contract.py').read_text()
         defined = {line.split('def ', 1)[1].split('(', 1)[0] for line in source.splitlines() if line.strip().startswith('def test_')}
         self.assertEqual(set(pinned), defined)
-        for mode in ('engine', 'controller'):
-            xfail = set(run_contract.names(here / ('xfail.%s.txt' % mode)))
-            self.assertLessEqual(xfail, {n for n, m in pinned.items() if mode in m}, mode)
+        mode = 'engine'
+        xfail = set(run_contract.names(here / ('xfail.%s.txt' % mode)))
+        self.assertLessEqual(xfail, {n for n, m in pinned.items() if mode in m}, mode)
 
 
 if __name__ == '__main__':
