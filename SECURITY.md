@@ -14,6 +14,9 @@ Treat as **high** severity:
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
 - new `unsafe`/FFI/process/network code in the engine without bounds checks.
 
+The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
+paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
