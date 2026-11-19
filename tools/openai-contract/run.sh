@@ -6,12 +6,13 @@
 #
 # usage: tools/openai-contract/run.sh --mode engine [--server BIN] [--work DIR]
 #                                     [--venv DIR] [--strict] [--keep]
-#   --server BIN  a built oxe-server (default: cargo build --release --locked -p server in engine/)
-#   --venv DIR    a venv to (re)use for the SDK (default: DIR under --work); requirements.txt is installed
-#   --strict      no expected failures (ignore xfail.<mode>.txt)
+#   --server BIN   a built oxe-server (default: cargo build --release --locked -p server in engine/)
+#   --venv DIR     a venv to (re)use for the SDK (default: DIR under --work); requirements.txt is installed
+#   --strict       no expected failures (ignore xfail.<mode>.txt)
+#   --keep         keep the work directory and its logs
 # Servers: engine E1 (stub reply text, slow prefill 2 ms/token so a request can be cut in flight),
 # engine E2 (stub reply = two tool calls).
-# Prints 'OPENAI CONTRACT RESULT: PASS|FAIL ...' per mode; exit 0 only when every mode passed.
+# Prints 'OPENAI CONTRACT RESULT: PASS|FAIL ...'; exit 0 only when the engine mode passed.
 # Model-free; no network beyond 127.0.0.1 except pip (PyPI) for the pinned SDK.
 set -euo pipefail
 
@@ -26,7 +27,7 @@ while [ $# -gt 0 ]; do
     --venv) venv=$2; shift 2 ;;
     --strict) strict=1; shift ;;
     --keep) keep=1; shift ;;
-    -h|--help) sed -n 2,16p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,19p "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -60,8 +61,8 @@ venv=${venv:-$work/venv}
 "$venv/bin/python" -c 'import openai, sys; print("openai-python", openai.__version__)'
 
 N_CTX=32768
-ALIAS=ornith-35b-a3b-local
-LIMITED=qwen3.6-35b-a3b-local  # its output default is 4 tokens
+ALIAS=ornith-35b-a3b-local     # the model alias the stub engine serves
+LIMITED=qwen3.6-35b-a3b-local  # the model name the contract asks for by default
 TOOL_REPLY=$'Checking both.\n\n<tool_call>\n<function=get_weather>\n<parameter=city>\nOslo\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=get_time>\n<parameter=zone>\nUTC\n</parameter>\n</function>\n</tool_call>'
 mkdir -p "$work/home" "$work/logs"
 
@@ -88,19 +89,19 @@ start_engine e2 --stub-reply "$TOOL_REPLY"; e2=$started
 slow=1
 
 rc=0
-run_mode() { # mode, url, tools url, idle url, engine url
+run_mode() { # mode, engine url, tools engine url
   local m=$1 args=(--mode "$1")
   if [ "$strict" = 1 ]; then args+=(--strict); fi
   echo "== OpenAI contract, mode $m"
   set +e
-  OAC_URL=$2 OAC_TOOLS_URL=$3 OAC_IDLE_URL=$4 OAC_ENGINE_URL=$5 OAC_SLOW=$slow OAC_DEFAULT_MODEL=$LIMITED OAC_N_CTX=$N_CTX \
+  OAC_URL=$2 OAC_TOOLS_URL=$3 OAC_IDLE_URL= OAC_ENGINE_URL=$2 OAC_SLOW=$slow OAC_DEFAULT_MODEL=$LIMITED OAC_N_CTX=$N_CTX \
     "$venv/bin/python" -I "$here/run_contract.py" "${args[@]}" 2>&1 | tee "$work/logs/contract-$m.log"
   local status=${PIPESTATUS[0]}
   set -e
   [ "$status" = 0 ] || rc=1
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then grep -h 'OPENAI CONTRACT RESULT' "$work/logs/contract-$m.log" >>"$GITHUB_STEP_SUMMARY" || true; fi
 }
-run_mode engine "http://127.0.0.1:$e1" "http://127.0.0.1:$e2" "" "http://127.0.0.1:$e1"
+run_mode engine "http://127.0.0.1:$e1" "http://127.0.0.1:$e2"
 if [ "$rc" != 0 ]; then
   echo "--- server logs (tail)"; for f in "$work"/logs/engine-*.log; do
     [ -f "$f" ] && { echo "## $f"; tail -n 30 "$f"; }; done
