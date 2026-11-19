@@ -18,6 +18,12 @@ Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursio
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
 
+For `oxa work`, a task with zero or skipped checks remains `Unverified` and lacks a publishable
+acceptance receipt. Project files and worker replies cannot change the owner-only
+`oxa.work.localChecks` setting, which defaults to per-package `cargo check`. Rust acceptance
+requires hosted test evidence for the exact head, including for changed inputs outside packages
+in a tree with Cargo manifests. A worker declaration can add requirements to that evidence.
+
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
