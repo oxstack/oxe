@@ -1,4 +1,6 @@
 // Record the engine's git commit (plus "-dirty") in the M0 report.
+mod build_support;
+
 use std::process::Command;
 
 fn main() {
@@ -27,12 +29,10 @@ fn main() {
         }
         println!("cargo:rustc-env=OXE_GIT_COMMIT={s}");
     }
-    // A watched path that does not exist (a git worktree has a .git file, not a directory)
-    // counts as changed on every run, so watch only the files that exist.
+    // Ask Git for the per-worktree metadata paths: in a linked worktree, `.git` is a
+    // pointer file and HEAD/index live under the main repository's worktrees directory.
     let manifest = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    for watched in ["../../../.git/HEAD", "../../../.git/index"] {
-        if manifest.join(watched).exists() {
-            println!("cargo:rerun-if-changed={watched}");
-        }
+    for watched in build_support::git_metadata_paths(&manifest) {
+        println!("cargo:rerun-if-changed={}", watched.display());
     }
 }
