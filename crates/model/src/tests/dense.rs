@@ -149,6 +149,25 @@ fn mini_dense_descriptor_tied_head_and_no_mtp() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn mini_dense_rejects_f32_down_projection_before_engine_construction() {
+    let (dir, path) = dense_paths("f32-down");
+    let g = gguf::Gguf::open(&path).unwrap();
+    let d = ModelDesc::from_header(&g.header).unwrap();
+    let plan = Plan::build(&g.header, &d, 3, 512).unwrap();
+    let mut tensors = g.header.tensors.clone();
+    let crate::plan::Ffn::Dense(ffn) = &plan.layers[0].ffn else {
+        unreachable!()
+    };
+    let down = ffn.down;
+    tensors[down].ty = gguf::GgmlType::F32;
+
+    let err = WeightStore::check_supported(&plan, &tensors).unwrap_err();
+    assert!(err.contains("blk.0.ffn_down.weight"), "{err}");
+    assert!(err.contains("F32 dense down projection"), "{err}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The dense FFN of every layer and the tied head against f32 math on the original GGUF rows
 /// (down(silu(gate . xn) * (up . xn)), embedding rows . result_norm), from the engine's own
 /// intermediates. Pure f32 differs by the activation quantisation of the GEMVs (a few percent on

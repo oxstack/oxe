@@ -984,6 +984,18 @@ impl WeightStore {
         for id in Self::ids(plan) {
             layout_for(&tensors[id], id == plan.embd)?;
         }
+        for layer in &plan.layers {
+            let crate::plan::Ffn::Dense(ffn) = &layer.ffn else {
+                continue;
+            };
+            let down = &tensors[ffn.down];
+            if down.ty == GgmlType::F32 {
+                return Err(format!(
+                    "{}: F32 dense down projection is not supported by decode",
+                    down.name
+                ));
+            }
+        }
         Ok(())
     }
 
