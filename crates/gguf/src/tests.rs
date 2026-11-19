@@ -360,3 +360,42 @@ fn mutated_headers_never_panic() {
     }
     assert!(parsed > 0);
 }
+
+/// A header of `arch` with the given (name, offset) F32 [256, 4] tensors.
+fn arch_header(arch: &str, tensors: &[(&str, u64)]) -> Vec<u8> {
+    let mut b = b"GGUF".to_vec();
+    b.extend(3u32.to_le_bytes());
+    b.extend((tensors.len() as u64).to_le_bytes());
+    b.extend(1u64.to_le_bytes());
+    put_str(&mut b, "general.architecture");
+    b.extend(8u32.to_le_bytes());
+    put_str(&mut b, arch);
+    for (name, off) in tensors {
+        put_str(&mut b, name);
+        b.extend(2u32.to_le_bytes());
+        b.extend(256u64.to_le_bytes());
+        b.extend(4u64.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        b.extend(off.to_le_bytes());
+    }
+    b
+}
+
+/// A dense qwen35 file without `output.weight` gets the head as an alias of the embedding (same
+/// data range); a file with its own head, and the MoE architecture, are left as they are.
+#[test]
+fn tied_head_aliases_the_embedding_only_where_the_architecture_ties_it() {
+    let h = parse_header(&arch_header("qwen35", &[("token_embd.weight", 4096)])).unwrap();
+    let e = h.tensor("token_embd.weight").unwrap();
+    let o = h.tensor(OUTPUT_HEAD).expect("tied head");
+    assert_eq!((&o.shape, o.ty, o.offset), (&e.shape, e.ty, e.offset));
+    assert_eq!(h.tensors.len(), 2);
+
+    let own = [("token_embd.weight", 0), ("output.weight", 4096)];
+    let h = parse_header(&arch_header("qwen35", &own)).unwrap();
+    assert_eq!(h.tensors.len(), 2);
+    assert_eq!(h.tensor(OUTPUT_HEAD).unwrap().offset, 4096);
+
+    let h = parse_header(&arch_header("qwen35moe", &[("token_embd.weight", 0)])).unwrap();
+    assert!(h.tensor(OUTPUT_HEAD).is_none());
+}

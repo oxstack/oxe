@@ -237,7 +237,10 @@ fn candidates(plan: &Plan, cfg: Config) -> BTreeSet<Tid> {
             Mixer::Recurrent { .. } => {}
             Mixer::Attention { q, k, v, out, .. } => ids.extend([q, k, v, out]),
         }
-        ids.extend([l.gate_shexp, l.up_shexp, l.down_shexp]);
+        match &l.ffn {
+            crate::plan::Ffn::Moe(m) => ids.extend([m.gate_shexp, m.up_shexp, m.down_shexp]),
+            crate::plan::Ffn::Dense(f) => ids.extend([f.gate, f.up, f.down]),
+        }
     }
     ids
 }

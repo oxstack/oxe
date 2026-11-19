@@ -3168,6 +3168,7 @@ fn mtp_sidecar_head_sha_ignores_model_sha_env() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+mod dense;
 mod fprec;
 mod longctx;
 
@@ -3343,12 +3344,25 @@ fn mini_fused_verify_lanes_are_batch_invariant_with_rollback() {
 #[test]
 fn mini_f32_reference_batch_step_and_thread_invariant() {
     let (dir, path) = mini_paths("f32ref");
+    f32_reference_batch_step_and_thread_invariant(&dir, &path);
+    // the dense qwen35 FFN and the tied head go through the same original-row reference (own
+    // cache directory: OXE_MODEL_SHA256 names both files' caches)
+    let dense_dir = dir.join("dense");
+    std::fs::create_dir_all(&dense_dir).unwrap();
+    let dense = dense_dir.join("dense.gguf");
+    mini_dense_model(&dense);
+    f32_reference_batch_step_and_thread_invariant(&dense_dir, &dense);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[cfg(feature = "f32-reference")]
+fn f32_reference_batch_step_and_thread_invariant(dir: &std::path::Path, path: &std::path::Path) {
     std::env::set_var("OXE_MODEL_SHA256", "0".repeat(64));
-    let opt = mini_opts(&dir);
+    let opt = mini_opts(dir);
     let toks: Vec<u32> = (0..48).map(|i| ((i * 17 + 5) % 64) as u32).collect();
     let mut reference_rows = Vec::new();
     for n in [1, 2] {
-        let (plan, ws, pool) = mini_engine_parts(&path, &opt, n);
+        let (plan, ws, pool) = mini_engine_parts(path, &opt, n);
         let cfg = EngineConfig {
             n_ctx: 512,
             logits: true,
@@ -3358,7 +3372,7 @@ fn mini_f32_reference_batch_step_and_thread_invariant() {
         let mut batch = Engine::new(&plan, &ws, cfg.clone()).unwrap();
         let mut single_token = Engine::new(&plan, &ws, cfg).unwrap();
         for e in [&mut batch, &mut single_token] {
-            e.enable_f32_reference(gguf::Gguf::open(&path).unwrap(), &ws.info.model_sha256)
+            e.enable_f32_reference(gguf::Gguf::open(path).unwrap(), &ws.info.model_sha256)
                 .unwrap();
         }
         batch.prefill(&pool, &toks, 64).unwrap();
@@ -3411,7 +3425,6 @@ fn mini_f32_reference_batch_step_and_thread_invariant() {
             );
         }
     }
-    std::fs::remove_dir_all(dir).ok();
 }
 
 #[cfg(feature = "npu-prefill")]
@@ -3429,7 +3442,7 @@ fn original_recurrent_float_rows_use_open_file_and_residual_stride() {
     let w = ws.get(qkv);
     assert!(rows.contains(w.ptr));
     assert!(rows.count() >= 3);
-    assert!(!rows.contains(ws.get(plan.layers[1].gate_shexp).ptr));
+    assert!(!rows.contains(ws.get(plan.layers[1].moe().gate_shexp).ptr));
     let source = crate::npu_rows::GgufRows::new(
         &g.header.tensors[qkv],
         g.tensor_data(&g.header.tensors[qkv]),

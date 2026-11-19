@@ -20,7 +20,9 @@
 
 use crate::desc::ModelDesc;
 use crate::engine::{Engine, MAX_LANES};
-use crate::plan::{split, split_rows, LayerTensors, Mixer, Phase, PhaseKind, Plan, Tid, Work};
+use crate::plan::{
+    split, split_rows, Ffn, LayerTensors, Mixer, MoeTensors, Phase, PhaseKind, Plan, Tid, Work,
+};
 use crate::weights::{LoadOptions, WeightRef, WeightStore};
 use gguf::{GgmlType, Gguf};
 use sched::Team;
@@ -109,6 +111,9 @@ fn bf16_to_f32(b: &[u8]) -> Box<[f32]> {
 impl MtpWeights {
     /// Load `blk.{n_layer}.*` of `model` (its own cache file `<sha>-<engine>-mtp.bin`).
     pub fn load(model: &Path, plan: &Plan, opt: &LoadOptions) -> Result<MtpWeights, String> {
+        if plan.desc.is_dense() {
+            return Err("MTP head: the dense FFN models have no MTP block".into());
+        }
         let g = Gguf::open(model).map_err(|e| e.to_string())?;
         let h = &g.header;
         let il = plan.desc.n_layer;
@@ -129,14 +134,16 @@ impl MtpWeights {
                 k_norm: find("attn_k_norm.weight")?,
                 out: find("attn_output.weight")?,
             },
-            router: find("ffn_gate_inp.weight")?,
-            shexp_gate: find("ffn_gate_inp_shexp.weight")?,
-            gate_exps: find("ffn_gate_exps.weight")?,
-            up_exps: find("ffn_up_exps.weight")?,
-            down_exps: find("ffn_down_exps.weight")?,
-            gate_shexp: find("ffn_gate_shexp.weight")?,
-            up_shexp: find("ffn_up_shexp.weight")?,
-            down_shexp: find("ffn_down_shexp.weight")?,
+            ffn: Ffn::Moe(MoeTensors {
+                router: find("ffn_gate_inp.weight")?,
+                shexp_gate: find("ffn_gate_inp_shexp.weight")?,
+                gate_exps: find("ffn_gate_exps.weight")?,
+                up_exps: find("ffn_up_exps.weight")?,
+                down_exps: find("ffn_down_exps.weight")?,
+                gate_shexp: find("ffn_gate_shexp.weight")?,
+                up_shexp: find("ffn_up_shexp.weight")?,
+                down_shexp: find("ffn_down_shexp.weight")?,
+            }),
         };
         let (eh_proj, enorm, hnorm, head_norm) = (
             find("nextn.eh_proj.weight")?,
@@ -218,14 +225,19 @@ impl MtpWeights {
             attn_norm: layer.attn_norm + b,
             post_norm: layer.post_norm + b,
             mixer,
-            router: layer.router + b,
-            shexp_gate: layer.shexp_gate + b,
-            gate_exps: layer.gate_exps + b,
-            up_exps: layer.up_exps + b,
-            down_exps: layer.down_exps + b,
-            gate_shexp: layer.gate_shexp + b,
-            up_shexp: layer.up_shexp + b,
-            down_shexp: layer.down_shexp + b,
+            ffn: {
+                let m = layer.moe();
+                Ffn::Moe(MoeTensors {
+                    router: m.router + b,
+                    shexp_gate: m.shexp_gate + b,
+                    gate_exps: m.gate_exps + b,
+                    up_exps: m.up_exps + b,
+                    down_exps: m.down_exps + b,
+                    gate_shexp: m.gate_shexp + b,
+                    up_shexp: m.up_shexp + b,
+                    down_shexp: m.down_shexp + b,
+                })
+            },
         };
         Ok(MtpWeights {
             layer,

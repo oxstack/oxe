@@ -27,7 +27,7 @@
 //!   all with identical inputs and code, so they agree bit for bit.
 
 use crate::desc::{LayerKind, ModelDesc};
-use crate::plan::{LayerTensors, Mixer, Phase, PhaseKind, Plan, Tid, Work};
+use crate::plan::{Ffn, LayerTensors, Mixer, Phase, PhaseKind, Plan, Tid, Work};
 use crate::weights::{Mapping, WeightRef, WeightStore};
 use kernels_sys::{ffi, gemv_raw, ops, quantize_act, ActType, QType, QK_K};
 use sched::{Ctx, Team};
@@ -233,10 +233,10 @@ pub fn tick_hz() -> u64 {
 /// count, KV positions x row bytes for its share of the heads, delta-net state per lane).
 #[derive(Clone, Default, Debug)]
 pub struct Prof {
-    pub phase_work: [u64; 9],
-    pub phase_wait: [u64; 9],
+    pub phase_work: [u64; PhaseKind::ALL.len()],
+    pub phase_wait: [u64; PhaseKind::ALL.len()],
     pub tokens: u64,
-    pub phase_bytes: [u64; 9],
+    pub phase_bytes: [u64; PhaseKind::ALL.len()],
     /// work ticks of sub-steps, see [`PROF_SUB_NAMES`]
     pub sub_work: [u64; 2],
 }
@@ -257,6 +257,8 @@ pub fn phase_class(k: PhaseKind) -> &'static str {
         PhaseKind::MoeGateUp => "expert gate/up",
         PhaseKind::MoeDown => "expert down + shared down",
         PhaseKind::Head => "output head",
+        PhaseKind::DenseGateUp => "dense FFN gate/up",
+        PhaseKind::DenseDown => "dense FFN down",
     }
 }
 
@@ -1159,13 +1161,19 @@ impl<'a> Engine<'a> {
         if lanes > MAX_LANES {
             return Err(format!("{lanes} lanes > MAX_LANES {MAX_LANES}"));
         }
-        let mut downs: Vec<(Tid, Tid)> = plan
+        // (routed down, down over a full FFN row in hsh): the MoE's experts and shared expert,
+        // or the dense FFN's down (no routed experts)
+        let mut downs: Vec<(Option<Tid>, Tid)> = plan
             .layers
             .iter()
-            .map(|l| (l.down_exps, l.down_shexp))
+            .map(|l| match &l.ffn {
+                Ffn::Moe(m) => (Some(m.down_exps), m.down_shexp),
+                Ffn::Dense(f) => (None, f.down),
+            })
             .collect();
         if let Some(m) = opt.mtp {
-            downs.push((m.layer.down_exps, m.layer.down_shexp));
+            let mm = m.layer.moe();
+            downs.push((Some(mm.down_exps), mm.down_shexp));
         }
         let get = |id: Tid| -> &WeightRef {
             if id >= crate::mtp::MTP_TID_BASE {
@@ -1178,9 +1186,10 @@ impl<'a> Engine<'a> {
         };
         let hq_blk = downs
             .iter()
-            .map(|&(a, _)| get(a).qtype().act().bytes(QK_K))
+            .filter_map(|&(a, _)| a)
+            .map(|a| get(a).qtype().act().bytes(QK_K))
             .max()
-            .unwrap();
+            .unwrap_or(0);
         let hsh_blk = downs
             .iter()
             .map(|&(_, b)| get(b).qtype().act().bytes(QK_K))
@@ -1216,8 +1225,10 @@ impl<'a> Engine<'a> {
         let o = c.lanes::<f32>(d.ssm_d_inner.max(att_width), lanes);
         let kraw = c.lanes::<f32>(d.n_head_kv * hd, lanes);
         let router = c.lanes::<f32>(d.n_expert, lanes);
-        let hsh = c.lanes::<f32>(d.ff_shexp, lanes);
-        let hsh_q = c.lanes::<u8>(d.ff_shexp / QK_K * hsh_blk, lanes);
+        // the shared expert's h row, or the dense FFN's (a model has one of the two)
+        let ff_row = d.ff_shexp.max(d.ff_dense);
+        let hsh = c.lanes::<f32>(ff_row, lanes);
+        let hsh_q = c.lanes::<u8>(ff_row / QK_K * hsh_blk, lanes);
         let h = c.lanes::<f32>(k_used * d.ff_exp, lanes);
         let hq = c.lanes::<u8>(k_used * d.ff_exp / QK_K * hq_blk, lanes);
         let logits = c.lanes::<f32>(if cfg.logits { d.n_vocab } else { 0 }, lanes);
@@ -1287,7 +1298,7 @@ impl<'a> Engine<'a> {
             .max(d.ssm_d_inner)
             .max(att_width)
             .max(d.ff_exp)
-            .max(d.ff_shexp)
+            .max(ff_row)
             .max(mtp_width);
         let mut att_index = index_of(d, LayerKind::Attention);
         let mtp = opt.mtp.map(|w| {
@@ -1356,8 +1367,8 @@ impl<'a> Engine<'a> {
                     .max(2 * att_width)
                     .max(d.ssm_conv_channels())
             ],
-            g: vec![0.0; QK_K.max(d.ff_shexp)],
-            u: vec![0.0; QK_K.max(d.ff_shexp)],
+            g: vec![0.0; QK_K.max(ff_row)],
+            u: vec![0.0; QK_K.max(ff_row)],
             probs: vec![0.0; d.n_expert],
             pwp: vec![0.0; d.n_expert],
             ids: vec![0; k_used],
@@ -2809,6 +2820,12 @@ impl<'a> Engine<'a> {
                     self.moe_gate_up(tss, l, tid, units.clone())
                 }
                 (PhaseKind::MoeDown, Work::MoeDown { rows }) => self.moe_down(tss, l, rows.clone()),
+                (PhaseKind::DenseGateUp, Work::DenseGateUp { rows }) => {
+                    self.dense_gate_up(tss, l, tid, rows.clone())
+                }
+                (PhaseKind::DenseDown, Work::DenseDown { rows }) => {
+                    self.dense_down(tss, l, rows.clone())
+                }
                 (PhaseKind::Head, Work::Head { rows }) => self.head(
                     tss,
                     tid,
@@ -4441,15 +4458,8 @@ impl<'a> Engine<'a> {
         sh_rows: Range<usize>,
     ) {
         let d = &self.plan.desc;
-        let lt = self.layer(l);
-        for (ln, ts) in tss.iter_mut().enumerate() {
-            // SAFETY: x1 complete (mixer barrier); read-only until the next mixer phase.
-            let x1 = unsafe { self.x1.at(ln, 0..d.n_embd) };
-            self.norm(ts, Some(x1), lt.post_norm);
-        }
-        if tid == 0 && self.trace.is_some() {
-            self.tr("attn_post_norm", Some(l), d.n_embd, 0, &tss[0].xn.clone());
-        }
+        self.post_norm(tss, l, tid);
+        let lt = self.layer(l).moe();
         let wr = *self.w(lt.router);
         // this thread owns router logits `rows`
         self.mv_xn_lanes(tss, &wr, 0, rows.clone(), |ln, _| {
@@ -4516,7 +4526,7 @@ impl<'a> Engine<'a> {
 
     fn moe_gate_up(&self, tss: &mut [ThreadState], l: usize, tid: usize, units: Range<usize>) {
         let d = &self.plan.desc;
-        let lt = self.layer(l);
+        let lt = self.layer(l).moe();
         let n = tss.len();
         for (ln, ts) in tss.iter_mut().enumerate() {
             self.route(ts, ln);
@@ -4663,7 +4673,7 @@ impl<'a> Engine<'a> {
 
     fn moe_down(&self, tss: &mut [ThreadState], l: usize, rows: Range<usize>) {
         let d = &self.plan.desc;
-        let lt = self.layer(l);
+        let lt = self.layer(l).moe();
         let k = d.n_expert_used;
         let nr = rows.len();
         let n = tss.len();
@@ -4756,6 +4766,103 @@ impl<'a> Engine<'a> {
                 self.tr("ffn_moe_out", Some(l), d.n_embd, rows.start, &moe);
                 self.tr("ffn_shexp", Some(l), d.n_embd, rows.start, &sh);
                 self.tr("ffn_out", Some(l), d.n_embd, rows.start, &fo);
+                self.tr("l_out", Some(l), d.n_embd, rows.start, &x2.to_vec());
+            }
+        }
+    }
+
+    /// xn = post-attention norm of x1 for every lane (redundant on every thread).
+    #[inline]
+    fn post_norm(&self, tss: &mut [ThreadState], l: usize, tid: usize) {
+        let d = &self.plan.desc;
+        let wid = self.layer(l).post_norm;
+        for (ln, ts) in tss.iter_mut().enumerate() {
+            // SAFETY: x1 complete (mixer barrier); read-only until the next mixer phase.
+            let x1 = unsafe { self.x1.at(ln, 0..d.n_embd) };
+            self.norm(ts, Some(x1), wid);
+        }
+        if tid == 0 && self.trace.is_some() {
+            self.tr("attn_post_norm", Some(l), d.n_embd, 0, &tss[0].xn.clone());
+        }
+    }
+
+    // ---------------------------------------------------------------- dense FFN
+
+    /// Dense FFN, part 1: gate/up rows `rows` (whole 256-row blocks) of every lane, h =
+    /// silu(gate) * up into `hsh`, then this thread's h blocks quantised for the down projection
+    /// (llama.cpp: ggml_swiglu_split, then the down mul_mat's from_float). The same kernels as
+    /// the MoE shared expert, without the router and the sigmoid gate.
+    fn dense_gate_up(&self, tss: &mut [ThreadState], l: usize, tid: usize, rows: Range<usize>) {
+        self.post_norm(tss, l, tid);
+        if rows.is_empty() {
+            return;
+        }
+        let Ffn::Dense(f) = &self.layer(l).ffn else {
+            panic!("dense FFN phase on a MoE layer")
+        };
+        let (wg, wu) = (*self.w(f.gate), *self.w(f.up));
+        let n = rows.len();
+        self.mv_xn_lanes(tss, &wg, 0, rows.clone(), |_, ts| ts.g.as_mut_ptr());
+        self.mv_xn_lanes(tss, &wu, 0, rows.clone(), |_, ts| ts.u.as_mut_ptr());
+        let at = self.w(f.down).qtype().act();
+        let blk = at.bytes(QK_K);
+        for (ln, ts) in tss.iter_mut().enumerate() {
+            // SAFETY: this thread owns h rows `rows` and their activation blocks.
+            let h = unsafe { self.hsh.at(ln, rows.clone()) };
+            ops::swiglu(&ts.g[..n], &ts.u[..n], h);
+            let (b0, b1) = (rows.start / QK_K, rows.end / QK_K);
+            let q = unsafe { self.hsh_q.at(ln, b0 * blk..b1 * blk) };
+            for (hb, qb) in h.chunks_exact(QK_K).zip(q.chunks_exact_mut(blk)) {
+                quantize_act(at, hb, qb);
+            }
+            if ln == 0 && self.trace.is_some() {
+                self.tr(
+                    "ffn_swiglu",
+                    Some(l),
+                    self.plan.desc.ff_dense,
+                    rows.start,
+                    &h.to_vec(),
+                );
+            }
+        }
+    }
+
+    /// Dense FFN, part 2: down rows `rows` of every lane, plus the residual into x2.
+    fn dense_down(&self, tss: &mut [ThreadState], l: usize, rows: Range<usize>) {
+        let d = &self.plan.desc;
+        let nr = rows.len();
+        let n = tss.len();
+        if nr == 0 {
+            return;
+        }
+        let Ffn::Dense(f) = &self.layer(l).ffn else {
+            panic!("dense FFN phase on a MoE layer")
+        };
+        let wd = *self.w(f.down);
+        let nulls = [std::ptr::null(); MAX_LANES];
+        let mut outs = [std::ptr::null_mut(); MAX_LANES];
+        let mut acts = [std::ptr::null(); MAX_LANES];
+        for (ln, ts) in tss.iter_mut().enumerate() {
+            outs[ln] = ts.dtmp.as_mut_ptr();
+            // SAFETY: the h activations are complete (DenseGateUp barrier) and read-only here.
+            acts[ln] = self.hsh_q.ptr_at(ln, 0) as *const u8;
+        }
+        self.mv_lanes(&wd, 0, rows.clone(), n, &outs[..n], &nulls[..n], &acts[..n]);
+        for (ln, ts) in tss.iter_mut().enumerate() {
+            // SAFETY: x1 read-only in this phase; this thread owns rows of x2.
+            let x1 = unsafe { self.x1.at(ln, rows.clone()) };
+            let x2 = unsafe { self.x2.at(ln, rows.clone()) };
+            for i in 0..nr {
+                x2[i] = ts.dtmp[i] + x1[i]; // ffn_out + residual (l_out)
+            }
+            if self.trace.is_some() {
+                self.tr(
+                    "ffn_out",
+                    Some(l),
+                    d.n_embd,
+                    rows.start,
+                    &ts.dtmp[..nr].to_vec(),
+                );
                 self.tr("l_out", Some(l), d.n_embd, rows.start, &x2.to_vec());
             }
         }

@@ -280,6 +280,31 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// The dense qwen35 model: the same exact split of the engine total (its FFN rows carved
+    /// instead of the experts), the tied head counted in the bytes per token, and MTP falling
+    /// back (the dense models have no MTP block).
+    #[test]
+    fn dense_model_report_adds_up_and_has_no_mtp() {
+        let dir = std::env::temp_dir().join(format!("oxe-admission-dense-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dense.gguf");
+        crate::testkit::mini_dense_model(&path);
+        let g = gguf::Gguf::open(&path).unwrap();
+        let r = report(&g.header, &rq(1000, 2)).unwrap();
+        assert_eq!(r.architecture, "qwen35");
+        assert_eq!(r.mtp_depth, 0);
+        assert!(r.mtp_fallback.unwrap().contains("no MTP block"));
+        let b = r.budget;
+        assert_eq!(
+            b.kv_bytes_per_position * r.n_ctx_capacity as u64 + b.scratch_bytes,
+            r.engine.total(2, 2) as u64
+        );
+        let embd = g.header.tensor("token_embd.weight").unwrap();
+        assert!(r.bytes_per_token.weights_dense >= embd.bytes());
+        assert_eq!(r.bytes_per_token.weights_expert, 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[test]
     fn refuses_zero_margin_and_context_beyond_training() {
         let (dir, g) = header("ref", false);

@@ -31,11 +31,9 @@ pub enum Mixer {
     },
 }
 
+/// The MoE FFN of a layer: router, routed experts and the gated shared expert.
 #[derive(Clone, Debug)]
-pub struct LayerTensors {
-    pub attn_norm: Tid,
-    pub post_norm: Tid,
-    pub mixer: Mixer,
+pub struct MoeTensors {
     pub router: Tid,
     pub shexp_gate: Tid,
     pub gate_exps: Tid,
@@ -46,18 +44,58 @@ pub struct LayerTensors {
     pub down_shexp: Tid,
 }
 
-impl LayerTensors {
-    pub fn all(&self) -> Vec<Tid> {
-        let mut v = vec![
-            self.attn_norm,
-            self.post_norm,
+impl MoeTensors {
+    pub fn all(&self) -> [Tid; 8] {
+        [
             self.router,
             self.shexp_gate,
             self.gate_exps,
             self.up_exps,
             self.down_exps,
-        ];
-        v.extend([self.gate_shexp, self.up_shexp, self.down_shexp]);
+            self.gate_shexp,
+            self.up_shexp,
+            self.down_shexp,
+        ]
+    }
+}
+
+/// The dense SwiGLU FFN of a `qwen35` layer: down(silu(gate . x) * (up . x)).
+#[derive(Clone, Debug)]
+pub struct DenseFfn {
+    pub gate: Tid,
+    pub up: Tid,
+    pub down: Tid,
+}
+
+#[derive(Clone, Debug)]
+pub enum Ffn {
+    Moe(MoeTensors),
+    Dense(DenseFfn),
+}
+
+#[derive(Clone, Debug)]
+pub struct LayerTensors {
+    pub attn_norm: Tid,
+    pub post_norm: Tid,
+    pub mixer: Mixer,
+    pub ffn: Ffn,
+}
+
+impl LayerTensors {
+    /// The MoE tensors; only MoE phases call this (a dense layer has none).
+    #[inline]
+    pub fn moe(&self) -> &MoeTensors {
+        match &self.ffn {
+            Ffn::Moe(m) => m,
+            Ffn::Dense(_) => panic!("MoE tensors of a dense FFN layer"),
+        }
+    }
+    pub fn all(&self) -> Vec<Tid> {
+        let mut v = vec![self.attn_norm, self.post_norm];
+        match &self.ffn {
+            Ffn::Moe(m) => v.extend(m.all()),
+            Ffn::Dense(f) => v.extend([f.gate, f.up, f.down]),
+        }
         match self.mixer {
             Mixer::Recurrent {
                 qkv,
@@ -94,10 +132,15 @@ pub enum PhaseKind {
     MoeGateUp,
     MoeDown,
     Head,
+    /// Dense FFN (`qwen35`): post-attention norm, gate/up rows (256-row blocks), SwiGLU and the
+    /// down activation blocks.
+    DenseGateUp,
+    /// Dense FFN down rows + residual.
+    DenseDown,
 }
 
 impl PhaseKind {
-    pub const ALL: [PhaseKind; 9] = [
+    pub const ALL: [PhaseKind; 11] = [
         PhaseKind::RecMix,
         PhaseKind::RecOut,
         PhaseKind::AttnQkv,
@@ -107,6 +150,8 @@ impl PhaseKind {
         PhaseKind::MoeGateUp,
         PhaseKind::MoeDown,
         PhaseKind::Head,
+        PhaseKind::DenseGateUp,
+        PhaseKind::DenseDown,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -119,6 +164,8 @@ impl PhaseKind {
             PhaseKind::MoeGateUp => "moe_gate_up",
             PhaseKind::MoeDown => "moe_down",
             PhaseKind::Head => "head",
+            PhaseKind::DenseGateUp => "ffn_gate_up",
+            PhaseKind::DenseDown => "ffn_down",
         }
     }
     pub fn index(self) -> usize {
@@ -164,6 +211,14 @@ pub enum Work {
         rows: Range<usize>,
     },
     Head {
+        rows: Range<usize>,
+    },
+    /// Dense FFN rows (whole 256-row blocks) of gate/up and of the h blocks this thread quantises.
+    DenseGateUp {
+        rows: Range<usize>,
+    },
+    /// Output rows of the dense down projection.
+    DenseDown {
         rows: Range<usize>,
     },
 }
@@ -270,18 +325,29 @@ impl Plan {
                     out: t("attn_output.weight")?,
                 },
             };
+            let ffn = if desc.is_dense() {
+                Ffn::Dense(DenseFfn {
+                    gate: t("ffn_gate.weight")?,
+                    up: t("ffn_up.weight")?,
+                    down: t("ffn_down.weight")?,
+                })
+            } else {
+                Ffn::Moe(MoeTensors {
+                    router: t("ffn_gate_inp.weight")?,
+                    shexp_gate: t("ffn_gate_inp_shexp.weight")?,
+                    gate_exps: t("ffn_gate_exps.weight")?,
+                    up_exps: t("ffn_up_exps.weight")?,
+                    down_exps: t("ffn_down_exps.weight")?,
+                    gate_shexp: t("ffn_gate_shexp.weight")?,
+                    up_shexp: t("ffn_up_shexp.weight")?,
+                    down_shexp: t("ffn_down_shexp.weight")?,
+                })
+            };
             layers.push(LayerTensors {
                 attn_norm: t("attn_norm.weight")?,
                 post_norm: t("post_attention_norm.weight")?,
                 mixer,
-                router: t("ffn_gate_inp.weight")?,
-                shexp_gate: t("ffn_gate_inp_shexp.weight")?,
-                gate_exps: t("ffn_gate_exps.weight")?,
-                up_exps: t("ffn_up_exps.weight")?,
-                down_exps: t("ffn_down_exps.weight")?,
-                gate_shexp: t("ffn_gate_shexp.weight")?,
-                up_shexp: t("ffn_up_shexp.weight")?,
-                down_shexp: t("ffn_down_shexp.weight")?,
+                ffn,
             });
         }
         let n = nthreads;
@@ -352,6 +418,33 @@ impl Plan {
                         work,
                     });
                 }
+            }
+            if d.is_dense() {
+                // gate/up in whole 256-row blocks: each thread quantises the h blocks it wrote
+                // for the down projection before the barrier (one phase less than the MoE)
+                let work = split(d.ff_dense / kernels_sys::QK_K, n)
+                    .into_iter()
+                    .map(|b| Work::DenseGateUp {
+                        rows: b.start * kernels_sys::QK_K..b.end * kernels_sys::QK_K,
+                    })
+                    .collect();
+                phases.push(Phase {
+                    kind: PhaseKind::DenseGateUp,
+                    layer: il,
+                    barrier_after: true,
+                    work,
+                });
+                let work = split_rows(d.n_embd, n)
+                    .into_iter()
+                    .map(|rows| Work::DenseDown { rows })
+                    .collect();
+                phases.push(Phase {
+                    kind: PhaseKind::DenseDown,
+                    layer: il,
+                    barrier_after: true,
+                    work,
+                });
+                continue;
             }
             let sh = split_rows(d.ff_shexp, n);
             let work = split(d.n_expert, n)
@@ -573,6 +666,22 @@ impl Plan {
                         _ => 0..0,
                     }),
                     d.n_vocab,
+                )?,
+                PhaseKind::DenseGateUp => exact(
+                    &name,
+                    &ranges(&|w| match w {
+                        Work::DenseGateUp { rows } => rows.clone(),
+                        _ => 0..0,
+                    }),
+                    d.ff_dense,
+                )?,
+                PhaseKind::DenseDown => exact(
+                    &name,
+                    &ranges(&|w| match w {
+                        Work::DenseDown { rows } => rows.clone(),
+                        _ => 0..0,
+                    }),
+                    d.n_embd,
                 )?,
             }
         }

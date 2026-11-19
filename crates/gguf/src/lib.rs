@@ -193,7 +193,35 @@ impl Header {
     pub fn architecture(&self) -> Option<&str> {
         self.get("general.architecture").and_then(|v| v.as_str())
     }
+    /// A tied output head as its own entry: for an architecture of [`TIED_HEAD_ARCHES`] without
+    /// `output.weight`, append `output.weight` with the shape, type and data range of
+    /// `token_embd.weight` (llama.cpp loads the embedding as the head then). A loader that keys
+    /// tensors by name then repacks the head like any other matrix, while the embedding keeps
+    /// its own row layout. Returns whether the alias was added.
+    pub fn tie_output_head(&mut self) -> bool {
+        let tied = self
+            .architecture()
+            .is_some_and(|a| TIED_HEAD_ARCHES.contains(&a));
+        if !tied || self.tensor(OUTPUT_HEAD).is_some() {
+            return false;
+        }
+        let Some(embd) = self.tensor("token_embd.weight") else {
+            return false;
+        };
+        let head = TensorInfo {
+            name: OUTPUT_HEAD.to_string(),
+            ..embd.clone()
+        };
+        self.tensors.push(head);
+        true
+    }
 }
+
+/// Name of the output head tensor.
+pub const OUTPUT_HEAD: &str = "output.weight";
+/// Architectures whose files may omit `output.weight` and reuse `token_embd.weight` as the head
+/// (the dense Qwen3.5 small models). See [`Header::tie_output_head`].
+pub const TIED_HEAD_ARCHES: [&str; 1] = ["qwen35"];
 
 struct Cursor<'a> {
     buf: &'a [u8],
@@ -359,6 +387,7 @@ pub fn parse_header(buf: &[u8]) -> Result<Header> {
         return err(format!("general.alignment {align} is not a power of two"));
     }
     h.data_offset = (c.pos as u64).div_ceil(align) * align;
+    h.tie_output_head();
     Ok(h)
 }
 

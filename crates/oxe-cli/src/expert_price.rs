@@ -222,7 +222,10 @@ pub(super) fn run(a: &Args) -> Result<(), String> {
     if layer >= s.loaded.plan.layers.len() || !(1..=3).contains(&reps) {
         return Err("layer or reps out of pricing bounds".into());
     }
-    let l = &s.loaded.plan.layers[layer];
+    if s.loaded.plan.desc.is_dense() {
+        return Err("expert pricing needs a MoE model".into());
+    }
+    let l = s.loaded.plan.layers[layer].moe();
     let ws = [
         *s.loaded.ws.get(l.gate_exps),
         *s.loaded.ws.get(l.up_exps),

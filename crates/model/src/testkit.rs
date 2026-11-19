@@ -1,6 +1,6 @@
-//! Test kit (feature `testkit`, and the crate's own tests): the tiny synthetic qwen35moe GGUF
-//! writer, so server-side tests can drive a real `OxeEngine` (recurrent + KV + MTP state)
-//! model-free. Not part of the production build.
+//! Test kit (feature `testkit`, and the crate's own tests): the tiny synthetic qwen35moe (and
+//! dense qwen35) GGUF writer, so server-side tests can drive a real `OxeEngine` (recurrent + KV
+//! + MTP state) model-free. Not part of the production build.
 
 use gguf::{GgmlType, TensorInfo};
 use kernels_sys::QType;
@@ -216,26 +216,7 @@ pub fn mini_model_with(
     for il in 0..4u64 {
         let p = |s: &str| format!("blk.{il}.{s}");
         let s = 100 * (il + 1);
-        w.tensor(&p("attn_norm.weight"), &[e], f32_, s);
-        w.tensor(&p("post_attention_norm.weight"), &[e], f32_, s + 1);
-        if il == 3 {
-            w.tensor(&p("attn_q.weight"), &[e, 1024], q4, s + 2);
-            w.tensor(&p("attn_k.weight"), &[e, 256], q4, s + 3);
-            w.tensor(&p("attn_v.weight"), &[e, 256], q4, s + 4);
-            w.tensor(&p("attn_q_norm.weight"), &[128], f32_, s + 5);
-            w.tensor(&p("attn_k_norm.weight"), &[128], f32_, s + 6);
-            w.tensor(&p("attn_output.weight"), &[512, e], q4, s + 7);
-        } else {
-            w.tensor(&p("attn_qkv.weight"), &[e, 512], q4, s + 2);
-            w.tensor(&p("attn_gate.weight"), &[e, 256], q4, s + 3);
-            w.tensor(&p("ssm_beta.weight"), &[e, 2], f32_, s + 4);
-            w.tensor(&p("ssm_alpha.weight"), &[e, 2], f32_, s + 5);
-            w.tensor(&p("ssm_conv1d.weight"), &[4, 512], f32_, s + 6);
-            w.tensor(&p("ssm_a"), &[2], f32_, s + 7);
-            w.tensor(&p("ssm_dt.bias"), &[2], f32_, s + 8);
-            w.tensor(&p("ssm_norm.weight"), &[128], f32_, s + 9);
-            w.tensor(&p("ssm_out.weight"), &[256, e], q4, s + 10);
-        }
+        mini_backbone_layer(&mut w, il);
         let xt = [q3, q4, GgmlType::Q5_K, q4][il as usize];
         w.tensor(&p("ffn_gate_inp.weight"), &[e, 8], f32_, s + 11);
         w.tensor(&p("ffn_gate_inp_shexp.weight"), &[e], f32_, s + 12);
@@ -270,6 +251,101 @@ pub fn mini_model_with(
         w.tensor(&p("nextn.enorm.weight"), &[e], f32_, 920);
         w.tensor(&p("nextn.hnorm.weight"), &[e], f32_, 921);
         w.tensor(&p("nextn.shared_head_norm.weight"), &[e], f32_, 922);
+    }
+    w.write(path);
+}
+
+/// Norms and mixer of layer `il` of the mini models (embedding 256): layer 3 full attention
+/// (4 query heads over 2 KV heads, head_dim 128, q + gate), the others gated delta-net (1 key
+/// head, 2 value heads of 128, conv kernel 4). Tensor seeds `100 * (il + 1) + 0..=10`.
+fn mini_backbone_layer(w: &mut GgufWriter, il: u64) {
+    let (e, f32_, q4) = (256u64, GgmlType::F32, GgmlType::Q4_K);
+    let p = |s: &str| format!("blk.{il}.{s}");
+    let s = 100 * (il + 1);
+    w.tensor(&p("attn_norm.weight"), &[e], f32_, s);
+    w.tensor(&p("post_attention_norm.weight"), &[e], f32_, s + 1);
+    if il == 3 {
+        w.tensor(&p("attn_q.weight"), &[e, 1024], q4, s + 2);
+        w.tensor(&p("attn_k.weight"), &[e, 256], q4, s + 3);
+        w.tensor(&p("attn_v.weight"), &[e, 256], q4, s + 4);
+        w.tensor(&p("attn_q_norm.weight"), &[128], f32_, s + 5);
+        w.tensor(&p("attn_k_norm.weight"), &[128], f32_, s + 6);
+        w.tensor(&p("attn_output.weight"), &[512, e], q4, s + 7);
+    } else {
+        w.tensor(&p("attn_qkv.weight"), &[e, 512], q4, s + 2);
+        w.tensor(&p("attn_gate.weight"), &[e, 256], q4, s + 3);
+        w.tensor(&p("ssm_beta.weight"), &[e, 2], f32_, s + 4);
+        w.tensor(&p("ssm_alpha.weight"), &[e, 2], f32_, s + 5);
+        w.tensor(&p("ssm_conv1d.weight"), &[4, 512], f32_, s + 6);
+        w.tensor(&p("ssm_a"), &[2], f32_, s + 7);
+        w.tensor(&p("ssm_dt.bias"), &[2], f32_, s + 8);
+        w.tensor(&p("ssm_norm.weight"), &[128], f32_, s + 9);
+        w.tensor(&p("ssm_out.weight"), &[256, e], q4, s + 10);
+    }
+}
+
+/// Dense FFN width of [`mini_dense_model`]: two 256-row blocks (so a 3-thread plan has a thread
+/// without gate/up rows).
+pub const MINI_DENSE_FF: u64 = 512;
+
+/// A 4-layer dense `qwen35` (the architecture of the Qwen3.5 small models) with the mini model's
+/// backbone (3 delta-net + 1 attention layer, GQA 4/2) and a dense SwiGLU FFN of width
+/// [`MINI_DENSE_FF`] per layer: gate/up Q4_K, Q5_K, Q8_0, Q4_K and down Q6_K, Q4_K, Q8_0, Q6_K
+/// by layer (the mixed quants of a Q4_K_M file, and an all-Q8_0 layer). No `output.weight`: the
+/// head is tied to the Q6_K token embedding, as in the real small models. No MTP block.
+pub fn mini_dense_model(path: &std::path::Path) {
+    mini_dense_model_vocab(path, 64)
+}
+
+/// [`mini_dense_model`] with a vocabulary of `vocab` tokens (a multiple of 8).
+pub fn mini_dense_model_vocab(path: &std::path::Path, vocab: u64) {
+    let mut w = GgufWriter {
+        kv: vec![],
+        n_kv: 0,
+        tensors: vec![],
+    };
+    let a = "qwen35";
+    w.str("general.architecture", a);
+    w.u32("general.alignment", 32);
+    for (k, v) in [
+        ("block_count", 4),
+        ("full_attention_interval", 4),
+        ("embedding_length", 256),
+        ("feed_forward_length", MINI_DENSE_FF as u32),
+        ("attention.head_count", 4),
+        ("attention.head_count_kv", 2),
+        ("attention.key_length", 128),
+        ("attention.value_length", 128),
+        ("ssm.conv_kernel", 4),
+        ("ssm.state_size", 128),
+        ("ssm.group_count", 1),
+        ("ssm.time_step_rank", 2),
+        ("ssm.inner_size", 256),
+        ("rope.dimension_count", 64),
+        ("context_length", 4096),
+    ] {
+        w.u32(&format!("{a}.{k}"), v);
+    }
+    w.f32(&format!("{a}.attention.layer_norm_rms_epsilon"), 1e-6);
+    w.f32(&format!("{a}.rope.freq_base"), 1e7);
+    w.arr_i32(&format!("{a}.rope.dimension_sections"), &[11, 11, 10, 0]);
+    let (e, ff) = (256u64, MINI_DENSE_FF);
+    w.tensor("token_embd.weight", &[e, vocab], GgmlType::Q6_K, 1);
+    w.tensor("output_norm.weight", &[e], GgmlType::F32, 2);
+    let (q4, q5, q6, q8) = (
+        GgmlType::Q4_K,
+        GgmlType::Q5_K,
+        GgmlType::Q6_K,
+        GgmlType::Q8_0,
+    );
+    for il in 0..4u64 {
+        let p = |s: &str| format!("blk.{il}.{s}");
+        let s = 100 * (il + 1);
+        mini_backbone_layer(&mut w, il);
+        let (gu, dn) = [(q4, q6), (q5, q4), (q8, q8), (q4, q6)][il as usize];
+        w.tensor(&p("ffn_gate.weight"), &[e, ff], gu, s + 11);
+        w.tensor(&p("ffn_up.weight"), &[e, ff], gu, s + 12);
+        w.tensor(&p("ffn_down.weight"), &[ff, e], dn, s + 13);
     }
     w.write(path);
 }

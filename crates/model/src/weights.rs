@@ -1225,7 +1225,11 @@ impl WeightStore {
         let mut ids: Vec<_> = plan
             .layers
             .iter()
-            .flat_map(|l| [l.gate_exps, l.up_exps, l.down_exps])
+            .filter_map(|l| match &l.ffn {
+                crate::plan::Ffn::Moe(m) => Some([m.gate_exps, m.up_exps, m.down_exps]),
+                crate::plan::Ffn::Dense(_) => None,
+            })
+            .flatten()
             .collect();
         ids.sort_unstable();
         ids.dedup();

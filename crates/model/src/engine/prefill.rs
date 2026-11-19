@@ -29,7 +29,7 @@
 use super::kv8::{self, Kv8Scratch, KvType};
 use super::pfattn;
 use super::*;
-use crate::plan::Tid;
+use crate::plan::{Ffn, Tid};
 use kernels_sys::{
     gemm_mmid_raw, gemm_raw, interleave_rows4_raw, quantize_mat4_raw, quantize_row_raw,
 };
@@ -689,11 +689,13 @@ impl Pf {
         let att_w = d.n_head * d.head_dim;
         let nch = d.ssm_conv_channels();
         let ku = d.n_expert_used;
+        // the shared expert's FFN row, or the dense FFN's (a model has one of the two)
+        let ffs = d.ff_shexp.max(d.ff_dense);
         let wide = d
             .n_embd
             .max(d.ssm_d_inner)
             .max(att_w)
-            .max(d.ff_shexp)
+            .max(ffs)
             .max(d.ff_exp);
         let hv = d.ssm_head_v_dim();
         Pf {
@@ -738,10 +740,10 @@ impl Pf {
             ids: Sb::new(ub * ku),
             w: Sb::new(ub * ku),
             sg: Sb::new(ub),
-            shg: Sb::new(ub * d.ff_shexp),
-            shu: Sb::new(ub * d.ff_shexp),
-            shh: Sb::new(ub * d.ff_shexp),
-            sh_act: Sb::new(ub * max_act(d.ff_shexp)),
+            shg: Sb::new(ub * ffs),
+            shu: Sb::new(ub * ffs),
+            shh: Sb::new(ub * ffs),
+            sh_act: Sb::new(ub * max_act(ffs)),
             g: Sb::new(ub * ku * d.ff_exp),
             u: Sb::new(ub * ku * d.ff_exp),
             hq: Sb::new(ub * ku * max_act(d.ff_exp)),
@@ -1231,10 +1233,10 @@ impl<'a> Engine<'a> {
                 Mixer::Attention { .. } => self.pf_attention(ctx, pf, ts, l, n, p0),
             }
             if l + 1 < nl || all_rows {
-                self.pf_moe(ctx, pf, ts, l, Rows { r0: 0, n });
+                self.pf_ffn(ctx, pf, ts, l, Rows { r0: 0, n });
             } else if last {
                 // crop_before_nextn: only the output row continues (logits for the last token)
-                self.pf_moe(ctx, pf, ts, l, Rows { r0: n - 1, n: 1 });
+                self.pf_ffn(ctx, pf, ts, l, Rows { r0: n - 1, n: 1 });
             }
         }
         if all_rows {
@@ -1254,7 +1256,7 @@ impl<'a> Engine<'a> {
             self.bar(ctx, pf, PH_HID_NORM);
             if last && redo_last {
                 // M3.1: the output row's last-layer MoE as Engine::prefill computes it
-                self.pf_moe(ctx, pf, ts, nl - 1, Rows { r0: n - 1, n: 1 });
+                self.pf_ffn(ctx, pf, ts, nl - 1, Rows { r0: n - 1, n: 1 });
             }
         }
         if last {
@@ -2660,9 +2662,118 @@ impl<'a> Engine<'a> {
 
     // ------------------------------------------------------------ MoE FFN
 
-    fn pf_moe(&self, ctx: &mut Ctx, pf: &Pf, ts: &mut PfThread, l: usize, rows: Rows) {
+    /// The FFN of layer `l` over `rows`: the MoE, or the dense FFN of a `qwen35` model.
+    #[inline]
+    fn pf_ffn(&self, ctx: &mut Ctx, pf: &Pf, ts: &mut PfThread, l: usize, rows: Rows) {
+        match self.plan.layers[l].ffn {
+            Ffn::Moe(_) => self.pf_moe(ctx, pf, ts, l, rows),
+            Ffn::Dense(_) => self.pf_dense_ffn(ctx, pf, ts, l, rows),
+        }
+    }
+
+    /// Dense FFN (`qwen35`) over `rows`: llama.cpp's build_ffn (SiLU, parallel gate/up), i.e.
+    /// the MoE's shared-expert steps without the router and the sigmoid gate. [1] post-attention
+    /// norm + activations, [2] gate/up projections, [3] SwiGLU + down activations, [4] down
+    /// projection + residual into x. The f32 reference and the NPU path see plain dense ops.
+    fn pf_dense_ffn(&self, ctx: &mut Ctx, pf: &Pf, ts: &mut PfThread, l: usize, rows: Rows) {
         let d = &self.plan.desc;
         let lt = &self.plan.layers[l];
+        let Ffn::Dense(f) = &lt.ffn else {
+            panic!("dense FFN step on a MoE layer")
+        };
+        let tid = ctx.tid;
+        let n = rows.n;
+        let de = d.n_embd;
+        let ff = d.ff_dense;
+        // [1]
+        let ats = self.acts_of(&[f.gate, f.up]);
+        self.pf_norm_act(
+            ctx,
+            pf,
+            ts,
+            &pf.x1,
+            rows,
+            lt.post_norm,
+            &ats,
+            None,
+            l,
+            "attn_post_norm",
+            PH_MOE_NORM_QUANT,
+        );
+        // [2]
+        let xn = pf.xn.p(0) as *const f32;
+        let gate_up = [
+            self.dense(pf, n, f.gate, xn, pf.shg.p(0), ff, std::ptr::null()),
+            self.dense(pf, n, f.up, xn, pf.shu.p(0), ff, std::ptr::null()),
+        ];
+        self.pf_dense(pf, ts, &gate_up, n);
+        self.bar(ctx, pf, PH_MOE_ROUTER_SHARED);
+        // [3] by 4-row groups: SwiGLU rows, then their down activations (forward_mul_mat layout)
+        let wd = *self.ws.get(f.down);
+        let at = if wd.is_f32() {
+            None
+        } else {
+            Some(wd.qtype().act())
+        };
+        let full = n - n % 4;
+        for g in share(pf, ts, n.div_ceil(4), 1, tid) {
+            let (a, b) = (4 * g, (4 * g + 4).min(n));
+            // SAFETY: rows a..b of shh / sh_act are owned by this thread; shg / shu read-only.
+            unsafe {
+                for t in a..b {
+                    ops::swiglu(
+                        pf.shg.s(t * ff..(t + 1) * ff),
+                        pf.shu.s(t * ff..(t + 1) * ff),
+                        pf.shh.s(t * ff..(t + 1) * ff),
+                    );
+                }
+                if let Some(at) = at {
+                    let rb = at.bytes(ff);
+                    if b - a == 4 && b <= full {
+                        quantize_mat4_raw(at, pf.shh.p(a * ff), pf.sh_act.p(a * rb), ff);
+                    } else {
+                        for i in a..b {
+                            quantize_row_raw(at, pf.shh.p(i * ff), pf.sh_act.p(i * rb), ff);
+                        }
+                    }
+                }
+            }
+        }
+        self.bar(ctx, pf, PH_MOE_ROUTE_SWIGLU);
+        // [4] x = down . h + x1 (ffn_out, then the residual add)
+        let down = self.dense(
+            pf,
+            n,
+            f.down,
+            pf.shh.p(0),
+            pf.x.p(rows.r0 * de),
+            de,
+            pf.x1.p(rows.r0 * de),
+        );
+        let down = Dense {
+            act: if at.is_some() {
+                pf.sh_act.p(0) as *const u8
+            } else {
+                std::ptr::null()
+            },
+            ..down
+        };
+        self.pf_dense(pf, ts, &[down], n);
+        self.bar(ctx, pf, PH_MOE_SUM_RESIDUAL);
+        if self.trace.is_some() {
+            if tid == 0 {
+                // SAFETY: complete after the barrier; the next writer of x is the next layer.
+                let x = unsafe { pf.x.s(rows.r0 * de..(rows.r0 + n) * de) }.to_vec();
+                self.ptr(l, "l_out", n * de, 0, &x);
+            }
+            self.bar(ctx, pf, PH_TRACE); // trace snapshots must not race with the next step
+        }
+    }
+
+    fn pf_moe(&self, ctx: &mut Ctx, pf: &Pf, ts: &mut PfThread, l: usize, rows: Rows) {
+        let d = &self.plan.desc;
+        let layer = &self.plan.layers[l];
+        let lt = layer.moe();
         let tid = ctx.tid;
         let n = rows.n;
         let de = d.n_embd;
@@ -2691,7 +2802,7 @@ impl<'a> Engine<'a> {
             ts,
             &pf.x1,
             rows,
-            lt.post_norm,
+            layer.post_norm,
             &ats,
             Some(rat),
             l,

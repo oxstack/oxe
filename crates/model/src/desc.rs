@@ -1,4 +1,5 @@
-//! `ModelDesc`: the qwen35moe architecture read from GGUF metadata and the tensor table.
+//! `ModelDesc`: the qwen35moe architecture (and its dense sibling `qwen35`) read from GGUF
+//! metadata and the tensor table.
 //! Nothing here is hard-coded per model; the hot loop only sees these numbers.
 
 use gguf::{GgmlType, Header, TensorInfo};
@@ -25,6 +26,9 @@ pub struct ModelDesc {
     pub n_expert_used: usize,
     pub ff_exp: usize,
     pub ff_shexp: usize,
+    /// Dense FFN width (`qwen35`: `feed_forward_length`, one gate/up/down triple per layer);
+    /// 0 for the MoE architecture, whose expert fields above are then all 0 for a dense model.
+    pub ff_dense: usize,
     pub ssm_conv_kernel: usize,
     /// Key head dim of the delta net (`ssm.state_size`).
     pub ssm_d_state: usize,
@@ -43,7 +47,15 @@ pub struct ModelDesc {
     pub layers: Vec<LayerKind>,
 }
 
+/// Architectures the engine runs: the MoE model and the dense small models of the same family
+/// (same hybrid delta-net + attention backbone, a dense SwiGLU FFN instead of the experts).
+pub const ARCHES: [&str; 2] = ["qwen35moe", "qwen35"];
+
 impl ModelDesc {
+    /// A dense FFN model (`qwen35`): no router, no experts.
+    pub fn is_dense(&self) -> bool {
+        self.ff_dense > 0
+    }
     pub fn ssm_head_v_dim(&self) -> usize {
         self.ssm_d_inner / self.ssm_n_vheads
     }
@@ -78,11 +90,12 @@ impl ModelDesc {
             .architecture()
             .ok_or("no general.architecture")?
             .to_string();
-        if arch != "qwen35moe" {
+        if !ARCHES.contains(&arch.as_str()) {
             return Err(format!(
-                "architecture {arch} is not supported (qwen35moe only)"
+                "architecture {arch} is not supported (qwen35moe or qwen35 only)"
             ));
         }
+        let dense = arch == "qwen35";
         let u = |k: &str| -> Result<usize, String> {
             h.get(&format!("{arch}.{k}"))
                 .and_then(|v| v.as_u64())
@@ -131,10 +144,19 @@ impl ModelDesc {
             n_head: u("attention.head_count")?,
             n_head_kv: u("attention.head_count_kv")?,
             head_dim: u("attention.key_length")?,
-            n_expert: u("expert_count")?,
-            n_expert_used: u("expert_used_count")?,
-            ff_exp: u("expert_feed_forward_length")?,
-            ff_shexp: u("expert_shared_feed_forward_length")?,
+            n_expert: if dense { 0 } else { u("expert_count")? },
+            n_expert_used: if dense { 0 } else { u("expert_used_count")? },
+            ff_exp: if dense {
+                0
+            } else {
+                u("expert_feed_forward_length")?
+            },
+            ff_shexp: if dense {
+                0
+            } else {
+                u("expert_shared_feed_forward_length")?
+            },
+            ff_dense: if dense { u("feed_forward_length")? } else { 0 },
             ssm_conv_kernel: u("ssm.conv_kernel")?,
             ssm_d_state: u("ssm.state_size")?,
             ssm_n_kheads: u("ssm.group_count")?,
@@ -164,6 +186,9 @@ impl ModelDesc {
             layers,
             arch,
         };
+        if dense && d.ff_dense == 0 {
+            return Err(format!("{}.feed_forward_length is 0", d.arch));
+        }
         d.check(h)?;
         Ok(d)
     }
@@ -197,15 +222,34 @@ impl ModelDesc {
                     }
                 }
             }
-            if shape(&p("ffn_gate_exps.weight"))?
+            if self.is_dense() {
+                let ff = self.ff_dense as u64;
+                for (t, want) in [
+                    ("ffn_gate.weight", vec![e, ff]),
+                    ("ffn_up.weight", vec![e, ff]),
+                    ("ffn_down.weight", vec![ff, e]),
+                ] {
+                    if shape(&p(t))? != want {
+                        return Err(format!("layer {il}: {t} shape (dense FFN {ff})"));
+                    }
+                }
+            } else if shape(&p("ffn_gate_exps.weight"))?
                 != vec![e, self.ff_exp as u64, self.n_expert as u64]
             {
                 return Err(format!("layer {il}: ffn_gate_exps shape"));
             }
         }
         // OXE-TOPK-EQ-N: every expert may be used (k == n selects all, the routing weights stay
-        // softmax + normalisation); more than there are is a malformed GGUF, refused here
-        if self.n_expert == 0 || self.n_expert_used == 0 || self.n_expert_used > self.n_expert {
+        // softmax + normalisation); more than there are is a malformed GGUF, refused here.
+        // The dense FFN runs in 256-row blocks (one activation block of the down projection).
+        if self.is_dense() {
+            if self.ff_dense % kernels_sys::QK_K != 0 {
+                return Err("dense FFN width must be a multiple of 256".into());
+            }
+        } else if self.n_expert == 0
+            || self.n_expert_used == 0
+            || self.n_expert_used > self.n_expert
+        {
             return Err(format!(
                 "expert_used_count {} must be between 1 and expert_count {}",
                 self.n_expert_used, self.n_expert
@@ -214,7 +258,9 @@ impl ModelDesc {
         if self.ssm_n_vheads % self.ssm_n_kheads != 0 || self.n_head % self.n_head_kv != 0 {
             return Err("head counts do not divide".into());
         }
-        if self.ff_exp % kernels_sys::QK_K != 0 || self.ff_shexp % kernels_sys::QK_K != 0 {
+        if !self.is_dense()
+            && (self.ff_exp % kernels_sys::QK_K != 0 || self.ff_shexp % kernels_sys::QK_K != 0)
+        {
             return Err(
                 "expert FFN width must be a multiple of 256 (one activation block per MoE unit)"
                     .into(),

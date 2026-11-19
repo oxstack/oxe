@@ -1,5 +1,5 @@
-//! qwen35moe model side of the engine: descriptor, file-backed repacked weights, static
-//! plan, and the decode engine with llama.cpp-exact math.
+//! qwen35moe (and dense qwen35) model side of the engine: descriptor, file-backed repacked
+//! weights, static plan, and the decode engine with llama.cpp-exact math.
 
 pub mod admission;
 pub mod check;
