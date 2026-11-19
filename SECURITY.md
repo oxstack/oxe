@@ -110,4 +110,5 @@ descriptor (`--body-file /dev/fd/N`), never a pathname a command could swap afte
 - **Yolo:** no OS sandbox for the session, nor for any worker, subagent, headless or unattended run it starts. Yolo refuses only publishing secrets and an OS-breaking wipe.
 - **Unattended runs without yolo:** keep bwrap by default.
 - **In-process guards in every mode:** secret masking, private-path denials, user-only settings, offline mode.
+- **Settings fail safe:** a user settings file that exists but cannot be read or parsed keeps offline on, bash network off, remote engines off and new projects untrusted, and warns the owner. Only a missing file or a valid file changes this.
 - **Re-adding an OS sandbox to interactive or yolo paths** is a regression, not a hardening.
