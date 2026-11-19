@@ -651,7 +651,7 @@ jobs:
   gateway:
     # Moved from cloud-gateway.yml (fmt + conformance, same steps and matrix) so the gate covers it.
     needs: changes
-    if: needs.changes.outputs.gateway == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: (needs.changes.outputs.gateway == 'true' || (github.event_name == 'merge_group' && needs.changes.outputs.oxa == 'true')) && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     name: cloud gateway (${{ matrix.runner }})
     strategy:
       matrix:
