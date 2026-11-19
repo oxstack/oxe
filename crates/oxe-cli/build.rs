@@ -7,8 +7,15 @@ fn main() {
         .output()
         .ok()
         .filter(|o| o.status.success());
+    // --no-optional-locks: a plain `git status` refreshes and rewrites .git/index, which is
+    // watched below, so every cargo call would see it changed and rerun this script.
     let dirty = Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=no"])
+        .args([
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        ])
         .output()
         .ok()
         .map(|o| !o.stdout.is_empty())
@@ -20,6 +27,12 @@ fn main() {
         }
         println!("cargo:rustc-env=OXE_GIT_COMMIT={s}");
     }
-    println!("cargo:rerun-if-changed=../../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../../.git/index");
+    // A watched path that does not exist (a git worktree has a .git file, not a directory)
+    // counts as changed on every run, so watch only the files that exist.
+    let manifest = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    for watched in ["../../../.git/HEAD", "../../../.git/index"] {
+        if manifest.join(watched).exists() {
+            println!("cargo:rerun-if-changed={watched}");
+        }
+    }
 }

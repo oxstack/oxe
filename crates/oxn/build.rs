@@ -3,15 +3,25 @@
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rerun-if-changed=../../npu/oxn/host/oxn_host.c");
-    println!("cargo:rerun-if-changed=../../npu/oxn/host/oxn_host.h");
-    println!("cargo:rerun-if-changed=../../npu/oxn/common");
-    println!("cargo:rerun-if-env-changed=FASTRPC_INC");
-
+    // Cargo treats a watched path that does not exist as changed on every run, which rebuilds
+    // oxn and all its dependents on every cargo call. The default build therefore watches only
+    // this script, and the device backend watches only the paths that exist.
+    println!("cargo:rerun-if-changed=build.rs");
     if std::env::var_os("CARGO_FEATURE_DEVICE").is_none() {
         return;
     }
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    for watched in [
+        "../../npu/oxn/host/oxn_host.c",
+        "../../npu/oxn/host/oxn_host.h",
+        "../../npu/oxn/common",
+    ] {
+        let path = root.join(watched);
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+    println!("cargo:rerun-if-env-changed=FASTRPC_INC");
     let inc = std::env::var("FASTRPC_INC").unwrap_or_else(|_| {
         panic!(
             "oxn: the `device` feature needs FASTRPC_INC=<dir> (the open-source FastRPC ABI include directory)"
