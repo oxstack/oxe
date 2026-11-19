@@ -27,6 +27,11 @@ The background-job and per-parent child limits are configurable through `oxa.bas
 Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
 bash `timeout: 0` opts out of the call timeout. Sandbox and permission checks still apply.
 
+Automated Go review reads at most 200 GitHub comment pages (20,000 comments) when it checks the
+configured daily quota and prior same-diff receipts. If either listing is incomplete, review is
+deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
+cannot authorize another token-spending review.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.

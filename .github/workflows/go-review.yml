@@ -45,7 +45,7 @@ jobs:
       - name: Review the exact head through OpenCode Go OIDC
         env:
           GH_TOKEN: ${{ github.token }}
-          # JSON list; second model runs only for two-review label/core paths. Unset: DeepSeek only.
+          # JSON list of 1 or 2 distinct ids matching [a-z0-9][a-z0-9.-]{0,63}; second model runs only for two-review label/core paths. Unset: deepseek-v4.1-flash.
           GO_REVIEW_MODELS: ${{ vars.GO_REVIEW_MODELS }}
           GO_REVIEW_MAX_PER_DAY: ${{ vars.GO_REVIEW_MAX_PER_DAY }}
           OPENCODE_CI_CLIENT_ID: ${{ vars.OPENCODE_CI_CLIENT_ID }}
