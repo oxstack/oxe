@@ -1,16 +1,30 @@
 # cargo-nextest settings for the engine workspace (CI: the MoE job in .github/workflows/build.yml).
-# nextest runs every test in its own process, many at once. Test binaries whose tests assert on
-# wall-clock time must not compete for cores:
-#   sched   the spin/futex worker pool tests (spinning workers, deadlines in tests.rs)
-#   server  the lib tests with elapsed-time bounds (tests_hotfix.rs stall window, the persist/
-#           preload/fair-scheduling deadlines in tests*.rs)
-# They run one at a time (max-threads = 1) and each takes every test slot while it runs
-# (threads-required), so nothing else runs beside them.
+# nextest runs every test in its own process, many at once. Tests whose assertions depend on
+# elapsed time must not compete for cores, so they run one at a time (max-threads = 1) and each
+# takes every test slot while it runs (threads-required). Everything else runs in parallel
+# (the server lib tests pass in parallel under cargo test in the other jobs).
+#
+# Serial, with the reason:
+#   sched binary                 spin/futex worker pool tests: spinning workers, deadlines in tests.rs
+#   stalled_stream_client_...    asserts the second request completes within a time bound behind a stalled stream
+#   send_frame_gives_up_...      asserts the full-channel send waits at least the stall time and gives up soon after
+#   over_http_the_head_and_...   asserts head and first comment arrive in the first third/half of a ~2.4 s reply
+#   queue_ms_counts_the_wait_*   assert queue_ms bounds (<50 ms, >=100 ms) behind a ~200 ms prefill
+#   service_a_short_request_...  B must finish before A: decode_sleep and quantum timing, 4 runtime threads
 
 [test-groups.wall-clock]
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary_id(sched) | binary_id(server)'
+filter = '''
+binary_id(sched)
+| (binary_id(server) & (
+    test(stalled_stream_client_does_not_block_the_worker)
+  | test(send_frame_gives_up_on_a_full_channel)
+  | test(over_http_the_head_and_comments_arrive_during_the_prefill)
+  | test(queue_ms_counts_the_wait_for_the_worker)
+  | test(service_a_short_request_overtakes_a_long_stream_and_both_stay_exact)
+))
+'''
 test-group = 'wall-clock'
 threads-required = 'num-test-threads'
