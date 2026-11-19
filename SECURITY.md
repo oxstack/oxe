@@ -14,6 +14,12 @@ Treat as **high** severity:
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
 - new `unsafe`/FFI/process/network code in the engine without bounds checks.
 
+Attended bash can run with host rights under the owner’s interactive sandbox policy. It uses
+a cleared toolchain environment, and output still redacts every GitHub CLI credential
+(all accounts and hosts, with the bash network on or off).
+Unattended runs include ownerless RPC and headless runs pursuing a goal. Exec hooks
+keep their dedicated sandbox. Network-disabled model shells mask host runtime IPC.
+
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the owner lists them in
