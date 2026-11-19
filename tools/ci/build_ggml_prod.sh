@@ -80,7 +80,7 @@ cmake --build "$WORK/build" --parallel "$JOBS" --target ggml-base ggml-cpu
 BIGMOE_BUILD="$WORK/build" "$ROOT/tools/sync_ggml_prod.sh" "$WORK/parent"
 DST=${OXF_GGML_PROD:-$HOME/.cache/local-ai/snapdragon-engine/ggml-prod}
 # Keep both pinned build-source licences, with explicit NOTICE absence and hashes.
-python3 -I "$ROOT/tools/ci/flash_licenses.py" collect \
+"$ROOT/tools/ci/flash_licenses.sh" collect \
   "$WORK/parent" "$WORK/parent/third_party/llama.cpp" "$DST"
 {
   echo "llama_cpp_patched_tree $tree"

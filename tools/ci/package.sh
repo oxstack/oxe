@@ -20,12 +20,12 @@ cp "$ROOT/vendor/ggml-flash/LICENSE" "$STAGE/licenses/ggml-flash-LICENSE"
 cp "$ROOT/third_party/stable-diffusion.cpp-LICENSE" "$STAGE/licenses/"
 feat=()
 [ "$FEATURES" = "-" ] || feat=(--features "$FEATURES")
-(cd "$ROOT" && python3 -I tools/ci/crate_licenses.py "$PKG" "$STAGE/licenses/crates" "${feat[@]}")
+(cd "$ROOT" && tools/ci/crate_licenses.sh "$PKG" "$STAGE/licenses/crates" ${feat[@]+"${feat[@]}"})
 
 flash_note=""
 if [[ "$FEATURES" =~ (^|[[:space:],])(server/)?flash($|[[:space:],]) ]]; then
   : "${OXF_GGML_PROD:?Flash packaging requires the pinned source licence bundle}"
-  python3 -I "$ROOT/tools/ci/flash_licenses.py" package "$OXF_GGML_PROD" "$STAGE"
+  "$ROOT/tools/ci/flash_licenses.sh" package "$OXF_GGML_PROD" "$STAGE"
   cp "$OXF_GGML_PROD/MANIFEST" "$STAGE/GGML-PROD-MANIFEST.txt"
   flash_note="
 Flash links the production ggml static libraries, built in the same CI run from the

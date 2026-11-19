@@ -193,7 +193,7 @@ with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:
                  'oxc/tools', 'oxc/src/oxc/runtime', 'oxc/packaging/memlat', 'engine/tools/ci',
                  'engine/vendor/ggml-subset'):
         (root/name).mkdir(parents=True,exist_ok=True)
-    shutil.copy2(REPO/'packaging/release/stage.py',root/'packaging/release/stage.py')
+    shutil.copy2(REPO/'packaging/release/stage.sh',root/'packaging/release/stage.sh')
     for product,name in (('engine','oxe'),('engine','oxe-server'),('oxa','oxa')):
         (root/product/'target/release'/name).write_text('#!/bin/sh\nexit 0\n')
     shutil.copy2(RUST,root/'oxa/target/release/local-ai-memlat-boot')
@@ -207,11 +207,11 @@ with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:
         shutil.copy2(REPO/'oxc/packaging/memlat'/name, template_source/name)
     # Independent exclusion control: retirement of the real unit must not break this fixture.
     (template_source/'oxc-memlat-shutdown.service').write_text('[Service]\nExecStart=/usr/bin/false\n')
-    (root/'engine/tools/ci/crate_licenses.py').write_text('# fixture collector; no external packages\n')
+    (root/'engine/tools/ci/crate_licenses.sh').write_text('#!/bin/sh\n# fixture collector; no external packages\nexit 0\n')
     (root/'engine/vendor/ggml-subset/LICENSE').write_text('synthetic license fixture\n')
     (root/'LICENSE').write_text('synthetic license fixture\n')
     destination=Path(directory)/'payload'
-    subprocess.run(['/usr/bin/python3','-I',str(root/'packaging/release/stage.py'),str(destination)],check=True)
+    subprocess.run(['/usr/bin/bash',str(root/'packaging/release/stage.sh'),str(destination)],check=True)
     installed=destination/'usr/bin/local-ai-memlat-boot'
     assert installed.read_bytes()==Path(RUST).read_bytes()
     assert installed.stat().st_mode & 0o777 == 0o755

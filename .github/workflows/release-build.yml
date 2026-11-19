@@ -83,7 +83,7 @@ jobs:
           for build in first second; do
             cd "/build/$build"
             packaging/release/build.sh
-            python3 -B packaging/release/stage.py /build/payload
+            packaging/release/stage.sh /build/payload
             packaging/release/archive.sh /build/payload "/build/$build.tar.gz"
             rm -rf /build/payload
           done

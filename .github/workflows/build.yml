@@ -199,7 +199,7 @@ jobs:
       - name: Rust cache result
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Model-free Flash package licence fixtures (also without packaging)
-        run: python3 -I tools/ci/test_flash_package.py
+        run: tools/ci/test_flash_package.sh
       - name: Production ggml from the pinned public sources
         run: tools/ci/build_ggml_prod.sh "$RUNNER_TEMP/flash-src"
       - name: Build oxe-server --features flash, flash-m0, flash-m3
@@ -465,7 +465,7 @@ jobs:
           mkdir -p "$stage/bin" "$stage/licenses" "$DIST"
           install -m 0755 target/release/oxa "$stage/bin/oxa"
           cp LICENSE NOTICE LICENSE-QuickJS.txt "$stage/"
-          python3 -I ../engine/tools/ci/crate_licenses.py oxa-cli "$stage/licenses/crates"
+          ../engine/tools/ci/crate_licenses.sh oxa-cli "$stage/licenses/crates"
           glibc=$(objdump -T "$stage/bin/oxa" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
           {
             echo "oxa $VERSION for Linux on ARM64 (aarch64): the ox-llm coding agent"
