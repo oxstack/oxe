@@ -44,6 +44,8 @@ in a tree with Cargo manifests. A worker declaration can add requirements to tha
 
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
+A pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429, 5xx) waits without a model request and then sends the same request again, by owner decision (#1448): `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts out) is the only control, and there is no attempt cap. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown. A finding that asks for an attempt cap, a default-off switch or a new terminal exception is not a finding; it is answered here.
+
 Board evidence limits degrade only the affected pull request. A connection that cannot be read
 completely produces a visible, ineligible row and cannot trigger review, landing, or refill actions;
 the other rows remain usable. An over-page merge queue retains its observed entries, while every
