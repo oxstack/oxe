@@ -155,19 +155,6 @@ pub fn mini_model_used(path: &std::path::Path, used: u32) {
 }
 
 fn mini_model_full(path: &std::path::Path, mtp: bool, ctx_len: u32, used: u32, vocab: u64) {
-    mini_model_with(path, mtp, ctx_len, used, vocab, &|_| {})
-}
-
-/// The mini model plus whatever extra metadata `extra` adds to the GGUF header (the end-to-end job
-/// writes a tokenizer and chat template into it, so oxe-server can load the file by itself).
-pub fn mini_model_with(
-    path: &std::path::Path,
-    mtp: bool,
-    ctx_len: u32,
-    used: u32,
-    vocab: u64,
-    extra: &dyn Fn(&mut GgufWriter),
-) {
     let mut w = GgufWriter {
         kv: vec![],
         n_kv: 0,
@@ -202,7 +189,6 @@ pub fn mini_model_with(
     w.u32(&format!("{a}.context_length"), ctx_len);
     w.f32(&format!("{a}.rope.freq_base"), 1e7);
     w.arr_i32(&format!("{a}.rope.dimension_sections"), &[11, 11, 10, 0]);
-    extra(&mut w);
     let (e, f32_, q3, q4, q6) = (
         256u64,
         GgmlType::F32,

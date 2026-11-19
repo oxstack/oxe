@@ -3,9 +3,9 @@
 # report); only the generous hard ceilings fail the job. They exist to catch a hang, not a slowdown.
 
 [model]
-# sha256 of the file `cargo run --example e2e_tiny_model` writes (seeded filler weights: the same
-# bytes on every run). A mismatch fails the job: the model changed without this pin changing.
-sha256 = "24b31c9d9ab22ceb033629b721f9df8fb011b3f3e5977ee06e55c50935e7bb79"
+# sha256 of Qwen3.5-0.8B-Q8_0.gguf (unsloth/Qwen3.5-0.8B-GGUF, the revision pinned in e2e.yml). A
+# mismatch fails the job: the model changed without this pin changing.
+sha256 = "0ad885ffd4bb022fc4f0d33a3308fa108ef8613159d3b3a67e23abca056b7a6c"
 
 [server]
 port = 18080
@@ -21,12 +21,18 @@ max_tokens = 8
 # `oxa -p`, two runs in one session (the second continues the first).
 run_timeout_s = 240
 max_time_s = 180
-# stops a run after this many new prompt+output tokens (cached ones are free); keeps a filler-weight model short
+# stops a run after this many new prompt+output tokens (cached ones are free)
 max_tokens = 20000
-# TEMPORARY (synthetic filler-weight model): a run may end on these without a stop token
-accept_error_classes = ["output_limit", "aborted"]
-first_prompt = "Create a file named hello.txt containing the word hi."
-second_prompt = "Now say which file you were asked to create."
+# error classes a run may end on and still count (none: the real model stops by itself)
+accept_error_classes = []
+# the tool task: the first run must leave `task_file` in the work directory holding `task_word`
+# "in the current directory": the 0.8B model otherwise picks /hello.txt (first real run)
+first_prompt = "Create a file named hello.txt in the current directory containing the word hi."
+task_file = "hello.txt"
+task_word = "hi"
+# answered from the conversation: bash is off in the container (no usable bwrap), and a tool call
+# here sent the 0.8B model into a retry loop until --max-time (first real run)
+second_prompt = "Without using any tool, answer in one sentence: which file did you just create?"
 
 [budget]
 # warn above *_warn_ms; fail only above *_fail_ms.
@@ -49,4 +55,4 @@ baseline_fail_drop = 0.10
 baseline_warn_drop = 0.01
 
 [cache.baseline]
-"e2e-tiny-model.gguf" = 0.999
+# Qwen3.5-0.8B-Q8_0.gguf: fill in from the first green run of the real model on main

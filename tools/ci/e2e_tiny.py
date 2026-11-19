@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end check of the ox suite: oxa drives the real oxe engine over HTTP (tiny synthetic model).
+"""End-to-end check of the ox suite: oxa drives the real oxe engine over HTTP (a small real model).
 
   e2e_tiny.py --oxe-server BIN --oxa BIN --model FILE --config tools/ci/e2e-tiny.toml --out DIR
 
-Asserts (a) it works: oxa -p completes real turns through oxe-server's oxe engine and the engine
-reports tokens, (b) the cache stays: the second run of the same session reuses the cached prefix
-(cached prompt tokens > 0 in oxa's --usage-log), (c) time to first token and turn time are inside the
-budgets of the config file (warn above, fail only above the hard ceiling). Writes report.json and
+Asserts (a) it works: oxa -p completes real turns through oxe-server's oxe engine, the engine
+reports tokens, and the first turn's tool task leaves its file with the asked word, (b) the cache
+stays: the second run of the same session reuses the cached prefix (cached prompt tokens > 0 in
+oxa's --usage-log), (c) time to first token and turn time are inside the budgets of the config file
+(warn above, fail only above the hard ceiling). Writes report.json and
 report.md into --out and the markdown into the GitHub step summary. Standard library only.
 """
 import argparse
@@ -15,6 +16,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -99,7 +101,10 @@ def probe(port, messages, max_tokens):
 
 
 def run_oxa(oxa, prompt, cwd, env, usage_log, timeout, max_time, max_tokens, name, out):
-    cmd = [oxa, '-p', '--thinking', 'off', '--no-mcp', '--no-web-search', '--session-id', 'e2e-tiny',
+    # --yolo: the container has no usable bwrap, so a sandboxed run has no bash at all, and the 0.8B
+    # model then retries `cat hello.txt` until --max-time (real-model runs). The container is
+    # throwaway; yolo is the owner's standard for unattended work (AGENTS.md sandbox standard).
+    cmd = [oxa, '-p', '--yolo', '--thinking', 'off', '--no-mcp', '--no-web-search', '--session-id', 'e2e-tiny',
            '--usage-log', str(usage_log), '--max-time', str(max_time), '--max-tokens', str(max_tokens), prompt]
     t0 = time.monotonic()
     p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
@@ -226,22 +231,28 @@ def main():
 
         oenv = dict(os.environ, HOME=str(home), OXA_AGENT_DIR=str(home / 'agent'),
                     OXA_ENGINE_URL=f'http://127.0.0.1:{port}')
-        usage_log = out / 'usage.jsonl'
         o = cfg['oxa']
         runs = []
         for name, text in (('turn1', o['first_prompt']), ('turn2', o['second_prompt'])):
+            # one log per run: oxa writes --usage-log for its own process (a later run replaces it)
+            usage_log = out / f'usage-{name}.jsonl'
             code, wall, result, recs = run_oxa_with_usage(
                 a.oxa, text, work, oenv, usage_log, o['run_timeout_s'], o['max_time_s'],
                 o['max_tokens'], name, out
             )
             runs.append({'name': name, 'exit': code, 'error_class': result.get('error_class'), 'wall_ms': wall, 'requests': recs})
-            # the synthetic model has filler weights and never stops: a turn that ends on the output
-            # limit or on the token budget still went through the whole oxa -> oxe path
             if code != 0 and result.get('error_class') not in o['accept_error_classes']:
                 fail(f"{name}: oxa -p exited {code} ({result.get('error_class')}; see {name}.stderr.txt)")
         report['oxa'] = runs
 
-        # (a) it works: both runs reached the engine and got tokens back
+        # (a) it works: the tool task left its file, and both runs reached the engine and got tokens
+        task = work / o['task_file']
+        content = task.read_text(errors='replace') if task.is_file() else None
+        report['task'] = {'file': o['task_file'], 'exists': content is not None, 'content': (content or '')[:200]}
+        if content is None:
+            fail(f"turn1: oxa did not create {o['task_file']} (see turn1.stdout.txt)")
+        elif not re.search(rf"\b{re.escape(o['task_word'])}\b", content, re.IGNORECASE):
+            fail(f"turn1: {o['task_file']} does not contain {o['task_word']!r}: {content[:80]!r}")
         for r in runs:
             ok = [q for q in r['requests'] if q.get('usage_reported') and (q.get('output') or 0) > 0]
             if not ok:
@@ -279,7 +290,7 @@ def finish(report, out):
     report['warnings'] = warnings
     report['failures'] = failures
     (out / 'report.json').write_text(json.dumps(report, indent=2))
-    md = ['## e2e (oxa + oxe, tiny synthetic model)', '',
+    md = ['## e2e (oxa + oxe, real model)', '',
           f"model `{report.get('model_file')}`, {report.get('model_bytes')} bytes, sha256 `{report.get('model_sha256')}`", '']
     pr = report.get('probe')
     if pr:
@@ -288,6 +299,9 @@ def finish(report, out):
             u = (pr[k].get('usage') or {}).get('prompt_tokens_details') or {}
             md.append(f"| {k} | {pr[k]['ttft_ms']:.0f} | {pr[k]['total_ms']:.0f} | {u.get('cached_tokens', 'n/a')} |")
         md.append('')
+    t = report.get('task')
+    if t:
+        md += [f"- tool task: {t['file']} {'created' if t['exists'] else 'MISSING'}, content {t['content']!r}"]
     for r in report.get('oxa', []):
         md.append(f"- `oxa -p` {r['name']}: exit {r['exit']}, {r['wall_ms']:.0f} ms, requests "
                   + json.dumps([{k: q.get(k) for k in ('prompt', 'cached', 'output', 'duration_ms')} for q in r['requests']]))
