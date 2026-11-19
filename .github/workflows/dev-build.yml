@@ -66,7 +66,7 @@ jobs:
           # Every payload path is under usr/, and the native oxa is present.
           for tarball in dist/*.tar.gz; do
             tar -tzf "$tarball" | awk '!/^usr\// || /(^|\/)\.\.(\/|$)/ { print "unsafe payload path: " $0; bad = 1 } END { exit bad }'
-            tar -tzf "$tarball" | grep -qx 'usr/bin/oxa' || { echo "missing native oxa in $tarball" >&2; exit 1; }
+            tar -tzf "$tarball" | grep -x 'usr/bin/oxa' >/dev/null || { echo "missing native oxa in $tarball" >&2; exit 1; }
           done
           packaging/release/no-python.sh dist/*.tar.gz
           (cd dist && sha256sum -- * > SHA256SUMS && sha256sum -c SHA256SUMS)
