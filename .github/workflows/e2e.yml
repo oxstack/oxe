@@ -1,0 +1,128 @@
+name: e2e
+# End-to-end check of the ox suite: oxa drives the real oxe engine (oxe-server --engine oxe) over HTTP.
+# NOT a required check and not part of the `gate` job of checks.yml: it runs in parallel and adds no
+# minutes to the required path. Runs on PRs that touch the engine or the oxa crates that talk to it,
+# on main and nightly.
+#
+# Runner: the real engine is aarch64-only (an x86_64 build is the stub engine, O-174), so this job
+# uses the ARM64 runner and the same Fedora 44 container as build.yml.
+#
+# Model: oxe implements only the qwen35moe architecture and no public GGUF of it is smaller than
+# 35B-A3B. TEMPORARY: until the engine supports a small dense Qwen3.5 model, the job serves a tiny
+# deterministic synthetic qwen35moe (engine/crates/server/examples/e2e_tiny_model.rs, a few MB,
+# regenerated in seconds, so there is nothing to download or cache; its sha256 is pinned in
+# tools/ci/e2e-tiny.toml and checked). It tests plumbing, cache reuse and latency; its weights are
+# filler, so it cannot make a tool call. Plan: handoff/plans/tiny-model-support.md.
+# Budgets and the cache baseline live in tools/ci/e2e-tiny.toml: they warn; only the hard ceilings fail.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    paths:
+      - "engine/**"
+      - "oxa/oxa-core/**"
+      - "oxa/oxa-engine/**"
+      - "oxa/oxc-gateway/**"
+      - "oxa/oxa-cli/**"
+      - ".github/workflows/e2e.yml"
+      - "tools/ci/e2e_tiny.py"
+      - "tools/ci/e2e-tiny.toml"
+  workflow_dispatch:
+  schedule:
+    - cron: "47 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUST_VERSION: "1.99.1"
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "4"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  e2e:
+    name: e2e (oxa + oxe, tiny model)
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Engine cache key (the cache build.yml seeds on main)
+        id: ekey
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-moe engine
+      - name: oxa cache key (the cache build.yml seeds on main)
+        id: okey
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-oxa-release oxa
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: erestore
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.ekey.outputs.key }}
+          restore-keys: ${{ steps.ekey.outputs.prefix }}
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: orestore
+        with:
+          path: oxa/target
+          key: ${{ steps.okey.outputs.key }}
+          restore-keys: ${{ steps.okey.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
+      - name: Build oxe-server and the model writer
+        working-directory: engine
+        run: cargo build --release --locked -p server --bin oxe-server --example e2e_tiny_model
+      - name: Build oxa
+        working-directory: oxa
+        run: cargo build --release --locked --bin oxa
+      - name: Write the tiny model
+        run: engine/target/release/examples/e2e_tiny_model "$RUNNER_TEMP/e2e-tiny-model.gguf"
+      - name: Run oxa against oxe-server
+        run: |
+          python3 -I tools/ci/e2e_tiny.py \
+            --oxe-server engine/target/release/oxe-server --oxa oxa/target/release/oxa \
+            --model "$RUNNER_TEMP/e2e-tiny-model.gguf" --config tools/ci/e2e-tiny.toml \
+            --out "$RUNNER_TEMP/e2e-report"
+      - name: Collect the report
+        if: always()
+        run: |
+          mkdir -p e2e-report
+          cp -r "$RUNNER_TEMP/e2e-report/." e2e-report/ 2>/dev/null || true
+          rm -rf e2e-report/home e2e-report/work
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main-seeded keys: PRs never save, and a restore of the exact main entry skips
+        # the save (build.yml seeds the same keys for the same content).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.erestore.outputs.cache-matched-key != format('{0}main', steps.ekey.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.ekey.outputs.prefix }}main
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches; a restore of the exact main entry skips the save.
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.orestore.outputs.cache-matched-key != format('{0}main', steps.okey.outputs.prefix)
+        with:
+          path: oxa/target
+          key: ${{ steps.okey.outputs.prefix }}main
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e-report
+          path: e2e-report/
+          if-no-files-found: warn
+          retention-days: 14

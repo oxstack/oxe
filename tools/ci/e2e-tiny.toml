@@ -1,0 +1,52 @@
+# Budgets and settings of the end-to-end job (.github/workflows/e2e.yml, tools/ci/e2e_tiny.py).
+# One place for every number. Owner rule: a limit warns (a GitHub warning annotation and a line in the
+# report); only the generous hard ceilings fail the job. They exist to catch a hang, not a slowdown.
+
+[model]
+# sha256 of the file `cargo run --example e2e_tiny_model` writes (seeded filler weights: the same
+# bytes on every run). A mismatch fails the job: the model changed without this pin changing.
+sha256 = "24b31c9d9ab22ceb033629b721f9df8fb011b3f3e5977ee06e55c50935e7bb79"
+
+[server]
+port = 18080
+ctx_size = 65536
+startup_timeout_s = 120
+
+[probe]
+# Direct streaming request to oxe-server, run twice: the cold and the warm time to first token.
+prompt_repeat = 300
+max_tokens = 8
+
+[oxa]
+# `oxa -p`, two runs in one session (the second continues the first).
+run_timeout_s = 240
+max_time_s = 180
+# stops a run after this many new prompt+output tokens (cached ones are free); keeps a filler-weight model short
+max_tokens = 20000
+# TEMPORARY (synthetic filler-weight model): a run may end on these without a stop token
+accept_error_classes = ["output_limit", "aborted"]
+first_prompt = "Create a file named hello.txt containing the word hi."
+second_prompt = "Now say which file you were asked to create."
+
+[budget]
+# warn above *_warn_ms; fail only above *_fail_ms.
+ttft_cold_warn_ms = 3000
+ttft_cold_fail_ms = 60000
+ttft_warm_warn_ms = 1500
+ttft_warm_fail_ms = 60000
+turn_warn_ms = 60000
+turn_fail_ms = 180000
+warm_over_cold_prefill_warn = 0.5
+warm_over_cold_prefill_fail = 1.0
+
+[cache]
+# Reuse ratio = cached prompt tokens / the previous prompt's tokens (a new turn adds only its own
+# tokens, so a healthy cache reuses nearly all of it). Fail below the floor.
+min_reuse_ratio = 0.9
+# Per-model baseline (the ratio measured on main for that model file). A drop of more than 10 points
+# fails, a smaller drop warns. Fill in from the first green run's report.
+baseline_fail_drop = 0.10
+baseline_warn_drop = 0.01
+
+[cache.baseline]
+"e2e-tiny-model.gguf" = 0.999
