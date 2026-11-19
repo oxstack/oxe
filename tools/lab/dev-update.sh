@@ -497,7 +497,8 @@ promote_gate() {
 denied_get() {
   local status
   status=$(curl -q --silent --show-error --output /dev/null --write-out '%{http_code}' \
-    --noproxy '*' --proto '=http' --connect-timeout 5 --max-time 10 "$lead_url") || return 1
+    --noproxy '*' --proto '=http' --connect-timeout 5 --max-time 10 \
+    --retry 10 --retry-connrefused --retry-delay 1 --retry-max-time 15 "$lead_url") || return 1
   [[ $status == 403 ]]
 }
 
