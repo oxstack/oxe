@@ -366,10 +366,13 @@ fn arch_header(arch: &str, tensors: &[(&str, u64)]) -> Vec<u8> {
     let mut b = b"GGUF".to_vec();
     b.extend(3u32.to_le_bytes());
     b.extend((tensors.len() as u64).to_le_bytes());
-    b.extend(1u64.to_le_bytes());
+    b.extend(2u64.to_le_bytes());
     put_str(&mut b, "general.architecture");
     b.extend(8u32.to_le_bytes());
     put_str(&mut b, arch);
+    put_str(&mut b, &format!("{arch}.embedding_length"));
+    b.extend(10u32.to_le_bytes());
+    b.extend(256u64.to_le_bytes());
     for (name, off) in tensors {
         put_str(&mut b, name);
         b.extend(2u32.to_le_bytes());
@@ -379,6 +382,24 @@ fn arch_header(arch: &str, tensors: &[(&str, u64)]) -> Vec<u8> {
         b.extend(off.to_le_bytes());
     }
     b
+}
+
+#[test]
+fn tied_head_rejects_a_malformed_embedding_shape() {
+    let mut b = arch_header("qwen35", &[("token_embd.weight", 0)]);
+    let dimensions = b
+        .windows(4)
+        .rposition(|bytes| bytes == 2u32.to_le_bytes())
+        .expect("tensor dimensions");
+    b[dimensions..dimensions + 4].copy_from_slice(&1u32.to_le_bytes());
+    b.drain(dimensions + 12..dimensions + 20);
+
+    let err = parse_header(&b).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("token_embd.weight: tied embedding shape [256], expected [256, vocabulary]"),
+        "{err}"
+    );
 }
 
 /// A dense qwen35 file without `output.weight` gets the head as an alias of the embedding (same
