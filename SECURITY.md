@@ -36,6 +36,11 @@ configured daily quota and prior same-diff receipts. If either listing is incomp
 deferred before quota reservation, provider authentication, or provider I/O. An incomplete history
 cannot authorize another token-spending review.
 
+The memory store (`memory/` under the agent directory) is owner-only: folder `0700`, tightened by a
+save when an existing one is looser; entries and `MEMORY.md` `0600` via a private synced temporary;
+lock created `0600`. A save is bounded (8 KiB body, 4 KiB frontmatter) and the index scan reads each
+file only that far.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
