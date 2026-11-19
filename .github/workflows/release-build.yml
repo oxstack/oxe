@@ -128,7 +128,7 @@ jobs:
           cd /build/first
           mkdir -p /build/payload
           tar -xzf "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).tar.gz" -C /build/payload
-          python3 -B packaging/release/sbom.py /build/payload "$GITHUB_WORKSPACE/dist/SBOM.cdx.json"
+          packaging/release/sbom.sh /build/payload "$GITHUB_WORKSPACE/dist/SBOM.cdx.json"
           cp "$GITHUB_WORKSPACE/dist/SBOM.cdx.json" "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).sbom.cdx.json"
           # No build path or home directory in any shipped binary.
           for binary in /build/payload/usr/bin/*; do
@@ -163,6 +163,8 @@ jobs:
         with:
           name: release-build-x86_64
           path: artifacts
+      - name: No Python in installers, recipes and release scripts
+        run: bash packaging/release/no-python-installers.sh
       - name: Fresh Arch container (official image is x86_64 only)
         run: |
           mkdir packages
@@ -171,7 +173,7 @@ jobs:
             -v "$GITHUB_WORKSPACE/artifacts:/artifacts:ro" \
             -v "$GITHUB_WORKSPACE/packages:/packages" \
             -v "$GITHUB_WORKSPACE/packaging/arch:/recipes:ro" \
-            -v "$GITHUB_WORKSPACE/packaging/release/smoke.py:/smoke.py:ro" \
+            -v "$GITHUB_WORKSPACE/packaging/release/smoke.sh:/smoke.sh:ro" \
             -v "$GITHUB_WORKSPACE/packaging/release/arch-test.sh:/arch-test.sh:ro" \
             -v "$GITHUB_WORKSPACE/packaging/release/no-python.sh:/no-python.sh:ro" \
             archlinux:latest bash /arch-test.sh
