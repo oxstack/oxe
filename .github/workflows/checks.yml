@@ -7,8 +7,7 @@ name: checks
 # additionally runs the complete oxa workspace, including tests that read docs/assets. Outputs: engine/ and fuzz/oxe/ -> `engine` (clippy, x86_64 stub server tests,
 # the x86_64 engine workspace check, ARM engine and Flash builds, oxe fuzz smoke); oxa/ and
 # fuzz/oxa/ -> `oxa` (clippy, the oxa test archive and shards, the ARM oxa build, oxa fuzz smoke);
-# oxc/ -> `lab`, `cli` and `gateway`;
-# oxc-rs/ and conformance/ -> `cli`; oxa/oxc-gateway/ -> `gateway`.
+# oxc/ -> `gateway`; oxa/oxc-gateway/ -> `gateway`.
 # The shared gateway selects oxa to check its in-process consumer.
 # Anything else (.github/, tools/, packaging/, root files, a new directory) and an empty group
 # diff count as "everything changed".
@@ -64,8 +63,6 @@ jobs:
       docs: ${{ steps.paths.outputs.docs }}
       engine: ${{ steps.paths.outputs.engine }}
       oxa: ${{ steps.paths.outputs.oxa }}
-      lab: ${{ steps.paths.outputs.lab }}
-      cli: ${{ steps.paths.outputs.cli }}
       gateway: ${{ steps.paths.outputs.gateway }}
       md: ${{ steps.paths.outputs.md }}
     steps:
@@ -179,43 +176,9 @@ jobs:
       - name: oxa
         working-directory: oxa
         run: cargo fmt --all -- --check
-      - name: experimental oxc parser
-        working-directory: oxc-rs
-        run: cargo fmt --all -- --check
       - name: engine
         working-directory: engine
         run: cargo fmt --all -- --check
-
-  native-controller-cli:
-    needs: changes
-    if: needs.changes.outputs.cli == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
-    name: experimental oxc CLI (x86_64)
-    # the project's runner image uses the same tool-cache path as the hosted image, so setup-python works there too
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # The goldens record one argparse behaviour (quoted choices, negative-number rule), which
-      # changes between patch releases, so the reference interpreter is pinned exactly.
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.14.8"
-      - name: Toolchain
-        run: rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy --component rustfmt --no-self-update
-      - name: Build opt-in parser and check defaults
-        env:
-          RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
-        run: |
-          cargo check --locked --manifest-path oxc-rs/Cargo.toml --no-default-features
-          cargo clippy --locked --manifest-path oxc-rs/Cargo.toml --features native-controller --all-targets -- -D warnings
-          cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --features native-controller
-      - name: Python and native parser conformance
-        run: |
-          python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
-          OXC_COMMAND="$GITHUB_WORKSPACE/oxc-rs/target/release/oxc-native" python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
-          python3 conformance/check_native_scaffold.py "$GITHUB_WORKSPACE/oxc-rs/target/release/oxc-native"
 
   clippy:
     needs: changes
@@ -276,8 +239,8 @@ jobs:
 
   x86-64-stub:
     needs: changes
-    # engine changes run the server tests; controller changes need the stub build for the contract
-    if: (needs.changes.outputs.engine == 'true' || needs.changes.outputs.lab == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    # engine changes run the server tests and the OpenAI contract
+    if: needs.changes.outputs.engine == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     # oxe-server builds on x86_64 with the stub engine only (kernels-sys compiles its kernels on
     # aarch64 only; the model engine refuses to load elsewhere). Its server tests that do not need
     # the model engine run here. Uses the hosted image's rustup (setup_toolchain.sh installs the
@@ -319,7 +282,7 @@ jobs:
         id: pip-cache
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('tools/openai-contract/requirements.txt') }}
       - name: Build oxe-server
         working-directory: engine
         run: cargo build --release --locked -p server --bin oxe-server
@@ -334,13 +297,13 @@ jobs:
           ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
           cargo test --release --locked -p server --lib
 
-      - name: OpenAI contract (engine and controller over loopback)
+      - name: OpenAI contract (engine over loopback)
         working-directory: ${{ github.workspace }}
         run: |
           root=$(mktemp -d)
           mkdir -p "$root/home"
           env -i PATH="$PATH" HOME="$root/home" PIP_CACHE_DIR="$HOME/.cache/pip" \
-            tools/openai-contract/run.sh --mode both --server "$PWD/engine/target/release/oxe-server" --work "$root/work"
+            tools/openai-contract/run.sh --mode engine --server "$PWD/engine/target/release/oxe-server" --work "$root/work"
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
         if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
@@ -355,7 +318,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.pip-cache.outputs.cache-hit != 'true'
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('tools/openai-contract/requirements.txt') }}
 
   engine-x86-workspace:
     needs: changes
@@ -477,109 +440,6 @@ jobs:
       - name: Task 61 oxe targets, short smoke
         run: cargo test --locked --manifest-path fuzz/oxe/Cargo.toml --test smoke
 
-  lab-shards:
-    # The controller unit suite in three shards (oxc/tools/ci_test_shard.py: every module in exactly
-    # one shard). The aggregate `lab` below keeps the required check name.
-    needs: changes
-    if: needs.changes.outputs.lab == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
-    name: lab tests shard ${{ matrix.shard }}
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
-    defaults:
-      run:
-        shell: bash
-        working-directory: oxc
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
-        id: pip-cache
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
-      # No setup-python here: the synthetic screen (tools/run_synthetic_screen.py) runs generated code
-      # in bwrap with only /usr mounted, so the interpreter must live under /usr. The image's system
-      # python3 is used and checked below.
-      - name: System python3 under /usr
-        run: |
-          python3 -c 'import sys; print(sys.executable, sys.version)
-          assert sys.version_info >= (3, 12), "python3 >= 3.12 required"
-          assert sys.executable.startswith("/usr/"), "python3 must live under /usr (bwrap screen)"'
-      - name: bubblewrap + unprivileged user namespaces
-        # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor
-        # (kernel.apparmor_restrict_unprivileged_userns=1); bwrap needs them. Lifted for this
-        # ephemeral runner VM only.
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap python3-pip
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          bwrap --unshare-all --ro-bind / / true || { echo "::error::bwrap cannot create a sandbox on this runner"; exit 1; }
-      - name: Anthropic SDK for the mock-only D6 tests
-        # The native Messages client is the official SDK; every test talks to a loopback mock,
-        # never a real API and never a real key. Install into the /usr interpreter the bwrap
-        # screen uses, not a separate setup-python toolchain.
-        run: sudo python3 -m pip install --break-system-packages --ignore-installed --disable-pip-version-check 'anthropic==0.125.0'
-      - name: Unit tests, shard ${{ matrix.shard }} of 3 (verbose, so skips are visible)
-        # ci_test_shard.py numbers shards from 0; the check names count from 1. The shard prints its
-        # measured seconds per module and in total (for rebalancing WEIGHTS).
-        run: |
-          set -o pipefail
-          LAB_TEST_SHARD="$((${{ matrix.shard }} - 1))/3" ./tools/run_lab_tests.sh 2>&1 | tee "unittest-${{ matrix.shard }}.log"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        # for the one skip report in the aggregate job
-        if: always()
-        with:
-          name: lab-unittest-log-${{ matrix.shard }}
-          path: oxc/unittest-${{ matrix.shard }}.log
-          if-no-files-found: error
-          retention-days: 7
-      - name: CLI help (isolated HOME)
-        if: matrix.shard == 1
-        run: |
-          root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
-          HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_RUNTIME_DIR="$root/r" \
-            PYTHONPATH=src python3 -m oxc --help > /dev/null
-      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
-        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
-        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.pip-cache.outputs.cache-hit != 'true' && matrix.shard == 1
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-${{ runner.arch }}-pip-${{ hashFiles('oxc/pyproject.toml', 'tools/openai-contract/requirements.txt') }}
-
-  lab:
-    # Preserves the required check name: fails when any shard failed, was cancelled or was skipped
-    # while the lab component changed. (The receipt scrub of the name runs in `scans`.)
-    needs: [changes, lab-shards]
-    if: always() && needs.changes.outputs.lab == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
-    name: lab tests, CLI, receipt scrub (x86_64)
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 5
-    steps:
-      - name: Every shard must pass
-        run: test '${{ needs.lab-shards.result }}' = success
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        if: always()
-        with:
-          pattern: lab-unittest-log-*
-          path: ${{ runner.temp }}/lab-logs
-          merge-multiple: true
-      - name: Report skipped tests
-        if: always()
-        # every skip is surfaced as an annotation instead of a silent pass (e.g. tests that need
-        # a real engine and its model files); all three shard logs must be present
-        run: |
-          cd "$RUNNER_TEMP/lab-logs"
-          for k in 1 2 3; do test -s "unittest-$k.log" || { echo "::error::missing log of lab shard $k"; exit 1; }; done
-          cat unittest-1.log unittest-2.log unittest-3.log > unittest.log
-          grep -E ' \.\.\. skipped ' unittest.log | sed -E 's/^(.*) \.\.\. skipped (.*)$/::warning title=Skipped test::\1: \2/' || true
-          echo "skipped: $(grep -cE ' \.\.\. skipped ' unittest.log || true)" >> "$GITHUB_STEP_SUMMARY"
-          grep -h '^lab shard' unittest-*.log >> "$GITHUB_STEP_SUMMARY" || true
-
   scans:
     name: secret scan, SDK-material check, product isolation
     # Never path-gated: runs on every event and every change.
@@ -597,7 +457,7 @@ jobs:
           # Plan item 22: exact test-only fixture of obviously fake OpenAI key/JWT/refresh
           # shapes; asserts configured secrets disappear from errors and echoed headers.
           # No real credentials or requests. Keep realistic inputs intact (T3 review).
-          if git grep -nIE "$pat" -- . ':!oxc/tests/fixtures' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs' ':!oxa/oxc-gateway/tests/redaction_openai.rs'; then echo "secret-like strings found"; exit 1; fi
+          if git grep -nIE "$pat" -- . ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs' ':!oxa/oxc-gateway/tests/redaction_openai.rs'; then echo "secret-like strings found"; exit 1; fi
           echo "no secret-like strings in $(git ls-files | wc -l) tracked files"
       - name: SDK-material check (file names, ELF objects, hexagon directories)
         # Self-contained: the exporter's full scan (text notices included) runs at export time.
@@ -699,7 +559,7 @@ jobs:
     # the scans must succeed; every classifier output must be literally 'true' or 'false'.
     name: gate
     if: always()
-    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, engine-x86-workspace, native-controller-cli, fuzz-oxa, fuzz-oxe, lab-shards, lab, build, gateway]
+    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, engine-x86-workspace, fuzz-oxa, fuzz-oxe, build, gateway]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
@@ -713,7 +573,7 @@ jobs:
           for k in ('changes', 'scans'):                      # these two may never be skipped
               if needs[k]['result'] != 'success': bad[k] = needs[k]['result']
           flags = needs['changes'].get('outputs', {})
-          for k in ('engine', 'oxa', 'lab', 'cli', 'gateway', 'docs', 'md', 'full'):
+          for k in ('engine', 'oxa', 'gateway', 'docs', 'md', 'full'):
               if flags.get(k) not in ('true', 'false'): bad['changes.' + k] = repr(flags.get(k))
           print(json.dumps({k: v['result'] for k, v in needs.items()}, indent=1)); print('bad:', bad)
           sys.exit(1 if bad else 0)
