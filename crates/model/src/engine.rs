@@ -888,6 +888,19 @@ pub fn validate_n_ctx(n_ctx: usize, n_ctx_train: usize) -> Result<usize, String>
 /// trained context of Qwen3.6 / Ornith).
 pub const MAX_N_CTX: usize = 1 << 20;
 
+/// Recurrent slots and attention lanes of an engine with `verify_lanes` verify lanes (`mtp`: an MTP
+/// block is loaded; MTP engines get every lane for catch-up runs). The one rule shared by
+/// [`Engine::with_options`] and the admission report (`crate::admission`).
+pub fn lane_shape(mtp: bool, verify_lanes: usize) -> (usize, usize) {
+    let n_slots = verify_lanes.max(1);
+    let lanes = if mtp {
+        MAX_LANES.max(n_slots + 1)
+    } else {
+        n_slots
+    };
+    (n_slots, lanes)
+}
+
 /// LONG-CTX memory of one engine at a context capacity, in bytes (see [`ctx_mem`]). `kv` and
 /// `recurrent` are the persistent sequence state; the scratch parts grow with the context in
 /// use (anonymous zero pages: only the positions a run touched become resident).
@@ -1138,13 +1151,8 @@ impl<'a> Engine<'a> {
         let att_width = d.n_head * hd;
         let hv = d.ssm_head_v_dim();
         let k_used = d.n_expert_used;
-        let n_slots = opt.verify_lanes.max(1);
         // MTP engines get every lane for catch-up runs (prompt seeding); verify uses n_slots
-        let lanes = if opt.mtp.is_some() {
-            MAX_LANES.max(n_slots + 1)
-        } else {
-            n_slots
-        };
+        let (n_slots, lanes) = lane_shape(opt.mtp.is_some(), opt.verify_lanes);
         if n > 255 || d.ssm_conv_kernel > 16 {
             return Err("thread count or conv kernel beyond the engine limits".into());
         }

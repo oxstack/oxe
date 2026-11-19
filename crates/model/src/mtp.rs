@@ -28,6 +28,45 @@ use std::ops::Range;
 use std::path::Path;
 use std::time::Instant;
 
+/// Per-model MTP default when no --spec-type flag is given (M3.1 speed results, Codex
+/// 2026-11-09): Qwen3.6 depth 2 (+30 % decode); Ornith off (its MTP head chains badly: no
+/// gain); any other model off.
+pub fn default_mtp_depth(model: &Path, head: Option<&Path>) -> usize {
+    let name = model
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if name.contains("ornith") {
+        // Ornith's own MTP head chains badly (64.9% / 15.1%, WP-D5a); with Qwen3.6's head as a
+        // sidecar it reaches 2.22-2.38 tokens/verify at depth 2 (ticket 014). The depth is
+        // ORNITH_GRAFT_DEPTH, confirmed by 014's speed screen before any promotion.
+        if head.is_some() {
+            ORNITH_GRAFT_DEPTH
+        } else {
+            0
+        }
+    } else if name.contains("qwen3.6") || name.contains("qwen36") {
+        2
+    } else {
+        0
+    }
+}
+
+/// Ornith's MTP depth with a sidecar head and no tune table: 1 (ticket 018 [M]: the restricted
+/// graft head at depth 1 ~47 vs 44 tok/s on the short screen, deeper drafts slower). A tune table
+/// (`--mtp-tune`) overrides it per context bucket.
+pub const ORNITH_GRAFT_DEPTH: usize = 1;
+
+/// The MTP head source: `explicit` if given, else `<model stem>.mtp-head.gguf` next to the model if
+/// it exists, else None (the model's own blk.{n_layer} block).
+pub fn mtp_head_path(model: &Path, explicit: Option<&Path>) -> Option<std::path::PathBuf> {
+    if let Some(p) = explicit {
+        return Some(p.to_path_buf());
+    }
+    let side = model.with_extension("mtp-head.gguf");
+    side.exists().then_some(side)
+}
+
 /// MTP tensor ids are offset by this so they never collide with the target's ids (the MTP
 /// block may come from another GGUF, e.g. a sidecar head, whose tensor indices overlap the
 /// target's). `refs` is indexed by `tid - MTP_TID_BASE`.

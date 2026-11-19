@@ -391,6 +391,27 @@ logprobs, cache state. Code: `fair.rs` (queue, driver, lock order), `Worker::gen
   a sliced generation that ends with nobody queued keeps them.
 - Test aid: `--stub-decode-us N` (stub engine) makes each decoded token take N us.
 
+### Admission report (`oxe admission`)
+
+`oxe admission --model M.gguf --ctx N [launch args] [--margin-bytes B] --json` prints the
+allocation bounds oxa's native local admission (`oxa.local.limits.<model>.allocation_budget`)
+needs. Only the GGUF header is read: no weights are mapped, no pool or device session exists.
+The numbers are the engine's own: `model::engine::ctx_mem` (held equal to the real allocation by the
+long-context tests), `lane_shape` (shared with `Engine::with_options`) and `Plan::budget`. It is not
+an RSS measurement. The launch arguments use the oxe-server names (`--ctx-size`/`-c`, `--oxe-cpus`,
+`--oxe-prefill-cpus`, `--spec-type`, `--spec-draft-n-max`/`--draft-max`, `--cache-type-k/-v`,
+`--mtp-head`, `--engine oxe`), resolved by the same rules (model-default MTP depth, sidecar head,
+KV type mapping). Without `--ctx` the report is for the model's own `context_length` (said in
+`launch.context_source`); an option it does not understand is an error, never a guess. The output's `arguments` is the complete resolved argument list the budget is valid for.
+
+With `T = ctx_mem(...).total(decode threads, prefill threads)` of the launch:
+`kv_bytes_per_position` (MTP attention layer included once) `* capacity + scratch_bytes +
+mtp_state_bytes = T` exactly, where `scratch_bytes` is the engine without MTP minus its KV, and
+`mtp_state_bytes` is what MTP adds beyond its KV share (plus a separate sidecar head file's size).
+`margin_bytes` is `--margin-bytes`, else 1 GiB of host headroom for what the report does not model
+(HTTP server, tokenizer, optional prefix/state RAM caches, per-lane working rows, the operating
+system); it is a documented default the owner can override. oxa adds the weights file itself.
+
 ## 3. Tests (all with the stub engine; no model weights are read)
 
 ```sh

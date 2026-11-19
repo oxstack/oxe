@@ -24,3 +24,6 @@ oxn = { path = "../oxn", optional = true }
 [[bin]]
 name = "oxe"
 path = "src/bin/oxe.rs"
+
+[dev-dependencies]
+model = { path = "../model", features = ["testkit"] }
