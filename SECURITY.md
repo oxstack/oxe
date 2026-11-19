@@ -30,6 +30,10 @@ messages with `oxa.inbox.headless` set to `true` by default. This user-only sett
 project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
 goal, and the managed-steering path do not mount the plain inbox watcher.
 
+An explicit owner CLI `--auto` or `--yolo` is sufficient startup consent for home, root, or a
+parent of home, with a warning. Project settings and model output cannot supply that CLI consent.
+An interactive time or token limit ends the watched startup session after its bounded wrap-up,
+and an idle expiry starts no model request.
 The background-job and per-parent child limits are configurable through `oxa.bash.maxJobs`
 (default 16) and `oxa.subagent.maxChildren` (default 8). Read both caps from the user file.
 Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
