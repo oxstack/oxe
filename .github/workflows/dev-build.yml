@@ -21,11 +21,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 1
+          fetch-tags: true
       - id: version
         run: |
-          version=$(awk '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[ ]*=/{split($0,a,"=");gsub(/[" ]/,"",a[2]);print a[2];exit}' oxa/Cargo.toml)
-          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*$ ]]
-          echo "version=v$version-dev.${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "version=$(python3 -I tools/ci/dev_version.py "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
   build:
     needs: version
     uses: ./.github/workflows/release-build.yml
