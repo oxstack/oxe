@@ -69,6 +69,7 @@ Image input (B2b): `read` sends an image to a model that takes images only throu
 - **Re-adding an OS sandbox to interactive or yolo paths** is a regression, not a hardening.
 
 ## Owner decisions (not findings)
+The owner confirm broker answers a typed yes only for a request whose dialog was shown, and a consumer started by the model verifies the broker before it accepts an answer, by owner decision (2026-11-19, post-merge audit of #1572). A finding that asks for the old behaviour (a typed yes answering an unshown request, or a consumer trusting `OXA_CONFIRM_SOCK` as given) is answered here.
 A background bash job that finishes on its own queues one follow-up message with the command as written, its exit code and last lines, by owner decision (#1448 W4): `oxa.jobs.wakeOnFinish` (default `true`, `false` opts out, user settings only so a project file cannot turn it on) is the control, and it wakes only the session the job started in. A job the model or the user stopped wakes nothing, and a completion retained behind a failed or interrupted turn stays queued, also across a session reopen, until the next prompt. A finding that asks for a default-off switch, for the output to stay silent, or for a cross-session wake is not a finding; it is answered here.
 A pursuing goal whose request fails transiently (stream cut, engine down or busy, timeout, 429, 5xx) waits without a model request and then sends the same request again, by owner decision (#1448): `oxa.goal.failureBackoffSeconds` (default 60, doubling, capped at 900 unless set higher, `0` opts out) is the only control, and there is no attempt cap. Auth errors, refusals, a repetition stop, an abort and an owner-set budget still stop the goal with the reason shown. A finding that asks for an attempt cap, a default-off switch or a new terminal exception is not a finding; it is answered here.
 
@@ -97,6 +98,16 @@ Intentional removals must be stated in the PR body with a `Removes:` line; flag 
 The owner confirm broker (`oxa-core/src/owner_confirm.rs`, `OXA_CONFIRM_SOCK`) answers an oxa
 confirmation only from the owner: yolo chosen for the session (answer yes, shown and recorded), the
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
+A typed yes answers only a confirmation whose dialog oxa has already shown to the owner (the broker
+records shown requests; a yes with no shown dialog, or for a different request id, does not count).
+A consumer a model-run command starts cannot tell a fake listener from the broker by the socket
+path, because the command controls its environment: it trusts only the sandbox's pinned mount point
+or a listener verified through the peer's credentials as the session's own oxa process (an ancestor
+of the consumer running the same executable as the same user). A consumer that accepts an answer
+from an unverified socket is high. In yolo nothing changes: the model already has the owner's rights
+and the broker answers yes. The question text is the requesting process's own words and is shown as
+data, marked as requested by the process. Off Linux the peer check is unavailable and a consumer
+trusts only the sandbox's pinned mount.
 A confirmation that a model-run command can satisfy without the broker is high. A broker answer
 derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
 The broker bounds what a request can hold in the oxa process before accepting it for confirmation:
