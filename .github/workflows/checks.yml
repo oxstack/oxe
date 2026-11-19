@@ -506,7 +506,8 @@ jobs:
         # --user '': the user-name rule matches the account that RUNS the scrub (the maintainer's,
         # when receipts are scrubbed locally). Here that is the hosted runner's account, `runner`,
         # which only matches the English word "runner" in receipts. The other rules still run.
-        run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I tools/scrub_receipts.py --check --user ''
+        # The controller is retired; the scrubber is build/CI tooling and the gate stays.
+        run: git ls-files -z benchmarks experiments | xargs -0 -r timeout 300 python3 -I ../tools/ci/scrub_receipts.py --check --user ''
 
   gateway:
     # Moved from cloud-gateway.yml (fmt + conformance, same steps and matrix) so the gate covers it.
