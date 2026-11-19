@@ -1,0 +1,148 @@
+name: oracle
+# Real-weights oracle: oxe against llama.cpp on Qwen3.5-0.8B, the smallest model of the Qwen3.5
+# family (dense `qwen35`: the qwen35moe backbone with a dense FFN and a tied head). llama.cpp's
+# dump_ref (engine/tools/oracle) writes the logits of a fixed chat prompt and its greedy
+# continuation; `oxe verify` replays the tokens through oxe's decode path and tools/ci/oracle_tiny.py
+# checks top-1 agreement, mean KL divergence and the largest logit difference.
+# NOT a required check: it runs beside `checks` on engine changes, on main and nightly.
+#
+# Runner: the real engine is aarch64-only, so the ARM64 runner and the Fedora 44 container of
+# build.yml. llama.cpp is upstream at a pinned release (commit checked) built as build.sh does
+# (KleidiAI off, CPU repack on, the engine's ARM flags); the built dump_ref is cached per commit.
+# The model is a pinned Hugging Face revision, verified by sha256 and cached by that sha256.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "engine/crates/model/**"
+      - "engine/crates/kernels-sys/**"
+      - "engine/crates/gguf/**"
+      - "engine/crates/oxe-cli/**"
+      - "engine/tools/oracle/**"
+      - ".github/workflows/oracle.yml"
+      - "tools/ci/oracle_tiny.py"
+      - "tools/ci/fetch_model.sh"
+  pull_request:
+    paths:
+      - "engine/crates/model/**"
+      - "engine/crates/kernels-sys/**"
+      - "engine/crates/gguf/**"
+      - "engine/crates/oxe-cli/**"
+      - "engine/tools/oracle/**"
+      - ".github/workflows/oracle.yml"
+      - "tools/ci/oracle_tiny.py"
+      - "tools/ci/fetch_model.sh"
+  workflow_dispatch:
+  schedule:
+    - cron: "37 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUST_VERSION: "1.99.1"
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "4"
+  LLAMA_TAG: b11898
+  LLAMA_COMMIT: 8b28c2394324465bf7727089e7eaf7aec9442d6a
+  MODEL_FILE: Qwen3.5-0.8B-Q8_0.gguf
+  MODEL_URL: https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q8_0.gguf
+  MODEL_SHA256: 0ad885ffd4bb022fc4f0d33a3308fa108ef8613159d3b3a67e23abca056b7a6c
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  oracle:
+    name: oracle (oxe vs llama.cpp, Qwen3.5-0.8B)
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Engine cache key (the cache build.yml seeds on main)
+        id: ekey
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-moe engine
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: erestore
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.ekey.outputs.key }}
+          restore-keys: ${{ steps.ekey.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: mrestore
+        with:
+          path: ~/models/${{ env.MODEL_FILE }}
+          key: model-${{ env.MODEL_SHA256 }}
+      - name: Model (pinned revision, sha256 verified)
+        run: tools/ci/fetch_model.sh "$MODEL_URL" "$MODEL_SHA256" "$HOME/models/$MODEL_FILE"
+      - name: dump_ref cache key (llama.cpp commit + oracle sources, not the built binary)
+        id: lkey
+        run: echo "key=dump-ref-fedora44-$LLAMA_COMMIT-$(cat engine/tools/oracle/dump_ref.cpp engine/tools/oracle/build.sh | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: lrestore
+        with:
+          path: engine/tools/oracle/bin/dump_ref
+          key: ${{ steps.lkey.outputs.key }}
+      - name: Build llama.cpp and dump_ref
+        if: steps.lrestore.outputs.cache-hit != 'true'
+        run: |
+          src="$RUNNER_TEMP/llama.cpp"
+          git clone -q --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp "$src"
+          test "$(git -C "$src" rev-parse HEAD)" = "$LLAMA_COMMIT"
+          LLAMA="$src" CMAKE=cmake NINJA=ninja JOBS=4 engine/tools/oracle/build.sh
+      - name: Build oxe
+        working-directory: engine
+        run: cargo build --release --locked -p oxe-cli --bin oxe
+      - name: oxe vs llama.cpp
+        run: |
+          python3 -I tools/ci/oracle_tiny.py --dump-ref engine/tools/oracle/bin/dump_ref \
+            --oxe engine/target/release/oxe --model "$HOME/models/$MODEL_FILE" \
+            --out "$RUNNER_TEMP/oracle"
+      - name: Collect the report
+        if: always()
+        run: |
+          mkdir -p oracle-report
+          cp "$RUNNER_TEMP/oracle/report.json" "$RUNNER_TEMP/oracle/ref/manifest.json" oracle-report/ 2>/dev/null || true
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches; an exact restore of main's entry skips the save (as in e2e.yml).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.erestore.outputs.cache-matched-key != format('{0}main', steps.ekey.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.ekey.outputs.prefix }}main
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches (PR refs would only evict main's entries).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.mrestore.outputs.cache-hit != 'true'
+        with:
+          path: ~/models/${{ env.MODEL_FILE }}
+          key: model-${{ env.MODEL_SHA256 }}
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.lrestore.outputs.cache-hit != 'true'
+        with:
+          path: engine/tools/oracle/bin/dump_ref
+          key: ${{ steps.lkey.outputs.key }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: oracle-report
+          path: oracle-report/
+          if-no-files-found: warn
+          retention-days: 14

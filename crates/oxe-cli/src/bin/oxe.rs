@@ -1058,6 +1058,8 @@ fn cmd_verify(a: &Args) {
     let mut bytes = vec![0u8; 4 * n_vocab];
     let (mut kl_sum, mut kl_max, mut top1, mut nk, mut exact_rows) =
         (0f64, 0f64, 0usize, 0usize, 0usize);
+    // largest |ours - ref| over every compared logit, and the largest |ref| (its scale)
+    let (mut max_abs_diff, mut max_abs_ref) = (0f32, 0f32);
     let mut first_div: Option<usize> = None;
     let mut ours_gen = Vec::new();
     let t0 = Instant::now();
@@ -1082,6 +1084,10 @@ fn cmd_verify(a: &Args) {
                 nk += 1;
                 top1 += (argmax(&rbuf) == argmax(ol)) as usize;
                 exact_rows += rbuf.iter().zip(ol).all(|(x, y)| x.to_bits() == y.to_bits()) as usize;
+                for (x, y) in rbuf.iter().zip(ol) {
+                    max_abs_diff = max_abs_diff.max((x - y).abs());
+                    max_abs_ref = max_abs_ref.max(x.abs());
+                }
             }
         }
     }
@@ -1097,6 +1103,8 @@ fn cmd_verify(a: &Args) {
         "max_kld": kl_max,
         "top1_agreement": if nk > 0 { top1 as f64 / nk as f64 } else { f64::NAN },
         "bit_exact_logit_rows": exact_rows,
+        "max_abs_logit_diff": max_abs_diff,
+        "max_abs_ref_logit": max_abs_ref,
         "threads": s.pool.nthreads(),
         "seconds": secs,
     });
