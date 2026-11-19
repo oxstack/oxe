@@ -29,4 +29,6 @@ in a tree with Cargo manifests. A worker declaration can add requirements to tha
 
 The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 
+Semantic report verification is one consent, by owner decision (#1448): opting into `oxa.reportIssue.semanticDedupe` is the owner's consent to send the scrubbed report, a public source excerpt and candidate summaries to the configured model and to search the repository for matching issues, so the post asks one question — the final preview. New issues are limited to one per task, and the per-worker daily count is the owner setting `oxa.reportIssue.dailyNew`: unset means no check, and at or over a configured cap the preview warns, the ledger records it and the owner's yes still posts. A finding that asks for a second consent question, for a built-in daily cap, or for the cap to block is answered here.
+
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
