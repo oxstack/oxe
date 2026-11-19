@@ -16,6 +16,10 @@ Treat as **high** severity:
 
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
+Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the owner lists them in
+`oxa.sandbox.sockets` and permits network access. The launch validates and pins each socket
+through an FD-based bind (user settings only; the docker socket gives root on the host, so it is noted
+at start, not blocked).
 
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
 messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
