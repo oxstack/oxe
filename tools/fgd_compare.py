@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare two directories of FGD1 tensor dumps (flash-m1 --dump-dir / production --tensor-dump).
+"""Compare two directories of FGD1 tensor dumps (production --tensor-dump; the flash-m1 driver was removed).
 
 FGD1 file: b"FGD1", i32 ggml type, 4 x i64 ne, then the elements (contiguous, ggml type size).
 Per tensor: identical / shape or type mismatch / max-abs-diff and first differing index (f32 only).

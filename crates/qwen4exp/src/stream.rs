@@ -11,7 +11,7 @@
 //!   DOWN (all threads): act rows quantised per thread (production from_float), production vec_dot.
 //! Exactness: production's mul_mat_id computes every output row as one vec_dot of the weight row
 //! with the quantised activation row, so any row split / order gives the same bits; the R4 gemv is
-//! bitwise equal to vec_dot (vendor/ggml-flash test) and checked in-process (`flash-m1 stream`).
+//! bitwise equal to vec_dot (vendor/ggml-flash test) and checked in-process (the flash-m1 driver was removed).
 //!
 //! Any n_tokens works (MTP verify batches of 2-4) as long as the distinct experts of one layer fit
 //! that layer's pool: all lookups of one call carry the same stamp, so none of them evicts another.

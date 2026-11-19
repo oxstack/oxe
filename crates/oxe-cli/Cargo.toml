@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "oxe command-line tools: oxe (gen/trace/compare/verify/bench/cache), barrier-bench, gguf-dump"
+description = "oxe command-line tool: oxe (gen/trace/compare/verify/bench/cache)"
 build = "build.rs"
 
 [features]
@@ -24,11 +24,3 @@ oxn = { path = "../oxn", optional = true }
 [[bin]]
 name = "oxe"
 path = "src/bin/oxe.rs"
-
-[[bin]]
-name = "barrier-bench"
-path = "src/bin/barrier-bench.rs"
-
-[[bin]]
-name = "gguf-dump"
-path = "src/bin/gguf-dump.rs"

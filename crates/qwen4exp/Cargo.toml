@@ -23,13 +23,5 @@ name = "flash-m0"
 path = "src/bin/flash-m0.rs"
 
 [[bin]]
-name = "flash-m1"
-path = "src/bin/flash-m1.rs"
-
-[[bin]]
 name = "flash-m3"
 path = "src/bin/flash-m3.rs"
-
-[[bin]]
-name = "flash-t2"
-path = "src/bin/flash-t2.rs"

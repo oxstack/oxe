@@ -8,7 +8,7 @@
 //!   snapshot per token (production's `ggml_gated_delta_net(.., K)`), the conv states are windows of the
 //!   verify's conv inputs. Every dense matmul of a verify runs per column with the one-token kernels
 //!   (`mm_cols`), attention is the fixed-chunk routine, the expert ops are row-wise: a verify row is
-//!   bitwise the one-token decode of that token (the bug detector; `flash-t2 selfcheck`).
+//!   bitwise the one-token decode of that token (the bug detector; its flash-t2 driver was removed).
 //! * `decode_h`: a prefill ubatch that also returns `h` of every row (the head must see every position).
 //!   The last row's logits are bitwise those of `decode`.
 //! * the head: `GraphModel::mtp_attach` (block 48 + nextn tensors of the head GGUF), `mtp_set_vocab`
