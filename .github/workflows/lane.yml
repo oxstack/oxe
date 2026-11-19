@@ -105,8 +105,7 @@ jobs:
         run: git ls-files -z -- oxa engine | xargs -0 -r touch -c --
       - name: Required sandbox and syscall tools
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
+          "$GITHUB_WORKSPACE/tools/ci/apt_install.sh" bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind / / true
       - name: Pinned nextest
