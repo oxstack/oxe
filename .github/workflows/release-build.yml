@@ -108,10 +108,10 @@ jobs:
           for legacy in usr/share/ox-llm/oxc usr/bin/oxc usr/bin/oxc-diagnostics; do
             test ! -e "$extracted/$legacy" && test ! -L "$extracted/$legacy" || exit 1
           done
-          test -z "$(find "$extracted" \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
+          scan=$(packaging/release/no-python.sh "$artifact")
           receipt="$GITHUB_WORKSPACE/dist/NO-PYTHON-PROOF.txt"
           { printf 'source=%s\n' "$GITHUB_SHA"; sha256sum "$artifact" | cut -d' ' -f1;
-            (cd "$extracted/usr/bin" && sha256sum oxa); } > "$receipt"
+            (cd "$extracted/usr/bin" && sha256sum oxa); printf '%s\n' "$scan"; } > "$receipt"
           cd oxa
           cargo fetch --locked
           env -i PATH="$PATH" HOME="$sandbox" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" \
@@ -130,15 +130,13 @@ jobs:
           tar -xzf "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).tar.gz" -C /build/payload
           python3 -B packaging/release/sbom.py /build/payload "$GITHUB_WORKSPACE/dist/SBOM.cdx.json"
           cp "$GITHUB_WORKSPACE/dist/SBOM.cdx.json" "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).sbom.cdx.json"
-          python3 -B - <<'PY'
-          import os, pathlib, re
-          payload = pathlib.Path('/build/payload')
-          prefixes = [b'/build/first', b'/build/second', os.fsencode(os.environ['HOME']), b'/opt/cargo', b'/opt/rustup']
-          for binary in (payload / 'usr/bin').iterdir():
-              data = binary.read_bytes()
-              assert not any(prefix in data for prefix in prefixes), binary.name
-              assert not re.search(rb'/home/[^/\x00\s]+/', data), binary.name
-          PY
+          # No build path or home directory in any shipped binary.
+          for binary in /build/payload/usr/bin/*; do
+            for prefix in /build/first /build/second "$HOME" /opt/cargo /opt/rustup; do
+              ! grep -aqF -- "$prefix" "$binary" || { echo "build path $prefix in $binary" >&2; exit 1; }
+            done
+            ! LC_ALL=C grep -aqE '/home/[^/[:space:]]+/' "$binary" || { echo "home path in $binary" >&2; exit 1; }
+          done
           cd "$GITHUB_WORKSPACE/dist"
           sha256sum -- * > SHA256SUMS
           sha256sum -c SHA256SUMS
@@ -175,6 +173,7 @@ jobs:
             -v "$GITHUB_WORKSPACE/packaging/arch:/recipes:ro" \
             -v "$GITHUB_WORKSPACE/packaging/release/smoke.py:/smoke.py:ro" \
             -v "$GITHUB_WORKSPACE/packaging/release/arch-test.sh:/arch-test.sh:ro" \
+            -v "$GITHUB_WORKSPACE/packaging/release/no-python.sh:/no-python.sh:ro" \
             archlinux:latest bash /arch-test.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
