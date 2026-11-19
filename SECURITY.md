@@ -21,6 +21,10 @@ Host runtime sockets (docker, podman) stay masked in sandboxed bash unless the o
 through an FD-based bind (user settings only; the docker socket gives root on the host, so it is noted
 at start, not blocked).
 
+`oxa send` keeps owner messages over the 256 KiB inline inbox limit in the receiving session's
+private spill directory and queues a short pointer. The sandbox exposes that spill directory only
+to the receiving session and sessions inheriting its history; the private agent directory remains
+denied to model tools.
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
 messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
 project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
