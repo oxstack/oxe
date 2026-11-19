@@ -96,7 +96,13 @@ confirmation only from the owner: yolo chosen for the session (answer yes, shown
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
 A confirmation that a model-run command can satisfy without the broker is high. A broker answer
 derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
-The broker bounds each newline-terminated request to 64 KiB before accepting it for confirmation.
+The broker bounds what a request can hold in the oxa process before accepting it for confirmation:
+its size, the time to deliver it and the connections served at once (owner-configurable, generous
+defaults: 8 MiB, 60 s, 64). An unbounded buffer, read or thread per request is high. Inside the
+Linux sandbox the broker socket is mounted only where bwrap denies nested user namespaces
+(`--disable-userns`), so a command cannot stack a fake listener over the trusted mount point; a
+broker mount without that denial is high. Publishing hands `gh` the approved bytes through a sealed
+descriptor (`--body-file /dev/fd/N`), never a pathname a command could swap after the yes.
 
 ## Sandbox standard (owner decision)
 
