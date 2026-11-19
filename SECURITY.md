@@ -17,6 +17,11 @@ Treat as **high** severity:
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.
 
+The background-job and per-parent child limits are configurable through `oxa.bash.maxJobs`
+(default 16) and `oxa.subagent.maxChildren` (default 8). Read both caps from the user file.
+Project settings for remote concurrency remain bounded by the user’s child cap. An explicit
+bash `timeout: 0` opts out of the call timeout. Sandbox and permission checks still apply.
+
 Treat as **medium**: missing bounds on untrusted input (sizes, lengths, recursion), error messages that echo provider text, weakened validation of provider usage/billing fields.
 
 Do not report: style, pre-existing issues outside the diff, test-only code that never runs in production, or hypothetical risks without a concrete path.
