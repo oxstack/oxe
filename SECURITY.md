@@ -64,6 +64,13 @@ Semantic report verification is one consent, by owner decision (#1448): opting i
 
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
 
+The owner confirm broker (`oxa-core/src/owner_confirm.rs`, `OXA_CONFIRM_SOCK`) answers an oxa
+confirmation only from the owner: yolo chosen for the session (answer yes, shown and recorded), the
+owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
+A confirmation that a model-run command can satisfy without the broker is high. A broker answer
+derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
+The broker bounds each newline-terminated request to 64 KiB before accepting it for confirmation.
+
 ## Sandbox standard (owner decision)
 
 - **Interactive CLI:** no OS sandbox by default, on Linux and macOS. Dangerous commands ask the owner.
