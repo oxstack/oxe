@@ -18,8 +18,38 @@ env:
   CARGO_TERM_COLOR: never
 
 jobs:
+  pr-check:
+    # A push to a branch with an open PR against main is covered by the PR's `checks` run on the
+    # same commit, so the heavy jobs are skipped. Branches without a PR and manual dispatches run.
+    name: lane pr check
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      has_pr: ${{ steps.pr.outputs.has_pr }}
+    steps:
+      - name: Open PR against main for this branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          has_pr=false
+          if [ "$EVENT" = push ]; then
+            count=$(gh api -X GET "repos/$GITHUB_REPOSITORY/pulls" \
+              -f state=open -f base=main -f "head=$GITHUB_REPOSITORY_OWNER:$BRANCH" --jq 'length')
+            [ "$count" -gt 0 ] && has_pr=true
+          fi
+          echo "has_pr=$has_pr" >> "$GITHUB_OUTPUT"
+          echo "Open PR for $BRANCH: $has_pr (a PR's checks run covers its commits)" >> "$GITHUB_STEP_SUMMARY"
+
   plan:
     name: lane plan
+    needs: pr-check
+    if: needs.pr-check.outputs.has_pr != 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:

@@ -102,35 +102,6 @@ jobs:
           ./target/release/oxe-server --help > help.txt && head -n 3 help.txt
           ./target/release/oxi > oxi.txt 2>&1 || true
           head -n 3 oxi.txt
-      - name: Pinned nextest
-        working-directory: ${{ github.workspace }}
-        run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
-      - name: Test inventory, cargo test vs nextest (no test may disappear)
-        # Same selection as the run below. Prints the count before (cargo test --list) and after
-        # (nextest list) and fails on any difference in names; ignored tests are counted too.
-        run: |
-          cargo test --release --locked --workspace --exclude qwen4exp -- --list --format terse > "$RUNNER_TEMP/libtest-list.txt"
-          cargo nextest list --release --locked --workspace --exclude qwen4exp --message-format json > "$RUNNER_TEMP/nextest-list.json"
-          python3 -I ../tools/ci/engine_test_count.py "$RUNNER_TEMP/libtest-list.txt" "$RUNNER_TEMP/nextest-list.json" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Model-free tests (workspace without the Flash crate; nextest)
-        timeout-minutes: 40
-        # the numerics golden is recorded for the qualified reference platforms, not for this
-        # hosted runner's kernel path: print its hash instead of failing.
-        # engine/.config/nextest.toml runs the wall-clock binaries (sched, server lib) alone.
-        env:
-          OXE_NUMERICS_GOLDEN_UNLISTED: print
-        run: |
-          ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
-          start=$(date +%s)
-          cargo nextest run --release --locked --no-fail-fast --workspace --exclude qwen4exp \
-            --no-tests fail --failure-output immediate-final
-          echo "engine nextest run: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Doc tests (nextest does not run them)
-        env:
-          OXE_NUMERICS_GOLDEN_UNLISTED: print
-        run: |
-          ulimit -c 0
-          cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp --doc
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
         if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
@@ -155,6 +126,91 @@ jobs:
           path: ${{ github.workspace }}/dist/
           if-no-files-found: error
           retention-days: 7
+
+  engine-tests:
+    if: inputs.heavy && inputs.engine
+    name: oxe-server tests shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+      # Docker's default seccomp profile blocks io_uring; the Flash IO tests use it.
+      options: --security-opt seccomp=unconfined
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-moe-tests-${{ matrix.shard }} engine
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        # A restored target/ may hold workspace crates built from OLDER sources. Checkout mtimes can be older
+        # than those artifacts, so cargo would treat stale crates as fresh. Touching the tracked sources
+        # forces workspace crates to rebuild; third-party dependencies stay cached.
+        working-directory: ${{ github.workspace }}
+        run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pinned nextest
+        working-directory: ${{ github.workspace }}
+        run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
+      - name: Test inventory, cargo test vs nextest (no test may disappear)
+        if: matrix.shard == 1
+        # Same selection as the run below. Prints the count before (cargo test --list) and after
+        # (nextest list) and fails on any difference in names; ignored tests are counted too.
+        run: |
+          cargo test --release --locked --workspace --exclude qwen4exp -- --list --format terse > "$RUNNER_TEMP/libtest-list.txt"
+          cargo nextest list --release --locked --workspace --exclude qwen4exp --message-format json > "$RUNNER_TEMP/nextest-list.json"
+          python3 -I ../tools/ci/engine_test_count.py "$RUNNER_TEMP/libtest-list.txt" "$RUNNER_TEMP/nextest-list.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Model-free tests (workspace without the Flash crate; nextest)
+        timeout-minutes: 40
+        # the numerics golden is recorded for the qualified reference platforms, not for this
+        # hosted runner's kernel path: print its hash instead of failing.
+        # engine/.config/nextest.toml runs the wall-clock binaries (sched, server lib) alone.
+        env:
+          OXE_NUMERICS_GOLDEN_UNLISTED: print
+        run: |
+          ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
+          start=$(date +%s)
+          cargo nextest run --release --locked --no-fail-fast --workspace --exclude qwen4exp \
+            --no-tests fail --failure-output immediate-final \
+            --partition hash:${{ matrix.shard }}/3
+          echo "engine nextest run: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Doc tests (nextest does not run them)
+        if: matrix.shard == 1
+        env:
+          OXE_NUMERICS_GOLDEN_UNLISTED: print
+        run: |
+          ulimit -c 0
+          cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp --doc
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
 
   flash:
     if: inputs.heavy && inputs.engine
@@ -208,14 +264,6 @@ jobs:
           --bin oxe-server --bin flash-m0 --bin flash-m3
       - name: Smoke
         run: ./target/release/oxe-server --help > help.txt && head -n 3 help.txt
-      - name: Model-free tests (Flash)
-        timeout-minutes: 40
-        run: |
-          ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
-          cargo test --release --locked --no-fail-fast -p server --lib --features flash
-          cargo test --release --locked --no-fail-fast -p qwen4exp
-          ./target/release/flash-m3 selftest | tee selftest.txt
-          ! grep -q FAIL selftest.txt
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
         if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
@@ -238,6 +286,79 @@ jobs:
           path: ${{ github.workspace }}/dist/
           if-no-files-found: error
           retention-days: 7
+
+  flash-tests:
+    if: inputs.heavy && inputs.engine
+    name: oxe-server flash tests (${{ matrix.part }})
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+      # Docker's default seccomp profile blocks io_uring; the Flash IO tests use it.
+      options: --security-opt seccomp=unconfined
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [server, qwen4exp]
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      # the production ggml libraries, built below from the pinned public sources
+      OXF_GGML_PROD: ${{ github.workspace }}/ggml-prod
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-flash-tests-${{ matrix.part }} engine
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        # A restored target/ may hold workspace crates built from OLDER sources. Checkout mtimes can be older
+        # than those artifacts, so cargo would treat stale crates as fresh. Touching the tracked sources
+        # forces workspace crates to rebuild; third-party dependencies stay cached.
+        working-directory: ${{ github.workspace }}
+        run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Production ggml from the pinned public sources
+        run: tools/ci/build_ggml_prod.sh "$RUNNER_TEMP/flash-src"
+      - name: Model-free tests (Flash server lib)
+        if: matrix.part == 'server'
+        timeout-minutes: 40
+        run: |
+          ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
+          cargo test --release --locked --no-fail-fast -p server --lib --features flash
+      - name: Model-free tests (qwen4exp) and flash-m3 selftest
+        if: matrix.part == 'qwen4exp'
+        timeout-minutes: 40
+        run: |
+          ulimit -c 0
+          cargo test --release --locked --no-fail-fast -p qwen4exp
+          cargo build --release --locked -p server -p qwen4exp --features server/flash --bin flash-m3
+          ./target/release/flash-m3 selftest | tee selftest.txt
+          ! grep -q FAIL selftest.txt
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
 
   oxa-test-build:
     if: inputs.heavy && inputs.oxa

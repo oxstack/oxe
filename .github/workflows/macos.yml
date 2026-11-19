@@ -1,21 +1,20 @@
 name: oxa macOS (non-required)
 # Native arm64 build of the oxa-cli binary (#795). Not required, not in the merge queue, not in
-# the gate. The job is expected to be red until the macOS sandbox slices land; that is the signal.
+# the gate. It runs on main, on manual dispatch and on PRs touching platform-sensitive paths. The job is expected to be red until the macOS sandbox slices land; that is the signal.
 
 on:
   push:
-    branches: ['agent/**', 'codex/**', 'air/**', 'runner/**', 'main']
-    paths:
-      - 'oxa/**'
-      - 'packaging/macos/**'
-      - 'tools/lab/dev-update-macos.sh'
-      - '.github/workflows/macos.yml'
+    branches: ['main']
   pull_request:
     paths:
-      - 'oxa/**'
+      - 'oxa/oxa-session/**'
+      - 'oxa/oxa-sandbox/**'
+      - 'oxa/oxa-cli/**'
+      - 'oxa/oxc-gateway/**'
       - 'packaging/macos/**'
-      - 'tools/lab/dev-update-macos.sh'
-      - '.github/workflows/macos.yml'
+      - '.github/workflows/macos*.yml'
+      - 'oxa/Cargo.lock'
+  workflow_dispatch:
   workflow_call:
     inputs:
       version:
@@ -28,7 +27,7 @@ permissions:
 
 concurrency:
   group: macos-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
