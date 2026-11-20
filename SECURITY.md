@@ -19,6 +19,8 @@ a cleared toolchain environment, and output still redacts every GitHub CLI crede
 (all accounts and hosts, with the bash network on or off).
 Unattended runs include ownerless RPC and headless runs pursuing a goal. Exec hooks
 keep their dedicated sandbox. Network-disabled model shells mask host runtime IPC.
+Local model setup refuses agent tool invocations before running engine admission or writing user
+settings.
 
 The sandbox can forward the owner's `CARGO_TARGET_DIR` to worker shells. External cache
 paths are writable only through an explicit owner `oxa.sandbox.writePaths` mount.

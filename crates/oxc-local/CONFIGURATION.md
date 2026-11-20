@@ -44,9 +44,11 @@ The following is synthetic test configuration, not a qualified real-model budget
 }
 ```
 
-For real use, supply the installed model's actual context/output limits and qualified
-allocation bounds for its context, KV format, thread teams, lanes and MTP settings.
-The example above is synthetic stub data, not usable real-model admission data.
+For real use, do not write these numbers by hand: `oxa local add <model.gguf>` runs the sibling
+`oxe admission --json` (header-only; the bounds come from the engine's own allocation code,
+`ctx_mem`/`lane_shape`, not from RSS) and writes `oxa.local` for the model into the USER settings
+file with a backup of the previous file. See "Adding a real model" below. The example above is
+synthetic stub data, not usable real-model admission data.
 The production factory requires every `allocation_budget` component (unsigned bytes)
 and a positive margin; full weights residency is added by the factory, not user-discounted.
 The former opaque `required_available_bytes` setting refuses
@@ -82,6 +84,32 @@ The memory budget and actual `--ctx-size N`/`-c N` must match `context_window`;
 missing context argv is supplied explicitly, duplicates/conflicts refuse. Low available
 memory reports available/required bytes and advises reducing context or freeing memory.
 Existing no-swap, PSI/OOM/pid and runtime-pressure stops remain enabled.
+
+Adding a real model: `oxa local add <model.gguf> [--name ALIAS] [--ctx N] [--max-output N]
+[--margin-bytes N] [--enable] [--replace] [--engine-dir DIR] [-- <oxe-server launch args>]`.
+
+- `oxe` and `oxe-server` are taken from the directory of the running `oxa` executable (no PATH
+  search); `--engine-dir` names another installation.
+- `oxe admission --model M --ctx N <launch args> --json` reports `kv_bytes_per_position` (MTP
+  attention layer included once), `scratch_bytes` (the engine without MTP, minus its KV),
+  `mtp_state_bytes` (what MTP adds beyond its KV share, plus a separate sidecar head file) and
+  `margin_bytes`, such that `kv_bytes_per_position * C + scratch_bytes + mtp_state_bytes` is the
+  engine's own context-dependent allocation for the launch. The margin rule is `--margin-bytes`,
+  else 1 GiB of host headroom for what the report does not model (HTTP server, tokenizer, optional
+  prefix/state RAM caches, per-lane working rows, the operating system); it is a documented default
+  the owner may override, not a measurement. Without `--ctx` the context is the GGUF
+  `context_length`. The report also carries the complete resolved launch `arguments`, which are
+  written verbatim (they include the `--ctx-size` that `context_window` must equal).
+- `max_output` defaults to the context window (the engine's own bound); `--max-output` narrows it.
+- Only the user settings file is written (copied first to `settings.json.bak-<unix seconds>`,
+  0600); the project file is never read or written. `oxa.engine.inProcessLocal` is set to `true`
+  only with `--enable`. The result is validated by the same code that loads `oxa.local` before
+  anything is written, and any value the report or an option does not supply is an error that
+  writes nothing.
+- No qualified real-model record is published in this file yet. A real record is produced on the
+  reference laptop by running `oxa local add` for the installed model and context, and its output
+  (labelled with the model, context and engine version) is added here; nothing in this file is
+  to be copied from a different model or launch profile.
 
 Startup defaults
 to 180 seconds; `startup_timeout_seconds` can select another positive duration.
