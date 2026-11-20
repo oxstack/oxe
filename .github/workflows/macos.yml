@@ -1,19 +1,12 @@
-name: oxa macOS (non-required)
-# Native arm64 build of the oxa-cli binary (#795). Not required, not in the merge queue, not in
-# the gate. It runs on main, on manual dispatch and on PRs touching platform-sensitive paths. The job is expected to be red until the macOS sandbox slices land; that is the signal.
+name: oxa macOS
+# Native arm64 build of the oxa-cli binary (#795). On pull requests and in the merge queue it is
+# required: checks.yml calls this workflow as its `macos` job (when the classifier says oxa changed)
+# and the `gate` aggregate fails if it fails. Standalone it runs on pushes to main and on manual
+# dispatch. It has no pull_request trigger of its own, so a PR never runs the build twice.
 
 on:
   push:
     branches: ['main']
-  pull_request:
-    paths:
-      - 'oxa/oxa-session/**'
-      - 'oxa/oxa-sandbox/**'
-      - 'oxa/oxa-cli/**'
-      - 'oxa/oxc-gateway/**'
-      - 'packaging/macos/**'
-      - '.github/workflows/macos*.yml'
-      - 'oxa/Cargo.lock'
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -27,11 +20,11 @@ permissions:
 
 concurrency:
   group: macos-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
 
 jobs:
   test:
-    name: oxa-cli build (macOS arm64, non-required)
+    name: oxa-cli build (macOS arm64)
     runs-on: macos-15
     timeout-minutes: 90
     env:

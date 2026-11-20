@@ -15,6 +15,7 @@ name: checks
 # each merge (one run at a time; a newer push replaces a waiting one) and catches cross-component
 # breaks outside the components selected by a PR. Drafts run only the classifier, the scans
 # and rustfmt. The scans run on every event and every change, unconditionally.
+# The macOS arm64 oxa-cli build (`macos`, macos.yml) runs on ready PRs and in the queue when `oxa` is selected.
 # The `gate` job aggregates every job below; it fails when any job failed or was cancelled, when
 # the classifier or the scans did not succeed, or when a classifier output is not literally
 # 'true'/'false', so a skip caused by a failed or missing classifier cannot pass.
@@ -106,6 +107,14 @@ jobs:
       build_oxa: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
       engine: ${{ needs.changes.outputs.engine == 'true' }}
       oxa: ${{ github.event_name == 'merge_group' || needs.changes.outputs.oxa == 'true' }}
+
+  macos:
+    # Required through `gate`: the native macOS arm64 oxa-cli build (macos.yml, one definition also
+    # used for main pushes and dispatch). Runs on ready PRs and in the queue whenever the classifier
+    # says oxa (Rust code, Cargo.lock, packaging/, this workflow); main pushes run macos.yml directly.
+    needs: changes
+    if: (github.event_name == 'merge_group' || github.event_name == 'pull_request') && needs.changes.outputs.oxa == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    uses: ./.github/workflows/macos.yml
 
   oxa-nightly-arm:
     # Extra primary-platform coverage at night; manual opt-in validates this job before merge.
@@ -562,7 +571,7 @@ jobs:
     # the scans must succeed; every classifier output must be literally 'true' or 'false'.
     name: gate
     if: always()
-    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, engine-x86-workspace, fuzz-oxa, fuzz-oxe, build, gateway]
+    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, engine-x86-workspace, fuzz-oxa, fuzz-oxe, build, gateway, macos]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
