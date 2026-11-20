@@ -2,7 +2,7 @@
 //! KleidiAI off, repack on, FA off, f16 KV) with the same ubatch size.
 //!
 //! A prompt is processed in ubatches of `ubatch` tokens (production: 256). Per ubatch every op
-//! mirrors what llama.cpp's graph computes for `n_tokens = N` (see docs/lab-notes/M3-PREFILL.md):
+//! mirrors what llama.cpp's graph computes for `n_tokens = N` (see archived docs/lab-notes/M3-PREFILL.md):
 //!
 //! - Dense projections (repack `forward_mul_mat`): the activation rows are quantised as
 //!   4-row interleaved groups (`ggml_quantize_mat_t`) for the first N - N%4 rows, which go
@@ -295,7 +295,7 @@ const DOWN_CU: usize = 512;
 /// Query tokens per attention work unit.
 const ATT_TB: usize = 16;
 /// Query tokens per tiled-attention work unit (x 8 heads of a KV head = 32 columns that share
-/// every K / V^T row load; docs/lab-notes/M3-ATTN.md).
+/// every K / V^T row load; archived docs/lab-notes/M3-ATTN.md).
 const ATT_TT: usize = 4;
 /// Extra floats between the routed down-projection output rows (`dn`): with n_embd 2048 the 8
 /// expert rows of a token would sit exactly 8 KB apart and share two L1 sets with the shared
@@ -2323,7 +2323,7 @@ impl<'a> Engine<'a> {
         );
     }
 
-    /// Tiled prefill attention (docs/lab-notes/M3-ATTN.md). Units = (KV head, block of ATT_TT tokens),
+    /// Tiled prefill attention (archived docs/lab-notes/M3-ATTN.md). Units = (KV head, block of ATT_TT tokens),
     /// dynamically scheduled; per unit the 8 x ATT_TT query columns share every K row (scores)
     /// and every V^T row (outputs). Each score / output is one `ggml_vec_dot_f16` with the
     /// reference's arithmetic, each softmax row is `soft_max_f32` over the token's padded n_kv

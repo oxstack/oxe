@@ -1,4 +1,4 @@
-//! v0.2.0 engine hints (HARNESS-RS-PLAN sec. 3; API doc `docs/lab-notes/SERVER.md`, "Hints"):
+//! v0.2.0 engine hints (HARNESS-RS-PLAN sec. 3; API doc `archived docs/lab-notes/SERVER.md`, "Hints"):
 //! - H6 `max_tokens: 0`: prefill only. Zero generated tokens, no sampling, no ECHO record; the prompt
 //!   is the conversation without the assistant opener, so the next request continues it exactly
 //!   (`cache_n` = this request's `prompt_tokens`) and generates what it would have without the

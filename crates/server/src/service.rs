@@ -629,7 +629,7 @@ pub async fn handle_policy<E: Engine>(
 }
 
 /// v0.2.0 client-neutral request hints read from headers (HARNESS-RS-PLAN sec. 3; engine API doc
-/// `docs/lab-notes/SERVER.md`). A hint never selects arithmetic for the tokens it does not touch and
+/// `archived docs/lab-notes/SERVER.md`). A hint never selects arithmetic for the tokens it does not touch and
 /// is ignored by a server that lacks it. H6 (`max_tokens: 0`) is a body field, not a header.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Hints {

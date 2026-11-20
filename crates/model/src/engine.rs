@@ -613,7 +613,7 @@ pub struct Engine<'a> {
     /// tests: scale the fa2 / fa2x prefill unit outputs by (1 + this) (a degraded candidate)
     #[cfg(test)]
     pf_degrade: f32,
-    /// Tiled attention (docs/lab-notes/M3-ATTN.md), columns in [kv head][lane][query head in group] order:
+    /// Tiled attention (archived docs/lab-notes/M3-ATTN.md), columns in [kv head][lane][query head in group] order:
     /// f16 q (col * head_dim), sigmoid gate (col * head_dim), scores and f16 probabilities
     /// (col * n_ctx).
     aq16: Raw<u16>,
@@ -3790,7 +3790,7 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Tiled attention (docs/lab-notes/M3-ATTN.md): the same per-element arithmetic as [`Self::attn_head`]
+    /// Tiled attention (archived docs/lab-notes/M3-ATTN.md): the same per-element arithmetic as [`Self::attn_head`]
     /// (every score and every output is one `ggml_vec_dot_f16`, the softmax row is
     /// `soft_max_f32` over the padded n_kv), but split over ALL threads by KV position (scores)
     /// and by V^T row (outputs), with each K / V^T row loaded once for all query heads of its

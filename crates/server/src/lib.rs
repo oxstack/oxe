@@ -1,6 +1,6 @@
 //! oxe-server: an OpenAI-compatible HTTP server shaped like llama-server, over the
 //! [`engine::Engine`] trait (real engine: crates/model once M2 lands; [`engine::StubEngine`]
-//! until then). See docs/lab-notes/SERVER.md.
+//! until then). See archived docs/lab-notes/SERVER.md.
 
 pub mod api;
 pub mod cache;

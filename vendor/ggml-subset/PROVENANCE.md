@@ -13,7 +13,7 @@
 - Hand-written glue (not upstream): `compat.h` (the few ggml-impl/simd-mappings macros the items need),
   `ggml_subset.h` (C declarations of the extracted functions), `crates/kernels-sys/csrc/oxe_shim.cpp`
   (includes `generated/repack_subset.cpp` and adds row-loop wrappers around the static `make_block_*`)
-  and `crates/kernels-sys/csrc/oxe_ops.cpp` (the ported decode ops; see M1.md).
+  and `crates/kernels-sys/csrc/oxe_ops.cpp` (the ported decode ops; see the archived M1 lab note).
 - `generated/upstream/` holds whole upstream files verbatim (ggml-cpu `vec.{h,cpp}`, `simd-mappings.h` and the
   headers they include); `vec.cpp` is compiled unmodified.
 - Build flags (crates/kernels-sys/build.rs) are llama.cpp's, per library, from the pinned build.ninja:

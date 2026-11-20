@@ -239,7 +239,7 @@ pub mod ffi {
             p16: *mut u16,
             out: *mut f32,
         );
-        /// Block of `ggml_vec_dot_f16` results, bit-identical per element (docs/lab-notes/M3-ATTN.md):
+        /// Block of `ggml_vec_dot_f16` results, bit-identical per element (archived docs/lab-notes/M3-ATTN.md):
         /// out[r*ox + c*oy] = dot(n, x + r*xs, y + c*ys); optional per-column `n_full` tail rule.
         pub fn oxe_dot_f16_tile(
             n: c_int,

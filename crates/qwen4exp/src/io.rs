@@ -10,7 +10,7 @@
 //! * WHY: the sidecar is on dm-crypt opened with `no_read_workqueue`, so every 256 KiB bio of a read is decrypted
 //!   inline in the completion softirq of the CPU that SUBMITTED it. One IO thread = one core decrypting: a 2 MiB
 //!   expert record costs ~1.8 ms of serial AES-XTS on the critical path (measured by the former flash-iobench crate, removed in v0.2.0;
-//!   docs/lab-notes/M3-FLASH-IO.md).
+//!   archived docs/lab-notes/M3-FLASH-IO.md).
 //! * `cpus=a,b,c`: several workers, one ring each, one core each. `split=N`: a read is striped into up to N parts
 //!   (>= `min` bytes each, boundaries on `align`), one part per worker, so the parts decrypt in parallel; the
 //!   state word flips READY when the last part lands (`Join`). Unsplit reads go round-robin over the workers.
