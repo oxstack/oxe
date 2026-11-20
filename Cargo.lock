@@ -26,7 +26,7 @@ dependencies = [
 
 [[package]]
 name = "chat"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "minijinja",
@@ -61,7 +61,7 @@ checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
 
 [[package]]
 name = "gguf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "memmap2",
  "serde_json",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "image-dit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gguf",
  "int8-gemm",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "image-flow"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gguf",
  "image-dit",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "image-npu"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "image-dit",
  "image-flow",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "image-vae"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "int8-gemm",
  "serde_json",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "int8-gemm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cc",
 ]
@@ -205,7 +205,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "kernels-sys"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cc",
 ]
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gguf",
  "kernels-sys",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "oxe-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gguf",
  "kernels-sys",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "oxn"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cc",
  "sched",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "qwen3-te"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gguf",
  "kernels-sys",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "qwen4exp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cc",
  "gguf",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "sched"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
 ]
@@ -395,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "chat",
@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "tokenizer"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde_json",
 ]
