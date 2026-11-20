@@ -23,9 +23,12 @@ The native cloud gateway's default recommendations use only configured API-key p
 and their standard endpoints. User model entries take precedence, and the owner can opt out.
 Recommendations do not initiate network discovery or confer guest access.
 
-Attended bash can run with host rights under the owner’s interactive sandbox policy. It uses
-a cleared toolchain environment, and output still redacts every GitHub CLI credential
-(all accounts and hosts, with the bash network on or off).
+Attended bash can run with host rights under the owner’s interactive sandbox policy. Host tool
+shells keep the cleared toolchain environment. Their live and captured output masks exact copies
+of known GitHub credentials (all CLI accounts and hosts), the configured engine bearer key,
+and nonempty values from oxa's environment or the command spec whose names contain `KEY`,
+`SECRET`, `TOKEN`, or `PASSWORD` (case insensitive). This also covers yolo bash and portable host
+execution, without changing sandbox or network policy. Output masking is not isolation.
 Unattended runs include ownerless RPC and headless runs pursuing a goal. Exec hooks
 keep their dedicated sandbox. Network-disabled model shells mask host runtime IPC.
 Local model setup refuses agent tool invocations before running engine admission or writing user
