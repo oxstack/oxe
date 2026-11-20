@@ -17,20 +17,23 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      file_version: ${{ steps.version.outputs.file_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 1
+          fetch-depth: 0
           fetch-tags: true
       - id: version
         run: |
           echo "version=$(python3 -I tools/ci/dev_version.py "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+          echo "file_version=$(python3 -I tools/ci/dev_version.py "$GITHUB_SHA" --file-name)" >> "$GITHUB_OUTPUT"
   build:
     needs: version
     uses: ./.github/workflows/release-build.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      file_version: ${{ needs.version.outputs.file_version }}
   publish:
     needs: [version, build]
     if: github.repository == 'oxstack/ox-llm' && github.ref == 'refs/heads/main' && !github.event.repository.private
@@ -42,6 +45,7 @@ jobs:
       attestations: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      FILE_VERSION: ${{ needs.version.outputs.file_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,9 +62,9 @@ jobs:
           for arch in aarch64 x86_64; do
             source="combined/release-build-$arch"
             (cd "$source" && sha256sum -c SHA256SUMS)
-            cp "$source/ox-llm-$VERSION-linux-$arch.tar.gz" "$source/ox-llm-$VERSION-linux-$arch.sbom.cdx.json" dist/
+            cp "$source/ox-llm-$FILE_VERSION-linux-$arch.tar.gz" "$source/ox-llm-$FILE_VERSION-linux-$arch.sbom.cdx.json" dist/
             for proof in REPRODUCIBILITY TOOLCHAIN NO-PYTHON-PROOF; do
-              cp "$source/$proof.txt" "dist/ox-llm-$VERSION-linux-$arch.$proof.txt"
+              cp "$source/$proof.txt" "dist/ox-llm-$FILE_VERSION-linux-$arch.$proof.txt"
             done
           done
           # Every payload path is under usr/, and the native oxa is present.
@@ -70,7 +74,7 @@ jobs:
           done
           packaging/release/no-python.sh dist/*.tar.gz
           (cd dist && sha256sum -- * > SHA256SUMS && sha256sum -c SHA256SUMS)
-          cp dist/SHA256SUMS "dist/SHA256SUMS-$VERSION"
+          cp dist/SHA256SUMS "dist/SHA256SUMS-$FILE_VERSION"
       - name: Provenance for the exact dev assets and checksums
         id: provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -82,7 +86,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cp "$BUNDLE" "dist/ox-llm-$VERSION.provenance.jsonl"
+          cp "$BUNDLE" "dist/ox-llm-$FILE_VERSION.provenance.jsonl"
           # Only a genuine 404 permits creation; auth/network failures fail closed.
           missing() { grep -q 'HTTP 404' "$1"; }
           # Publish only forward: this commit must still be on main and must be
