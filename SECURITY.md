@@ -180,6 +180,7 @@ data, marked as requested by the process. Off Linux the peer check is unavailabl
 trusts only the sandbox's pinned mount.
 A confirmation that a model-run command can satisfy without the broker is high. A broker answer
 derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
+The broker's state machine, bounds and records do not depend on the extension host pump. A request is a structured, length-prefixed frame (title and body fields); an over-limit length is refused unread with a `reason` (`too_large`, `not_servable`, `closed`, `busy_limit`, `bad_request`). The session thread's `serve` picks a request, creates its per-dialog cancel ticket and marks it shown in one step under the broker's lock, so a typed yes that arrives before the UI has registered the dialog is neither lost nor able to dismiss another dialog. In yolo a request is answered at once, keeps no pending state and leaves a compact record (hash, size, first title line, a count for identical consecutive requests), never the text; a dialog or typed answer keeps the full text, which the owner paced. A finding that asks for yolo to retain every request body is answered here.
 The broker bounds what a request can hold in the oxa process before accepting it for confirmation:
 its size, the time to deliver it and the connections served at once (owner-configurable, generous
 defaults: 8 MiB, 60 s, 64). An unbounded buffer, read or thread per request is high. Inside the
