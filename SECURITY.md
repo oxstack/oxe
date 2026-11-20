@@ -42,6 +42,10 @@ at start, not blocked).
 private spill directory and queues a short pointer. The sandbox exposes that spill directory only
 to the receiving session and sessions inheriting its history; the private agent directory remains
 denied to model tools.
+Inbox child creation, publication, scanning and privacy wipes stay relative to opened
+no-follow directory descriptors on Linux and macOS. A replacement pathname must not
+redirect these operations.
+
 Persisted headless print and JSON runs with a pursuing goal consume plain `oxa send` inbox
 messages with `oxa.inbox.headless` set to `true` by default. This user-only setting can opt out;
 project settings cannot enable or disable it. Non-persisted sessions, sessions without a pursuing
