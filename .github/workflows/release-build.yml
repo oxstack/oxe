@@ -11,6 +11,14 @@ on:
         description: version used in archive file names ('+' written as '.'); defaults to version
         type: string
         default: ''
+      reproducible:
+        description: build each architecture twice in different directories and compare the payloads
+        type: boolean
+        default: true
+      skip_source_tests:
+        description: skip packaging/release/check.sh because this commit's merge-queue run already passed it
+        type: boolean
+        default: false
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -81,6 +89,8 @@ jobs:
         run: packaging/release/setup.sh
       - name: Immutable source archive
         id: source
+        env:
+          REPRODUCIBLE: ${{ inputs.reproducible }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           commit=$(git rev-parse HEAD)
@@ -88,29 +98,39 @@ jobs:
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
           echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
-          mkdir -p /build/first /build/second dist
+          # A dev push builds the tree once; the reproducibility lanes build it twice. An absent
+          # input (the dispatch and pull-request triggers) keeps the strict form.
+          builds="first second"
+          if [ "$REPRODUCIBLE" = 'false' ]; then builds=first; fi
+          echo "BUILDS=$builds" >> "$GITHUB_ENV"
+          mkdir -p dist
           source_archive="dist/ox-llm-$commit.tar.gz"
-          git archive --format=tar --prefix="ox-llm-$commit/" HEAD -- . \
-            ':(exclude)oxc/src' ':(exclude)oxc/tools' \
-            ':(exclude)oxc/packaging/flash-qos/oxc-flash-qos' \
-            ':(exclude,glob)oxc/**/*.py' | gzip -n -9 > "$source_archive"
-          for build in first second; do
+          packaging/release/source-archive.sh "$source_archive"
+          for build in $builds; do
+            mkdir -p "/build/$build"
             tar -xzf "$source_archive" --strip-components=1 -C "/build/$build"
           done
-      - name: Build twice in different directories; compare complete payload hashes
+      - name: Build once, or twice in different directories for the strict lanes
+        env:
+          REPRODUCIBLE: ${{ inputs.reproducible }}
         run: |
-          for build in first second; do
+          for build in $BUILDS; do
             cd "/build/$build"
             packaging/release/build.sh
             packaging/release/stage.sh /build/payload
             packaging/release/archive.sh /build/payload "/build/$build.tar.gz"
             rm -rf /build/payload
           done
-          cmp /build/first.tar.gz /build/second.tar.gz
           arch=$(uname -m)
           cp /build/first.tar.gz "$GITHUB_WORKSPACE/dist/ox-llm-$FILE_VERSION-linux-$arch.tar.gz"
-          echo 'PASS: two clean builds in different source/target directories produced identical payload tarballs.' \
-            > "$GITHUB_WORKSPACE/dist/REPRODUCIBILITY.txt"
+          if [ "$REPRODUCIBLE" = 'false' ]; then
+            echo 'Single build for this dev push; the two-build comparison runs on the nightly and release lanes.' \
+              > "$GITHUB_WORKSPACE/dist/REPRODUCIBILITY.txt"
+          else
+            cmp /build/first.tar.gz /build/second.tar.gz
+            echo 'PASS: two clean builds in different source/target directories produced identical payload tarballs.' \
+              > "$GITHUB_WORKSPACE/dist/REPRODUCIBILITY.txt"
+          fi
           { rustc --version; cargo --version; cc --version; c++ --version; ld --version; rpm -q glibc libstdc++; } \
             > "$GITHUB_WORKSPACE/dist/TOOLCHAIN.txt"
       - name: No-Python proof on the exact release tarball binary
@@ -140,6 +160,9 @@ jobs:
             cargo test --profile ci --locked -p oxa-cli --test no_python_in_path \
             2>&1 | tee -a "$receipt"
       - name: Model-free source tests
+        # A dev push whose commit already passed the merge queue skips the repeat
+        # (tools/ci/queue_covered.py); release, nightly and pull-request runs always take it.
+        if: ${{ !inputs.skip_source_tests }}
         working-directory: /build/first
         run: packaging/release/check.sh
       - name: CycloneDX SBOM and checksums
@@ -166,47 +189,71 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  arch-clean-install:
-    name: Arch source + binary packages, namcap, clean install and removal
-    needs: binaries
+  arch-source:
+    # The source package compiles the archive in Arch and runs its check(); it needs no release
+    # artifact, so it runs beside the release build instead of after it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    name: Arch source package, namcap, clean install and removal
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    env:
-      SOURCE_DATE_EPOCH: ${{ needs.binaries.outputs.source_epoch }}
-      OX_SOURCE_COMMIT: ${{ needs.binaries.outputs.source_commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Version from the workspace when the caller gave none
-        run: |
-          version=$(packaging/release/version.sh "$VERSION")
-          if [ -z "$VERSION" ]; then
-            echo "VERSION=$version" >> "$GITHUB_ENV"
-          fi
-          # '+' (build metadata) becomes '.' in archive and package file names.
-          if [ -z "$FILE_VERSION" ]; then
-            echo "FILE_VERSION=${version//+/.}" >> "$GITHUB_ENV"
-          fi
-          echo "version: $version"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-build-x86_64
-          path: artifacts
       - name: No Python in installers, recipes and release scripts
         run: bash packaging/release/no-python-installers.sh
+      - name: Immutable source archive and its checksum
+        run: |
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+          echo "OX_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          packaging/release/source-archive.sh "source/ox-llm-$(git rev-parse HEAD).tar.gz"
+          (cd source && sha256sum -- *.tar.gz > SHA256SUMS)
       - name: Fresh Arch container (official image is x86_64 only)
         run: |
           mkdir packages
           docker run --rm \
             -e SOURCE_DATE_EPOCH -e OX_SOURCE_COMMIT \
+            -v "$GITHUB_WORKSPACE/source:/artifacts:ro" \
+            -v "$GITHUB_WORKSPACE/packages:/packages" \
+            -v "$GITHUB_WORKSPACE/packaging/arch:/recipes:ro" \
+            -v "$GITHUB_WORKSPACE/packaging/release/smoke.sh:/smoke.sh:ro" \
+            -v "$GITHUB_WORKSPACE/packaging/release/arch-test.sh:/arch-test.sh:ro" \
+            -v "$GITHUB_WORKSPACE/packaging/release/no-python.sh:/no-python.sh:ro" \
+            archlinux:latest bash /arch-test.sh source
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arch-source-package-x86_64
+          path: packages/
+          if-no-files-found: error
+          retention-days: 7
+
+  arch-binary:
+    name: Arch binary package, namcap, clean install and removal
+    needs: binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.binaries.outputs.source_epoch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-build-x86_64
+          path: artifacts
+      - name: Fresh Arch container (official image is x86_64 only)
+        run: |
+          mkdir packages
+          docker run --rm \
+            -e SOURCE_DATE_EPOCH \
             -v "$GITHUB_WORKSPACE/artifacts:/artifacts:ro" \
             -v "$GITHUB_WORKSPACE/packages:/packages" \
             -v "$GITHUB_WORKSPACE/packaging/arch:/recipes:ro" \
             -v "$GITHUB_WORKSPACE/packaging/release/smoke.sh:/smoke.sh:ro" \
             -v "$GITHUB_WORKSPACE/packaging/release/arch-test.sh:/arch-test.sh:ro" \
             -v "$GITHUB_WORKSPACE/packaging/release/no-python.sh:/no-python.sh:ro" \
-            archlinux:latest bash /arch-test.sh
+            archlinux:latest bash /arch-test.sh binary
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arch-packages-x86_64

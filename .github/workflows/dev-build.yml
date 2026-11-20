@@ -2,10 +2,17 @@ name: dev-build
 on:
   push:
     branches: [main]
+  schedule:
+    # The two-build reproducibility comparison runs nightly and in the release lane, never on a
+    # dev push.
+    - cron: "43 4 * * *"
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: dev-build
+  # The nightly qualification gets its own group so it never delays a dev push. Pushes stay
+  # serialized: a running build finishes, only the newest pending push is kept.
+  group: dev-build-${{ github.event_name }}
   cancel-in-progress: false
 defaults:
   run:
@@ -28,15 +35,39 @@ jobs:
         run: |
           echo "version=$(python3 -I tools/ci/dev_version.py "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
           echo "file_version=$(python3 -I tools/ci/dev_version.py "$GITHUB_SHA" --file-name)" >> "$GITHUB_OUTPUT"
+  covered:
+    # Same-SHA green evidence: a main push whose commit already passed the merge queue skips the
+    # repeated model-free source tests (tools/ci/queue_covered.py decides; any doubt runs them).
+    if: github.repository == 'oxstack/ox-llm'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      # Read-only: the merge-queue run lookup.
+      actions: read
+      contents: read
+    outputs:
+      covered: ${{ steps.covered.outputs.covered }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: covered
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: python3 -I tools/ci/queue_covered.py
   build:
-    needs: version
+    needs: [version, covered]
     uses: ./.github/workflows/release-build.yml
     with:
       version: ${{ needs.version.outputs.version }}
       file_version: ${{ needs.version.outputs.file_version }}
+      reproducible: ${{ github.event_name != 'push' }}
+      skip_source_tests: ${{ needs.covered.outputs.covered == 'true' }}
   publish:
     needs: [version, build]
-    if: github.repository == 'oxstack/ox-llm' && github.ref == 'refs/heads/main' && !github.event.repository.private
+    if: github.repository == 'oxstack/ox-llm' && github.event_name == 'push' && !github.event.repository.private
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     permissions:
