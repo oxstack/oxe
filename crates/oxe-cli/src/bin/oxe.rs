@@ -3491,10 +3491,19 @@ fn cmd_npu_prefill_check(a: &Args) {
     }
 }
 
+/// The release stamp (`OX_BUILD_VERSION`, set only by packaging/release/build.sh) or the
+/// package version. The engine fingerprint stays on `CARGO_PKG_VERSION`.
+fn build_version() -> &'static str {
+    match option_env!("OX_BUILD_VERSION") {
+        Some(stamp) if !stamp.is_empty() => stamp,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 fn main() {
     sched::cli::exit_zero_on_epipe(); // F-CI9: `| head` ends with status 0, not a core dump
     if std::env::args().skip(1).collect::<Vec<_>>() == ["--version"] {
-        println!("oxe {}", env!("CARGO_PKG_VERSION"));
+        println!("oxe {}", build_version());
         return;
     }
     {

@@ -103,7 +103,21 @@ const IGNORED: &[(&str, bool)] = &[
     ("--no-cache-prompt", false),
 ];
 
+/// The release stamp (`OX_BUILD_VERSION`, set only by packaging/release/build.sh) or the
+/// package version. The engine fingerprint stays on `CARGO_PKG_VERSION`.
+fn build_version() -> &'static str {
+    match option_env!("OX_BUILD_VERSION") {
+        Some(stamp) if !stamp.is_empty() => stamp,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 fn main() {
+    if std::env::args().skip(1).collect::<Vec<_>>() == ["--version"] {
+        // Before any CPU, model or port work: a release check must work on any machine.
+        println!("oxe-server {}", build_version());
+        return;
+    }
     server::startup_check::run(USAGE); // lane G (v0.1.3): CPU features, OXE_* env, --help / --check-args, EPIPE
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut model = None;
