@@ -137,6 +137,10 @@ Limits are owner settings that warn and record. A finding that asks for a defaul
 - **Report dedupe is one consent** (#1448): opting into `oxa.reportIssue.semanticDedupe` is the owner's consent to send the scrubbed report, a public source excerpt and candidate summaries to the configured model and to search the repository for matching issues, so the post asks one question: the final preview. New issues are limited to one per task. The per-worker daily count is the owner setting `oxa.reportIssue.dailyNew`: unset means no check, and at or over a configured cap the preview warns, the ledger records it and the owner's yes still posts.
 Intentional removals must be stated in the PR body with a `Removes:` line; flag silent deletion of security checks as high.
 
+The rolling dev release always requires its reproducible Linux artifacts. Its native macOS arm64
+archive is best effort, so a failed macOS build cannot suppress the Linux release. When the macOS
+archive is present, the workflow includes it in the versioned SHA256 checksum file and in the same
+build-provenance attestation as the other dev assets before publishing it.
 The owner confirm broker (`oxa-core/src/owner_confirm.rs`, `OXA_CONFIRM_SOCK`) answers an oxa
 confirmation only from the owner: yolo chosen for the session (answer yes, shown and recorded), the
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.

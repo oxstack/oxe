@@ -7,6 +7,11 @@ on:
     # dev push.
     - cron: "43 4 * * *"
   workflow_dispatch:
+    inputs:
+      macos_stage_only:
+        description: Build and upload the native macOS dev archive without publishing
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -38,7 +43,7 @@ jobs:
   covered:
     # Same-SHA green evidence: a main push whose commit already passed the merge queue skips the
     # repeated model-free source tests (tools/ci/queue_covered.py decides; any doubt runs them).
-    if: github.repository == 'oxstack/ox-llm'
+    if: github.repository == 'oxstack/ox-llm' && !inputs.macos_stage_only
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     permissions:
@@ -65,9 +70,59 @@ jobs:
       file_version: ${{ needs.version.outputs.file_version }}
       reproducible: ${{ github.event_name != 'push' }}
       skip_source_tests: ${{ needs.covered.outputs.covered == 'true' }}
+  macos:
+    if: github.event_name == 'push' || inputs.macos_stage_only
+    # A failed main build never blocks Linux; an explicit qualification must pass.
+    needs: version
+    runs-on: macos-15
+    continue-on-error: ${{ github.event_name == 'push' }}
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '3'
+      RUST_VERSION: '1.99.1'
+      FILE_VERSION: ${{ needs.version.outputs.file_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Isolated environment and toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          root=$(mktemp -d "$RUNNER_TEMP/oxa-macos.XXXXXX")
+          root=$(cd "$root" && pwd -P)
+          mkdir -p "$root/home" "$root/cargo" "$root/rustup" "$root/tmp"
+          export HOME="$root/home" CARGO_HOME="$root/cargo" RUSTUP_HOME="$root/rustup" TMPDIR="$root/tmp"
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          for name in HOME CARGO_HOME RUSTUP_HOME TMPDIR; do
+            echo "$name=${!name}" >> "$GITHUB_ENV"
+          done
+          echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
+          echo "$RUSTUP_HOME/toolchains/$RUST_VERSION-aarch64-apple-darwin/bin" >> "$GITHUB_PATH"
+      - name: Build oxa
+        working-directory: oxa
+        run: cargo build --release --locked -p oxa-cli --bin oxa
+      - name: Stage the archive
+        id: stage
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/macos-dist"
+          archive=$(bash packaging/macos/stage.sh "$FILE_VERSION" oxa/target/release/oxa "$out")
+          test "$archive" = "$out/ox-llm-$FILE_VERSION-macos-arm64.tar.gz"
+          probe=$(mktemp -d "$RUNNER_TEMP/probe.XXXXXX")
+          tar -xzf "$archive" -C "$probe"
+          cmp oxa/target/release/oxa "$probe/usr/bin/oxa"
+          test "$(lipo -archs "$probe/usr/bin/oxa")" = arm64
+          "$probe/usr/bin/oxa" --version
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-dist-arm64
+          path: ${{ steps.stage.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 7
   publish:
-    needs: [version, build]
-    if: github.repository == 'oxstack/ox-llm' && github.event_name == 'push' && !github.event.repository.private
+    needs: [version, build, macos]
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.repository == 'oxstack/ox-llm' && github.event_name == 'push' && github.ref == 'refs/heads/main' && !github.event.repository.private }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     permissions:
@@ -86,26 +141,14 @@ jobs:
         with:
           pattern: release-build-*
           path: combined
-      - name: Keep both qualified payloads and architecture-specific proof receipts
-        run: |
-          set -euo pipefail
-          mkdir dist
-          for arch in aarch64 x86_64; do
-            source="combined/release-build-$arch"
-            (cd "$source" && sha256sum -c SHA256SUMS)
-            cp "$source/ox-llm-$FILE_VERSION-linux-$arch.tar.gz" "$source/ox-llm-$FILE_VERSION-linux-$arch.sbom.cdx.json" dist/
-            for proof in REPRODUCIBILITY TOOLCHAIN NO-PYTHON-PROOF; do
-              cp "$source/$proof.txt" "dist/ox-llm-$FILE_VERSION-linux-$arch.$proof.txt"
-            done
-          done
-          # Every payload path is under usr/, and the native oxa is present.
-          for tarball in dist/*.tar.gz; do
-            tar -tzf "$tarball" | awk '!/^usr\// || /(^|\/)\.\.(\/|$)/ { print "unsafe payload path: " $0; bad = 1 } END { exit bad }'
-            tar -tzf "$tarball" | grep -x 'usr/bin/oxa' >/dev/null || { echo "missing native oxa in $tarball" >&2; exit 1; }
-          done
-          packaging/release/no-python.sh dist/*.tar.gz
-          (cd dist && sha256sum -- * > SHA256SUMS && sha256sum -c SHA256SUMS)
-          cp dist/SHA256SUMS "dist/SHA256SUMS-$FILE_VERSION"
+      # Optional: a failed macOS build leaves no artifact and the Linux release still publishes.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: macos-dist-arm64
+          path: macos-dist
+      - name: Assemble and verify the dev assets
+        run: bash packaging/release/dev-dist.sh "$FILE_VERSION"
       - name: Provenance for the exact dev assets and checksums
         id: provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
