@@ -161,3 +161,4 @@ descriptor (`--body-file /dev/fd/N`), never a pathname a command could swap afte
  Lane-push approval uses this broker when a session launches `oxa work`, including through an
 agent child; terminal and ambient-variable compatibility approval is unavailable to agent
 processes.
+Named cloud providers (`oxa.cloud.providers`) are user-only. A provider selects a distinct non-built-in key entry in the existing protected cloud secret store. The owner's HTTPS API base pins discovery and chat; redirects are not followed. A model list, project setting or per-model override cannot replace the base, protocol, key selector or billing class. Cached lists are bound to the base and credential, and catalog replies that echo the credential are refused. Public metadata lookup sends no key and cannot supply another provider's prices for a named route.
