@@ -70,6 +70,12 @@ Do not report: style, pre-existing issues outside the diff, test-only code that 
 
 Image input (B2b): `read` sends an image to a model that takes images only through the same pinned, private-path-checked open as text, when the engine says it takes images, and when `images.blockImages` is off. A project may enable that opt-out but cannot disable the owner's user setting. The user-only `oxa.read.maxImageBytes` (default 20 MiB, `0` = no limit) bounds both an individual image and the aggregate images across retained session history and the current tool-call batch; a result that would cross the limit is not sent and names the limit. An image read that skips the pinned open or the private-path rules is high severity.
 
+The bound, live Lead owner service has one execution surface: the `worker` tool can create a Git
+worktree and launch or steer child `oxa` processes. Its supervisor lives for the service lifetime,
+but each new launch uses the current user-only `oxa.workers.*` limits and permission ceiling. The
+read-only shadow preset and the one-shot `oxa lead chat` command expose no worker tool. Setting
+`oxa.workers.enabled` to `false` in user settings disables the surface.
+
 ## Sandbox standard (owner decision)
 
 - **Interactive CLI:** no OS sandbox by default, on Linux and macOS. Dangerous commands ask the owner.
