@@ -79,6 +79,12 @@ Do not report: style, pre-existing issues outside the diff, test-only code that 
 
 Image input (B2b): `read` sends an image to a model that takes images only through the same pinned, private-path-checked open as text, when the engine says it takes images, and when `images.blockImages` is off. A project may enable that opt-out but cannot disable the owner's user setting. The user-only `oxa.read.maxImageBytes` (default 20 MiB, `0` = no limit) bounds both an individual image and the aggregate images across retained session history and the current tool-call batch; a result that would cross the limit is not sent and names the limit. An image read that skips the pinned open or the private-path rules is high severity.
 
+Before `oxa work` publishes or pushes a lane candidate, the runner scans the exact commits added
+to the destination for credential-like content and refuses the push on a finding. Lane workers do
+not receive GitHub credentials, and a lane candidate may not modify GitHub workflows or the lane
+runner itself; those controls must land separately through the normal review path.
+
+The repeat guard warns and continues by owner decision (#1448): the third identical tool result gets a notice, a call that still repeats gets one persisted warning, and the run is not stopped. A finding that asks for the old stopping behaviour is not a finding; `oxa.maxTurns` is the configured cap.
 The bound, live Lead owner service has one execution surface: the `worker` tool can create a Git
 worktree and launch or steer child `oxa` processes. Its supervisor lives for the service lifetime,
 but each new launch uses the current user-only `oxa.workers.*` limits and permission ceiling. The
@@ -148,3 +154,6 @@ Linux sandbox the broker socket is mounted only where bwrap denies nested user n
 (`--disable-userns`), so a command cannot stack a fake listener over the trusted mount point; a
 broker mount without that denial is high. Publishing hands `gh` the approved bytes through a sealed
 descriptor (`--body-file /dev/fd/N`), never a pathname a command could swap after the yes.
+ Lane-push approval uses this broker when a session launches `oxa work`, including through an
+agent child; terminal and ambient-variable compatibility approval is unavailable to agent
+processes.
