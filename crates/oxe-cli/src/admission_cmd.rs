@@ -34,8 +34,17 @@ Print JSON allocation bounds from the model header without loading model weights
   --mtp-head PATH                  Select a separate MTP head
   --mtp-tune PATH                  Accept a server MTP tuning file
   --margin-bytes B                 Set the extra allocation margin in bytes
+  --session-ram-bytes N            RAM for parked sessions (default: MemTotal / 32; 0 turns it off)
+  --state-cache DIR|default        Disk state store (default: on, `default` directory)
+  --prefix-cache DIR|default       Disk prefix cache (default: on, `default` directory)
+  --ctx-checkpoints N              Context checkpoints kept per session (default 8)
   --json                           Request JSON output (the default)
   -h, --help                       Show this help
+
+The cache options are part of the product launch: when none is given the report adds
+--state-cache default, --session-ram-bytes (counted in the budget), --prefix-cache default and
+--ctx-checkpoints 8, so a second request (a subagent child, a worker) does not wipe the first
+session. A value you pass wins.
 
 Also accepted from server launch arguments: --alias/-a, --host, --port,
 --ubatch-size/-ub, --oxe-weights, --mtp-max-ctx, --mlock, and --mtp-sampled.
@@ -68,6 +77,32 @@ struct Parsed {
     mtp_head: Option<String>,
     mtp_tune: Option<String>,
     margin: Option<u64>,
+    session_ram: Option<u64>,
+    state_cache: Option<String>,
+    prefix_cache: Option<String>,
+    ctx_checkpoints: Option<usize>,
+}
+
+/// Parked-session RAM the native launch asks for when the owner states none: 1 GiB on a 32 GiB
+/// machine, 2 GiB on 64 GiB (MemTotal / 32; MemTotal, not MemAvailable, because the weights are
+/// not resident yet when the report is made). Unknown memory: 1 GiB. This is a default, never a cap:
+/// `--session-ram-bytes N` replaces it.
+pub fn default_session_ram_bytes(mem_total: Option<u64>) -> u64 {
+    const GIB: u64 = 1 << 30;
+    mem_total.map_or(GIB, |t| (t / 32).max(256 << 20))
+}
+
+/// `(MemTotal, MemAvailable)` in bytes from /proc/meminfo; `None` where it cannot be read.
+fn meminfo() -> (Option<u64>, Option<u64>) {
+    let text = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let field = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .and_then(|r| r.trim().strip_suffix("kB"))
+            .and_then(|n| n.trim().parse::<u64>().ok())
+            .map(|k| k * 1024)
+    };
+    (field("MemTotal:"), field("MemAvailable:"))
 }
 
 fn number<T: std::str::FromStr>(flag: &str, v: &str) -> Result<T, String> {
@@ -127,6 +162,10 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--mtp-head" => p.mtp_head = Some(v),
             "--mtp-tune" => p.mtp_tune = Some(v),
             "--margin-bytes" => p.margin = Some(number(flag, &v)?),
+            "--session-ram-bytes" => p.session_ram = Some(number(flag, &v)?),
+            "--state-cache" => p.state_cache = Some(v),
+            "--prefix-cache" => p.prefix_cache = Some(v),
+            "--ctx-checkpoints" => p.ctx_checkpoints = Some(number(flag, &v)?),
             other => {
                 return Err(format!(
                     "unknown option {other}: `oxe admission` takes --model, --ctx, --oxe-cpus, --oxe-prefill-cpus, --spec-type, --spec-draft-n-max, --cache-type-k/-v, --mtp-head, --margin-bytes and --json; it never guesses whether another option changes allocations"
@@ -269,6 +308,40 @@ pub fn report_json(args: &[String]) -> Result<Value, String> {
         ]);
     }
 
+    // Cache capacity of the product launch (owner values win). Without it the engine keeps no
+    // parked session: any other request (a subagent child, a worker) resets the live sequence and
+    // the parent re-prefills its whole context.
+    let (mem_total, mem_available) = meminfo();
+    let session_ram = p
+        .session_ram
+        .unwrap_or_else(|| default_session_ram_bytes(mem_total));
+    arguments.extend([
+        "--state-cache".into(),
+        p.state_cache.unwrap_or_else(|| "default".into()),
+        "--session-ram-bytes".into(),
+        session_ram.to_string(),
+        "--prefix-cache".into(),
+        p.prefix_cache.unwrap_or_else(|| "default".into()),
+        "--ctx-checkpoints".into(),
+        p.ctx_checkpoints.unwrap_or(8).to_string(),
+    ]);
+    let mut warnings: Vec<String> = Vec::new();
+    {
+        let need = r.engine.total(r.decode_threads, r.prefill_threads) as u64
+            + file_bytes
+            + session_ram
+            + r.budget.margin_bytes;
+        if let Some(avail) = mem_available.filter(|a| *a < need) {
+            warnings.push(format!(
+                "memory is low: {} MiB available, the weights, engine allocations, {} MiB of session RAM and the margin need {} MiB; the parked-session RAM may be paged out or the load may fail (set --session-ram-bytes to change it)",
+                avail >> 20,
+                session_ram >> 20,
+                need >> 20
+            ));
+        }
+    }
+
+    // the parked-session RAM is anonymous memory the engine may fill: it is part of the budget
     let b = r.budget;
     let e = &r.engine;
     let bt = &r.bytes_per_token;
@@ -292,18 +365,20 @@ pub fn report_json(args: &[String]) -> Result<Value, String> {
             "mtp_head_file_bytes": r.mtp_head_file_bytes,
             "decode_threads": r.decode_threads,
             "prefill_threads": r.prefill_threads,
+            "session_ram_bytes": session_ram,
             "recurrent_slots": r.recurrent_slots,
             "lanes": r.lanes,
             "attention_layers_with_kv": r.attention_layers,
             "recurrent_layers": r.recurrent_layers,
         },
         "arguments": arguments,
+        "warnings": warnings,
         "limits": {
             "context_window": r.n_ctx_requested,
             "max_output": r.n_ctx_requested,
             "allocation_budget": {
                 "kv_bytes_per_position": b.kv_bytes_per_position,
-                "scratch_bytes": b.scratch_bytes,
+                "scratch_bytes": b.scratch_bytes + session_ram,
                 "mtp_state_bytes": b.mtp_state_bytes,
                 "margin_bytes": b.margin_bytes,
             },
@@ -341,5 +416,20 @@ pub fn run(args: &[String]) -> ! {
             eprintln!("oxe admission: {e}");
             std::process::exit(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_session_ram_bytes as ram;
+
+    #[test]
+    fn session_ram_scales_with_memory_and_has_no_upper_cap() {
+        let gib = 1u64 << 30;
+        assert_eq!(ram(Some(32 * gib)), gib);
+        assert_eq!(ram(Some(64 * gib)), 2 * gib);
+        assert_eq!(ram(Some(256 * gib)), 8 * gib);
+        assert_eq!(ram(None), gib);
+        assert!(ram(Some(4 * gib)) >= 128 << 20);
     }
 }

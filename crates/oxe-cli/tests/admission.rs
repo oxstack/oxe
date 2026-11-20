@@ -82,6 +82,8 @@ fn admission_report_matches_engine_allocation_plan() {
                 spec,
                 "--spec-draft-n-max",
                 "2",
+                "--session-ram-bytes",
+                "0",
             ],
         );
         // the engine's own numbers, computed here from the same header
@@ -234,4 +236,82 @@ fn admission_report_refuses_unknown_architecture_with_reason() {
     );
     std::fs::remove_dir_all(dir).ok();
     std::fs::remove_dir_all(d2).ok();
+}
+
+fn words(r: &Value) -> Vec<String> {
+    r["arguments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap().to_string())
+        .collect()
+}
+
+fn value_of(args: &[String], flag: &str) -> Option<String> {
+    args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
+}
+
+#[test]
+fn admission_launch_carries_cache_capacity_and_counts_session_ram() {
+    let (dir, path) = fixture("cache", false);
+    let r = report(&path, &["--ctx", "1024"]);
+    let a = words(&r);
+    assert_eq!(value_of(&a, "--state-cache").as_deref(), Some("default"));
+    assert_eq!(value_of(&a, "--prefix-cache").as_deref(), Some("default"));
+    assert_eq!(value_of(&a, "--ctx-checkpoints").as_deref(), Some("8"));
+    let ram: u64 = value_of(&a, "--session-ram-bytes")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(ram > 0, "the native launch must give parked sessions RAM");
+    assert_eq!(num(&r["launch"]["session_ram_bytes"]), ram);
+    // the session RAM is in the budget: with it switched off the scratch term is smaller by exactly it
+    let off = report(&path, &["--ctx", "1024", "--session-ram-bytes", "0"]);
+    let scratch = |r: &Value| num(&r["limits"]["allocation_budget"]["scratch_bytes"]);
+    assert_eq!(scratch(&r) - scratch(&off), ram);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn admission_owner_cache_values_win() {
+    let (dir, path) = fixture("cache-owner", false);
+    let r = report(
+        &path,
+        &[
+            "--ctx",
+            "1024",
+            "--session-ram-bytes",
+            "123456789",
+            "--ctx-checkpoints",
+            "3",
+            "--state-cache",
+            "/tmp/owner-state",
+            "--prefix-cache",
+            "/tmp/owner-prefix",
+        ],
+    );
+    let a = words(&r);
+    assert_eq!(
+        value_of(&a, "--session-ram-bytes").as_deref(),
+        Some("123456789")
+    );
+    assert_eq!(value_of(&a, "--ctx-checkpoints").as_deref(), Some("3"));
+    assert_eq!(
+        value_of(&a, "--state-cache").as_deref(),
+        Some("/tmp/owner-state")
+    );
+    assert_eq!(
+        value_of(&a, "--prefix-cache").as_deref(),
+        Some("/tmp/owner-prefix")
+    );
+    // each flag appears once
+    for f in [
+        "--session-ram-bytes",
+        "--ctx-checkpoints",
+        "--state-cache",
+        "--prefix-cache",
+    ] {
+        assert_eq!(a.iter().filter(|w| *w == f).count(), 1, "{f}");
+    }
+    std::fs::remove_dir_all(dir).ok();
 }

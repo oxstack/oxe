@@ -16,6 +16,9 @@ startup_timeout_s = 120
 # Direct streaming request to oxe-server, run twice: the cold and the warm time to first token.
 prompt_repeat = 300
 max_tokens = 8
+# parent -> child-shaped request -> parent probe (the engine's cache capacity): repeats of the parent's
+# body (~2K tokens, above the engine's 1024-token park/state minimum)
+guard_repeat = 450
 
 [oxa]
 # `oxa -p`, three runs in one session (each continues the previous one), then the first prompt once

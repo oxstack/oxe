@@ -62,7 +62,7 @@ def wait_health(port, timeout, proc):
     return False
 
 
-def probe(port, messages, max_tokens):
+def probe(port, messages, max_tokens, headers=None):
     """One streaming chat request. Returns time to first content chunk, total time, usage, timings."""
     body = json.dumps({
         'messages': messages,
@@ -71,7 +71,7 @@ def probe(port, messages, max_tokens):
     })
     t0 = time.monotonic()
     c = http.client.HTTPConnection('127.0.0.1', port, timeout=120)
-    c.request('POST', '/v1/chat/completions', body, {'Content-Type': 'application/json'})
+    c.request('POST', '/v1/chat/completions', body, {'Content-Type': 'application/json', **(headers or {})})
     r = c.getresponse()
     if r.status != 200:
         raise RuntimeError(f'probe: HTTP {r.status}: {r.read()[:300]!r}')
@@ -138,6 +138,63 @@ def run_oxa_with_usage(oxa, prompt, cwd, env, usage_log, timeout, max_time, max_
     return code, wall, result, records(usage_log)
 
 
+def product_launch(oxe, model, ctx):
+    """The arguments the native launch gives oxe-server: `oxe admission` is what `oxa local add` saves."""
+    p = subprocess.run([oxe, 'admission', '--model', model, '--ctx', str(ctx), '--json'],
+                       capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        raise RuntimeError(f'oxe admission failed: {p.stderr.strip()[:500]}')
+    return json.loads(p.stdout)['arguments']
+
+
+def start_server(server_bin, args, port, env, log_path):
+    log = open(log_path, 'w')
+    proc = subprocess.Popen([server_bin, *args, '--host', '127.0.0.1', '--port', str(port)],
+                            env=env, stdout=log, stderr=subprocess.STDOUT)
+    return proc, log
+
+
+def stop_server(proc, log):
+    proc.terminate()
+    try:
+        proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    log.close()
+
+
+def cached_of(r):
+    return ((r.get('usage') or {}).get('prompt_tokens_details') or {}).get('cached_tokens')
+
+
+def subagent_probe(port, cfg):
+    """parent request -> a child-shaped request (other system prompt, session `<parent>.s1`, background
+    priority) -> parent follow-up. Returns the parent follow-up's cached tokens over the previous parent
+    prompt: the share of the parent's context the engine still had after the child ran."""
+    pc = cfg['probe']
+    user = lambda t: {'role': 'user', 'content': t}
+    system = lambda t: {'role': 'system', 'content': t}
+    parent_h = {'X-Oxe-Session': 'guard-parent'}
+    child_h = {'X-Oxe-Session': 'guard-parent.s1', 'X-Oxe-Priority': 'background'}
+    body = 'the quick brown fox ' * pc['guard_repeat']
+    m1 = [system('You are the parent coding agent. Use tools when needed.'), user(body)]
+    r1 = probe(port, m1, pc['max_tokens'], parent_h)
+    m2 = m1 + [{'role': 'assistant', 'content': r1['text'] or 'ok'}, user('and once more')]
+    r2 = probe(port, m2, pc['max_tokens'], parent_h)
+    child = [system('You are a read-only search subagent. Report file paths only.'),
+             user('Task: find the word fox. ' + 'jumps over the lazy dog ' * (pc['guard_repeat'] // 2))]
+    rc = probe(port, child, pc['max_tokens'], child_h)
+    m3 = m2 + [{'role': 'assistant', 'content': r2['text'] or 'ok'}, user('thanks')]
+    r3 = probe(port, m3, pc['max_tokens'], parent_h)
+    prev = (r2['usage'] or {}).get('prompt_tokens')
+    c = cached_of(r3)
+    if c is None or not prev:
+        raise RuntimeError('subagent probe: the server reported no cached/prompt token counts')
+    return {'parent_prompt': prev, 'child_prompt': (rc['usage'] or {}).get('prompt_tokens'),
+            'parent_cached_after_child': c, 'ratio': c / prev,
+            'parent_ttft_ms': r3['ttft_ms'], 'parent_prefill_ms': (r3.get('timings') or {}).get('prompt_ms')}
+
+
 def check_ratio(name, ratio, cfg, report):
     """Reuse ratio = cached tokens / previous prompt tokens. Floor and per-model baseline from the config."""
     c = cfg['cache']
@@ -164,11 +221,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--oxe-server', required=True)
     ap.add_argument('--oxa', required=True)
+    ap.add_argument('--oxe', help='the oxe CLI: its `admission` report gives the native launch arguments')
     ap.add_argument('--model', required=True)
     ap.add_argument('--config', required=True)
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     a.oxa, a.oxe_server, a.model = (os.path.abspath(x) for x in (a.oxa, a.oxe_server, a.model))
+    a.oxe = os.path.abspath(a.oxe) if a.oxe else None
     cfg = tomllib.loads(Path(a.config).read_text())
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -189,17 +248,37 @@ def main():
 
     port = cfg['server']['port']
     env = dict(os.environ, HOME=str(home), OXE_MODEL_SHA256=sha)
-    log = open(out / 'oxe-server.log', 'w')
-    server = subprocess.Popen(
-        [a.oxe_server, '--engine', 'oxe', '--model', a.model, '--host', '127.0.0.1', '--port', str(port),
-         '--ctx-size', str(cfg['server']['ctx_size'])],
-        env=env, stdout=log, stderr=subprocess.STDOUT)
+    pc = cfg['probe']
+    ctx = cfg['server']['ctx_size']
+    bare = ['--engine', 'oxe', '--model', a.model, '--ctx-size', str(ctx)]
+    if a.oxe:
+        # the same arguments `oxa local add` saves for the native launch, not bare flags
+        product = ['--model', a.model, *product_launch(a.oxe, a.model, ctx)]
+        report['launch_arguments'] = product
+        # evidence that the guard bites: the old bare launch, probed once, reported, not asserted
+        proc, blog = start_server(a.oxe_server, bare, port, env, out / 'oxe-server-bare.log')
+        try:
+            if wait_health(port, cfg['server']['startup_timeout_s'], proc):
+                report['subagent_probe_bare'] = subagent_probe(port, cfg)
+            else:
+                warn('the bare launch did not become healthy; its subagent probe is skipped')
+        finally:
+            stop_server(proc, blog)
+    else:
+        product = bare
+        warn('no --oxe given: the server runs with bare flags and the subagent cache probe is skipped')
+    server, log = start_server(a.oxe_server, product, port, env, out / 'oxe-server.log')
     try:
         if not wait_health(port, cfg['server']['startup_timeout_s'], server):
             fail('oxe-server did not become healthy (see oxe-server.log)')
             return finish(report, out)
+        if a.oxe:
+            g = subagent_probe(port, cfg)
+            report['subagent_probe'] = g
+            if g['ratio'] < cfg['cache']['min_reuse_ratio']:
+                fail(f"subagent probe: the parent reused {g['ratio']:.1%} of its context after a child-shaped "
+                     f"request, below {cfg['cache']['min_reuse_ratio']:.0%} (cached {g['parent_cached_after_child']} of {g['parent_prompt']})")
         b = cfg['budget']
-        pc = cfg['probe']
         prompt = 'hello world ' * pc['prompt_repeat']
         user = lambda t: {'role': 'user', 'content': t}
         cold = probe(port, [user(prompt)], pc['max_tokens'])
@@ -225,8 +304,6 @@ def main():
         elif frac > b['warm_over_cold_prefill_warn']:
             warn(f"warm prefill is {frac:.2f} of cold, above {b['warm_over_cold_prefill_warn']}")
         # growing conversation: cached must cover the whole previous prompt (the new turn is the rest)
-        def cached_of(r):
-            return ((r.get('usage') or {}).get('prompt_tokens_details') or {}).get('cached_tokens')
         for name, cur, prev in (('follow-up turn', t2, cold), ('turn after a tool result', t3, t2)):
             prev_prompt = (prev['usage'] or {}).get('prompt_tokens')
             c = cached_of(cur)
@@ -314,12 +391,7 @@ def main():
     except subprocess.TimeoutExpired as e:
         fail(f'oxa run timed out: {e}')
     finally:
-        server.terminate()
-        try:
-            server.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            server.kill()
-        log.close()
+        stop_server(server, log)
     return finish(report, out)
 
 
@@ -336,6 +408,11 @@ def finish(report, out):
             u = (pr[k].get('usage') or {}).get('prompt_tokens_details') or {}
             md.append(f"| {k} | {pr[k]['ttft_ms']:.0f} | {pr[k]['total_ms']:.0f} | {u.get('cached_tokens', 'n/a')} |")
         md.append('')
+    for key, label in (('subagent_probe_bare', 'old bare launch'), ('subagent_probe', 'native launch (oxe admission arguments)')):
+        g = report.get(key)
+        if g:
+            md.append(f"- parent -> child -> parent probe, {label}: parent cached {g['parent_cached_after_child']} of "
+                      f"{g['parent_prompt']} tokens ({g['ratio']:.1%}), time to first token {g['parent_ttft_ms']:.0f} ms")
     px = report.get('prefix')
     if px:
         md += [f"- prefix (system prompt + tool declaration): **{', '.join(map(str, px['bytes'])) or 'n/a'} bytes**, "

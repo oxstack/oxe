@@ -100,13 +100,16 @@ jobs:
       - name: Build oxe-server
         working-directory: engine
         run: cargo build --release --locked -p server --bin oxe-server
+      - name: Build oxe (its admission report gives the native launch arguments)
+        working-directory: engine
+        run: cargo build --release --locked -p oxe-cli --bin oxe
       - name: Build oxa
         working-directory: oxa
         run: cargo build --release --locked --bin oxa
       - name: Run oxa against oxe-server
         run: |
           python3 -I tools/ci/e2e_tiny.py \
-            --oxe-server engine/target/release/oxe-server --oxa oxa/target/release/oxa \
+            --oxe-server engine/target/release/oxe-server --oxe engine/target/release/oxe --oxa oxa/target/release/oxa \
             --model "$HOME/models/$MODEL_FILE" --config tools/ci/e2e-tiny.toml \
             --out "$RUNNER_TEMP/e2e-report"
       - name: Collect the report
