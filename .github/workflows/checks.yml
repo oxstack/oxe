@@ -6,7 +6,8 @@ name: checks
 # (base...head) or a queued group changes (merge_group.base_sha..head_sha). Every queued tree
 # additionally runs the complete oxa workspace, including tests that read docs/assets. Outputs: engine/ and fuzz/oxe/ -> `engine` (clippy, x86_64 stub server tests,
 # the x86_64 engine workspace check, ARM engine and Flash builds, oxe fuzz smoke); oxa/ and
-# fuzz/oxa/ -> `oxa` (clippy, the oxa test archive and shards, the ARM oxa build, oxa fuzz smoke);
+# fuzz/oxa/ -> `oxa` (clippy, the oxa test archive, its four shards and the doctest job, the ARM
+# oxa build, oxa fuzz smoke);
 # oxc/ -> `gateway`; oxa/oxc-gateway/ -> `gateway`.
 # The shared gateway selects oxa to check its in-process consumer.
 # Anything else (.github/, tools/, packaging/, root files, a new directory) and an empty group
@@ -15,7 +16,13 @@ name: checks
 # each merge (one run at a time; a newer push replaces a waiting one) and catches cross-component
 # breaks outside the components selected by a PR. Drafts run only the classifier, the scans
 # and rustfmt. The scans run on every event and every change, unconditionally.
-# The macOS arm64 oxa-cli build (`macos`, macos.yml) runs on ready PRs and in the queue when `oxa` is selected.
+# Main-push dedupe (#2049): the merge queue pushes the commit it tested to main, so a main push
+# whose commit already has a green `merge_group` run of this workflow skips the jobs that run would
+# repeat (tools/ci/queue_covered.py decides). A push that changed a dependency cache key still
+# runs: main is what seeds the `<prefix>main` caches, and a queue run cannot. The classifier and
+# the scans always run, deduped or not.
+# The macOS arm64 oxa-cli build (`macos`, macos.yml) runs on ready PRs and in the queue when `oxa`
+# is selected. It has no push trigger of its own, so a main push never builds macOS twice.
 # The `gate` job aggregates every job below; it fails when any job failed or was cancelled, when
 # the classifier or the scans did not succeed, or when a classifier output is not literally
 # 'true'/'false', so a skip caused by a failed or missing classifier cannot pass.
@@ -61,7 +68,12 @@ jobs:
     name: classify changed paths
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
+    permissions:
+      # Read-only: the merge-queue run lookup of the main-push dedupe.
+      actions: read
+      contents: read
     outputs:
+      covered: ${{ steps.covered.outputs.covered }}
       full: ${{ steps.paths.outputs.full }}
       docs: ${{ steps.paths.outputs.docs }}
       engine: ${{ steps.paths.outputs.engine }}
@@ -75,6 +87,15 @@ jobs:
           fetch-depth: 0
       - id: paths
         run: python3 -I tools/ci/paths.py
+      - name: Merge-queue coverage for this push
+        id: covered
+        # A main push repeats the queue's run of the same commit (the queue pushes the commit it
+        # tested). Any doubt answers "not covered", so the full run happens.
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: python3 -I tools/ci/queue_covered.py
       - name: Path filter controls
         run: python3 -I -m unittest discover -s tools/ci/tests
       - name: Benchmark adapters (fake engine, no network, no Docker)
@@ -83,7 +104,7 @@ jobs:
   links:
     name: documentation links
     needs: changes
-    if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.docs == 'true' || needs.changes.outputs.md == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: needs.changes.outputs.covered != 'true' && (needs.changes.outputs.full == 'true' || needs.changes.outputs.docs == 'true' || needs.changes.outputs.md == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
@@ -99,6 +120,8 @@ jobs:
     # Ready PRs select changed components. The queue always runs the complete oxa workspace;
     # the classifier sets every component on main, nightly and manual runs.
     needs: changes
+    # A deduped main push skips the whole call: the queue ran these components at this commit.
+    if: needs.changes.outputs.covered != 'true'
     uses: ./.github/workflows/build.yml
     with:
       version: dev-${{ github.sha }}
@@ -110,10 +133,11 @@ jobs:
 
   macos:
     # Required through `gate`: the native macOS arm64 oxa-cli build (macos.yml, one definition also
-    # used for main pushes and dispatch). Runs on ready PRs and in the queue whenever the classifier
-    # says oxa (Rust code, Cargo.lock, packaging/, this workflow); main pushes run macos.yml directly.
+    # used for manual dispatch). Runs on ready PRs and in the queue whenever the classifier says oxa
+    # (Rust code, Cargo.lock, packaging/, this workflow). macos.yml has no push trigger: the queue
+    # built this commit already, so a main push never builds macOS twice (#2049).
     needs: changes
-    if: (github.event_name == 'merge_group' || github.event_name == 'pull_request') && needs.changes.outputs.oxa == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: needs.changes.outputs.covered != 'true' && (github.event_name == 'merge_group' || github.event_name == 'pull_request') && needs.changes.outputs.oxa == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     uses: ./.github/workflows/macos.yml
 
   oxa-nightly-arm:
@@ -175,6 +199,9 @@ jobs:
 
   rustfmt:
     name: rustfmt (oxa)
+    needs: changes
+    # Rustfmt needs no classifier output, only the dedupe answer: the queue formatted this commit.
+    if: needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     env:
@@ -194,7 +221,7 @@ jobs:
 
   clippy:
     needs: changes
-    if: (needs.changes.outputs.engine == 'true' || needs.changes.outputs.oxa == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: needs.changes.outputs.covered != 'true' && (needs.changes.outputs.engine == 'true' || needs.changes.outputs.oxa == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     # Compile errors fail the job; lint warnings are reported but do not fail it yet. Add
     # "-- -D warnings" once the warning count is known to be zero.
     name: clippy (engine, oxa; aarch64)
@@ -252,7 +279,7 @@ jobs:
   x86-64-stub:
     needs: changes
     # engine changes run the server tests and the OpenAI contract
-    if: needs.changes.outputs.engine == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: needs.changes.outputs.covered != 'true' && needs.changes.outputs.engine == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     # oxe-server builds on x86_64 with the stub engine only (kernels-sys compiles its kernels on
     # aarch64 only; the model engine refuses to load elsewhere). Its server tests that do not need
     # the model engine run here. Uses the hosted image's rustup (setup_toolchain.sh installs the
@@ -334,7 +361,7 @@ jobs:
 
   engine-x86-workspace:
     needs: changes
-    if: needs.changes.outputs.engine == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: needs.changes.outputs.covered != 'true' && needs.changes.outputs.engine == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     # O394/O395 (#912, engine N1): the engine workspace as seen from a non-aarch64 target. int8-gemm
     # and qwen4exp used to enter their ARM C builds unconditionally (-march=armv8.6-a, -mcpu=oryon-1,
     # a pre-existing production ggml archive), so nothing could check the workspace off aarch64. Both
@@ -418,7 +445,7 @@ jobs:
     # Task 61: the stable smoke of the oxa cargo-fuzz targets (seconds; no nightly/sanitizer).
     name: oxa fuzz smoke (x86_64)
     needs: changes
-    if: needs.changes.outputs.oxa == 'true'
+    if: needs.changes.outputs.covered != 'true' && needs.changes.outputs.oxa == 'true'
     runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
@@ -437,7 +464,7 @@ jobs:
     # Task 61: the stable smoke of the oxe cargo-fuzz targets (seconds; no model weights).
     name: oxe fuzz smoke (x86_64)
     needs: changes
-    if: needs.changes.outputs.engine == 'true'
+    if: needs.changes.outputs.covered != 'true' && needs.changes.outputs.engine == 'true'
     runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
@@ -524,7 +551,7 @@ jobs:
   gateway:
     # Moved from cloud-gateway.yml (fmt + conformance, same steps and matrix) so the gate covers it.
     needs: changes
-    if: (needs.changes.outputs.gateway == 'true' || (github.event_name == 'merge_group' && needs.changes.outputs.oxa == 'true')) && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: needs.changes.outputs.covered != 'true' && (needs.changes.outputs.gateway == 'true' || (github.event_name == 'merge_group' && needs.changes.outputs.oxa == 'true')) && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     name: cloud gateway (${{ matrix.runner }})
     strategy:
       matrix:

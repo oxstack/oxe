@@ -396,19 +396,6 @@ jobs:
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Pinned nextest
         run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
-      - name: Workspace doctests (isolated HOME/XDG)
-        working-directory: oxa
-        run: |
-          real=$HOME; root=$(mktemp -d); log=$(mktemp)
-          set +e
-          env -i PATH="$PATH" CARGO_HOME="$real/.cargo" RUSTUP_HOME="$real/.rustup" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
-            HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_DATA_HOME="$root/d" \
-            XDG_CACHE_HOME="$root/k" XDG_RUNTIME_DIR="$root/r" OXA_REQUIRE_BWRAP=1 \
-            cargo test --profile ci --locked --workspace --doc --no-fail-fast -- --nocapture 2>&1 | tee "$log"
-          rc=${PIPESTATUS[0]}
-          set -e
-          test "$rc" = 0
-          if grep -n '^skipped: ' "$log"; then echo "::error::doctest skipped at runtime"; exit 1; fi
       - name: Build child binaries and archive every workspace test once
         working-directory: oxa
         run: |
@@ -440,6 +427,60 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  oxa-doctests:
+    if: inputs.heavy && inputs.oxa
+    name: oxa doctests (x86_64)
+    # Own job (#2049): nextest cannot partition doctests, and inside the archive job they pushed
+    # every shard's start behind them. Here they run beside the shards, and the archive is ready
+    # sooner. Nothing is blocked on this job except the `oxa tests` aggregate.
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        # The archive job's variant: this job only reads that cache, it never saves it (one
+        # saver per key, and only main saves). Compiling the doctests needs the workspace
+        # built, which is exactly what the restored target/ holds.
+        run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-x86-oxa-ci oxa
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        # A restored target/ may hold workspace crates built from OLDER sources. Checkout mtimes can be older
+        # than those artifacts, so cargo would treat stale crates as fresh. Touching the tracked sources
+        # forces workspace crates to rebuild; third-party dependencies stay cached.
+        working-directory: ${{ github.workspace }}
+        run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Workspace doctests (isolated HOME/XDG)
+        working-directory: oxa
+        run: |
+          real=$HOME; root=$(mktemp -d); log=$(mktemp)
+          set +e
+          env -i PATH="$PATH" CARGO_HOME="$real/.cargo" RUSTUP_HOME="$real/.rustup" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+            HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_DATA_HOME="$root/d" \
+            XDG_CACHE_HOME="$root/k" XDG_RUNTIME_DIR="$root/r" OXA_REQUIRE_BWRAP=1 \
+            cargo test --profile ci --locked --workspace --doc --no-fail-fast -- --nocapture 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          test "$rc" = 0
+          if grep -n '^skipped: ' "$log"; then echo "::error::doctest skipped at runtime"; exit 1; fi
+
   oxa-test-shards:
     if: inputs.heavy && inputs.oxa
     needs: oxa-test-build
@@ -448,8 +489,9 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
+      # Four shards (#2049): two left ~17 min on the critical path; four keep a shard near 9.
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -481,7 +523,7 @@ jobs:
             "$RUNNER_TEMP/nextest/cargo-nextest" nextest run --profile ci --no-tests fail \
             --archive-file "$RUNNER_TEMP/oxa-archive/oxa-tests.tar.zst" \
             --workspace-remap "$PWD" --extract-to "$PWD" \
-            --partition hash:${{ matrix.shard }}/2 --test-threads 4 --success-output immediate \
+            --partition hash:${{ matrix.shard }}/4 --test-threads 4 --success-output immediate \
             --failure-output immediate-final --no-output-indent
       - name: Preserve and validate the report even after failure
         if: always()
@@ -497,17 +539,18 @@ jobs:
           retention-days: 7
 
   oxa-tests:
-    # Preserve the required check name. A missing/failed build or shard cannot turn green.
+    # Preserve the required check name. A missing/failed build, doctest job or shard cannot turn green.
     if: always() && inputs.heavy && inputs.oxa
-    needs: [oxa-test-build, oxa-test-shards]
+    needs: [oxa-test-build, oxa-test-shards, oxa-doctests]
     name: oxa tests (bwrap sandbox required)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
-      - name: Every archive and partition must pass
+      - name: Every archive, partition and doctest job must pass
         run: |
           test '${{ needs.oxa-test-build.result }}' = success
           test '${{ needs.oxa-test-shards.result }}' = success
+          test '${{ needs.oxa-doctests.result }}' = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -522,8 +565,9 @@ jobs:
           merge-multiple: true
       - name: All expected tests ran once; no runtime skips
         run: |
+          # One report per shard, however many shards the matrix above has.
           python3 -I tools/ci/check_oxa_report.py --expected "$RUNNER_TEMP/oxa-reports/oxa-test-list.json" \
-            "$RUNNER_TEMP/oxa-reports/junit-1.xml" "$RUNNER_TEMP/oxa-reports/junit-2.xml"
+            "$RUNNER_TEMP"/oxa-reports/junit-*.xml
 
   oxa:
     if: inputs.build_oxa && inputs.oxa
