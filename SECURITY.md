@@ -14,6 +14,8 @@ Treat as **high** severity:
 - fork-PR or guest access to secrets, cloud providers or owner credentials;
 - new `unsafe`/FFI/process/network code in the engine without bounds checks.
 
+Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
+substitution markers in any stage make saved grants inapplicable, including markers before a hit.
 The native cloud gateway's default recommendations use only configured API-key providers
 and their standard endpoints. User model entries take precedence, and the owner can opt out.
 Recommendations do not initiate network discovery or confer guest access.
@@ -79,6 +81,8 @@ worktree and launch or steer child `oxa` processes. Its supervisor lives for the
 but each new launch uses the current user-only `oxa.workers.*` limits and permission ceiling. The
 read-only shadow preset and the one-shot `oxa lead chat` command expose no worker tool. Setting
 `oxa.workers.enabled` to `false` in user settings disables the surface.
+
+Dangerous commands are a floor prompt in the interactive run, and an unattended run (a worker, a subagent, a headless goal: no one to ask) never waits for an answer (#1512). `oxa.approval.unattended` is the owner setting, user settings only: `auto` (the default) refuses the command under the OS sandbox and files an approval request without one, `refuse` always refuses, `request` always files a request. Requests live in `<agent dir>/approvals/` (directory 0700, one record per request at 0600, written atomically under a private temporary name, never following a symlink or an agent directory owned by another user) and are answered only by the owner through `oxa send <session> --approve <id> once|session|always|deny`, never by inbox text or model output. A `once` grant is consumed by the run that retries the command; `session` grants persist for their session, and `always` is recorded in the user-only `oxa.approval.always` list: the desk record holds only in the run that was answered, later runs read the list, so removing a line there revokes it. A command that reads its input from a file or stdin (an input redirection, `xargs`, `read`, `--files-from`) is refused unattended like shell input, and no saved grant covers it, because the reviewed text does not fix what it acts on. A grant is bound to the canonical directory it was reviewed in, a wipe takes the desk lock, the newest 500 `refused` and 500 `pending` records are kept (older ones of that status rotate out; answered grants never do), and listings escape control, bidi and zero-width format characters. A finding that asks for a default-off switch, for an unattended run to wait indefinitely, or for the desk to take an answer from a model or a project file is answered here.
 
 ## Sandbox standard (owner decision)
 
