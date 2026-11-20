@@ -68,11 +68,8 @@ jobs:
           persist-credentials: false
       - name: Version from the workspace when the caller gave none
         run: |
-          version=$VERSION
-          if [ -z "$version" ]; then
-            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' oxa/Cargo.toml | head -1)
-            [ -n "$v" ] || { echo "no workspace version in oxa/Cargo.toml" >&2; exit 1; }
-            version="v$v"
+          version=$(packaging/release/version.sh "$VERSION")
+          if [ -z "$VERSION" ]; then
             echo "VERSION=$version" >> "$GITHUB_ENV"
           fi
           # '+' (build metadata) becomes '.' in archive and package file names.
@@ -183,11 +180,8 @@ jobs:
           persist-credentials: false
       - name: Version from the workspace when the caller gave none
         run: |
-          version=$VERSION
-          if [ -z "$version" ]; then
-            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' oxa/Cargo.toml | head -1)
-            [ -n "$v" ] || { echo "no workspace version in oxa/Cargo.toml" >&2; exit 1; }
-            version="v$v"
+          version=$(packaging/release/version.sh "$VERSION")
+          if [ -z "$VERSION" ]; then
             echo "VERSION=$version" >> "$GITHUB_ENV"
           fi
           # '+' (build metadata) becomes '.' in archive and package file names.
@@ -231,11 +225,8 @@ jobs:
           persist-credentials: false
       - name: Version from the workspace when the caller gave none
         run: |
-          version=$VERSION
-          if [ -z "$version" ]; then
-            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' oxa/Cargo.toml | head -1)
-            [ -n "$v" ] || { echo "no workspace version in oxa/Cargo.toml" >&2; exit 1; }
-            version="v$v"
+          version=$(packaging/release/version.sh "$VERSION")
+          if [ -z "$VERSION" ]; then
             echo "VERSION=$version" >> "$GITHUB_ENV"
           fi
           # '+' (build metadata) becomes '.' in archive and package file names.
@@ -270,11 +261,8 @@ jobs:
           persist-credentials: false
       - name: Version from the workspace when the caller gave none
         run: |
-          version=$VERSION
-          if [ -z "$version" ]; then
-            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' oxa/Cargo.toml | head -1)
-            [ -n "$v" ] || { echo "no workspace version in oxa/Cargo.toml" >&2; exit 1; }
-            version="v$v"
+          version=$(packaging/release/version.sh "$VERSION")
+          if [ -z "$VERSION" ]; then
             echo "VERSION=$version" >> "$GITHUB_ENV"
           fi
           # '+' (build metadata) becomes '.' in archive and package file names.
