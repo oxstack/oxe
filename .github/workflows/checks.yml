@@ -96,8 +96,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PUSH_BEFORE: ${{ github.event.before }}
         run: python3 -I tools/ci/queue_covered.py
-      - name: Path filter controls
+      - name: CI tooling tests
         run: python3 -I -m unittest discover -s tools/ci/tests
+      - name: Validate pending changelog fragments
+        run: python3 -I tools/ci/changelog.py changelog.d > /dev/null
       - name: Benchmark adapters (fake engine, no network, no Docker)
         run: python3 -I -m unittest discover -s tools/bench
 
