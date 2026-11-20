@@ -100,11 +100,17 @@ def probe(port, messages, max_tokens):
     return {'ttft_ms': (t_first - t0) * 1e3, 'total_ms': total * 1e3, 'usage': usage, 'timings': timings, 'text': text}
 
 
-def run_oxa(oxa, prompt, cwd, env, usage_log, timeout, max_time, max_tokens, name, out):
-    # --yolo: the container has no usable bwrap, so a sandboxed run has no bash at all, and the 0.8B
-    # model then retries `cat hello.txt` until --max-time (real-model runs). The container is
-    # throwaway; yolo is the owner's standard for unattended work (AGENTS.md sandbox standard).
-    cmd = [oxa, '-p', '--yolo', '--thinking', 'off', '--no-mcp', '--no-web-search', '--session-id', 'e2e-tiny',
+def run_oxa(oxa, prompt, cwd, env, usage_log, timeout, max_time, max_tokens, name, out, session_id='e2e-tiny'):
+    # The request prefix (system prompt + tool declaration) is what a user's interactive session
+    # gets: no --thinking, --no-mcp or --no-web-search, so a change to the real prompt or tool set
+    # shows up in the prefix hash and the cache checks. Kept, and why:
+    #  * -p: a non-interactive run is the only way to drive it from a script.
+    #  * --yolo (owner decision, 2026-11-19): the container has no usable bwrap, so a sandboxed run has
+    #    no bash at all, and the 0.8B model then retries `cat hello.txt` until --max-time. The container
+    #    is throwaway. Yolo adds no tools and changes no prompt text.
+    #  * --session-id / --usage-log: isolation, and the evidence (tokens, prefix hash).
+    #  * --max-time / --max-tokens: the hang guards.
+    cmd = [oxa, '-p', '--yolo', '--session-id', session_id,
            '--usage-log', str(usage_log), '--max-time', str(max_time), '--max-tokens', str(max_tokens), prompt]
     t0 = time.monotonic()
     p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
@@ -233,19 +239,20 @@ def main():
                     OXA_ENGINE_URL=f'http://127.0.0.1:{port}')
         o = cfg['oxa']
         runs = []
-        for name, text in (('turn1', o['first_prompt']), ('turn2', o['second_prompt'])):
+        for name, text in (('turn1', o['first_prompt']), ('turn2', o['second_prompt']), ('turn3', o['third_prompt'])):
+            if name == 'turn3':
+                # a fact only the file holds, so the model has to call the read tool to answer
+                (work / o['read_file']).write_text(o['read_word'] + '\n')
             # one log per run: oxa writes --usage-log for its own process (a later run replaces it)
             usage_log = out / f'usage-{name}.jsonl'
-            code, wall, result, recs = run_oxa_with_usage(
-                a.oxa, text, work, oenv, usage_log, o['run_timeout_s'], o['max_time_s'],
-                o['max_tokens'], name, out
-            )
+            code, wall, result = run_oxa(a.oxa, text, work, oenv, usage_log, o['run_timeout_s'], o['max_time_s'], o['max_tokens'], name, out)
+            recs = records(usage_log)
             runs.append({'name': name, 'exit': code, 'error_class': result.get('error_class'), 'wall_ms': wall, 'requests': recs})
             if code != 0 and result.get('error_class') not in o['accept_error_classes']:
                 fail(f"{name}: oxa -p exited {code} ({result.get('error_class')}; see {name}.stderr.txt)")
         report['oxa'] = runs
 
-        # (a) it works: the tool task left its file, and both runs reached the engine and got tokens
+        # (a) it works: the tool task left its file, and every run reached the engine and got tokens
         task = work / o['task_file']
         content = task.read_text(errors='replace') if task.is_file() else None
         report['task'] = {'file': o['task_file'], 'exists': content is not None, 'content': (content or '')[:200]}
@@ -259,18 +266,48 @@ def main():
                 fail(f"{r['name']}: no model call with reported usage and output tokens")
             elif (ok[0].get('prompt') or 0) <= 0:
                 fail(f"{r['name']}: the engine reported no prompt tokens")
-        # (b) the cache stays: the second run reuses the prefix of the first
-        second = runs[1]['requests']
-        cached = second[0].get('cached') if second else None
-        prev_prompt = next((q.get('prompt') for q in reversed(runs[0]['requests']) if q.get('prompt')), None)
-        report['second_run_first_request_cached'] = cached
-        if not cached or cached <= 0:
-            fail(f'turn2: the first request of the second run reused no cached prompt tokens (cached={cached})')
-        elif second[0].get('prompt') and cached > second[0]['prompt']:
-            fail(f"turn2: cached {cached} exceeds the prompt {second[0]['prompt']}")
-        elif prev_prompt:
-            # the cached prefix must cover the whole context the previous run ended with
-            check_ratio('oxa turn2', cached / prev_prompt, cfg, report)
+        # (b) the cache stays across the whole session (3 oxa processes, 1 session): every chat request
+        # reuses the cached prefix of the previous one, i.e. at least the floor of its whole context.
+        # This covers turn 2, turn 3, and the requests that follow a real tool result (turn 1 creates
+        # the file with a tool; turn 3 reads it back).
+        chat = [(r['name'], i, q) for r in runs for i, q in enumerate(r['requests'])
+                if q.get('kind') == 'chat' and q.get('usage_reported') and q.get('prompt')]
+        report['cache_requests'] = []
+        for (_, _, prev), (rname, i, cur) in zip(chat, chat[1:]):
+            label = f"oxa {rname} request {i + 1}" + (' (first of the run)' if i == 0 else ' (after a tool result)')
+            c = cur.get('cached')
+            report['cache_requests'].append({'at': label, 'prompt': cur['prompt'], 'cached': c, 'prev_prompt': prev['prompt']})
+            if not c or c <= 0:
+                fail(f'{label}: reused no cached prompt tokens (cached={c})')
+            elif c > cur['prompt']:
+                fail(f"{label}: cached {c} exceeds the prompt {cur['prompt']}")
+            else:
+                check_ratio(label, c / prev['prompt'], cfg, report)
+        t3 = runs[2]['requests']
+        if len([q for q in t3 if q.get('kind') == 'chat']) < 2:
+            fail('turn3: no request followed a tool result (the model did not call a tool; see turn3.stdout.txt)')
+        # (d) the prefix (system prompt + tool declaration) is byte-identical in every request of
+        # the session: oxa logs the sha256 of the frozen prefix it sends, per request
+        reqs = [q for r in runs for q in r['requests']]
+        hashes = {q.get('prefix_sha256') for q in reqs}
+        sizes = {q.get('prefix_bytes') for q in reqs}
+        report['prefix'] = {'sha256': sorted(h for h in hashes if h), 'bytes': sorted(x for x in sizes if x), 'requests': len(reqs)}
+        if None in hashes or None in sizes:
+            fail('usage log: a request carries no prefix_sha256/prefix_bytes')
+        elif len(hashes) != 1 or len(sizes) != 1:
+            fail(f'the system prompt + tool declaration changed within the session: {len(hashes)} distinct hashes over {len(reqs)} requests')
+        # temperature-0 determinism (warn only): the first prompt again, a fresh session, same tokens?
+        # same-length directory name: the cwd is a line of the system prompt, so a longer path alone shifts the prompt tokens
+        det_work = out / 'dets'
+        det_work.mkdir(exist_ok=True)
+        d_log = out / 'usage-det.jsonl'
+        d_code, d_wall, _ = run_oxa(a.oxa, o['first_prompt'], det_work, oenv, d_log, o['run_timeout_s'], o['max_time_s'], o['max_tokens'], 'det', out, session_id='e2e-det')
+        path = lambda rs: [(q.get('kind'), q.get('prompt'), q.get('output')) for q in rs if q.get('kind') == 'chat']
+        p1, p2 = path(runs[0]['requests']), path(records(d_log))
+        same = d_code == 0 and p1 == p2
+        report['determinism'] = {'match': same, 'first_run': p1, 'repeat': p2}
+        if not same:
+            warn(f'temperature-0 determinism: the repeated first prompt took another token path: {p1} vs {p2}')
         # (c) latency
         for r in runs:
             check_budget(f"{r['name']} total time", r['wall_ms'], b['turn_warn_ms'], b['turn_fail_ms'])
@@ -299,6 +336,15 @@ def finish(report, out):
             u = (pr[k].get('usage') or {}).get('prompt_tokens_details') or {}
             md.append(f"| {k} | {pr[k]['ttft_ms']:.0f} | {pr[k]['total_ms']:.0f} | {u.get('cached_tokens', 'n/a')} |")
         md.append('')
+    px = report.get('prefix')
+    if px:
+        md += [f"- prefix (system prompt + tool declaration): **{', '.join(map(str, px['bytes'])) or 'n/a'} bytes**, "
+               f"sha256 `{', '.join(px['sha256']) or 'n/a'}`, over {px['requests']} requests"]
+    for c in report.get('cache_requests', []):
+        md.append(f"- cache {c['at']}: cached {c['cached']} of prompt {c['prompt']} (previous prompt {c['prev_prompt']})")
+    d = report.get('determinism')
+    if d:
+        md.append(f"- temperature-0 determinism (first prompt run twice): {'token paths match' if d['match'] else 'token paths DIFFER'}")
     t = report.get('task')
     if t:
         md += [f"- tool task: {t['file']} {'created' if t['exists'] else 'MISSING'}, content {t['content']!r}"]

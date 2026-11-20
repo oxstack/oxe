@@ -11,6 +11,11 @@ name: e2e
 # and tool-capable. A pinned Hugging Face revision, verified by sha256 (tools/ci/fetch_model.sh; the
 # pin is also in tools/ci/e2e-tiny.toml) and Actions-cached by that sha256 (only main saves). The
 # "works" check is a real tool task: `oxa -p` must create hello.txt containing "hi".
+# oxa runs with the flags of a normal interactive session, so the system prompt and tool set are the
+# real ones and a prompt/tool change that breaks the cache shows here: only -p, --yolo, --session-id,
+# --usage-log and the --max-* guards are added. `--yolo` is an owner decision (2026-11-19): the
+# container has no usable bwrap and is throwaway. oxa's usage log carries the sha256 and size of the
+# frozen prefix per request; the job asserts it is identical across the session and reports its bytes.
 # Budgets and the cache baseline live in tools/ci/e2e-tiny.toml: they warn; only the hard ceilings fail.
 on:
   push:

@@ -18,7 +18,8 @@ prompt_repeat = 300
 max_tokens = 8
 
 [oxa]
-# `oxa -p`, two runs in one session (the second continues the first).
+# `oxa -p`, three runs in one session (each continues the previous one), then the first prompt once
+# more in a fresh session (temperature-0 determinism note).
 run_timeout_s = 240
 max_time_s = 180
 # stops a run after this many new prompt+output tokens (cached ones are free)
@@ -33,6 +34,11 @@ task_word = "hi"
 # answered from the conversation: bash is off in the container (no usable bwrap), and a tool call
 # here sent the 0.8B model into a retry loop until --max-time (first real run)
 second_prompt = "Without using any tool, answer in one sentence: which file did you just create?"
+# a real tool result in the third run: the file holds a word the model cannot know, so it has to read
+# it (first try: asking for hello.txt, which the model answered from its own context, without a tool)
+read_file = "notes.txt"
+read_word = "kumquat"
+third_prompt = "Read the file notes.txt with the read tool and tell me the word it contains."
 
 [budget]
 # warn above *_warn_ms; fail only above *_fail_ms.
@@ -55,4 +61,7 @@ baseline_fail_drop = 0.10
 baseline_warn_drop = 0.01
 
 [cache.baseline]
-# Qwen3.5-0.8B-Q8_0.gguf: fill in from the first green run of the real model on main
+# Qwen3.5-0.8B-Q8_0.gguf: cached tokens / previous prompt tokens over the 4 oxa requests of the green run
+# (PR #1889, 2026-11-19): 1.022, 1.006, 1.020 and 1.012 (above 1.0 because the cache also holds the
+# previous reply). The lowest is the baseline.
+"Qwen3.5-0.8B-Q8_0.gguf" = 1.006
