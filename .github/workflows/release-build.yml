@@ -146,7 +146,22 @@ jobs:
           sandbox=$(mktemp -d)
           trap 'rm -rf "$extracted" "$sandbox"' EXIT
           tar -xzf "$artifact" -C "$extracted"
-          test -x "$extracted/usr/bin/oxa"
+          # Check the shipped archive, not the build outputs or the runner's PATH.
+          (
+            shopt -s dotglob nullglob
+            bins=("$extracted"/usr/bin/*)
+            if (( ${#bins[@]} != 4 )); then
+              printf 'unexpected combined tarball bin contents: %s\n' "${bins[*]}" >&2
+              exit 1
+            fi
+            for name in local-ai-memlat-boot oxa oxe oxe-server; do
+              path="$extracted/usr/bin/$name"
+              if [[ ! -f $path || -L $path || ! -x $path ]]; then
+                echo "missing regular executable in combined tarball: usr/bin/$name" >&2
+                exit 1
+              fi
+            done
+          )
           # Regression check for #2114: a dev build reports its full release version, not the
           # package version. VERSION is the same value the binaries were stamped with.
           want=${VERSION#v}
