@@ -17,6 +17,12 @@ Treat as **high** severity:
 Skill reactivation after compaction is a user-only opt-in. A project setting cannot add
 the skill reactivation instructions to later turns.
 
+Dangerous-command rules read one parsed `Effects` value per shell command (launchers unwrapped, the directory
+chain of `env -C`, files read, token-printing commands). `credential-read` and `git-hook-write` are approval
+prompts in standard mode, not a sandbox; yolo does not reach them. A saved unattended grant never covers a
+pipeline fed by anything but a literal `echo`/`printf`, or an input redirect. A `wait` probe that runs `gh`
+is network access (plan denies, ask asks once per session).
+
 Saved dangerous-command grants cover a reviewed literal command. Shell parameter or command
 substitution markers in any stage make saved grants inapplicable, including markers before a hit.
 The native cloud gateway's default recommendations use only configured API-key providers
