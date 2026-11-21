@@ -191,14 +191,12 @@ confirmation only from the owner: yolo chosen for the session (answer yes, shown
 owner's answer to the session's own dialog, or the owner's typed message while a confirmation waits.
 A typed yes answers only a confirmation whose dialog oxa has already shown to the owner (the broker
 records shown requests; a yes with no shown dialog, or for a different request id, does not count).
-A consumer a model-run command starts cannot tell a fake listener from the broker by the socket
-path, because the command controls its environment: it trusts only the sandbox's pinned mount point
-or a listener verified through the peer's credentials as the session's own oxa process (an ancestor
-of the consumer running the same executable as the same user). A consumer that accepts an answer
-from an unverified socket is high. In yolo nothing changes: the model already has the owner's rights
-and the broker answers yes. The question text is the requesting process's own words and is shown as
-data, marked as requested by the process. Off Linux the peer check is unavailable and a consumer
-trusts only the sandbox's pinned mount.
+The socket path is not authority. In the Linux sandbox, clients require the pinned mount and a
+same-user peer outside the sandbox's PID namespace. Outside the sandbox on Linux or macOS, they
+require the peer to be the same user and the unique ancestor running the same oxa executable.
+Clients authenticate the connection before sending the question; unknown or ambiguous identities
+cannot approve. In yolo the broker answers yes, without changing publication scans or credentials.
+The question is shown as the requesting process's text, not an oxa instruction.
 A confirmation that a model-run command can satisfy without the broker is high. A broker answer
 derived from tool, file, web or agent-inbox text is high. A socket readable by another user is high.
 The broker's state machine, bounds and records do not depend on the extension host pump. A request is a structured, length-prefixed frame (title and body fields); an over-limit length is refused unread with a `reason` (`too_large`, `not_servable`, `closed`, `busy_limit`, `bad_request`). The session thread's `serve` picks a request, creates its per-dialog cancel ticket and marks it shown in one step under the broker's lock, so a typed yes that arrives before the UI has registered the dialog is neither lost nor able to dismiss another dialog. In yolo a request is answered at once, keeps no pending state and leaves a compact record (hash, size, first title line, a count for identical consecutive requests), never the text; a dialog or typed answer keeps the full text, which the owner paced. A finding that asks for yolo to retain every request body is answered here.
@@ -209,7 +207,10 @@ Linux sandbox the broker socket is mounted only where bwrap denies nested user n
 (`--disable-userns`), so a command cannot stack a fake listener over the trusted mount point; a
 broker mount without that denial is high. Publishing hands `gh` the approved bytes through a sealed
 descriptor (`--body-file /dev/fd/N`), never a pathname a command could swap after the yes.
- Lane-push approval uses this broker when a session launches `oxa work`, including through an
-agent child; terminal and ambient-variable compatibility approval is unavailable to agent
-processes.
+
+Lane-push approval, `oxa work --publish` and `--report-problems` use this broker when a session
+launches `oxa work`. A direct owner invocation can still use `/dev/tty`; agent markers and piped
+input do not approve. The legacy work-report workflow asks before sending scrubbed worker search
+queries, then separately previews any write. Semantic dedupe uses the owner's explicit opt-in.
+
 Named cloud providers (`oxa.cloud.providers`) are user-only. A provider selects a distinct non-built-in key entry in the existing protected cloud secret store. The owner's HTTPS API base pins discovery and chat; redirects are not followed. A model list, project setting or per-model override cannot replace the base, protocol, key selector or billing class. Cached lists are bound to the base and credential, and catalog replies that echo the credential are refused. Public metadata lookup sends no key and cannot supply another provider's prices for a named route.
