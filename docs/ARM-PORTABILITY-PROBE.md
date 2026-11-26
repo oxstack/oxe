@@ -33,7 +33,7 @@ sensors. Record a software/kernel inventory rather than the machine's serial or
 hostname. Save versions, hashes and build logs locally.
 
 The current real engine is ARM64-only. Its startup check requires **i8mm, bf16,
-dotprod and fp16** (`engine/crates/server/src/startup_check.rs`); the shipped
+dotprod and fp16** (`crates/server/src/startup_check.rs`); the shipped
 release targets Oryon-1, so do not assume a Snapdragon binary is portable just
 because the second machine is ARM64. Compare the four runtime feature checks
 with the inventory. Missing features are a valid **UNSUPPORTED** finding, not a
@@ -44,7 +44,7 @@ An unexpected SIGILL is a stop and a recorded defect.
 
 Use a clean checkout and an isolated target directory. Override only Rust's
 Oryon code-generation target for this exploratory build, preserving the source
-and release profile. For example, from `engine/`:
+and release profile. For example, from the repository root:
 
 ```sh
 env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \

@@ -75,7 +75,7 @@ Admission requires `MemAvailable >= weights file size + KV + scratch + MTP state
   constant. No real-model scratch/MTP/margin defaults are guessed here.
 
 The engine already describes its allocations in `CtxMem`/`ctx_mem_with_auto` and
-`CtxMem::total` (`engine/crates/model/src/engine.rs`): its recurrent slots, lanes,
+`CtxMem::total` (`crates/model/src/engine.rs`): its recurrent slots, lanes,
 per-decode-thread and both retained prefill teams must be included in the supplied
 bounds. This crate does not import or duplicate the model engine's allocation planner.
 Flash streaming admission is separate and is not inferred by this resident factory;

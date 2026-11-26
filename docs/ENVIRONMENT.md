@@ -4,7 +4,7 @@ The engine reads its environment once, at start (or at engine construction), unl
 
 This page is checked by `crates/gguf/tests/env_documented.rs`: every `OXE_*`, `OXF_*` and `OXI_*` name that non-test source in `crates/*/src` or a `build.rs` reads as a string literal needs a row here, and every row (except class `test`) needs such a reader. Class `test` rows must still appear in some `.rs` file.
 
-Classes: `option` (an owner would set it: paths, ports, key file), `tuning` (performance knob with a safe default; diagnostic switches that only add log output are listed here too), `experiment` (A/B switch between code paths), `test` (only tests, benches or fixtures read it), `build` (read or set by `build.rs`). "Read in" paths are relative to `engine/crates/`. Most server rows are also set by a command line flag of the same meaning: the flag writes the variable before the engine starts, so a flag wins over an inherited variable.
+Classes: `option` (an owner would set it: paths, ports, key file), `tuning` (performance knob with a safe default; diagnostic switches that only add log output are listed here too), `experiment` (A/B switch between code paths), `test` (only tests, benches or fixtures read it), `build` (read or set by `build.rs`). "Read in" paths are relative to `crates/`. Most server rows are also set by a command line flag of the same meaning: the flag writes the variable before the engine starts, so a flag wins over an inherited variable.
 
 `server/src/startup_check.rs` validates the form of most `OXE_*` values at start and refuses a malformed one.
 
