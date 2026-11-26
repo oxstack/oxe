@@ -1,0 +1,32 @@
+[package]
+name = "oxe-supervisor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "oxe-supervisor: caller-driven lifecycle, queue, memory admission and loopback transport for one oxe-server child"
+
+[features]
+# The test-only fake engine (src/fake.rs). Never enabled in release builds.
+testkit = []
+
+[dependencies]
+serde_json.workspace = true
+tokio = { version = "1", features = ["sync"] }
+nix = { version = "0.30", features = ["signal", "process", "fs", "user"] }
+ureq.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5.19"
+async-io = "2"
+futures-lite = { version = "2", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Integration tests (tests/*.rs) link the library without cfg(test), so the fake needs the
+# feature; enabling it here keeps it out of production builds.
+oxe-supervisor = { path = ".", features = ["testkit"] }
+
+[lints.rust]
+# Denied, not forbidden: the one unavoidable `unsafe` (CommandExt::pre_exec, which has no safe
+# wrapper) lives in src/spawn.rs behind a documented `#[allow(unsafe_code)]`.
+unsafe_code = "deny"

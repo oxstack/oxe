@@ -209,7 +209,7 @@ fn every_name_read_has_a_row() {
         .collect();
     assert!(
         missing.is_empty(),
-        "environment names read without a row in engine/docs/ENVIRONMENT.md:\n  {}",
+        "environment names read without a row in docs/ENVIRONMENT.md:\n  {}",
         missing.join("\n  ")
     );
 }
@@ -231,7 +231,7 @@ fn every_row_has_a_reader() {
         .collect();
     assert!(
         orphans.is_empty(),
-        "rows of engine/docs/ENVIRONMENT.md with no reader (remove the row or fix its class):\n  {}",
+        "rows of docs/ENVIRONMENT.md with no reader (remove the row or fix its class):\n  {}",
         orphans.join("\n  ")
     );
 }

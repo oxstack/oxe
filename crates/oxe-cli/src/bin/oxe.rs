@@ -64,6 +64,10 @@ mod f32_proof;
 #[cfg(feature = "f32-reference")]
 #[path = "../fused_ref_cmd.rs"]
 mod fused_ref_cmd;
+#[path = "../models_cmd.rs"]
+mod models_cmd;
+#[path = "../serve_cmd.rs"]
+mod serve_cmd;
 use model::engine::{tick_hz, Engine, EngineConfig, EngineOptions, StateDump};
 use model::load::{memory_report, open};
 use model::mtp::{MtpDriver, MtpStats, MtpWeights};
@@ -3508,8 +3512,12 @@ fn main() {
     }
     {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        if raw.first().map(String::as_str) == Some("admission") {
-            admission_cmd::run(&raw[1..]);
+        match raw.first().map(String::as_str) {
+            Some("admission") => admission_cmd::run(&raw[1..]),
+            Some("serve") => serve_cmd::run(&raw[1..]),
+            Some("models") => models_cmd::run_models(&raw[1..]),
+            Some("import-oxa") => models_cmd::run_import_oxa(&raw[1..]),
+            _ => (),
         }
     }
     let a = Args::parse();

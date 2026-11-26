@@ -1,6 +1,6 @@
 # Portability probe, step 1: second ARM machine (Apple M2, Asahi-style Linux)
 
-Issue #293. No product code was changed. Build output stayed in `engine/target` (`CARGO_TARGET_DIR=$PWD/target`).
+Issue #293. No product code was changed. Build output stayed in `target` (`CARGO_TARGET_DIR=$PWD/target`).
 
 ## 1. The CPU
 - `lscpu`: aarch64, Apple M2 (big.LITTLE): 4 x Blizzard-M2 (cpu0-3, max 2424 MHz) + 4 x Avalanche-M2 (cpu4-7, max 3504 MHz), 1 thread/core, 8 CPUs. L2 20 MiB (2 instances). Kernel 7.2.11 Arch.
@@ -10,14 +10,14 @@ Issue #293. No product code was changed. Build output stayed in `engine/target` 
 - `rustc --print target-cpus` knows `apple-m4/m5` but only reports `native = apple-m2`; there is no `apple-m2` name in this rustc.
 
 ## 2. Build of the real engine (not stub)
-Command (as in engine/README "Build from source"): `cd engine; CARGO_BUILD_JOBS=4 cargo build --release -p server -p oxe-cli` -> finished in 44 s (no Flash build: needs the ggml libs from the lab repo; not tried).
+Command (as in README "Build from source"): `CARGO_BUILD_JOBS=4 cargo build --release -p server -p oxe-cli` from the repository root -> finished in 44 s (no Flash build: needs the ggml libs from the lab repo; not tried).
 - It built **unchanged**, with the repo's `.cargo/config.toml` `target-cpu=oryon-1` (not the CPU of this machine). `kernels-sys/build.rs` uses `-march=armv8.6-a+dotprod+i8mm+fp16+bf16+nosve+nosme`, which this core implements, so nothing refused to build.
 - Runtime guard: `crates/server/src/startup_check.rs` (`REQUIRED_CPU_FEATURES`, `cpu_has`) checks i8mm, bf16, dotprod, fp16 at start and exits with a message when one is missing. `crates/model/src/engine.rs:78-83` reports dotprod/i8mm/fp16/bf16/sve. All four are present here, so the guard passes. Fallback when a feature is missing: none; the build is compile-time ARMv8.6 (the README says other cores stop with "Illegal instruction"; the guard now turns that into a message). Not testable here: this CPU has all four.
 - Risk: `target-cpu=oryon-1` lets rustc emit instructions of Oryon's feature set (e.g. `rng`, `crc`; Oryon is ARMv8.7-ish). Apple M2 lacks some Oryon-only features, and nothing hit one in the tests below, but this is luck of codegen and not guaranteed. `qwen4exp/build.rs:75` (Flash) hardcodes `-mcpu=oryon-1+rng+crc+nopauth+...`; the `rng` part is not in this CPU's flags, so the Flash build on this machine is a likely failure or SIGILL; it was not built.
 - `oxe-server --engine oxe --model /nonexistent.gguf` starts and stops with `tokenizer: No such file or directory`, as expected without a model.
 
 ## 3. Model-free tests and probe
-`cd engine; cargo test --release -p kernels-sys -p model -p sched -p tokenizer -p chat -p server` (8 min 19 s, RUST_TEST_THREADS=1 from config):
+`cargo test --release -p kernels-sys -p model -p sched -p tokenizer -p chat -p server` (8 min 19 s, RUST_TEST_THREADS=1 from config):
 - chat 29, kernels-sys 25 (6 ignored), model 92 (2 ignored) plus fattn 4, pfattn_kernel 10, pfg_kernel 7, sched 19, tokenizer 6, server 233 (41 ignored, they need the Ornith GGUF) plus startup_check 11, flash_template 5. **0 failed.** The long-context and prefill-attention accuracy tests (vs f64) also pass; their comments already name this Apple M2 as a second target ("lab-arm64 helper").
 
 ISA roofline probe: `./target/release/isa-roof --quick --out target/isa-roof.json` (5.9 s; receipt says "NOT Oryon numbers; functional test only"; all 5 GEMM tile self-tests ok). Per core, cpu4 = Avalanche (P core, ~3.2 GHz, all-8-cores figure in parentheses):

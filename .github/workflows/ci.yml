@@ -1,0 +1,321 @@
+name: ci
+# Engine-only CI on GitHub-hosted runners. No self-hosted machines, no secrets, no model weights.
+#
+# aarch64 gets the real thing: ubuntu-24.04-arm in the Fedora 44 container, whose GCC 16 is the
+# compiler the vendored C kernels were bit-matched with (tools/ci/setup_toolchain.sh pins the
+# Rust side). x86_64 runs only what genuinely builds there: formatting, the target-neutral
+# workspace check (the kernel build scripts return before any compiler access off aarch64) and
+# the stub-engine server, whose model-free tests do not need the model engine.
+#
+# The Flash engine is not built here: it links a prebuilt production ggml archive that is not in
+# this repository and does not build from a fresh clone (issue #7).
+#
+# Caches: every job restores; only main saves, once per dependency-level key prefix
+# (tools/ci/rust_cache_key.py) as `<prefix>main`, because PR and merge-group caches are visible
+# only to their own ref.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
+
+env:
+  RUST_VERSION: "1.99.1"
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "4"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rustup is preinstalled on the hosted image)
+        run: rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt --no-self-update
+      - name: cargo fmt --all
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (aarch64)
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+    timeout-minutes: 120
+    steps:
+      # The fedora image ships no git, so actions/checkout would fall back to the REST source
+      # archive without .git and every later `git ls-files` would fail. Install it first.
+      - name: Git before checkout (prevent REST archive fallback)
+        run: dnf -y -q install --setopt=install_weak_deps=False git-core
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The checkout runs as another uid than the container's root.
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Toolchain
+        run: tools/ci/setup_toolchain.sh "$RUST_VERSION" clippy
+      - name: Compiler and source cache key
+        id: rust-key
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-clippy .
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        # A restored target/ may hold workspace crates built from OLDER sources. Checkout mtimes can
+        # be older than those artifacts, so cargo would treat stale crates as fresh. Touching the
+        # tracked sources forces workspace crates to rebuild; third-party dependencies stay cached.
+        run: git ls-files -z | xargs -0 touch -c --
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Clippy (whole workspace except the Flash crate; compiled C included)
+        run: cargo clippy --locked --workspace --exclude qwen4exp --all-targets
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: PR and merge-group refs cannot share theirs.
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.prefix }}main
+
+  test:
+    name: tests shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+      # Docker's default seccomp profile blocks io_uring; the Flash IO tests use it.
+      options: --security-opt seccomp=unconfined
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    timeout-minutes: 60
+    env:
+      # The numerics golden is recorded for the qualified reference platforms, not for this hosted
+      # runner's kernel path: print its hash instead of failing.
+      OXE_NUMERICS_GOLDEN_UNLISTED: print
+    steps:
+      # The fedora image ships no git, so actions/checkout would fall back to the REST source
+      # archive without .git and every later `git ls-files` would fail. Install it first.
+      - name: Git before checkout (prevent REST archive fallback)
+        run: dnf -y -q install --setopt=install_weak_deps=False git-core
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The checkout runs as another uid than the container's root.
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Toolchain
+        run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Compiler and source cache key
+        id: rust-key
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-tests-${{ matrix.shard }} .
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        run: git ls-files -z | xargs -0 touch -c --
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pinned nextest
+        run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
+      - name: Test inventory, cargo test vs nextest (no test may disappear)
+        if: matrix.shard == 1
+        # Same selection as the run below. Prints the count before (cargo test --list) and after
+        # (nextest list) and fails on any difference in names; ignored tests are counted too.
+        run: |
+          cargo test --release --locked --workspace --exclude qwen4exp -- --list --format terse > "$RUNNER_TEMP/libtest-list.txt"
+          cargo nextest list --release --locked --workspace --exclude qwen4exp --message-format json > "$RUNNER_TEMP/nextest-list.json"
+          python3 -I tools/ci/engine_test_count.py "$RUNNER_TEMP/libtest-list.txt" "$RUNNER_TEMP/nextest-list.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Model-free tests (workspace without the Flash crate; nextest)
+        timeout-minutes: 40
+        # .config/nextest.toml runs the wall-clock binaries (sched, server lib) alone.
+        run: |
+          ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
+          start=$(date +%s)
+          cargo nextest run --release --locked --no-fail-fast --workspace --exclude qwen4exp \
+            --no-tests fail --failure-output immediate-final \
+            --partition hash:${{ matrix.shard }}/3 \
+            -E 'not (package(oxc-memlat) & binary(differential))'
+          echo "nextest run: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Doc tests (nextest does not run them)
+        if: matrix.shard == 1
+        run: |
+          ulimit -c 0
+          cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp --doc
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: PR and merge-group refs cannot share theirs.
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.prefix }}main
+
+  build:
+    name: release build (aarch64)
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+    timeout-minutes: 150
+    steps:
+      # The fedora image ships no git, so actions/checkout would fall back to the REST source
+      # archive without .git and every later `git ls-files` would fail. Install it first.
+      - name: Git before checkout (prevent REST archive fallback)
+        run: dnf -y -q install --setopt=install_weak_deps=False git-core
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The checkout runs as another uid than the container's root.
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Toolchain
+        run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Compiler and source cache key
+        id: rust-key
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-release .
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        run: git ls-files -z | xargs -0 touch -c --
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      # The production flags stay as they are: target-cpu=oryon-1 from .cargo/config.toml and the
+      # kernels' -march=armv8.6-a+dotprod+i8mm+fp16+bf16+nosve+nosme. The release workflows build
+      # the same two binaries plus local-ai-memlat-boot.
+      - name: Build the release binaries
+        run: |
+          cargo build --release --locked -p server --bin oxe-server
+          cargo build --release --locked -p oxe-cli --bin oxe
+          ./target/release/oxe --version
+          ./target/release/oxe-server --help > help.txt && head -n 3 help.txt
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: PR and merge-group refs cannot share theirs.
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.prefix }}main
+
+  scans:
+    name: tree scan (secrets, SDK material)
+    # Cheap and unconditional: no toolchain, no build, every event including docs-only changes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: No secrets and no Hexagon/QAIRT SDK material in tracked files
+        # tools/ci/scan_tree.py: credential shapes, SDK headers/IDL/stubs/skeletons/shared
+        # objects/ELF objects, Hexagon directories. Explicit reviewed allow-lists only.
+        run: python3 -I tools/ci/scan_tree.py
+
+  x86_64:
+    name: workspace check and stub server (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rustup is preinstalled on the hosted image)
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          { echo "target: $(uname -m)-$(uname -s)"; rustc -vV; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Compiler and source cache key
+        id: rust-key
+        run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-x86 .
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        run: git ls-files -z | xargs -0 touch -c --
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo check --workspace (no kernel is compiled here)
+        # Compiled C is absent by design on this target: kernels-sys, int8-gemm and qwen4exp return
+        # from their build scripts before cc, ld, objcopy or ar. Everything else is target-neutral
+        # Rust, including the crates that link int8-gemm.
+        run: |
+          cargo check --locked --workspace
+          echo "workspace check (x86_64): ok" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Unsupported kernel entry points refuse (model-free negative control)
+        # The stub never dereferences the null pointers; every entry point must refuse with its
+        # documented message on this target instead of returning fabricated results.
+        run: cargo test --locked -p int8-gemm --lib -- unsupported_target_refuses_every_entry_point
+      - name: memlat tests (the boot-oracle differential needs bwrap, which a container cannot run)
+        # memlat is target-neutral Rust. Its differential suite runs the real command inside
+        # bubblewrap; Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor.
+        run: |
+          "$GITHUB_WORKSPACE/tools/ci/apt_install.sh" bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / true
+          cargo test --locked -p oxc-memlat
+      - name: Build oxe-server (stub engine)
+        run: cargo build --release --locked -p server --bin oxe-server
+      - name: Smoke (stub engine; the model engine refuses cleanly)
+        run: ./target/release/oxe-server --help > help.txt && head -n 3 help.txt
+      - name: Server tests that need no model engine
+        run: |
+          ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
+          cargo test --release --locked -p server --lib
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: PR and merge-group refs cannot share theirs.
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.prefix }}main

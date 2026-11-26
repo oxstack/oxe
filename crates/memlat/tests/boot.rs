@@ -139,7 +139,9 @@ fn check_falls_back_if_stock_changed_or_modules_removed() {
         let f = Fixture::new();
         f.apply("enable");
         match failure {
-            "stock" => fs::write(policy::path(&f.p, "stock_image").unwrap(), b"new kernel").unwrap(),
+            "stock" => {
+                fs::write(policy::path(&f.p, "stock_image").unwrap(), b"new kernel").unwrap()
+            }
             "modules" => fs::remove_dir(policy::path(&f.p, "modules").unwrap()).unwrap(),
             _ => f.host.bad_image.set(true),
         }
@@ -202,7 +204,10 @@ fn compare_and_replace_refuses_intervening_changes() {
 fn update_prepares_marker_before_fallback_and_repeated_calls_keep_it() {
     let f = Fixture::new();
     f.apply("enable");
-    assert_eq!(f.apply("prepare-update")["default"], "Omarchy/linux-omarchy");
+    assert_eq!(
+        f.apply("prepare-update")["default"],
+        "Omarchy/linux-omarchy"
+    );
     let pending = policy::path(&f.p, "pending").unwrap();
     assert!(pending.exists());
     assert_eq!(f.apply("prepare-update")["changed"], false);
@@ -311,7 +316,10 @@ fn update_falls_back_from_auto_entry_unknown_to_restored_policy() {
 fn lookalike_user_entry_is_not_adopted() {
     for block in [
         STALE.replace("comment: Auto-rebuilt", "comment: Hand-made"),
-        STALE.replace("boot():/omarchy-memlat-", "boot():/elsewhere/omarchy-memlat-"),
+        STALE.replace(
+            "boot():/omarchy-memlat-",
+            "boot():/elsewhere/omarchy-memlat-",
+        ),
     ] {
         let f = Fixture::new();
         f.write(

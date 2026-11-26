@@ -19,7 +19,6 @@ rebuild while retaining STOCK; no runtime Python dependency is introduced.
 The 19 ported Rust behavior tests correspond to the 19 legacy Python tests, and
 three further tests cover the DTB-window deferral described below. The
 differential suite runs the actual Rust command over 28 scenarios and
-The differential suite runs the actual Rust command over 28 scenarios and
 52 steps and compares its exit status, selected output and ESP file digests
 with the captured [boot oracle](tests/boot-oracle.json). The test tooling uses
 Python to prepare synthetic fixtures and compares results in mandatory

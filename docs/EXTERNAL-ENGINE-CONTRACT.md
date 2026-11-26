@@ -11,7 +11,7 @@ Tags: [D] design decision, [E] estimate (arithmetic, not a measurement); source 
 
 ## 1. What the current `Engine` trait actually requires
 
-`engine/crates/server/src/engine.rs` is a **token-level, logits-level** interface. The server owns
+`crates/server/src/engine.rs` is a **token-level, logits-level** interface. The server owns
 sampling, stop handling, token accounting and all state; the engine owns the forward pass.
 
 | Trait item | Source | What the server does with it |
@@ -112,7 +112,7 @@ Disposition of every server feature for an external backend. "Refuse" = a clean 
 | `cached_tokens` in usage | **never claimed** | the upstream's own cache is not ours to report |
 | echo cache | unavailable | it is a local KV feature |
 | memory admission (`--flash-cache-gib`, `--flash-pf-admit`) | not applicable, **not bypassed** | the external backend holds no local weights; local engines keep their admission unchanged |
-| `--offline` / `OXA_OFFLINE` | not an engine flag today; the caller (oxa/oxc) owns the refusal | the engine has no offline switch (`grep offline engine/crates/server/src` is empty); the adapter must not add an outbound path that bypasses the caller's offline mode, and refuses under one if the engine ever gains it |
+| `--offline` / `OXA_OFFLINE` | not an engine flag today; the caller (oxa/oxc) owns the refusal | the engine has no offline switch (`grep offline crates/server/src` is empty); the adapter must not add an outbound path that bypasses the caller's offline mode, and refuses under one if the engine ever gains it |
 | `/props` capabilities | must not advertise state-preload, thinking-budget or echo | `service.rs:233`, `main.rs:40-42` |
 | `/v1/models` `n_ctx` / `max_output_tokens` | from the configured value only | never invented from the upstream |
 

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 const USAGE: &str = "usage: oxe-server --model PATH [--alias NAME] [--host 127.0.0.1 (non-loopback needs an API key)] [--port 8080]
   [--ctx-size N] [--ctx-checkpoints N] [--chat-template-kwargs JSON] [--reasoning-format none|auto|deepseek]
-  [--reasoning on|off] [--slots] [--idle-reprefill (SX-2, off by default)] [--engine stub|oxe|flash (stub: tokenizer + template only, no weights: /apply-template, /tokenize)] [--stub-reply TEXT] [--stub-prefill-us N (stub only, test aid: wall time per prefilled token, default 0)] [--stub-decode-us N (stub only, test aid: wall time per decoded token, default 0)] [--echo on|off (CACHE-PERFECT ECHO, default on)] [--echo-max-tokens 4194304] [--echo-ttl-secs 604800] [--oxe-cpus 0-7]
+  [--reasoning on|off] [--slots] [--idle-reprefill (SX-2, off by default)] [--engine oxe|stub|flash (default oxe: real weights, qwen35moe/qwen35 only; stub: tokenizer + template only, no weights, explicit only)] [--stub-reply TEXT] [--stub-prefill-us N (stub only, test aid: wall time per prefilled token, default 0)] [--stub-decode-us N (stub only, test aid: wall time per decoded token, default 0)] [--echo on|off (CACHE-PERFECT ECHO, default on)] [--echo-max-tokens 4194304] [--echo-ttl-secs 604800] [--oxe-cpus 0-7]
   [--oxe-prefill-cpus LIST (default: --oxe-cpus)] [--ubatch-size 256 (oxe prefill ubatch)]
   [--oxe-npu-prefill device|emu --oxe-npu-go-file PATH (guarded W2 experiment, optional build; off by default)]
   [--spec-type draft-mtp|none] [--spec-draft-n-max N (1-3)] [--mtp] [--draft N] [--mtp-guard off|RATIO[:WINDOW:COOLDOWN] (MTP acceptance guard, default off)]
@@ -134,7 +134,10 @@ fn main() {
     let mut enable_thinking = true;
     let mut slots = false;
     let mut idle_reprefill = false;
-    let mut engine = "stub".to_string();
+    // #23: the stub is a protocol fixture, never a silent default. Without --engine, the native
+    // engine is selected and an absent or unsupported architecture refuses before any weights
+    // are mapped.
+    let mut engine = "oxe".to_string();
     let mut stub_reply = "Hello from the oxe stub engine.".to_string();
     let mut stub_prefill_us: u64 = 0;
     let mut stub_decode_us: u64 = 0;
@@ -810,6 +813,30 @@ fn main() {
         eprintln!("{USAGE}");
         std::process::exit(2)
     };
+    // #23: refuse an absent/unsupported architecture here, from the GGUF header alone, before
+    // the tokenizer, the engine or any weight mapping. The stub stays available only when the
+    // caller asks for it with --engine stub.
+    if engine == "oxe" {
+        match gguf::Gguf::open(&model) {
+            Ok(gguf) => {
+                if let Err(error) = model::desc::ModelDesc::from_header(&gguf.header) {
+                    eprintln!(
+                        "oxe-server: {error}\n\
+                         oxe-server: this build runs qwen35moe and qwen35 weights only; {model} cannot be served.\n\
+                         oxe-server: pass --engine stub (protocol/template tests only, no weights) to serve without a model."
+                    );
+                    std::process::exit(1)
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "oxe-server: cannot read the model header of {model}: {error}\n\
+                     oxe-server: pass --engine stub (protocol/template tests only, no weights) to serve without a model."
+                );
+                std::process::exit(1)
+            }
+        }
+    }
     // O-27 / F122: the Flash cache tier is decided here, before anything of the model (tokenizer included) is read;
     // the engine then opens the chosen size, and /props reports the decision as engine_status.flash_cache
     #[allow(unused_mut)]

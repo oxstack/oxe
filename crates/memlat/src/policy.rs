@@ -31,16 +31,30 @@ pub fn blake2b(bytes: &[u8]) -> Result<String> {
         return err("BLAKE2 checksum failed");
     }
     let text = String::from_utf8(output.stdout)?;
-    let hash = text.split_whitespace().next().ok_or("missing BLAKE2 checksum")?;
+    let hash = text
+        .split_whitespace()
+        .next()
+        .ok_or("missing BLAKE2 checksum")?;
     if hash.len() != 128 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
         return err("invalid BLAKE2 checksum");
     }
     Ok(hash.into())
 }
-pub fn verify_entry(menu: &menu::Menu, name: &str, image: &Path, expected: Option<&str>) -> Result<()> {
+pub fn verify_entry(
+    menu: &menu::Menu,
+    name: &str,
+    image: &Path,
+    expected: Option<&str>,
+) -> Result<()> {
     verify_at(menu, name, image, expected, Path::new("/boot"))
 }
-fn verify_at(menu: &menu::Menu, name: &str, image: &Path, expected: Option<&str>, boot: &Path) -> Result<()> {
+fn verify_at(
+    menu: &menu::Menu,
+    name: &str,
+    image: &Path,
+    expected: Option<&str>,
+    boot: &Path,
+) -> Result<()> {
     let e = menu
         .get(name)
         .filter(|e| e.efi && e.path.is_some())
@@ -90,15 +104,22 @@ pub fn auto_entries(menu: &menu::Menu, p: &Value) -> Result<Vec<String>> {
                 && name.ends_with(')')
                 && e.comment.as_deref() == Some(menu::AUTO_COMMENT)
                 && e.efi
-                && e.path
-                    .as_ref()
-                    .is_some_and(|path| path.strip_prefix(&prefix).is_some_and(|tail| !tail.contains('/')))
+                && e.path.as_ref().is_some_and(|path| {
+                    path.strip_prefix(&prefix)
+                        .is_some_and(|tail| !tail.contains('/'))
+                })
         })
         .map(|(n, _)| n.clone())
         .collect())
 }
 pub trait Host {
-    fn verify(&self, menu: &menu::Menu, name: &str, image: &Path, expected: Option<&str>) -> Result<()> {
+    fn verify(
+        &self,
+        menu: &menu::Menu,
+        name: &str,
+        image: &Path,
+        expected: Option<&str>,
+    ) -> Result<()> {
         verify_entry(menu, name, image, expected)
     }
     fn build(&self, p: &Value, output: &Path) -> Result<Value>;
@@ -162,7 +183,10 @@ pub fn apply(p: &Value, action: &str, host: &impl Host) -> Result<Value> {
     if action == "prepare-update" {
         let pending = path(p, "pending")?;
         fs::create_dir_all(pending.parent().ok_or("missing pending parent")?)?;
-        fs::write(pending, "Rebuild approved MEMLAT default after stock update.\n")?;
+        fs::write(
+            pending,
+            "Rebuild approved MEMLAT default after stock update.\n",
+        )?;
     }
     Ok(json!({"action":action,"changed":after!=before,"default":target}))
 }
@@ -185,7 +209,9 @@ pub fn remove_owned_block(text: &str, p: &Value) -> Result<String> {
                 return err("owned automatic menu entry duplicated");
             }
             if let Some((i, h)) = matches.first() {
-                let end = hs.get(i + 1).map_or(text.len(), |h| h.get(0).unwrap().start());
+                let end = hs
+                    .get(i + 1)
+                    .map_or(text.len(), |h| h.get(0).unwrap().start());
                 if menu::semantic_fields(expected)?
                     != menu::semantic_fields(&text[h.get(0).unwrap().start()..end])?
                 {
@@ -201,7 +227,13 @@ pub fn remove_owned_block(text: &str, p: &Value) -> Result<String> {
     Ok(text)
 }
 
-pub fn rebuild(policy_path: &Path, p: &Value, dry_run: bool, force: bool, host: &impl Host) -> Result<Value> {
+pub fn rebuild(
+    policy_path: &Path,
+    p: &Value,
+    dry_run: bool,
+    force: bool,
+    host: &impl Host,
+) -> Result<Value> {
     let pending = path(p, "pending")?;
     if !(pending.exists() || dry_run || force) {
         return Ok(json!({"action":"rebuild","changed":false,"reason":"no update requested"}));
@@ -249,10 +281,11 @@ pub fn rebuild(policy_path: &Path, p: &Value, dry_run: bool, force: bool, host: 
         )?;
         let hash = string(&evidence, "memlat_sha256")?;
         let short = hash.get(..12).ok_or("invalid image checksum")?;
-        let destination = Path::new(optional(p, "image_directory", "/boot/EFI/LocalAI")).join(format!(
-            "omarchy-memlat-{}-{short}.efi",
-            string(&evidence, "kernel")?
-        ));
+        let destination =
+            Path::new(optional(p, "image_directory", "/boot/EFI/LocalAI")).join(format!(
+                "omarchy-memlat-{}-{short}.efi",
+                string(&evidence, "kernel")?
+            ));
         if destination.exists() {
             if sha256(&destination)? != hash {
                 return err("existing rebuilt image hash mismatch");

@@ -10,7 +10,7 @@ crossover threshold: the table edges are the owner's to fill in.
 ## 1. What the policy is, and what it is not
 
 The decode team is a fixed pool today: `OxeEngine` builds one `sched::DetachedPool` from `--oxe-cpus`
-(`engine/crates/server/src/oxe_engine.rs`) and every decode step runs on all of it. The policy adds an
+(`crates/server/src/oxe_engine.rs`) and every decode step runs on all of it. The policy adds an
 *optional* rule that chooses a smaller decode team as the active context grows, where a smaller team
 can be cheaper for long contexts than a larger one.
 
@@ -30,7 +30,7 @@ The rule is split in two:
 - **Selection** (`sched::decode_team`) is a pure function of `(active_context, allowed CPUs, table,
   explicit override)` returning a `TeamPlan { team, cpus, source, bucket_min_context }`. It holds no
   pool, spawns nothing, blocks on nothing and reads no environment. That is what the fixtures in
-  `engine/crates/sched/src/tests_decode_team.rs` exercise.
+  `crates/sched/src/tests_decode_team.rs` exercise.
 - **Execution** is where a plan becomes a running team. That is the part that needs the owner seam
   (§9), because `sched::Pool` fixes its barrier membership (`Barrier::new(n)`) at `Pool::new` time.
 

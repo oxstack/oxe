@@ -9,7 +9,7 @@ use std::{
     io::{self, Write},
     os::fd::AsRawFd,
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 struct System;
@@ -30,7 +30,10 @@ impl Host for System {
         let Some(uid) = p.get("notification_uid") else {
             return;
         };
-        let uid = uid.as_str().map(str::to_owned).unwrap_or_else(|| uid.to_string());
+        let uid = uid
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| uid.to_string());
         if let Ok(mut child) = Command::new("/usr/bin/runuser")
             .args([
                 "-u",
@@ -44,6 +47,9 @@ impl Host for System {
                 "Local AI: MEMLAT fallback",
                 &message,
             ])
+            // The notification is best effort; its own diagnostics must not leak into ours.
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
         {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -67,7 +73,13 @@ impl Host for System {
         }
     }
 }
-fn execute(action: &str, policy_path: &Path, no_lock: bool, dry: bool, force: bool) -> Result<Value> {
+fn execute(
+    action: &str,
+    policy_path: &Path,
+    no_lock: bool,
+    dry: bool,
+    force: bool,
+) -> Result<Value> {
     let lock = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -84,7 +96,9 @@ fn execute(action: &str, policy_path: &Path, no_lock: bool, dry: bool, force: bo
                 return Err(error.into());
             }
             if Instant::now() >= deadline {
-                return oxc_memlat::err("boot-partition mutex busy; retry after boot tooling finishes");
+                return oxc_memlat::err(
+                    "boot-partition mutex busy; retry after boot tooling finishes",
+                );
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -98,7 +112,11 @@ fn execute(action: &str, policy_path: &Path, no_lock: bool, dry: bool, force: bo
         }
         let result = policy::apply(&p, action, &System)?;
         if action == "fallback" {
-            if let Some(pending) = p.get("pending").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            if let Some(pending) = p
+                .get("pending")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
                 match fs::remove_file(pending) {
                     Ok(()) => (),
                     Err(e) if e.kind() == io::ErrorKind::NotFound => (),
@@ -148,7 +166,8 @@ fn main() {
         }
         i += 1;
     }
-    let action = action.unwrap_or_else(|| usage_error("the following arguments are required: action"));
+    let action =
+        action.unwrap_or_else(|| usage_error("the following arguments are required: action"));
     match execute(&action, Path::new(&path), no_lock, dry, force) {
         Ok(value) => println!(
             "{}",

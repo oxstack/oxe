@@ -20,6 +20,15 @@ model = { path = "../model" }
 tokenizer = { path = "../tokenizer" }
 serde_json.workspace = true
 oxn = { path = "../oxn", optional = true }
+oxe-supervisor = { path = "../supervisor" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "sync", "macros", "time", "signal"] }
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+bytes = "1.12.1"
+toml_edit = "0.25"
+ureq.workspace = true
 
 [[bin]]
 name = "oxe"
@@ -27,3 +36,5 @@ path = "src/bin/oxe.rs"
 
 [dev-dependencies]
 model = { path = "../model", features = ["testkit"] }
+# The serve tests end `oxe serve` with real signals (SIGTERM and SIGKILL), like an operator would.
+nix = { version = "0.30", features = ["signal", "process"] }
