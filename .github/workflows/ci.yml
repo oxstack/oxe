@@ -236,6 +236,22 @@ jobs:
             target
           key: ${{ steps.rust-key.outputs.prefix }}main
 
+  scans:
+    name: tree scan (secrets, SDK material)
+    # Cheap and unconditional: no toolchain, no build, every event including docs-only changes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: No secrets and no Hexagon/QAIRT SDK material in tracked files
+        # tools/ci/scan_tree.py: credential shapes, SDK headers/IDL/stubs/skeletons/shared
+        # objects/ELF objects, Hexagon directories. Explicit reviewed allow-lists only.
+        run: python3 -I tools/ci/scan_tree.py
+
   x86_64:
     name: workspace check and stub server (x86_64)
     runs-on: ubuntu-latest
