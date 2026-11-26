@@ -1,0 +1,28 @@
+# oxe: one OpenAI-compatible listener over the local Snapdragon engine.
+#
+# Install as a user unit:
+#   install -Dm644 packaging/systemd/oxe.service ~/.config/systemd/user/oxe.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now oxe
+#
+# MemorySwapMax=0 keeps the engine's no-swap admission promise: the supervisor samples this
+# unit's cgroup and attaches the child there. Raise MemoryMax for the configured models; the
+# admission budget still refuses a launch that does not fit.
+[Unit]
+Description=oxe local model server (OpenAI-compatible)
+Documentation=file:%h/.local/share/doc/oxe/SERVE.md
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/oxe serve --config %h/.config/oxe/models.toml --listen 127.0.0.1:8090
+Restart=on-failure
+RestartSec=2
+MemorySwapMax=0
+MemoryMax=28G
+TimeoutStopSec=15
+KillMode=control-group
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
