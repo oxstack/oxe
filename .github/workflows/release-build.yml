@@ -1,0 +1,127 @@
+name: release-build
+# Builds and packages the one release tarball. Artifact only: no tags, no credentials and no
+# publication here; release.yml and dev-build.yml call it and publish its artifact.
+#
+# The tarball holds oxe, oxe-server and local-ai-memlat-boot under usr/bin/, built by the pinned
+# Rust toolchain and the Fedora 44 GCC 16 container the vendored kernels were bit-matched with
+# (tools/ci/setup_toolchain.sh). The Flash feature is not built: it links a production ggml
+# archive that is not in this repository (issue #7).
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version in the tarball name and in the binaries (tag, or vX.Y.Z-dev.N+sha)
+        type: string
+        required: true
+      file_version:
+        description: Version used in file names ('+' written as '.'); defaults to version
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: "1.99.1"
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "4"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  linux-aarch64:
+    name: oxe tarball (linux-aarch64)
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version
+        id: v
+        env:
+          VERSION: ${{ inputs.version }}
+          FILE_VERSION: ${{ inputs.file_version }}
+        run: |
+          set -euo pipefail
+          [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || {
+            echo "bad version string: $VERSION" >&2; exit 1; }
+          file_version=${FILE_VERSION:-$VERSION}
+          [[ $file_version =~ ^[0-9A-Za-z._+-]+$ ]] || {
+            echo "bad file version string: $file_version" >&2; exit 1; }
+          {
+            echo "version=$VERSION"
+            echo "file_version=$file_version"
+            # The binaries report the tag without its leading v (OX_BUILD_VERSION, see
+            # crates/oxe-cli/src/bin/oxe.rs build_version).
+            echo "stamp=${VERSION#v}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Toolchain
+        run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
+      - name: Compiler and source cache key
+        id: rust-key
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-release .
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        run: git ls-files -z | xargs -0 touch -c --
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build the release binaries
+        env:
+          OX_BUILD_VERSION: ${{ steps.v.outputs.stamp }}
+        run: |
+          cargo build --release --locked -p server --bin oxe-server
+          cargo build --release --locked -p oxe-cli --bin oxe
+          cargo build --release --locked --bin local-ai-memlat-boot
+      - name: Binaries report the packaged version
+        env:
+          STAMP: ${{ steps.v.outputs.stamp }}
+        run: |
+          set -euo pipefail
+          test "$(./target/release/oxe --version)" = "oxe $STAMP"
+          test "$(./target/release/oxe-server --version)" = "oxe-server $STAMP"
+          ./target/release/local-ai-memlat-boot --help | head -n 1
+      - name: Package usr/bin, licences and README.txt
+        env:
+          VERSION: ${{ steps.v.outputs.file_version }}
+          DIST: ${{ github.workspace }}/dist
+          TARGET: ${{ github.workspace }}/target
+        run: tools/ci/package.sh oxe "$VERSION" "$DIST" "$TARGET" oxe oxe-server local-ai-memlat-boot
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          n=$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)
+          test "$n" -eq 1
+          rm -f ./*.tar.gz.sha256
+          # Bare file names: consumers (tools/lab/dev-update.sh) match them by asset name.
+          sha256sum -- *.tar.gz > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: a tag or PR ref cannot share its cache.
+        if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-key.outputs.prefix }}main
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oxe-linux-aarch64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

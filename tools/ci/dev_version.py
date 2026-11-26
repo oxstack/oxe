@@ -44,7 +44,7 @@ def commit_count(root, tags):
 
 
 def workspace_version(root):
-    text = (Path(root) / 'oxa' / 'Cargo.toml').read_text()
+    text = (Path(root) / 'Cargo.toml').read_text()
     section = text.split('[workspace.package]', 1)[1].split('\n[', 1)[0]
     match = re.search(r'^version\s*=\s*"([^"]+)"', section, re.M)
     if not match or not WORKSPACE.match(match.group(1)):

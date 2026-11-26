@@ -1,6 +1,6 @@
-# CodeQL (advanced setup). Owner decision 2026-11-19: scan main, weekly and on demand,
-# not every pull request (PR CI time goes to the required checks). Replaces the
-# repository's CodeQL default setup, which is switched off when this lands.
+# CodeQL (advanced setup) for the engine: Rust, the vendored C kernels, the Python CI tooling and
+# the workflows themselves. Scans main, weekly and on demand, not every pull request, so PR CI
+# time goes to the required checks.
 name: CodeQL
 
 on:
@@ -34,14 +34,12 @@ jobs:
             build-mode: none
           - language: c-cpp
             build-mode: none
-          - language: javascript-typescript
-            build-mode: none
           - language: python
             build-mode: none
           - language: rust
             build-mode: none
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
