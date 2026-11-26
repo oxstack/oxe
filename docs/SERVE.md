@@ -44,7 +44,10 @@ startup_timeout_seconds = 180
 max_waiters = 8
 
 [environment]
-# Passed to every child, in addition to the private OXE_API_KEY_FILE oxe serve creates.
+# Passed to every child. The child starts with a cleared environment that already carries
+# HOME, PATH, TMPDIR, LANG and the XDG directories from oxe serve itself, and never any
+# ambient credentials; entries here override that base. The private OXE_API_KEY_FILE is
+# added by oxe serve and cannot be overridden.
 HF_HUB_OFFLINE = "1"
 
 [models.ornith]

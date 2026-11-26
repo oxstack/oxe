@@ -482,12 +482,30 @@ impl Host {
         let mut models = BTreeMap::new();
         let mut endpoints = BTreeMap::new();
         let mut auths = Vec::new();
+        // The child runs with a cleared environment. Forward only the harmless base it needs
+        // to resolve its own caches; credentials and arbitrary ambient variables stay out.
+        let mut base_environment = BTreeMap::new();
+        for key in [
+            "HOME",
+            "PATH",
+            "TMPDIR",
+            "XDG_RUNTIME_DIR",
+            "XDG_CACHE_HOME",
+            "XDG_CONFIG_HOME",
+            "LANG",
+            "LC_ALL",
+        ] {
+            if let Some(value) = std::env::var_os(key).and_then(|v| v.into_string().ok()) {
+                base_environment.insert(key.to_string(), value);
+            }
+        }
+        base_environment.extend(cfg.environment.clone());
         for (id, model) in &cfg.models {
             let (model, endpoint, auth) = prepare_model(
                 id,
                 model,
                 &binary,
-                &cfg.environment,
+                &base_environment,
                 &run_dir,
                 cfg.startup_timeout_seconds,
             )?;
