@@ -140,7 +140,9 @@ fn import_oxa_converts_models_limits_and_environment_without_touching_the_source
     assert!(text.contains("kv_bytes_per_position = 22528"), "{text}");
     assert!(text.contains("HF_HUB_OFFLINE"), "{text}");
     assert!(text.contains("idle_unload_seconds = 300"), "{text}");
-    assert!(text.contains("/opt/oxe/bin/oxe-server"), "{text}");
+    // The source's binary path belongs to the other machine: not copied unless asked.
+    assert!(!text.contains("binary ="), "{text}");
+    assert!(!text.contains("/opt/oxe/bin/oxe-server"), "{text}");
     assert_eq!(
         std::fs::read(&source).unwrap(),
         digest,
@@ -216,12 +218,63 @@ fn import_oxa_dry_run_prints_but_writes_nothing() {
             "--dry-run",
         ],
     );
-    assert!(
-        dry.status.success(),
-        "{}",
+    assert_eq!(
+        dry.status.code(),
+        Some(0),
+        "a successful dry run exits 0: {}",
         String::from_utf8_lossy(&dry.stderr)
     );
     assert!(String::from_utf8_lossy(&dry.stdout).contains("[models.m]"));
     assert!(!config.exists(), "a dry run must not write the config");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn import_oxa_keeps_the_binary_only_with_keep_binary() {
+    let dir = scratch("keep-binary");
+    let source = dir.join("settings.json");
+    std::fs::write(
+        &source,
+        serde_json::to_vec(&json!({
+            "oxa": {"local": {
+                "binary": "/opt/oxe/bin/oxe-server",
+                "models": {"m": {"model": "/m.gguf", "arguments": []}},
+                "limits": {"m": {
+                    "context_window": 2048,
+                    "max_output": 128,
+                    "allocation_budget": {
+                        "kv_bytes_per_position": 2,
+                        "scratch_bytes": 0,
+                        "mtp_state_bytes": 0,
+                        "margin_bytes": 4096
+                    }
+                }}
+            }}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let config = dir.join("models.toml");
+    let kept = oxe(
+        &dir,
+        &[
+            "import-oxa",
+            "--from",
+            source.to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+            "--keep-binary",
+        ],
+    );
+    assert!(
+        kept.status.success(),
+        "{}",
+        String::from_utf8_lossy(&kept.stderr)
+    );
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        text.contains("binary = \"/opt/oxe/bin/oxe-server\""),
+        "{text}"
+    );
     std::fs::remove_dir_all(dir).ok();
 }

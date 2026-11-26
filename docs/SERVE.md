@@ -90,12 +90,18 @@ smaller reply bound.
 oxe import-oxa --from ~/.oxa/agent/settings.json
 oxe import-oxa --from ~/.oxa/agent/settings.json --dry-run
 oxe import-oxa --from ~/.oxa/agent/settings.json --force
+oxe import-oxa --from ~/.oxa/agent/settings.json --keep-binary
 ```
 
 `oxa.local.models.<id>.{model,arguments}`,
 `oxa.local.limits.<id>.{context_window,max_output,allocation_budget}` and
 `oxa.local.environment` are converted into `models.toml`. The source file is never modified.
 Existing ids refuse to be overwritten without `--force`.
+
+`oxa.local.binary` is not copied by default: the engine stays `oxe-server` beside the `oxe`
+executable. The source's path is usually another machine's install location; pass
+`--keep-binary` to import it anyway. A `--dry-run` prints the resulting `models.toml` and exits
+0 without writing anything.
 
 ## Using it from ox
 

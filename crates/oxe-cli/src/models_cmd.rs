@@ -542,6 +542,7 @@ pub fn run_import_oxa(args: &[String]) -> ! {
     let mut from = None;
     let mut dry_run = false;
     let mut force = false;
+    let mut keep_binary = false;
     let mut config = None;
     let mut i = 0;
     while i < args.len() {
@@ -556,9 +557,10 @@ pub fn run_import_oxa(args: &[String]) -> ! {
             }
             "--dry-run" => dry_run = true,
             "--force" => force = true,
-            "-h" | "--help" => {
-                usage("usage: oxe import-oxa [--from PATH] [--config PATH] [--dry-run] [--force]")
-            }
+            "--keep-binary" => keep_binary = true,
+            "-h" | "--help" => usage(
+                "usage: oxe import-oxa [--from PATH] [--config PATH] [--dry-run] [--force] [--keep-binary]",
+            ),
             flag => usage(&format!("unknown argument {flag}")),
         }
         i += 1;
@@ -588,7 +590,11 @@ pub fn run_import_oxa(args: &[String]) -> ! {
             collisions.join(", ")
         ));
     }
-    cfg.binary = imported.binary.or(cfg.binary);
+    // The default engine stays "oxe-server beside the oxe executable": the source's binary
+    // path is another machine's install location, so it is copied only when asked for.
+    if keep_binary {
+        cfg.binary = imported.binary.or(cfg.binary);
+    }
     cfg.idle_unload_seconds = imported.idle_unload_seconds;
     cfg.startup_timeout_seconds = imported.startup_timeout_seconds;
     cfg.environment = imported.environment;
@@ -725,7 +731,7 @@ fn value<'a>(args: &'a [String], i: usize, flag: &str) -> &'a str {
 }
 
 fn usage(message: &str) -> ! {
-    eprintln!("{message}\n  oxe models list | add <gguf> [--id ID] [--ctx N] | rm ID\n  oxe import-oxa [--from PATH] [--dry-run] [--force]");
+    eprintln!("{message}\n  oxe models list | add <gguf> [--id ID] [--ctx N] | rm ID\n  oxe import-oxa [--from PATH] [--dry-run] [--force] [--keep-binary]");
     std::process::exit(2)
 }
 
