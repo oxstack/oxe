@@ -1,5 +1,5 @@
 //! Checked full-resident weights plus explicit anonymous allocation accounting.
-use oxa_proto::{codes, OxaError};
+use crate::proto::{codes, OxaError};
 use serde_json::Value;
 use std::ffi::OsString;
 
@@ -170,7 +170,9 @@ mod tests {
             vec!["--ctx-size"],
             vec!["-c"],
         ] {
-            assert!(bind_context(&mut words.into_iter().map(OsString::from).collect(), 16384).is_err());
+            assert!(
+                bind_context(&mut words.into_iter().map(OsString::from).collect(), 16384).is_err()
+            );
         }
     }
 }

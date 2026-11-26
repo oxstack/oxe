@@ -1,6 +1,6 @@
 //! Model-free lifecycle proof. Arguments: absolute oxe-server, synthetic GGUF.
 //! Use engine/tools/ci/synth_qwen36_model.py, never an actual model.
-use oxc_local::{Config, State, Supervisor};
+use oxe_supervisor::{Config, State, Supervisor};
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -31,7 +31,10 @@ fn until(s: &mut Supervisor, address: SocketAddr, target: State) -> io::Result<(
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "lifecycle deadline"));
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "lifecycle deadline",
+            ));
         }
         std::thread::sleep(Duration::from_millis(20));
     }

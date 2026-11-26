@@ -1,5 +1,5 @@
 // No engine process or filesystem fixture is needed.
-use oxc_local::launch_profile::{from_user_settings, Error, InstalledLayout, InstalledModel};
+use oxe_supervisor::launch_profile::{from_user_settings, Error, InstalledLayout, InstalledModel};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -42,7 +42,10 @@ fn installed_layout_needs_no_profile_or_filesystem_probe() {
         ]
         .map(OsString::from)
     );
-    assert_eq!(p.environment, BTreeMap::from([("LANG".into(), "C.UTF-8".into())]));
+    assert_eq!(
+        p.environment,
+        BTreeMap::from([("LANG".into(), "C.UTF-8".into())])
+    );
 }
 
 #[test]
@@ -174,8 +177,7 @@ fn resolving_one_model_does_not_mutate_or_reuse_another_models_overrides() {
             arguments: vec![],
         },
     );
-    let settings =
-        json!({"oxa":{"local":{"models":{"local-model":{"arguments":[],"environment":{"ONE":"1"}}}}}});
+    let settings = json!({"oxa":{"local":{"models":{"local-model":{"arguments":[],"environment":{"ONE":"1"}}}}}});
     let before = settings.clone();
     let one = from_user_settings(&settings, &installed, "local-model", 8080).unwrap();
     let other = from_user_settings(&settings, &installed, "other", 8081).unwrap();
@@ -194,7 +196,9 @@ fn invalid_layout_values_fail_before_any_supervision_work() {
         Err(Error::Binary)
     );
     installed = layout();
-    installed.environment.insert("BAD=NAME".into(), "value".into());
+    installed
+        .environment
+        .insert("BAD=NAME".into(), "value".into());
     assert_eq!(
         from_user_settings(&json!({}), &installed, "local-model", 8080),
         Err(Error::Environment)
@@ -208,7 +212,8 @@ fn invalid_layout_values_fail_before_any_supervision_work() {
 #[test]
 fn short_alias_cannot_replace_selected_identity_from_either_argument_source() {
     let mut installed = layout();
-    installed.models.get_mut("local-model").unwrap().arguments = vec!["-a".into(), "other-model".into()];
+    installed.models.get_mut("local-model").unwrap().arguments =
+        vec!["-a".into(), "other-model".into()];
     assert_eq!(
         from_user_settings(&json!({}), &installed, "local-model", 8080),
         Err(Error::OwnedArgument)
@@ -235,7 +240,14 @@ fn shipped_moe_aliases_default_to_sampled_mtp_with_their_existing_cutoffs() {
         let profile = from_user_settings(&json!({}), &installed, alias, 8080).unwrap();
         assert_eq!(
             &profile.arguments[8..],
-            ["--ctx-size", "8192", "--mtp-max-ctx", cutoff, "--mtp-sampled"].map(OsString::from)
+            [
+                "--ctx-size",
+                "8192",
+                "--mtp-max-ctx",
+                cutoff,
+                "--mtp-sampled"
+            ]
+            .map(OsString::from)
         );
     }
 }
@@ -247,7 +259,8 @@ fn model_mtp_settings_override_defaults_without_changing_other_models() {
     installed
         .models
         .insert(alias.into(), installed.models["local-model"].clone());
-    let user = json!({"oxa":{"local":{"models":{(alias):{"mtp_max_context":4096,"sampled_mtp":false}}}}});
+    let user =
+        json!({"oxa":{"local":{"models":{(alias):{"mtp_max_context":4096,"sampled_mtp":false}}}}});
     let profile = from_user_settings(&user, &installed, alias, 8080).unwrap();
     assert_eq!(
         &profile.arguments[8..],
@@ -268,7 +281,11 @@ fn explicit_literal_mtp_flags_remain_the_callers_choice() {
         alias.into(),
         InstalledModel {
             model: "/models/synthetic.gguf".into(),
-            arguments: vec!["--mtp-max-ctx".into(), "8192".into(), "--mtp-sampled".into()],
+            arguments: vec![
+                "--mtp-max-ctx".into(),
+                "8192".into(),
+                "--mtp-sampled".into(),
+            ],
         },
     );
     let profile = from_user_settings(&json!({}), &installed, alias, 8080).unwrap();

@@ -4,6 +4,9 @@
 mod admission;
 mod child_auth;
 mod configured;
+pub mod engine;
+pub mod fake;
+pub mod proto;
 pub use configured::{configured_engine, configured_local_engine, LOCAL_SETTING};
 pub mod launch_profile;
 pub mod lifecycle;
@@ -147,7 +150,9 @@ impl Supervisor {
                 .unwrap_or(false);
             let mut command = if gated {
                 let mut command = gate_command()?;
-                command.arg(platform::CHILD_GATE).arg(&self.config.executable);
+                command
+                    .arg(platform::CHILD_GATE)
+                    .arg(&self.config.executable);
                 command
             } else {
                 Command::new(&self.config.executable)
@@ -195,7 +200,8 @@ impl Supervisor {
                 match pipe.read(&mut ready) {
                     Ok(1) if ready == [0x6b] => return Ok(()),
                     Err(error)
-                        if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < self.deadline =>
+                        if error.kind() == io::ErrorKind::WouldBlock
+                            && Instant::now() < self.deadline =>
                     {
                         std::thread::sleep(Duration::from_millis(1))
                     }
@@ -281,7 +287,11 @@ impl Supervisor {
 
     /// Advances lifecycle, checking exit before health. Probe errors count as unhealthy.
     /// Never retries a generation request. Caller must bound probe I/O time.
-    pub fn poll(&mut self, now: Instant, mut healthy: impl FnMut() -> io::Result<bool>) -> io::Result<State> {
+    pub fn poll(
+        &mut self,
+        now: Instant,
+        mut healthy: impl FnMut() -> io::Result<bool>,
+    ) -> io::Result<State> {
         self.reap(now)?;
         match self.state {
             State::Backoff if now >= self.deadline => self.spawn(now)?,
@@ -324,7 +334,9 @@ fn gate_command() -> io::Result<Command> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        Err(platform::refused("Linux executable-image scope gate available"))
+        Err(platform::refused(
+            "Linux executable-image scope gate available",
+        ))
     }
 }
 
@@ -363,7 +375,7 @@ mod platform_retry_tests {
 
     #[test]
     fn policy_lookup_failure_exhausts_backoff_instead_of_looping_forever() {
-        let env = oxa_fake::TestEnv::new();
+        let env = crate::fake::TestEnv::new();
         let now = Instant::now();
         let backoff = Duration::from_secs(1);
         let mut s = Supervisor::new(Config {
@@ -384,15 +396,21 @@ mod platform_retry_tests {
         assert!(s.start(now).is_err());
         assert_eq!(s.state(), State::Backoff);
         policy.0.store(true, Ordering::SeqCst);
-        assert_eq!(s.poll(now, || panic!("no live engine")).unwrap(), State::Backoff);
-        let error = s.poll(now + backoff, || panic!("no live engine")).unwrap_err();
+        assert_eq!(
+            s.poll(now, || panic!("no live engine")).unwrap(),
+            State::Backoff
+        );
+        let error = s
+            .poll(now + backoff, || panic!("no live engine"))
+            .unwrap_err();
         assert!(error.to_string().contains("child policy metadata readable"));
         assert_eq!(s.state(), State::Failed);
         assert_eq!(s.last_failure(), Some(Failure::Spawn));
         assert!(!s.wanted);
         assert_eq!(s.pid(), None);
         assert_eq!(
-            s.poll(now + backoff * 2, || panic!("no live engine")).unwrap(),
+            s.poll(now + backoff * 2, || panic!("no live engine"))
+                .unwrap(),
             State::Failed
         );
     }
@@ -406,7 +424,8 @@ mod gate_image_tests {
     #[test]
     fn gate_reexec_keeps_running_image_after_replace_or_unlink() {
         const MODE: &str = "OXA_TEST_GATE_IMAGE";
-        const TEST: &str = "gate_image_tests::gate_reexec_keeps_running_image_after_replace_or_unlink";
+        const TEST: &str =
+            "gate_image_tests::gate_reexec_keeps_running_image_after_replace_or_unlink";
         if let Ok(mode) = std::env::var(MODE) {
             if mode == "probe" {
                 return;
@@ -431,7 +450,7 @@ mod gate_image_tests {
             );
             return;
         }
-        let env = oxa_fake::TestEnv::new();
+        let env = crate::fake::TestEnv::new();
         for mode in ["replace", "unlink"] {
             let host = env.work().join(format!("gate-host-{mode}"));
             std::fs::copy(std::env::current_exe().unwrap(), &host).unwrap();

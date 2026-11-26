@@ -78,7 +78,10 @@ impl MemorySource {
             swap_current_bytes: scalar(&fs::read_to_string(group.join("memory.swap.current"))?)?,
             swap_limit_zero: fs::read_to_string(group.join("memory.swap.max"))?.trim() == "0",
             oom_events,
-            host_oom_kills: number(&fs::read_to_string(self.proc_root.join("vmstat"))?, "oom_kill")?,
+            host_oom_kills: number(
+                &fs::read_to_string(self.proc_root.join("vmstat"))?,
+                "oom_kill",
+            )?,
             pids_max_events: number(&fs::read_to_string(group.join("pids.events"))?, "max")?,
         })
     }
@@ -121,7 +124,7 @@ fn kib(text: &str, key: &str) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxa_fake::TestEnv;
+    use crate::fake::TestEnv;
     #[test]
     fn kernel_samples_are_complete_and_fail_closed_on_malformed_or_missing_data() {
         let env = TestEnv::new();
@@ -130,7 +133,10 @@ mod tests {
             "work/proc/meminfo",
             "MemAvailable: 8000000 kB\nSwapFree: 100 kB\n",
         );
-        env.write("work/proc/pressure/memory", "some avg10=1.0\nfull avg10=21.0\n");
+        env.write(
+            "work/proc/pressure/memory",
+            "some avg10=1.0\nfull avg10=21.0\n",
+        );
         env.write("work/proc/vmstat", "oom_kill 7\n");
         env.write(
             "work/cgroup/engine/memory.events",

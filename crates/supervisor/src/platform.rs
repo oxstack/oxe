@@ -87,7 +87,10 @@ impl LinuxLauncher {
     ) -> io::Result<Attachment> {
         before_startup_deadline(deadline)?;
         if !gated {
-            return no_swap(self.0.sample_child(pid)?).map(|sample| Attachment { sample, scope: None });
+            return no_swap(self.0.sample_child(pid)?).map(|sample| Attachment {
+                sample,
+                scope: None,
+            });
         }
         use std::{
             sync::atomic::{AtomicU64, Ordering},
@@ -132,12 +135,16 @@ impl PlatformLauncher for LinuxLauncher {
                 use zbus::zvariant::Value;
                 let address = format!("unix:path=/run/user/{}/bus", nix::unistd::geteuid());
                 let bus = zbus::connection::Builder::address(address.as_str())
-                    .map_err(|_| bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir()))?
+                    .map_err(|_| {
+                        bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir())
+                    })?
                     .auth_mechanism(zbus::connection::AuthMechanism::External)
                     .method_timeout(deadline.saturating_duration_since(Instant::now()))
                     .build()
                     .await
-                    .map_err(|_| bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir()))?;
+                    .map_err(|_| {
+                        bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir())
+                    })?;
                 let properties = scope_properties(pid);
                 let auxiliary: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
                 bus.call_method(
@@ -148,7 +155,9 @@ impl PlatformLauncher for LinuxLauncher {
                     &(unit, "fail", properties, auxiliary),
                 )
                 .await
-                .map_err(|_| refused("systemd StartTransientUnit with delegated MemorySwapMax=0"))?;
+                .map_err(|_| {
+                    refused("systemd StartTransientUnit with delegated MemorySwapMax=0")
+                })?;
                 Ok(())
             })
         })
@@ -262,7 +271,7 @@ fn scope_properties(pid: u32) -> Vec<(&'static str, zbus::zvariant::Value<'stati
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use oxa_fake::TestEnv;
+    use crate::fake::TestEnv;
     fn fixture(inherited: bool) -> (TestEnv, LinuxLauncher) {
         let env = TestEnv::new();
         env.write("work/proc/self/cgroup", "0::/parent\n");
@@ -315,7 +324,10 @@ mod tests {
     #[test]
     fn delegation_remediation_keeps_all_controllers_in_one_shell_argument() {
         let message = refused("child controller delegation").to_string();
-        assert!(message.contains("\"Delegate=cpu memory pids\""), "{message}");
+        assert!(
+            message.contains("\"Delegate=cpu memory pids\""),
+            "{message}"
+        );
     }
     #[test]
     fn scope_request_contains_child_pid_zero_swap_and_collect_without_memorymax() {
@@ -351,7 +363,9 @@ mod tests {
                 |_, _| panic!("inherited path"),
             )
             .unwrap_err();
-        assert!(error.to_string().contains("engine child memory.swap.max == 0"));
+        assert!(error
+            .to_string()
+            .contains("engine child memory.swap.max == 0"));
     }
     #[test]
     fn scope_attachment_uses_new_child_group_and_new_baseline() {

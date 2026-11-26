@@ -1,11 +1,11 @@
 //! Typed local chat over the owned loopback engine. No controller routes or retries.
-use crate::lifecycle::{Lifecycle, MemorySample, RequestLease};
-use crate::State;
-use oxa_engine::{
-    build_body, build_headers, post_sse_bounded, BoundedStreamOpts, Flow, GatewayEvent, ReplyAssembler,
-    SseEnd, SseEvent, StreamOpts, Url,
+use crate::engine::{
+    build_body, build_headers, post_sse_bounded, BoundedStreamOpts, Flow, GatewayEvent,
+    ReplyAssembler, SseEnd, SseEvent, StreamOpts, Url,
 };
-use oxa_proto::{codes, AssistantTurn, CancelToken, ChatRequest, OxaError, StreamEvent};
+use crate::lifecycle::{Lifecycle, MemorySample, RequestLease};
+use crate::proto::{codes, AssistantTurn, CancelToken, ChatRequest, OxaError, StreamEvent};
+use crate::State;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
@@ -34,7 +34,10 @@ impl Transport {
             || opts.connect_timeout_ms == 0
             || opts.silence_limit_ms == 0
         {
-            return Err(OxaError::new(codes::INVALID, "invalid local engine transport"));
+            return Err(OxaError::new(
+                codes::INVALID,
+                "invalid local engine transport",
+            ));
         }
         Ok(Self {
             url: Url {
@@ -48,7 +51,10 @@ impl Transport {
     }
     pub(crate) fn with_bearer(mut self, token: &str) -> Result<Self, OxaError> {
         if token.is_empty() || !token.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return Err(OxaError::new(codes::INVALID, "invalid child authentication"));
+            return Err(OxaError::new(
+                codes::INVALID,
+                "invalid child authentication",
+            ));
         }
         self.bearer = Some(token.into());
         Ok(self)
@@ -129,7 +135,9 @@ impl Transport {
                             let event = match event {
                                 SseEvent::Data(data) => {
                                     if data.len() > MAX_EVENT {
-                                        malformed = Some(broken("local stream event exceeds its size limit"));
+                                        malformed = Some(broken(
+                                            "local stream event exceeds its size limit",
+                                        ));
                                         return Flow::Stop;
                                     }
                                     match serde_json::from_str(&data) {
@@ -166,9 +174,13 @@ impl Transport {
                 if emitted
                     && error.code != codes::ABORTED
                     && error.code != codes::STREAM_BROKEN
-                    && !error.message.starts_with(oxa_proto::CUT_BY_REFUSAL)
+                    && !error.message.starts_with(crate::proto::CUT_BY_REFUSAL)
                 {
-                    broken(&format!("{}{}", oxa_proto::CUT_BY_REFUSAL, error.message))
+                    broken(&format!(
+                        "{}{}",
+                        crate::proto::CUT_BY_REFUSAL,
+                        error.message
+                    ))
                 } else {
                     error
                 }
@@ -274,16 +286,17 @@ fn drive(
                 }
             }
             Ok(Message::Comment(text)) => {
-                if let Some(event) =
-                    assembler.comment(&text, started.elapsed().as_secs().try_into().unwrap_or(u32::MAX))
-                {
+                if let Some(event) = assembler.comment(
+                    &text,
+                    started.elapsed().as_secs().try_into().unwrap_or(u32::MAX),
+                ) {
                     on(event);
                 }
             }
             Ok(Message::Finished(result)) => {
                 let end = result?;
                 if !(200..300).contains(&end.status) {
-                    return Err(oxa_engine::normalize_http_error(
+                    return Err(crate::engine::normalize_http_error(
                         end.status,
                         end.error_body.as_deref().unwrap_or("").as_bytes(),
                         end.retry_after,
@@ -295,20 +308,22 @@ fn drive(
                 for event in assembler.flush() {
                     on(event);
                 }
-                let mut reply = assembler.finish(request.effective_level())?;
+                let mut reply = assembler.finish()?;
                 if reply.model.is_empty() {
                     reply.model = request.model.into();
                 }
                 return Ok(reply);
             }
             Err(RecvTimeoutError::Timeout) => (),
-            Err(RecvTimeoutError::Disconnected) => return Err(broken("local transport ended unexpectedly")),
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(broken("local transport ended unexpectedly"))
+            }
         }
     }
 }
 // Local HTTP has no cloud replay authority. Do not inspect, invoke or serialize
 // private completion events added by other native gateway implementations.
-fn local_event(event: GatewayEvent) -> Result<Option<oxa_proto::Value>, OxaError> {
+fn local_event(event: GatewayEvent) -> Result<Option<crate::proto::Value>, OxaError> {
     if let GatewayEvent::Chunk(value) = event {
         Ok(Some(value))
     } else if matches!(event, GatewayEvent::Done) {

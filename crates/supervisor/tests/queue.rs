@@ -1,4 +1,4 @@
-use oxc_local::queue::{AdmissionError, RequestQueue};
+use oxe_supervisor::queue::{AdmissionError, RequestQueue};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{

@@ -155,7 +155,11 @@ pub fn from_user_settings(
     {
         return Err(Error::Arguments);
     }
-    let has_flag = |flag: &str| extra.iter().any(|word| word.split('=').next() == Some(flag));
+    let has_flag = |flag: &str| {
+        extra
+            .iter()
+            .any(|word| word.split('=').next() == Some(flag))
+    };
     let raw_cutoff = has_flag("--mtp-max-ctx");
     let raw_sampled = has_flag("--mtp-sampled");
     if raw_cutoff && selected.contains_key("mtp_max_context")
@@ -201,11 +205,17 @@ pub fn from_user_settings(
         .collect();
     if let Some(value) = selected.get("environment") {
         for (key, value) in value.as_object().ok_or(Error::Environment)? {
-            environment.insert(key.clone(), value.as_str().ok_or(Error::Environment)?.to_owned());
+            environment.insert(
+                key.clone(),
+                value.as_str().ok_or(Error::Environment)?.to_owned(),
+            );
         }
     }
     if environment.iter().any(|(key, value)| {
-        key.is_empty() || key.contains('=') || key.chars().any(char::is_control) || value.contains('\0')
+        key.is_empty()
+            || key.contains('=')
+            || key.chars().any(char::is_control)
+            || value.contains('\0')
     }) {
         return Err(Error::Environment);
     }
@@ -218,7 +228,9 @@ pub fn from_user_settings(
 }
 
 fn object(value: Option<&Value>) -> Result<Option<&Map<String, Value>>, Error> {
-    value.map(|v| v.as_object().ok_or(Error::Settings)).transpose()
+    value
+        .map(|v| v.as_object().ok_or(Error::Settings))
+        .transpose()
 }
 fn path(value: Option<&Value>, fallback: &Path, error: Error) -> Result<PathBuf, Error> {
     let path = match value {

@@ -1,14 +1,17 @@
 //! In-process Engine over one owned local child. Construction/discovery do not launch.
 use crate::child_auth::ChildAuth;
-use crate::lifecycle::{Lifecycle, MemorySample, Model, Policy, RequestGate, RequestLease, StopReason};
+use crate::engine::{http_request, HttpRequest, StreamOpts, Url};
+use crate::lifecycle::{
+    Lifecycle, MemorySample, Model, Policy, RequestGate, RequestLease, StopReason,
+};
 use crate::memory::MemorySource;
+use crate::proto::{
+    codes, AssistantTurn, CancelToken, ChatRequest, Engine, EngineCaps, EngineInfo, OxaError,
+    StreamEvent,
+};
 use crate::queue::AdmissionError;
 use crate::transport::{Monitor, Transport};
 use crate::State;
-use oxa_engine::{http_request, HttpRequest, StreamOpts, Url};
-use oxa_proto::{
-    codes, AssistantTurn, CancelToken, ChatRequest, Engine, EngineCaps, EngineInfo, OxaError, StreamEvent,
-};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::io;
@@ -53,8 +56,9 @@ trait Sample: Send + Sync {
 }
 impl Sample for MemorySource {
     fn sample(&self) -> io::Result<MemorySample> {
-        self.sample()
-            .map_err(|_| crate::platform::refused("host memory/PSI and cgroup v2 metadata readable"))
+        self.sample().map_err(|_| {
+            crate::platform::refused("host memory/PSI and cgroup v2 metadata readable")
+        })
     }
     fn child(&self, pid: Option<u32>) -> io::Result<MemorySample> {
         pid.map_or_else(|| self.sample(), |pid| self.sample_child(pid))
@@ -247,8 +251,12 @@ impl LocalEngine {
         }
         let config = &mut launch.config;
         if config.arguments.iter().any(|a| {
-            a.to_str()
-                .is_some_and(|a| matches!(a.split('=').next().unwrap_or(""), "--api-key" | "--api-key-file"))
+            a.to_str().is_some_and(|a| {
+                matches!(
+                    a.split('=').next().unwrap_or(""),
+                    "--api-key" | "--api-key-file"
+                )
+            })
         }) || config
             .environment
             .keys()
@@ -340,8 +348,8 @@ impl Engine for LocalEngine {
             return Err(OxaError::new(codes::BUSY, "local engine is busy"));
         }
         let endpoint = state.endpoints.get(alias).ok_or_else(down)?;
-        let body =
-            serde_json::to_vec(&serde_json::json!({"scope":"hint","hint":hint})).map_err(|_| invalid())?;
+        let body = serde_json::to_vec(&serde_json::json!({"scope":"hint","hint":hint}))
+            .map_err(|_| invalid())?;
         let headers = [
             ("Authorization", format!("Bearer {}", endpoint.auth.token())),
             ("Content-Type", "application/json".into()),
@@ -360,7 +368,7 @@ impl Engine for LocalEngine {
             Ok(())
         } else {
             Err(redact(
-                oxa_engine::normalize_http_error(response.status, &response.body, None),
+                crate::engine::normalize_http_error(response.status, &response.body, None),
                 endpoint.auth.token(),
             ))
         }
@@ -459,7 +467,10 @@ impl LocalEngine {
             if state.lifecycle.status().state == State::Ready {
                 break;
             }
-            if matches!(state.lifecycle.status().state, State::Stopped | State::Failed) {
+            if matches!(
+                state.lifecycle.status().state,
+                State::Stopped | State::Failed
+            ) {
                 return Err(down());
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -467,7 +478,9 @@ impl LocalEngine {
         state.target = None;
         let lease = state.lifecycle.take_ready_request().ok_or_else(down)?;
         let RuntimeState {
-            lifecycle, endpoints, ..
+            lifecycle,
+            endpoints,
+            ..
         } = &mut *state;
         let endpoint = endpoints.get(&model.alias).ok_or_else(down)?;
         let pid = lifecycle.status().pid;
@@ -491,7 +504,13 @@ impl Drop for LocalEngine {
     fn drop(&mut self) {
         self.inner.shutdown.store(true, Ordering::Release);
         self.inner.wake.notify_all();
-        if let Some(worker) = self.inner.worker.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(worker) = self
+            .inner
+            .worker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             let _ = worker.join();
         }
     }
@@ -506,7 +525,10 @@ fn watch(inner: Arc<Inner>) {
         }
         let _ = advance(&inner, &mut state);
         if state.lifecycle.status().pid.is_none()
-            && matches!(state.lifecycle.status().state, State::Stopped | State::Failed)
+            && matches!(
+                state.lifecycle.status().state,
+                State::Stopped | State::Failed
+            )
         {
             state.driver_running = false;
             return;
@@ -520,7 +542,9 @@ fn watch(inner: Arc<Inner>) {
 }
 fn advance(inner: &Inner, state: &mut RuntimeState) -> io::Result<()> {
     let RuntimeState {
-        lifecycle, endpoints, ..
+        lifecycle,
+        endpoints,
+        ..
     } = state;
     lifecycle.reap(Instant::now())?;
     let status = lifecycle.status();
@@ -534,12 +558,14 @@ fn advance(inner: &Inner, state: &mut RuntimeState) -> io::Result<()> {
         .map(|_| ());
     let version_mismatch = endpoint.is_some_and(|e| e.version_mismatch.load(Ordering::Acquire));
     publish(inner, lifecycle);
-    if lifecycle.status().pid.is_none() && matches!(lifecycle.status().state, State::Stopped | State::Failed)
+    if lifecycle.status().pid.is_none()
+        && matches!(lifecycle.status().state, State::Stopped | State::Failed)
     {
         state.target = None;
     }
     let current = lifecycle.status().model.map(str::to_owned);
-    endpoints.retain(|alias, _| current.as_ref() == Some(alias) || state.target.as_ref() == Some(alias));
+    endpoints
+        .retain(|alias, _| current.as_ref() == Some(alias) || state.target.as_ref() == Some(alias));
     if version_mismatch {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -631,7 +657,8 @@ fn wait_operation(
             return Err(aborted());
         }
         if let Poll::Ready(result) = acquire.as_mut().poll(&mut context) {
-            return result.map_err(|_| OxaError::new(codes::BUSY, "local request queue is unavailable"));
+            return result
+                .map_err(|_| OxaError::new(codes::BUSY, "local request queue is unavailable"));
         }
         let mut ready = signal.ready.lock().unwrap_or_else(|e| e.into_inner());
         while !*ready {
@@ -662,9 +689,9 @@ fn redact(mut error: OxaError, token: &str) -> OxaError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
+    use crate::proto::{Finish, FrozenPrefix, WireMsg};
     use crate::Config;
-    use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
-    use oxa_proto::{Finish, FrozenPrefix, WireMsg};
     struct Memory {
         fail: AtomicBool,
     }
@@ -808,7 +835,12 @@ mod tests {
             pid: std::sync::atomic::AtomicU32,
         }
         impl crate::platform::PlatformLauncher for Scope {
-            fn attach(&self, pid: u32, _gated: bool, _: Instant) -> io::Result<crate::platform::Attachment> {
+            fn attach(
+                &self,
+                pid: u32,
+                _gated: bool,
+                _: Instant,
+            ) -> io::Result<crate::platform::Attachment> {
                 self.pid.store(pid, Ordering::Release);
                 let mut sample = Memory {
                     fail: AtomicBool::new(false),
@@ -863,7 +895,9 @@ mod tests {
             assert_eq!(engine.status().pid, None);
             assert_eq!(engine.local_memory_status("fake-model"), None);
             assert!(wait_operation(engine.gate.acquire_operation(), &CancelToken::new()).is_ok());
-            assert!(!PathBuf::from(format!("/proc/{}", scope.pid.load(Ordering::Acquire))).exists());
+            assert!(
+                !PathBuf::from(format!("/proc/{}", scope.pid.load(Ordering::Acquire))).exists()
+            );
         }
     }
     fn prefix() -> FrozenPrefix {
@@ -876,14 +910,21 @@ mod tests {
     fn until(engine: &LocalEngine, wanted: State) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while engine.status().state != wanted {
-            assert!(Instant::now() < deadline, "state {:?}", engine.status().state);
+            assert!(
+                Instant::now() < deadline,
+                "state {:?}",
+                engine.status().state
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
     #[test]
     fn owned_fake_child_streams_and_unloads() {
         if std::env::var("SYNTHETIC_LOCAL_CHILD").as_deref() == Ok("1") {
-            let port = std::env::var("SYNTHETIC_LOCAL_PORT").unwrap().parse().unwrap();
+            let port = std::env::var("SYNTHETIC_LOCAL_PORT")
+                .unwrap()
+                .parse()
+                .unwrap();
             let model = std::env::var("SYNTHETIC_LOCAL_ALIAS").unwrap();
             let turns = match std::env::var("SYNTHETIC_LOCAL_CASE").as_deref() {
                 Ok("overflow") => vec![ScriptTurn::fault(Fault::StreamError {
@@ -932,7 +973,10 @@ mod tests {
         assert_eq!(info.limits_for, "other-model");
         assert_eq!(info.caps.context_window, Some(1048576));
         assert!(!info.caps.remote);
-        assert!(info.caps.hint_clear, "core cleanup must reach native clear_hint");
+        assert!(
+            info.caps.hint_clear,
+            "core cleanup must reach native clear_hint"
+        );
         assert!(engine.inner.worker.lock().unwrap().is_none());
         assert!(!env.work().join("private").exists());
         engine.clear_hint("synthetic-child").unwrap();
@@ -961,12 +1005,20 @@ mod tests {
                 &mut |_| {},
             )
             .unwrap();
-        assert_eq!(second.msg.content.as_deref(), Some("Synthetic task finished"));
+        assert_eq!(
+            second.msg.content.as_deref(),
+            Some("Synthetic task finished")
+        );
         assert_eq!(engine.status().pid, Some(pid));
         engine.clear_hint("synthetic-child").unwrap();
         until(&engine, State::Stopped);
         assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
-        assert_eq!(std::fs::read_dir(env.work().join("private")).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_dir(env.work().join("private"))
+                .unwrap()
+                .count(),
+            0
+        );
         drop(engine);
     }
 
@@ -993,7 +1045,9 @@ mod tests {
         let chat = |messages: &[WireMsg]| {
             let mut request = ChatRequest::new(&prefix, messages, "fake-model");
             request.hints.session = "plain-continuation";
-            engine.chat(&request, &CancelToken::new(), &mut |_| {}).unwrap()
+            engine
+                .chat(&request, &CancelToken::new(), &mut |_| {})
+                .unwrap()
         };
 
         let mut messages = vec![WireMsg::user("First synthetic question")];
@@ -1059,7 +1113,10 @@ mod tests {
             assert_eq!(waiting, 1, "guest must join the owner's engine queue");
         });
         assert_eq!(engine.gate.waiting(), 0);
-        assert!(matches!(engine.gate.try_acquire(), Err(AdmissionError::Full)));
+        assert!(matches!(
+            engine.gate.try_acquire(),
+            Err(AdmissionError::Full)
+        ));
         assert_eq!(engine.status().state, State::Stopped);
         drop(active);
         assert!(wait_operation(engine.gate.acquire_operation(), &CancelToken::new()).is_ok());
@@ -1095,7 +1152,12 @@ mod tests {
         assert_eq!(next.finish, Finish::ToolCalls);
         assert_ne!(engine.status().pid, Some(interrupted_pid));
         drop(engine);
-        assert_eq!(std::fs::read_dir(env.work().join("private")).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_dir(env.work().join("private"))
+                .unwrap()
+                .count(),
+            0
+        );
     }
     #[test]
     fn resident_model_reuses_the_frozen_launch_description() {
@@ -1143,7 +1205,12 @@ mod tests {
             assert!(error.message.contains("version"));
             until(&engine, State::Stopped);
             drop(engine);
-            assert_eq!(std::fs::read_dir(env.work().join("private")).unwrap().count(), 0);
+            assert_eq!(
+                std::fs::read_dir(env.work().join("private"))
+                    .unwrap()
+                    .count(),
+                0
+            );
         }
     }
     #[test]
@@ -1171,6 +1238,11 @@ mod tests {
         assert!(!PathBuf::from(format!("/proc/{previous}")).exists());
         drop(engine);
         assert!(!PathBuf::from(format!("/proc/{last}")).exists());
-        assert_eq!(std::fs::read_dir(env.work().join("private")).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_dir(env.work().join("private"))
+                .unwrap()
+                .count(),
+            0
+        );
     }
 }

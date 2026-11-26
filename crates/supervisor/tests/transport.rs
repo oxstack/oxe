@@ -1,11 +1,12 @@
-use oxa_engine::StreamOpts;
-use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn};
-use oxa_proto::{
-    codes, AssistantTurn, CancelToken, ChatRequest, Finish, FrozenPrefix, StreamEvent, ToolCall, WireMsg,
+use oxe_supervisor::engine::StreamOpts;
+use oxe_supervisor::fake::{FakeOpts, FakeServer, Fault, ScriptTurn};
+use oxe_supervisor::lifecycle::{Lifecycle, MemorySample, Model, Policy};
+use oxe_supervisor::proto::{
+    codes, AssistantTurn, CancelToken, ChatRequest, Finish, FrozenPrefix, StreamEvent, ToolCall,
+    WireMsg,
 };
-use oxc_local::lifecycle::{Lifecycle, MemorySample, Model, Policy};
-use oxc_local::transport::{Monitor, Transport};
-use oxc_local::{Config, State};
+use oxe_supervisor::transport::{Monitor, Transport};
+use oxe_supervisor::{Config, State};
 use std::time::{Duration, Instant};
 
 fn memory() -> std::io::Result<MemorySample> {
@@ -129,7 +130,9 @@ fn local_transport_delivers_prefill_comments_as_typed_progress() {
 fn local_transport_returns_length_when_generation_fills_the_context() {
     let prefix = prefix();
     let messages = [WireMsg::user("Synthetic question")];
-    let prompt = oxa_fake::cache_bytes(&prefix.system_text(), &prefix.tools_json, &messages).len() as u32;
+    let prompt =
+        oxe_supervisor::fake::cache_bytes(&prefix.system_text(), &prefix.tools_json, &messages)
+            .len() as u32;
     let context_window = prompt + 20;
     let server = FakeServer::start(
         vec![ScriptTurn::text(&"x".repeat(40))],
@@ -166,8 +169,10 @@ fn local_transport_starts_a_new_reply_after_trailing_assistant_history() {
         WireMsg::assistant("The earlier answer"),
     ];
 
-    let (reply, _) =
-        reply_from_local_transport(&server, &ChatRequest::new(&prefix(), &messages, "fake-model"));
+    let (reply, _) = reply_from_local_transport(
+        &server,
+        &ChatRequest::new(&prefix(), &messages, "fake-model"),
+    );
     assert_eq!(server.requests()[0].messages, messages);
     assert_eq!(reply.msg.content.as_deref(), Some("A new synthetic answer"));
 }
@@ -184,7 +189,10 @@ fn typed_request_streams_tools_usage_and_text_without_controller_routes() {
             text: Some("Local λ answer".into()),
             tool_calls: vec![tool.clone()],
             finish: Finish::ToolCalls,
-            fault: Some(Fault::Queued { count: 2, pos: false }),
+            fault: Some(Fault::Queued {
+                count: 2,
+                pos: false,
+            }),
             ..ScriptTurn::text("")
         }],
         FakeOpts {
@@ -224,8 +232,14 @@ fn typed_request_streams_tools_usage_and_text_without_controller_routes() {
         matches!(
             events.as_slice(),
             [
-                StreamEvent::Queued { pos: None, wait_s: 0 },
-                StreamEvent::Queued { pos: None, wait_s: 1 },
+                StreamEvent::Queued {
+                    pos: None,
+                    wait_s: 0
+                },
+                StreamEvent::Queued {
+                    pos: None,
+                    wait_s: 1
+                },
                 StreamEvent::Text(_),
                 ..
             ]
@@ -289,7 +303,12 @@ fn cancellation_holds_engine_exclusion_until_process_exit() {
 
 #[test]
 fn refusal_and_cut_stream_are_not_replayed_and_keep_cleanup_owned() {
-    for fault in [Fault::Busy { retry_after: Some(1) }, Fault::DropAt { bytes: 32 }] {
+    for fault in [
+        Fault::Busy {
+            retry_after: Some(1),
+        },
+        Fault::DropAt { bytes: 32 },
+    ] {
         let server = FakeServer::start(
             vec![ScriptTurn {
                 fault: Some(fault),
@@ -508,7 +527,7 @@ fn typed_tool_result_continues_the_same_owned_engine_without_a_controller() {
     let mut owner = owner();
     let pid = owner.status().pid;
     let prefix = prefix();
-    let user = oxa_proto::WireMsg::user("Read the synthetic note");
+    let user = oxe_supervisor::proto::WireMsg::user("Read the synthetic note");
     let first_request = [user.clone()];
     let lease = owner.try_request().unwrap();
     let first = transport
@@ -528,7 +547,7 @@ fn typed_tool_result_continues_the_same_owned_engine_without_a_controller() {
     let continued = [
         user,
         first.msg,
-        oxa_proto::WireMsg::tool_result("read-one", "SYNTHETIC NOTE"),
+        oxe_supervisor::proto::WireMsg::tool_result("read-one", "SYNTHETIC NOTE"),
     ];
     let lease = owner.try_request().unwrap();
     let second = transport
@@ -544,7 +563,10 @@ fn typed_tool_result_continues_the_same_owned_engine_without_a_controller() {
             &mut |_| {},
         )
         .unwrap();
-    assert_eq!(second.msg.content.as_deref(), Some("Synthetic completed task"));
+    assert_eq!(
+        second.msg.content.as_deref(),
+        Some("Synthetic completed task")
+    );
     assert_eq!(owner.status().pid, pid);
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
@@ -554,7 +576,11 @@ fn typed_tool_result_continues_the_same_owned_engine_without_a_controller() {
 
 #[test]
 fn local_overflow_uses_the_shared_error_classification() {
-    let server = FakeServer::start(vec![ScriptTurn::fault(Fault::Overflow)], FakeOpts::default()).unwrap();
+    let server = FakeServer::start(
+        vec![ScriptTurn::fault(Fault::Overflow)],
+        FakeOpts::default(),
+    )
+    .unwrap();
     let mut owner = owner();
     let lease = owner.try_request().unwrap();
     let prefix = prefix();
@@ -608,7 +634,9 @@ fn progress_before_overflow_preserves_typed_recovery_without_replaying() {
         .unwrap_err();
     assert!(progress);
     assert_eq!(error.code, codes::CONTEXT_OVERFLOW);
-    assert!(!error.message.starts_with(oxa_proto::CUT_BY_REFUSAL));
+    assert!(!error
+        .message
+        .starts_with(oxe_supervisor::proto::CUT_BY_REFUSAL));
     assert_eq!(server.hits("POST", "/v1/chat/completions"), 1);
     stopped(&mut owner);
 }

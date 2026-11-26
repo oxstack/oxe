@@ -1,8 +1,8 @@
-# Local engine ownership
+# oxe-supervisor: local engine ownership
 
-Design for #331's local-engine series: one owner of one `oxe-server` process, with
-no controller daemon or worker thread of its own. The engine remains a separate
-process. The library is not linked by oxa until the final default-off wiring slice.
+One owner of one `oxe-server` process, with no controller daemon or worker thread
+of its own. The engine remains a separate process. `oxe serve` is the standalone
+consumer of this crate; the library also runs model-free stub/fake tests.
 
 1. This slice: synchronous, caller-driven supervision. `start` launches in a new
    process group; `poll` checks exit and calls a bounded health probe supplied by

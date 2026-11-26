@@ -1,4 +1,4 @@
-use oxc_local::{Config, Failure, State, Supervisor};
+use oxe_supervisor::{Config, Failure, State, Supervisor};
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -79,8 +79,10 @@ fn startup_timeout_retains_child_until_exit_and_respects_backoff() {
         .unwrap();
     assert_eq!(s.state(), State::Backoff);
     s.stop(now).unwrap();
-    s.poll(now + Duration::from_secs(100), || panic!("cancelled restart"))
-        .unwrap();
+    s.poll(now + Duration::from_secs(100), || {
+        panic!("cancelled restart")
+    })
+    .unwrap();
     assert_eq!(s.state(), State::Stopped);
 }
 
@@ -131,8 +133,10 @@ fn natural_exit_is_reaped_before_replacement_and_budget_is_bounded() {
     s.start(now).unwrap();
     reap(&mut s, now, State::Backoff);
     assert_eq!(s.last_failure(), Some(Failure::Exited));
-    s.poll(now + Duration::from_secs(3), || panic!("spawn does not probe"))
-        .unwrap();
+    s.poll(now + Duration::from_secs(3), || {
+        panic!("spawn does not probe")
+    })
+    .unwrap();
     assert_eq!(s.state(), State::Starting);
     reap(&mut s, now + Duration::from_secs(3), State::Failed);
     assert_eq!(s.pid(), None);
@@ -164,7 +168,10 @@ fn term_grace_then_kill_for_an_uncooperative_child() {
     s.start(now).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !ready.exists() {
-        assert!(Instant::now() < deadline, "child did not install TERM handler");
+        assert!(
+            Instant::now() < deadline,
+            "child did not install TERM handler"
+        );
         std::thread::yield_now();
     }
     s.stop(now).unwrap();
@@ -193,7 +200,10 @@ fn term_allows_clean_shutdown_before_kill_deadline() {
     s.start(now).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !ready.exists() {
-        assert!(Instant::now() < deadline, "child did not install TERM handler");
+        assert!(
+            Instant::now() < deadline,
+            "child did not install TERM handler"
+        );
         std::thread::yield_now();
     }
     s.stop(now).unwrap();

@@ -1,10 +1,10 @@
 //! Model-free lifecycle smoke. Only use a stub engine and synthetic GGUF.
 //! Memory is explicitly faked here; this is not hardware qualification.
-use oxa_engine::StreamOpts;
-use oxa_proto::{CancelToken, ChatRequest, FrozenPrefix};
-use oxc_local::lifecycle::{Lifecycle, MemorySample, Model, Policy, StopReason};
-use oxc_local::transport::{Monitor, Transport};
-use oxc_local::{Config, State};
+use oxe_supervisor::engine::StreamOpts;
+use oxe_supervisor::lifecycle::{Lifecycle, MemorySample, Model, Policy, StopReason};
+use oxe_supervisor::proto::{CancelToken, ChatRequest, FrozenPrefix};
+use oxe_supervisor::transport::{Monitor, Transport};
+use oxe_supervisor::{Config, State};
 use std::io;
 use std::net::TcpListener;
 use std::path::PathBuf;

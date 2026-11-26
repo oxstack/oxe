@@ -1,10 +1,10 @@
 //! User-only local factory. The caller has already selected the default-off setting.
+use crate::engine::StreamOpts;
 use crate::launch_profile::{from_user_settings, InstalledLayout, InstalledModel};
 use crate::lifecycle::{Model, Policy};
 use crate::native::{LocalEngine, LocalModel};
+use crate::proto::{codes, Engine, OxaError};
 use crate::Config;
-use oxa_engine::StreamOpts;
-use oxa_proto::{codes, Engine, OxaError};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -74,7 +74,12 @@ pub fn configured_local_engine(
     };
     let mut installed = BTreeMap::new();
     for (alias, entry) in entries {
-        let model = PathBuf::from(entry.get("model").and_then(Value::as_str).ok_or_else(invalid)?);
+        let model = PathBuf::from(
+            entry
+                .get("model")
+                .and_then(Value::as_str)
+                .ok_or_else(invalid)?,
+        );
         let arguments = match entry.get("arguments") {
             None => Vec::new(),
             Some(value) => value
@@ -92,7 +97,10 @@ pub fn configured_local_engine(
         environment,
     });
     let user = Arc::new(serde_json::json!({"oxa":{"local":local}}));
-    let startup = duration(local.get("startup_timeout_seconds"), Duration::from_secs(180))?;
+    let startup = duration(
+        local.get("startup_timeout_seconds"),
+        Duration::from_secs(180),
+    )?;
     let policy = Policy {
         idle_timeout: match local.get("idle_unload_seconds") {
             Some(Value::Null) => None,
@@ -179,9 +187,18 @@ pub fn configured_local_engine(
             }),
         });
     }
-    Ok(Arc::new(LocalEngine::new(models, private_dir, opts, policy)?))
+    Ok(Arc::new(LocalEngine::new(
+        models,
+        private_dir,
+        opts,
+        policy,
+    )?))
 }
-fn required_for_weights(model: &std::path::Path, budget: &Value, context: u32) -> Result<u64, OxaError> {
+fn required_for_weights(
+    model: &std::path::Path,
+    budget: &Value,
+    context: u32,
+) -> Result<u64, OxaError> {
     let weights = std::fs::metadata(model).ok().filter(|m| m.is_file()).ok_or_else(||
         OxaError::new(codes::NOT_FOUND, "Local weights are missing; set oxa.local.models.<alias>.model to an existing GGUF path. No download is attempted."))?;
     crate::admission::required(budget, context, weights.len())
@@ -194,7 +211,10 @@ fn sibling_binary(executable: &std::path::Path) -> Result<PathBuf, OxaError> {
         .ok_or_else(invalid)
 }
 fn invalid() -> OxaError {
-    OxaError::new(codes::INVALID, "Invalid user local configuration in oxa.local.")
+    OxaError::new(
+        codes::INVALID,
+        "Invalid user local configuration in oxa.local.",
+    )
 }
 fn limit(value: &Value, key: &str) -> Result<u32, OxaError> {
     value[key]
@@ -222,7 +242,7 @@ fn duration(value: Option<&Value>, default: Duration) -> Result<Duration, OxaErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxa_fake::TestEnv;
+    use crate::fake::TestEnv;
     fn settings() -> Value {
         serde_json::json!({"binary":"/synthetic/oxe-server", "models":{"synthetic":{"model":"/synthetic/model.gguf","arguments":["--engine","stub"]}},"limits":{"synthetic":{"context_window":4096,"max_output":64,"allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}})
     }
@@ -235,7 +255,11 @@ mod tests {
             .unwrap()
             .remove("allocation_budget");
         old["limits"]["synthetic"]["required_available_bytes"] = serde_json::json!(1048576);
-        let error = match configured_engine(Some(&old), env.work().join("private"), StreamOpts::default()) {
+        let error = match configured_engine(
+            Some(&old),
+            env.work().join("private"),
+            StreamOpts::default(),
+        ) {
             Ok(_) => panic!("opaque total accepted without allocation components"),
             Err(error) => error,
         };
@@ -261,7 +285,8 @@ mod tests {
     fn metadata_factory_never_opens_launch_paths_or_private_storage() {
         let env = TestEnv::new();
         let private = env.work().join("not-created");
-        let engine = configured_engine(Some(&settings()), private.clone(), StreamOpts::default()).unwrap();
+        let engine =
+            configured_engine(Some(&settings()), private.clone(), StreamOpts::default()).unwrap();
         let info = engine.info(Some("synthetic")).unwrap();
         assert_eq!(info.n_ctx, 4096);
         assert_eq!(info.max_output, 64);
@@ -274,16 +299,18 @@ mod tests {
         let mut local = settings();
         local.as_object_mut().unwrap().remove("binary");
         let private = env.work().join("private");
-        let engine = configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
+        let engine =
+            configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
         assert_eq!(engine.info(None).unwrap().model, "synthetic");
         assert!(!private.exists());
     }
     #[test]
     fn missing_weights_are_reported_before_child_authentication_or_launch() {
-        use oxa_proto::{CancelToken, ChatRequest, FrozenPrefix};
+        use crate::proto::{CancelToken, ChatRequest, FrozenPrefix};
         let env = TestEnv::new();
         let private = env.work().join("private");
-        let engine = configured_engine(Some(&settings()), private.clone(), StreamOpts::default()).unwrap();
+        let engine =
+            configured_engine(Some(&settings()), private.clone(), StreamOpts::default()).unwrap();
         let prefix = FrozenPrefix {
             sections: vec![],
             tools_json: "[]".into(),
@@ -317,10 +344,11 @@ mod tests {
         ] {
             let mut local = settings();
             local["models"]["synthetic"]["arguments"] = arguments.clone();
-            let error = match configured_engine(Some(&local), private.clone(), StreamOpts::default()) {
-                Ok(_) => panic!("unsupported context accepted: {arguments}"),
-                Err(error) => error,
-            };
+            let error =
+                match configured_engine(Some(&local), private.clone(), StreamOpts::default()) {
+                    Ok(_) => panic!("unsupported context accepted: {arguments}"),
+                    Err(error) => error,
+                };
             assert_eq!(error.code, codes::INVALID);
             assert!(error.message.contains("context must match one"));
             assert!(!private.exists());
@@ -332,7 +360,8 @@ mod tests {
         ] {
             let mut local = settings();
             local["models"]["synthetic"]["arguments"] = arguments;
-            let engine = configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
+            let engine =
+                configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
             assert_eq!(engine.info(Some("synthetic")).unwrap().n_ctx, 4096);
             assert!(!private.exists());
         }
@@ -342,10 +371,13 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let env = TestEnv::new();
         env.write("work/synthetic.gguf", "Synthetic placeholder; never loaded");
-        env.write("work/oxe-server", "Synthetic placeholder; must never execute");
+        env.write(
+            "work/oxe-server",
+            "Synthetic placeholder; must never execute",
+        );
         let binary = env.work().join("oxe-server");
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let prefix = oxa_proto::FrozenPrefix {
+        let prefix = crate::proto::FrozenPrefix {
             sections: vec![],
             tools_json: "[]".into(),
             sha256: [0; 32],
@@ -356,24 +388,29 @@ mod tests {
         ] {
             let mut local = settings();
             local["binary"] = serde_json::json!(binary);
-            local["models"]["synthetic"]["model"] = serde_json::json!(env.work().join("synthetic.gguf"));
+            local["models"]["synthetic"]["model"] =
+                serde_json::json!(env.work().join("synthetic.gguf"));
             local["models"]["synthetic"]["arguments"] = arguments.clone();
             let private = env.work().join("private");
-            let engine = configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
+            let engine =
+                configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
             assert!(!private.exists());
             let error = engine
                 .chat(
-                    &oxa_proto::ChatRequest::new(&prefix, &[], "synthetic"),
-                    &oxa_proto::CancelToken::new(),
+                    &crate::proto::ChatRequest::new(&prefix, &[], "synthetic"),
+                    &crate::proto::CancelToken::new(),
                     &mut |_| panic!("Flash refusal generated output"),
                 )
                 .unwrap_err();
-            assert_eq!(error.code, codes::UNSUPPORTED_IN_OXA, "{arguments}");
+            assert_eq!(error.code, codes::UNSUPPORTED, "{arguments}");
             assert_eq!(
                 error.message,
-                "Flash streaming-budget admission in the resident local factory is not supported in oxa"
+                "Flash streaming-budget admission in the resident local factory is not supported"
             );
-            assert!(!private.exists(), "{arguments} reached child authentication");
+            assert!(
+                !private.exists(),
+                "{arguments} reached child authentication"
+            );
         }
     }
     #[test]
@@ -391,22 +428,30 @@ mod tests {
             "work/synthetic.gguf",
             "Synthetic metadata placeholder; never loaded",
         );
-        env.write("work/not-executable", "Synthetic placeholder; never executed");
-        for binary in [env.work().join("missing-oxe"), env.work().join("not-executable")] {
+        env.write(
+            "work/not-executable",
+            "Synthetic placeholder; never executed",
+        );
+        for binary in [
+            env.work().join("missing-oxe"),
+            env.work().join("not-executable"),
+        ] {
             let mut local = settings();
             local["binary"] = serde_json::json!(binary);
-            local["models"]["synthetic"]["model"] = serde_json::json!(env.work().join("synthetic.gguf"));
+            local["models"]["synthetic"]["model"] =
+                serde_json::json!(env.work().join("synthetic.gguf"));
             let private = env.work().join("private");
-            let engine = configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
-            let prefix = oxa_proto::FrozenPrefix {
+            let engine =
+                configured_engine(Some(&local), private.clone(), StreamOpts::default()).unwrap();
+            let prefix = crate::proto::FrozenPrefix {
                 sections: vec![],
                 tools_json: "[]".into(),
                 sha256: [0; 32],
             };
             let error = engine
                 .chat(
-                    &oxa_proto::ChatRequest::new(&prefix, &[], "synthetic"),
-                    &oxa_proto::CancelToken::new(),
+                    &crate::proto::ChatRequest::new(&prefix, &[], "synthetic"),
+                    &crate::proto::CancelToken::new(),
                     &mut |_| panic!("missing engine generated output"),
                 )
                 .unwrap_err();
@@ -428,12 +473,17 @@ mod tests {
                         serde_json::json!(["--api-key-file", "/synthetic/forbidden"])
                 }
                 3 => settings["binary"] = serde_json::json!("/usr/bin/python3"),
-                _ => settings["environment"] = serde_json::json!({"OXE_API_KEY_FILE":"/synthetic/forbidden"}),
+                _ => {
+                    settings["environment"] =
+                        serde_json::json!({"OXE_API_KEY_FILE":"/synthetic/forbidden"})
+                }
             }
-            assert!(
-                configured_engine(Some(&settings), env.work().join("private"), StreamOpts::default())
-                    .is_err()
-            );
+            assert!(configured_engine(
+                Some(&settings),
+                env.work().join("private"),
+                StreamOpts::default()
+            )
+            .is_err());
         }
         assert!(!env.work().join("private").exists());
     }

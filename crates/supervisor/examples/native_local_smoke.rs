@@ -1,7 +1,7 @@
 //! Actual native factory with stub-only synthetic model input. Use fake kernel
 //! metadata in the test mount namespace; this does not qualify real hardware.
-use oxa_engine::StreamOpts;
-use oxa_proto::{CancelToken, ChatRequest, FrozenPrefix};
+use oxe_supervisor::engine::StreamOpts;
+use oxe_supervisor::proto::{CancelToken, ChatRequest, FrozenPrefix};
 use std::{io, path::PathBuf};
 
 fn footprint(label: &str) -> io::Result<()> {
@@ -17,7 +17,9 @@ fn footprint(label: &str) -> io::Result<()> {
 
 fn main() -> io::Result<()> {
     // This executable embeds the native factory, so it also owns the child entry hook.
-    if let Some(result) = oxc_local::platform::child_entry(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+    if let Some(result) =
+        oxe_supervisor::platform::child_entry(&std::env::args_os().skip(1).collect::<Vec<_>>())
+    {
         return result;
     }
     let mut args = std::env::args_os().skip(1);
@@ -27,8 +29,9 @@ fn main() -> io::Result<()> {
     assert!(args.next().is_none());
     let local = serde_json::json!({"binary":binary,"models":{"synthetic":{"model":model,"arguments":["--engine","stub","--ctx-size","4096"]}},
         "limits":{"synthetic":{"context_window":4096,"max_output":64,"allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}},"idle_unload_seconds":0.1});
-    let engine = oxc_local::configured_engine(Some(&local), private.clone(), StreamOpts::default())
-        .map_err(io::Error::other)?;
+    let engine =
+        oxe_supervisor::configured_engine(Some(&local), private.clone(), StreamOpts::default())
+            .map_err(io::Error::other)?;
     assert_eq!(engine.info(None).map_err(io::Error::other)?.n_ctx, 4096);
     assert!(!private.exists());
     footprint("cold")?;

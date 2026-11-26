@@ -1,5 +1,5 @@
-use oxc_local::lifecycle::{Lifecycle, MemorySample, Model, Policy, StopReason};
-use oxc_local::{Config, State};
+use oxe_supervisor::lifecycle::{Lifecycle, MemorySample, Model, Policy, StopReason};
+use oxe_supervisor::{Config, State};
 use std::time::{Duration, Instant};
 
 fn model(name: &str) -> Model {
@@ -241,7 +241,10 @@ fn invalid_or_missing_samples_stop_a_loaded_engine_and_forbid_restart() {
         owner
             .poll(now, sample, || panic!("no probe after failure"))
             .unwrap();
-        assert_eq!(owner.status().stop_reason, Some(StopReason::MemoryUnavailable));
+        assert_eq!(
+            owner.status().stop_reason,
+            Some(StopReason::MemoryUnavailable)
+        );
         stopped(&mut owner, now);
     }
 }
@@ -341,7 +344,7 @@ fn queued_requests_block_idle_unload_and_owner_drop_wakes_them_closed() {
     drop(owner);
     assert!(matches!(
         waiting.as_mut().poll(&mut cx),
-        Poll::Ready(Err(oxc_local::queue::AdmissionError::Closed))
+        Poll::Ready(Err(oxe_supervisor::queue::AdmissionError::Closed))
     ));
     drop(active);
     assert!(gate.try_acquire().is_err());
@@ -351,7 +354,8 @@ fn queued_requests_block_idle_unload_and_owner_drop_wakes_them_closed() {
 fn memory_fault_during_switch_cancels_launch_even_if_sampling_recovers() {
     for fault_kind in 0..4 {
         let now = Instant::now();
-        let ready = std::env::temp_dir().join(format!("local-switch-{}-{fault_kind}", std::process::id()));
+        let ready =
+            std::env::temp_dir().join(format!("local-switch-{}-{fault_kind}", std::process::id()));
         let mut initial = model("one");
         initial.config.executable = "/bin/sh".into();
         initial.config.arguments = vec![
@@ -435,7 +439,9 @@ fn exhausted_spawn_failure_releases_control_before_returning_error() {
     assert!(owner.load(invalid, now, Ok(memory())).is_err());
     assert_eq!(owner.status().state, State::Backoff);
     assert!(owner
-        .poll(now + Duration::from_secs(2), Ok(memory()), || panic!("no child"))
+        .poll(now + Duration::from_secs(2), Ok(memory()), || panic!(
+            "no child"
+        ))
         .is_err());
     assert_eq!(owner.status().state, State::Failed);
     owner

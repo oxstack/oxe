@@ -153,7 +153,11 @@ impl RequestQueue {
         let _guest_slot = guests.slots.try_acquire()?;
         let _turn = match turn {
             Some(turn) => turn,
-            None => guests.turn.acquire().await.map_err(|_| AdmissionError::Closed)?,
+            None => guests
+                .turn
+                .acquire()
+                .await
+                .map_err(|_| AdmissionError::Closed)?,
         };
 
         loop {

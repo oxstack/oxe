@@ -44,7 +44,12 @@ impl ChildAuth {
         let directory: OwnedFd = file.into();
         let mut random = [0u8; 48];
         File::open("/dev/urandom")?.read_exact(&mut random)?;
-        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
         let name = format!("engine-{}.key", hex(&random[..16]));
         let token = hex(&random[16..]);
         let mut auth = Self {
@@ -57,7 +62,11 @@ impl ChildAuth {
             let fd = openat(
                 &auth.directory,
                 auth.name.as_str(),
-                OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
+                OFlag::O_WRONLY
+                    | OFlag::O_CREAT
+                    | OFlag::O_EXCL
+                    | OFlag::O_CLOEXEC
+                    | OFlag::O_NOFOLLOW,
                 Mode::S_IRUSR | Mode::S_IWUSR,
             )?;
             auth.created = true;
@@ -89,7 +98,11 @@ impl std::fmt::Debug for ChildAuth {
 impl Drop for ChildAuth {
     fn drop(&mut self) {
         if self.created {
-            let _ = unlinkat(&self.directory, self.name.as_str(), UnlinkatFlags::NoRemoveDir);
+            let _ = unlinkat(
+                &self.directory,
+                self.name.as_str(),
+                UnlinkatFlags::NoRemoveDir,
+            );
         }
     }
 }
@@ -111,7 +124,7 @@ fn refuse_repository(directory: &OwnedFd) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxa_fake::TestEnv;
+    use crate::fake::TestEnv;
     #[test]
     fn private_child_file_is_fresh_anchored_and_removed_without_reading_it() {
         let env = TestEnv::new();
@@ -120,7 +133,10 @@ mod tests {
         let second = ChildAuth::create(&path).unwrap();
         assert_ne!(first.token(), second.token());
         assert!(!format!("{first:?}").contains(first.token()));
-        assert_eq!(std::fs::metadata(first.path()).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(first.path()).unwrap().mode() & 0o777,
+            0o600
+        );
         let key = first.path();
         drop(first);
         assert!(!key.exists());

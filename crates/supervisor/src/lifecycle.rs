@@ -284,7 +284,10 @@ impl Lifecycle {
     pub fn status(&self) -> Status<'_> {
         Status {
             model: self.model.as_ref().map(|m| m.name.as_str()),
-            state: self.supervisor.as_ref().map_or(State::Stopped, Supervisor::state),
+            state: self
+                .supervisor
+                .as_ref()
+                .map_or(State::Stopped, Supervisor::state),
             pid: self.supervisor.as_ref().and_then(Supervisor::pid),
             waiting: self.queue.waiting(),
             stop_reason: self.stop_reason,
@@ -331,7 +334,12 @@ impl Lifecycle {
     }
     /// Load/switch only when exclusive. The owner keeps the lease through readiness.
     /// A loaded name reuses its frozen launch profile; unload before replacing it.
-    pub fn load(&mut self, model: Model, now: Instant, memory: io::Result<MemorySample>) -> io::Result<()> {
+    pub fn load(
+        &mut self,
+        model: Model,
+        now: Instant,
+        memory: io::Result<MemorySample>,
+    ) -> io::Result<()> {
         let lease = self.queue.try_acquire().map_err(io::Error::other)?;
         self.load_inner(lease, model, now, memory, false)
     }
@@ -379,7 +387,10 @@ impl Lifecycle {
         if self.control.is_some() {
             return Err(io::Error::other("local model operation in progress"));
         }
-        if model.name.is_empty() || model.name.len() > 128 || model.name.chars().any(char::is_control) {
+        if model.name.is_empty()
+            || model.name.len() > 128
+            || model.name.chars().any(char::is_control)
+        {
             return Err(io::Error::other("invalid local model name"));
         }
         let sample = self.admit(memory?, model.required_available_bytes)?;
@@ -408,7 +419,9 @@ impl Lifecycle {
             let gated = self.supervisor.as_ref().is_some_and(Supervisor::gated);
             let ready = self.supervisor.as_mut().unwrap().await_gate();
             match ready
-                .and_then(|()| platform.attach(pid, gated, self.supervisor.as_ref().unwrap().deadline))
+                .and_then(|()| {
+                    platform.attach(pid, gated, self.supervisor.as_ref().unwrap().deadline)
+                })
                 .and_then(|attached| {
                     crate::platform::no_swap(attached.sample)?;
                     self.supervisor.as_mut().unwrap().release()?;
@@ -438,7 +451,9 @@ impl Lifecycle {
                         {
                             error
                         } else {
-                            crate::platform::refused("engine child cgroup v2 memory/pids metadata readable")
+                            crate::platform::refused(
+                                "engine child cgroup v2 memory/pids metadata readable",
+                            )
                         },
                     );
                 }
@@ -491,11 +506,13 @@ impl Lifecycle {
         Ok(())
     }
     pub(crate) fn memory_policy(&self) -> Option<&'static str> {
-        (self.platform.is_some() && self.status().pid.is_some()).then_some(if self.scope.is_some() {
-            "scope"
-        } else {
-            "inherited"
-        })
+        (self.platform.is_some() && self.status().pid.is_some()).then_some(
+            if self.scope.is_some() {
+                "scope"
+            } else {
+                "inherited"
+            },
+        )
     }
     pub(crate) fn reap(&mut self, now: Instant) -> io::Result<()> {
         if let Some(supervisor) = &mut self.supervisor {
@@ -509,7 +526,10 @@ impl Lifecycle {
         memory: io::Result<MemorySample>,
         healthy: impl FnMut() -> io::Result<bool>,
     ) -> io::Result<Status<'_>> {
-        self.clock.lock().unwrap_or_else(|e| e.into_inner()).observed = now;
+        self.clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .observed = now;
         let sample = memory.and_then(MemorySample::validate);
         let state = self.status().state;
         if !(self.platform.is_some() && self.status().pid.is_none())
@@ -573,7 +593,8 @@ impl Lifecycle {
                 self.model = None;
                 self.guard = None;
                 if let Some(next) = self.next.take() {
-                    let admitted = sample.and_then(|s| self.admit(s, next.required_available_bytes));
+                    let admitted =
+                        sample.and_then(|s| self.admit(s, next.required_available_bytes));
                     match admitted {
                         Ok(sample) => {
                             let supervisor = Supervisor::new(next.config.clone())?;
@@ -593,11 +614,16 @@ impl Lifecycle {
             State::Ready => {
                 self.ready.store(true, Ordering::Release);
                 if self.control.is_some() && !self.retain_ready {
-                    self.clock.lock().unwrap_or_else(|e| e.into_inner()).last_use = now;
+                    self.clock
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .last_use = now;
                     self.control = None;
                 }
                 if let Some(timeout) = self.policy.idle_timeout {
-                    if let Some(lease) = idle_lease(now, &self.clock, timeout, || self.queue.try_acquire()) {
+                    if let Some(lease) =
+                        idle_lease(now, &self.clock, timeout, || self.queue.try_acquire())
+                    {
                         self.control = Some(lease);
                         self.stop(now, StopReason::Idle)?;
                     }
