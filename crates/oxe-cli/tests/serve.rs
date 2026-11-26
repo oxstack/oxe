@@ -4,9 +4,13 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 
 const OXE: &str = env!("CARGO_BIN_EXE_oxe");
 
@@ -145,22 +149,26 @@ impl Fixture {
     }
 
     fn start(&self) -> Serve {
-        let mut child = Command::new(OXE)
-            .env_clear()
-            .env("HOME", &self.root)
-            .env("PATH", "/usr/bin:/bin")
-            .env("OXE_SERVE_FAKE_MEMORY", "1")
-            .args([
-                "serve",
-                "--config",
-                self.config.to_str().unwrap(),
-                "--listen",
-                &format!("127.0.0.1:{}", self.listen),
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        // Hold the child in its guard from the first instruction: a panic during startup still
+        // ends `oxe serve` (and its engine) instead of leaking it into the next test run.
+        let mut serve = Serve {
+            child: Command::new(OXE)
+                .env_clear()
+                .env("HOME", &self.root)
+                .env("PATH", "/usr/bin:/bin")
+                .env("OXE_SERVE_FAKE_MEMORY", "1")
+                .args([
+                    "serve",
+                    "--config",
+                    self.config.to_str().unwrap(),
+                    "--listen",
+                    &format!("127.0.0.1:{}", self.listen),
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        };
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
             if let Ok(mut response) = agent()
@@ -169,12 +177,12 @@ impl Fixture {
             {
                 let text = response.body_mut().read_to_string().unwrap_or_default();
                 if text.contains("\"status\":\"ok\"") {
-                    return Serve { child };
+                    return serve;
                 }
             }
-            if child.try_wait().unwrap().is_some() {
+            if serve.child.try_wait().unwrap().is_some() {
                 let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
+                if let Some(mut pipe) = serve.child.stderr.take() {
                     let _ = pipe.read_to_string(&mut stderr);
                 }
                 panic!("oxe serve exited during startup: {stderr}");
@@ -205,11 +213,60 @@ struct Serve {
     child: Child,
 }
 
+impl Serve {
+    /// The graceful signal every stop path uses: `oxe serve` must stop the engine and exit 0.
+    fn terminate(&mut self) {
+        let _ = kill(Pid::from_raw(self.child.id() as i32), Signal::SIGTERM);
+    }
+
+    /// SIGKILL: no handler, no destructor, no shutdown path — only the parent-death tie.
+    fn kill_now(&mut self) {
+        kill(Pid::from_raw(self.child.id() as i32), Signal::SIGKILL).unwrap();
+    }
+
+    fn wait_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.child.try_wait().unwrap() {
+                Some(status) => return Some(status),
+                None if Instant::now() >= deadline => return None,
+                None => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    }
+}
+
 impl Drop for Serve {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // SIGTERM, bounded wait, then SIGKILL: never leave an `oxe serve` behind.
+        self.terminate();
+        if self.wait_exit(Duration::from_secs(10)).is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
+}
+
+/// True once `pid` is gone or a zombie: a killed child keeps a `/proc` entry until it is reaped.
+fn exited(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat
+            .rsplit_once(')')
+            .map(|(_, rest)| rest.trim_start().starts_with('Z'))
+            .unwrap_or(false),
+    }
+}
+
+fn wait_exit_of(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if exited(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    exited(pid)
 }
 
 fn agent() -> ureq::Agent {
@@ -465,4 +522,48 @@ fn local_only_bearer_is_accepted_without_a_key() {
     let _serve = fixture.start();
     let (status, body) = chat(fixture.listen, "tiny");
     assert_eq!(status, 200, "{body}");
+}
+
+/// Regression: a plain `kill` (SIGTERM) must stop the engine through the supervisor's own stop
+/// path and exit 0, not leave a ~20 GB engine behind with no owner.
+#[test]
+fn sigterm_stops_the_engine_child_and_exits_clean() {
+    let fixture = Fixture::new(&[("tiny", "")]);
+    let mut serve = fixture.start();
+    assert_eq!(chat(fixture.listen, "tiny").0, 200);
+    let engine = fixture.pid("tiny").expect("the fake engine wrote its pid");
+    assert!(!exited(engine), "the fake child must be running first");
+    serve.terminate();
+    let status = serve
+        .wait_exit(Duration::from_secs(10))
+        .expect("oxe serve must exit on SIGTERM");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "SIGTERM is a clean shutdown, not a failure: {status:?}"
+    );
+    assert!(
+        wait_exit_of(engine, Duration::from_secs(5)),
+        "the engine child outlived the SIGTERM shutdown"
+    );
+}
+
+/// Regression: if `oxe serve` dies abruptly (SIGKILL: no handler, no destructor), the engine child
+/// must die with it through PR_SET_PDEATHSIG instead of running on forever.
+#[test]
+fn sigkilled_serve_takes_the_engine_child_with_it() {
+    let fixture = Fixture::new(&[("tiny", "")]);
+    let mut serve = fixture.start();
+    assert_eq!(chat(fixture.listen, "tiny").0, 200);
+    let engine = fixture.pid("tiny").expect("the fake engine wrote its pid");
+    assert!(!exited(engine), "the fake child must be running first");
+    serve.kill_now();
+    let status = serve
+        .wait_exit(Duration::from_secs(10))
+        .expect("the killed oxe serve must be reaped");
+    assert_eq!(status.signal(), Some(Signal::SIGKILL as i32));
+    assert!(
+        wait_exit_of(engine, Duration::from_secs(5)),
+        "the engine child outlived a SIGKILLed oxe serve"
+    );
 }

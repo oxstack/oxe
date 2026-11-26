@@ -36,3 +36,5 @@ path = "src/bin/oxe.rs"
 
 [dev-dependencies]
 model = { path = "../model", features = ["testkit"] }
+# The serve tests end `oxe serve` with real signals (SIGTERM and SIGKILL), like an operator would.
+nix = { version = "0.30", features = ["signal", "process"] }

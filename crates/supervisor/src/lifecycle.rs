@@ -257,6 +257,7 @@ pub struct Lifecycle {
     clock: Arc<Mutex<Clock>>,
     policy: Policy,
     stop_reason: Option<StopReason>,
+    closed: bool,
 }
 impl Lifecycle {
     /// Sample this process's host/cgroup memory and attach the owned child to a no-swap
@@ -291,6 +292,7 @@ impl Lifecycle {
             })),
             policy,
             stop_reason: None,
+            closed: false,
         }
     }
     pub fn status(&self) -> Status<'_> {
@@ -389,6 +391,9 @@ impl Lifecycle {
         memory: io::Result<MemorySample>,
         retain_ready: bool,
     ) -> io::Result<()> {
+        if self.closed {
+            return Err(io::Error::other("local engine is shutting down"));
+        }
         if self.status().state == State::Ready && self.status().model == Some(model.name.as_str()) {
             if retain_ready {
                 self.control = Some(lease);
@@ -508,6 +513,18 @@ impl Lifecycle {
             self.control = None;
         }
         Ok(())
+    }
+    /// Permanent teardown: refuse new model operations and stop the owned engine through the
+    /// supervisor's normal TERM/grace/KILL/wait path. The caller keeps polling until `Stopped`.
+    /// A load that already holds this owner finishes or fails first; `closed` keeps it from
+    /// starting a replacement child after the stop.
+    pub fn shutdown(&mut self, now: Instant) -> io::Result<()> {
+        self.queue.close();
+        self.ready.store(false, Ordering::Release);
+        self.closed = true;
+        self.next = None;
+        self.retain_ready = false;
+        self.stop(now, StopReason::Explicit)
     }
     fn stop(&mut self, now: Instant, reason: StopReason) -> io::Result<()> {
         self.ready.store(false, Ordering::Release);

@@ -40,7 +40,8 @@ Serve every model in ~/.config/oxe/models.toml behind one OpenAI-compatible list
 GET /health, GET /v1/models, POST /v1/chat/completions and POST /v1/completions.
 One oxe-server child is resident at a time and is started on demand on a private loopback
 port. Loopback-only by default; --allow-remote permits a non-loopback --listen address.
-Any Authorization bearer token is accepted and ignored.";
+Any Authorization bearer token is accepted and ignored.
+SIGTERM and SIGINT stop the listener, stop the engine child (TERM, grace, KILL, wait) and exit 0.";
 
 pub fn run(args: &[String]) -> ! {
     let mut config = models_cmd::default_config_path();
@@ -109,6 +110,10 @@ pub fn run(args: &[String]) -> ! {
 
 async fn serve(host: Arc<Host>, address: SocketAddr) -> io::Result<()> {
     let listener = tokio::net::TcpListener::bind(address).await?;
+    // SIGTERM (systemd stop, `kill`) and SIGINT (Ctrl-C) both stop accepting, then take the
+    // engine down through the supervisor's own stop path instead of leaving it orphaned.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     eprintln!(
         "oxe serve: listening on http://{address}/v1 ({} model(s), engine {})",
         host.models.len(),
@@ -117,7 +122,8 @@ async fn serve(host: Arc<Host>, address: SocketAddr) -> io::Result<()> {
     loop {
         let (stream, _) = tokio::select! {
             accepted = listener.accept() => accepted?,
-            _ = tokio::signal::ctrl_c() => break,
+            _ = terminate.recv() => break,
+            _ = interrupt.recv() => break,
         };
         let io = TokioIo::new(stream);
         let host = host.clone();
@@ -131,7 +137,12 @@ async fn serve(host: Arc<Host>, address: SocketAddr) -> io::Result<()> {
                 .await;
         });
     }
-    Ok(())
+    drop(listener);
+    eprintln!("oxe serve: stopping the engine");
+    let stopping = host.clone();
+    tokio::task::spawn_blocking(move || stopping.shutdown())
+        .await
+        .unwrap_or_else(|error| Err(io::Error::other(format!("shutdown task: {error}"))))
 }
 
 async fn handle(request: Request<Incoming>, host: Arc<Host>) -> Response<ServeBody> {
@@ -681,6 +692,39 @@ impl Host {
             .read_to_string()
             .map_err(|_| io::Error::other("invalid local health reply"))?;
         Ok(serde_json::from_str::<Value>(&text).is_ok_and(|v| v["status"] == "ok"))
+    }
+
+    /// SIGTERM/SIGINT teardown: stop admitting engine work, then drive the supervisor's normal
+    /// stop path (TERM, grace, KILL, wait) to completion. The deadline bounds a child that
+    /// refuses to die, so the parent-death signal is the last resort, never the first.
+    fn shutdown(&self) -> io::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        lifecycle.shutdown(Instant::now())?;
+        loop {
+            let status = lifecycle.status();
+            if status.pid.is_none()
+                && matches!(
+                    status.state,
+                    oxe_supervisor::State::Stopped | oxe_supervisor::State::Failed
+                )
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::other(
+                    "the engine child did not stop before the shutdown deadline",
+                ));
+            }
+            let current = status.model.map(str::to_owned);
+            let healthy = || self.health(current.as_deref());
+            let sample = match status.pid {
+                Some(pid) => self.probe.child(pid),
+                None => self.probe.host(),
+            };
+            let _ = lifecycle.poll(Instant::now(), sample, healthy);
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 

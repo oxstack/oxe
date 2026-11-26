@@ -27,4 +27,6 @@ futures-lite = { version = "2", default-features = false, features = ["std"] }
 oxe-supervisor = { path = ".", features = ["testkit"] }
 
 [lints.rust]
-unsafe_code = "forbid"
+# Denied, not forbidden: the one unavoidable `unsafe` (CommandExt::pre_exec, which has no safe
+# wrapper) lives in src/spawn.rs behind a documented `#[allow(unsafe_code)]`.
+unsafe_code = "deny"

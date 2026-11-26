@@ -743,6 +743,7 @@ dependencies = [
  "hyper-util",
  "kernels-sys",
  "model",
+ "nix",
  "oxe-supervisor",
  "oxn",
  "sched",

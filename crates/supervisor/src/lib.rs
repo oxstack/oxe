@@ -16,6 +16,7 @@ pub mod native;
 pub mod platform;
 
 pub mod queue;
+mod spawn;
 pub mod transport;
 
 use nix::errno::Errno;
@@ -74,6 +75,9 @@ pub enum Failure {
 ///
 /// Call `stop` and continue polling until Stopped for bounded graceful teardown.
 /// Drop is an emergency kill-and-reap fallback, not a graceful shutdown API.
+///
+/// The child is created by a process-lifetime spawner thread with `PR_SET_PDEATHSIG` armed
+/// (`SIGKILL` on Linux), so it never outlives the process that owns it, however that process ends.
 pub struct Supervisor {
     config: Config,
     child: Option<Child>,
@@ -166,8 +170,10 @@ impl Supervisor {
                 .stdin(if gated { Stdio::piped() } else { Stdio::null() })
                 .stdout(if gated { Stdio::piped() } else { Stdio::null() })
                 .stderr(Stdio::null())
-                .process_group(0)
-                .spawn()
+                .process_group(0);
+            // Never `.spawn()` here: the child's parent-death signal is bound to the thread that
+            // forked it, so the fork must happen on the process-lifetime spawner thread.
+            spawn::spawn(command)
         })();
         match result {
             Ok(child) => {
