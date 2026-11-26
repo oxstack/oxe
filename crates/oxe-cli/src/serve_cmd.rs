@@ -66,7 +66,16 @@ pub fn run(args: &[String]) -> ! {
         }
         i += 1;
     }
-    let mut cfg = Config::load(&config).unwrap_or_else(|e| fail(&e));
+    let mut cfg = Config::load(&config).unwrap_or_else(|e| {
+        if config.exists() {
+            fail(&e)
+        } else {
+            fail(&format!(
+                "no config at {}; run `oxe models add <model.gguf>` (or `oxe import-oxa`) first\n{e}",
+                config.display()
+            ))
+        }
+    });
     if let Some(listen) = listen {
         cfg.listen = listen;
     }
