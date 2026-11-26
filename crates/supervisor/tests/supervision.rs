@@ -202,8 +202,17 @@ fn engine_child_outlives_its_spawning_thread_but_not_its_owner() {
             break pid;
         }
     };
-    let alive =
-        |pid: u32| nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok();
+    // A killed orphan stays a zombie until something reaps it; in a CI container PID 1 often does
+    // not reap, and `kill(pid, 0)` still succeeds on a zombie. Count a zombie as dead.
+    let alive = |pid: u32| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                let state = stat.rsplit_once(')')?.1.trim_start().chars().next()?;
+                Some(state != 'Z' && state != 'X')
+            })
+            .unwrap_or(false)
+    };
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         alive(pid),
