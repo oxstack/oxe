@@ -55,7 +55,7 @@ jobs:
           FILE_VERSION: ${{ inputs.file_version }}
         run: |
           set -euo pipefail
-          [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || {
+          [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$ ]] || {
             echo "bad version string: $VERSION" >&2; exit 1; }
           file_version=${FILE_VERSION:-$VERSION}
           [[ $file_version =~ ^[0-9A-Za-z._+-]+$ ]] || {
