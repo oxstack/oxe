@@ -59,9 +59,16 @@ jobs:
       image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
     timeout-minutes: 120
     steps:
+      # The fedora image ships no git, so actions/checkout would fall back to the REST source
+      # archive without .git and every later `git ls-files` would fail. Install it first.
+      - name: Git before checkout (prevent REST archive fallback)
+        run: dnf -y -q install --setopt=install_weak_deps=False git-core
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The checkout runs as another uid than the container's root.
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Toolchain
         run: tools/ci/setup_toolchain.sh "$RUST_VERSION" clippy
       - name: Compiler and source cache key
@@ -112,9 +119,16 @@ jobs:
       # runner's kernel path: print its hash instead of failing.
       OXE_NUMERICS_GOLDEN_UNLISTED: print
     steps:
+      # The fedora image ships no git, so actions/checkout would fall back to the REST source
+      # archive without .git and every later `git ls-files` would fail. Install it first.
+      - name: Git before checkout (prevent REST archive fallback)
+        run: dnf -y -q install --setopt=install_weak_deps=False git-core
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The checkout runs as another uid than the container's root.
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Toolchain
         run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
       - name: Compiler and source cache key
@@ -175,9 +189,16 @@ jobs:
       image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
     timeout-minutes: 150
     steps:
+      # The fedora image ships no git, so actions/checkout would fall back to the REST source
+      # archive without .git and every later `git ls-files` would fail. Install it first.
+      - name: Git before checkout (prevent REST archive fallback)
+        run: dnf -y -q install --setopt=install_weak_deps=False git-core
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The checkout runs as another uid than the container's root.
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Toolchain
         run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
       - name: Compiler and source cache key

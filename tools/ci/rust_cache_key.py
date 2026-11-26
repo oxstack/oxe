@@ -32,8 +32,8 @@ def source_files(root, workspaces):
     if (root / '.git').exists():
         return subprocess.check_output(['git', 'ls-files', '-z', '--', *workspaces,
             '.cargo', 'rust-toolchain', 'rust-toolchain.toml'], cwd=root).decode().split('\0')[:-1]
-    # Minimal Fedora images have no git at checkout time: checkout uses a source archive.
-    # That archive contains tracked source only; build outputs must not enter the key.
+    # No .git (an exported source archive, or a checkout made without git): walk the workspace
+    # trees instead. Such a tree holds tracked source only; build outputs must not enter the key.
     files = []
     for workspace in [*workspaces, '.cargo']:
         base = root / workspace
