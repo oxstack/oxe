@@ -8,7 +8,7 @@ pub(crate) fn invalid() -> OxaError {
         "Local admission requires oxa.local.limits.<alias>.allocation_budget: kv_bytes_per_position, scratch_bytes, mtp_state_bytes and positive margin_bytes. Supply qualified allocation bounds for the configured context/arguments, not the weights file size.")
 }
 
-pub(crate) fn required(value: &Value, context: u32, weights_bytes: u64) -> Result<u64, OxaError> {
+pub fn required(value: &Value, context: u32, weights_bytes: u64) -> Result<u64, OxaError> {
     let object = value.as_object().ok_or_else(invalid)?;
     let fields = [
         "kv_bytes_per_position",
@@ -41,7 +41,7 @@ pub(crate) fn required(value: &Value, context: u32, weights_bytes: u64) -> Resul
 
 /// Bind the allocation calculation to the actual native context, including -c.
 /// No duplicate/last-wins or unsupported attached/equals-form authority is accepted.
-pub(crate) fn bind_context(arguments: &mut Vec<OsString>, context: u32) -> Result<(), OxaError> {
+pub fn bind_context(arguments: &mut Vec<OsString>, context: u32) -> Result<(), OxaError> {
     let mut found = false;
     for (index, word) in arguments.iter().enumerate() {
         let Some(word) = word.to_str() else { continue };

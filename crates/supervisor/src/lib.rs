@@ -1,8 +1,8 @@
 //! Caller-driven ownership of one local engine. No daemon or background thread.
 #![cfg(unix)]
 
-mod admission;
-mod child_auth;
+pub mod admission;
+pub mod child_auth;
 mod configured;
 pub mod engine;
 pub mod fake;

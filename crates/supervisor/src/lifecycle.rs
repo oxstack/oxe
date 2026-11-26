@@ -259,6 +259,18 @@ pub struct Lifecycle {
     stop_reason: Option<StopReason>,
 }
 impl Lifecycle {
+    /// Sample this process's host/cgroup memory and attach the owned child to a no-swap
+    /// cgroup when the caller's own cgroup has no swap. This is the production memory mode
+    /// for `oxe serve`; tests inject synthetic samples instead and leave the platform unset.
+    pub fn use_host_memory(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            self.platform = Some(Arc::new(crate::platform::LinuxLauncher(
+                crate::memory::MemorySource::default(),
+            )));
+        }
+    }
+
     pub fn new(max_waiters: usize, policy: Policy) -> Self {
         let now = Instant::now();
         Self {

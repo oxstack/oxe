@@ -8,14 +8,14 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
-pub(crate) struct ChildAuth {
+pub struct ChildAuth {
     directory: OwnedFd,
     name: String,
     token: String,
     created: bool,
 }
 impl ChildAuth {
-    pub(crate) fn create(path: &Path) -> io::Result<Self> {
+    pub fn create(path: &Path) -> io::Result<Self> {
         if !path.is_absolute() {
             return Err(invalid());
         }
@@ -76,7 +76,7 @@ impl ChildAuth {
         })();
         result.map(|()| auth)
     }
-    pub(crate) fn path(&self) -> PathBuf {
+    pub fn path(&self) -> PathBuf {
         // Anchor the child read to the retained directory, even if its pathname
         // is replaced. No inherited FD or secret in argv/environment is needed.
         PathBuf::from(format!(
@@ -86,7 +86,7 @@ impl ChildAuth {
             self.name
         ))
     }
-    pub(crate) fn token(&self) -> &str {
+    pub fn token(&self) -> &str {
         &self.token
     }
 }

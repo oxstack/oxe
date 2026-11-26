@@ -125,7 +125,7 @@ pub fn http_request(r: &HttpRequest) -> Result<HttpResponse, OxaError> {
     let stream = connect(r.url, r.timeout_ms, &never)?;
     let mut conn = Conn::new(
         stream,
-        &never,
+        never.clone(),
         r.timeout_ms,
         codes::TIMEOUT,
         codes::ENGINE_HTTP,
@@ -278,19 +278,19 @@ fn build_request(
 }
 
 /// A connection with the liveness rule: any byte resets the silence clock.
-struct Conn<'a> {
+struct Conn {
     stream: TcpStream,
-    cancel: &'a CancelToken,
+    cancel: CancelToken,
     silence: Duration,
     last: Instant,
     silent_code: &'static str,
     broken_code: &'static str,
 }
 
-impl<'a> Conn<'a> {
+impl Conn {
     fn new(
         stream: TcpStream,
-        cancel: &'a CancelToken,
+        cancel: CancelToken,
         silence_ms: u64,
         silent_code: &'static str,
         broken_code: &'static str,
@@ -818,7 +818,7 @@ pub fn post_sse_bounded(
     let stream = connect(url, stream_opts.connect_timeout_ms, cancel)?;
     let mut conn = Conn::new(
         stream,
-        cancel,
+        cancel.clone(),
         stream_opts.silence_limit_ms,
         codes::STREAM_BROKEN,
         codes::STREAM_BROKEN,
@@ -893,6 +893,104 @@ pub fn post_sse_bounded(
         return Ok(end);
     }
     Err(broken("the engine closed the stream before [DONE]"))
+}
+
+/// An open raw response: status, headers and the body bytes as they arrive.
+///
+/// This is the passthrough form used by `oxe serve`: payload bytes are returned exactly as the
+/// engine wrote them (SSE comments included) and the caller decides how to frame them.
+pub struct RawResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    conn: Conn,
+    dec: BodyDecoder,
+    pending: Vec<u8>,
+    done: bool,
+}
+
+/// POST `body` and return the response head plus an open body reader. Non-2xx statuses are
+/// returned the same way; their bodies are read through [`RawResponse::read_chunk`].
+pub fn open_raw(
+    url: &Url,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &[u8],
+    opts: &StreamOpts,
+    cancel: &CancelToken,
+) -> Result<RawResponse, OxaError> {
+    let mut all: Vec<(&str, String)> = headers.to_vec();
+    if !has_header(headers, "content-type") {
+        all.push(("Content-Type", "application/json".to_string()));
+    }
+    if !has_header(headers, "accept") {
+        all.push(("Accept", "text/event-stream".to_string()));
+    }
+    let req = build_request("POST", url, path, &all, body)?;
+    let stream = connect(url, opts.connect_timeout_ms, cancel)?;
+    let mut conn = Conn::new(
+        stream,
+        cancel.clone(),
+        opts.silence_limit_ms,
+        codes::STREAM_BROKEN,
+        codes::STREAM_BROKEN,
+    )?;
+    conn.write_all(&req)?;
+    let (head, rest) = conn.read_head()?;
+    let parsed = parse_head(&head).map_err(|m| broken(&m))?;
+    let framing = framing_of(&parsed.headers).map_err(|m| broken(&m))?;
+    Ok(RawResponse {
+        status: parsed.status,
+        headers: parsed.headers,
+        conn,
+        dec: BodyDecoder::new(framing),
+        pending: rest,
+        done: false,
+    })
+}
+
+impl RawResponse {
+    /// The next payload bytes, or `None` at the end of the response body.
+    pub fn read_chunk(&mut self) -> Result<Option<Vec<u8>>, OxaError> {
+        if self.done {
+            return Ok(None);
+        }
+        let mut out = Vec::new();
+        loop {
+            if !self.pending.is_empty() {
+                let pending = std::mem::take(&mut self.pending);
+                self.dec.feed(&pending, &mut out)?;
+                if self.dec.done() {
+                    self.done = true;
+                }
+                if !out.is_empty() {
+                    return Ok(Some(out));
+                }
+                if self.done {
+                    return Ok(None);
+                }
+            }
+            if self.dec.done() {
+                self.done = true;
+                return Ok(None);
+            }
+            let mut buf = [0u8; 16 * 1024];
+            let n = self.conn.read(&mut buf)?;
+            if n == 0 {
+                self.done = true;
+                return Ok(None);
+            }
+            self.dec.feed(&buf[..n], &mut out)?;
+            if self.dec.done() {
+                self.done = true;
+            }
+            if !out.is_empty() {
+                return Ok(Some(out));
+            }
+            if self.done {
+                return Ok(None);
+            }
+        }
+    }
 }
 
 fn deliver(

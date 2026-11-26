@@ -36,8 +36,8 @@ must tolerate connection failure after a Ready snapshot. No supervision happens
 unless the owner polls; this is an integration obligation, not a hidden thread.
 
 Footprint: no extra threads, timers, sockets or allocations before construction;
-construction stores configuration only. No background work when stopped. The
-production binary is unchanged because it has no dependency on this crate.
+construction stores configuration only. No background work when stopped. `oxe serve`
+drives the caller-owned timers while a child process or queued work exists.
 
 ## Request lease (slice 2)
 
