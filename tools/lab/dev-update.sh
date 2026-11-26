@@ -120,7 +120,9 @@ download "$archive" 1073741824
 download SHA256SUMS 1048576
 bundle="oxe-$version.provenance.jsonl"
 download "$bundle" 16777216
-digest=$(awk -v name="$archive" '$2==name && $1 ~ /^[0-9a-f]+$/ && length($1)==64 {print $1}' "$work/SHA256SUMS")
+# sha256sum may print "./name"; match on the bare asset name either way.
+digest=$(awk -v name="$archive" '{n=$2; sub(/^\.\//, "", n)}
+  n==name && $1 ~ /^[0-9a-f]+$/ && length($1)==64 {print $1}' "$work/SHA256SUMS")
 [[ $digest =~ ^[0-9a-f]{64}$ ]] || die "SHA256SUMS has no digest for $archive"
 printf '%s  %s\n' "$digest" "$work/$archive" | sha256sum -c - >/dev/null ||
   die "checksum mismatch: $archive"
@@ -133,16 +135,22 @@ env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKE
   die "provenance mismatch: $archive"
 id="$sha-${digest:0:12}"
 
-# 3. Only the usr/ tree is ours to install; the packaged binaries must match their stamp.
-mkdir -p "$work/payload" "$prefix/releases"
+# 3. The tarball holds one top directory with the usr/ tree; nothing else is ours to install, and
+# the packaged binaries must match their stamp.
+mkdir -p "$work/payload" "$work/unpack" "$prefix/releases"
+# The tarball unpacks to one directory named after the file (tools/ci/package.sh).
+top=${archive%.tar.gz}
 tar -tzf "$work/$archive" >"$work/entries"
-if grep -Ev '^usr(/|$)' "$work/entries" >/dev/null; then
-  die "refusing a tarball with files outside usr/: $archive"
-fi
-if grep -E '(^|/)\.\.(/|$)' "$work/entries" >/dev/null; then
-  die "refusing a tarball with a .. path: $archive"
-fi
-tar -xzf "$work/$archive" -C "$work/payload" --no-same-owner --no-same-permissions
+while IFS= read -r entry; do
+  case $entry in
+    .. | ../* | */.. | */../*) die "refusing a tarball with a .. path: $entry" ;;
+    "$top" | "$top"/*) ;;
+    *) die "refusing a tarball with a file outside $top/: $entry" ;;
+  esac
+done <"$work/entries"
+tar -xzf "$work/$archive" -C "$work/unpack" --no-same-owner --no-same-permissions
+[[ -d $work/unpack/$top/usr ]] || die "the tarball has no usr/ tree: $archive"
+mv -- "$work/unpack/$top/usr" "$work/payload/usr"
 for name in oxe oxe-server local-ai-memlat-boot; do
   [[ -f $work/payload/usr/bin/$name && ! -L $work/payload/usr/bin/$name && -x $work/payload/usr/bin/$name ]] ||
     die "the tarball has no executable usr/bin/$name"
