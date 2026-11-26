@@ -106,7 +106,8 @@ jobs:
           n=$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)
           test "$n" -eq 1
           rm -f ./*.tar.gz.sha256
-          sha256sum -- ./*.tar.gz > SHA256SUMS
+          # Bare file names: consumers (tools/lab/dev-update.sh) match them by asset name.
+          sha256sum -- *.tar.gz > SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
