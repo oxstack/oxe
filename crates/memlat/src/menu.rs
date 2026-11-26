@@ -59,7 +59,9 @@ pub fn entries(text: &str) -> Result<Menu> {
         if result.contains_key(&key) {
             return err("duplicate menu path");
         }
-        let end = hs.get(i + 1).map_or(text.len(), |x| x.get(0).unwrap().start());
+        let end = hs
+            .get(i + 1)
+            .map_or(text.len(), |x| x.get(0).unwrap().start());
         let body = &text[h.get(0).unwrap().end()..end];
         let cmdlines = fields(body, "cmdline", false);
         if cmdlines.len() > 1 {
@@ -98,7 +100,9 @@ pub fn selected(text: &str, menu: &Menu) -> Result<String> {
 }
 pub fn replace_default(text: &str, target: &str) -> String {
     regex(r"(?mi)^(\s*default_entry\s*:)\s*.*$")
-        .replacen(text, 1, |c: &regex::Captures<'_>| format!("{} {target}", &c[1]))
+        .replacen(text, 1, |c: &regex::Captures<'_>| {
+            format!("{} {target}", &c[1])
+        })
         .into_owned()
 }
 pub fn remove_block(text: &str, name: &str, missing: bool) -> Result<String> {
@@ -116,8 +120,14 @@ pub fn remove_block(text: &str, name: &str, missing: bool) -> Result<String> {
         return err("automatic menu entry missing or duplicated");
     }
     let (i, h) = matches[0];
-    let end = hs.get(i + 1).map_or(text.len(), |h| h.get(0).unwrap().start());
-    Ok(format!("{}{}", &text[..h.get(0).unwrap().start()], &text[end..]))
+    let end = hs
+        .get(i + 1)
+        .map_or(text.len(), |h| h.get(0).unwrap().start());
+    Ok(format!(
+        "{}{}",
+        &text[..h.get(0).unwrap().start()],
+        &text[end..]
+    ))
 }
 pub fn semantic_fields(block: &str) -> Result<Vec<(String, String)>> {
     let mut result = Vec::new();
@@ -129,7 +139,9 @@ pub fn semantic_fields(block: &str) -> Result<Vec<(String, String)>> {
             result.push(("header".into(), line.into()));
             continue;
         }
-        let (key, value) = line.split_once(':').ok_or("unsupported automatic menu field")?;
+        let (key, value) = line
+            .split_once(':')
+            .ok_or("unsupported automatic menu field")?;
         result.push((key.trim().to_lowercase(), value.trim().into()));
     }
     result.sort();

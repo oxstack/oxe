@@ -148,7 +148,10 @@ fn secure_boot(root: &Path) -> String {
     if files.len() != 1 {
         return "unknown".into();
     }
-    match fs::read(files[0].path()).ok().and_then(|v| v.get(4).copied()) {
+    match fs::read(files[0].path())
+        .ok()
+        .and_then(|v| v.get(4).copied())
+    {
         Some(0) => "disabled",
         Some(1) => "enabled",
         _ => "unknown",
@@ -160,7 +163,10 @@ fn tool(name: &str, kernel: &Path) -> PathBuf {
         let path = parent.join(name);
         if path.is_file() {
             use std::os::unix::fs::PermissionsExt;
-            if path.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0) {
+            if path
+                .metadata()
+                .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+            {
                 return path;
             }
         }
@@ -202,7 +208,8 @@ pub fn build(p: &Value, output: &Path) -> Result<Value> {
     let modules = Path::new("/usr/lib/modules").join(version);
     let kernel = modules.join("build");
     if !modules.is_dir()
-        || !fs::read_to_string(kernel.join(".config"))?.contains("CONFIG_SCMI_QCOM_MEMLAT_DEVFREQ=y")
+        || !fs::read_to_string(kernel.join(".config"))?
+            .contains("CONFIG_SCMI_QCOM_MEMLAT_DEVFREQ=y")
     {
         return err("matching kernel modules/headers or built-in MEMLAT driver missing");
     }
@@ -222,7 +229,10 @@ pub fn build(p: &Value, output: &Path) -> Result<Value> {
         .arg(&changed)
         .arg(&compiled))?;
     let patched = patch_uki(&original, &fs::read(&stock_dtb)?, &fs::read(&changed)?)?;
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(output)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
     file.write_all(&patched)?;
     println!(
         "{}",
