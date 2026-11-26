@@ -1,0 +1,116 @@
+name: release
+# Tagged release: builds the linux-aarch64 tarball (release-build.yml), writes SHA256SUMS,
+# generates build provenance (actions/attest-build-provenance) and creates the GitHub Release.
+# No secrets: the job token only. Only the release job holds write permissions and the "release"
+# environment, which must be protected in the repository settings (required reviewer, deployment
+# tag v*), together with a tag ruleset that limits who may create v* tags.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      file_version: ${{ steps.v.outputs.file_version }}
+    steps:
+      - id: v
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          v=$REF_NAME
+          re='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+          if ! [[ $v =~ $re ]]; then echo "bad version string: $v" >&2; exit 1; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "file_version=$v" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      file_version: ${{ needs.version.outputs.file_version }}
+
+  release:
+    needs: [version, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Protect this environment in the repository settings (see the header).
+    environment: release
+    permissions:
+      contents: write      # create the release and upload its assets
+      id-token: write      # sign the provenance (Sigstore)
+      attestations: write  # store the attestation
+    env:
+      TAG: ${{ needs.version.outputs.version }}
+      FILE_VERSION: ${{ needs.version.outputs.file_version }}
+    steps:
+      - name: Refuse a release without provenance
+        # Artifact attestations need a public repository on GitHub Free/Pro: a release without
+        # one is not made from a private repository.
+        if: github.event.repository.private
+        run: |
+          echo "::error::release only from the public repository (no build provenance in a private one)"
+          exit 1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: oxe-linux-aarch64
+          path: dist
+      - name: Build provenance
+        id: provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+      - name: Keep the attestation with the assets
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE" "dist/oxe-$FILE_VERSION.provenance.jsonl"
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Built by GitHub Actions from \`$TAG\` (commit $GITHUB_SHA) in [run $GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID); nobody uploads binaries by hand."
+            echo
+            echo "Linux aarch64, for ARMv8.6-A cores with dotprod, i8mm, fp16 and bf16 (measured on the Snapdragon X Elite X1E80100 only); glibc requirement and toolchain in the tarball's README.txt."
+            echo
+            echo "| File | Contents |"
+            echo "|---|---|"
+            echo "| \`oxe-$TAG-linux-aarch64.tar.gz\` | \`usr/bin/oxe\`, \`usr/bin/oxe-server\` and \`usr/bin/local-ai-memlat-boot\`, with licences and README.txt |"
+            echo "| \`SHA256SUMS\` | the tarball's SHA-256 |"
+            echo "| \`oxe-$FILE_VERSION.provenance.jsonl\` | the Sigstore attestation bundle for both files |"
+            echo
+            echo "The Flash engine (\`oxe-server --engine flash\`) is not in these binaries: its production ggml archive is not in the source repository (https://github.com/$GITHUB_REPOSITORY/issues/7)."
+            echo
+            echo "Verify:"
+            echo
+            echo '```sh'
+            echo "sha256sum -c SHA256SUMS"
+            echo "gh attestation verify oxe-$TAG-linux-aarch64.tar.gz --repo $GITHUB_REPOSITORY \\"
+            echo "  --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml"
+            echo '```'
+            echo
+            echo "No model weights are included."
+          } > notes.md
+          opts=()
+          case $TAG in *-*) opts+=(--prerelease);; esac
+          gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS dist/*.provenance.jsonl \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "oxe $TAG" --notes-file notes.md \
+            ${opts[@]+"${opts[@]}"}
