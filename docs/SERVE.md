@@ -118,7 +118,11 @@ header it expects.
 ## Running as a user service
 
 `packaging/systemd/oxe.service` is a `systemd --user` unit with `MemorySwapMax=0`, which is what
-the supervisor's no-swap admission checks. Adjust `MemoryMax` for your models, then:
+the supervisor's no-swap admission checks. `MemoryMax` is optional: the per-model admission
+budget refuses a launch that does not fit, with or without a hard cgroup cap.
+
+Its `ExecStart` assumes `oxe` in `~/.local/bin`; edit that line if your binary lives elsewhere
+(and the `--config` path if your `models.toml` is not in `~/.config/oxe`). Then:
 
 ```sh
 install -Dm644 packaging/systemd/oxe.service ~/.config/systemd/user/oxe.service
