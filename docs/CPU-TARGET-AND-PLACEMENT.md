@@ -17,13 +17,13 @@ NPU/device path.
 
 Today, exactly as on `main`:
 
-- `../.cargo/config.toml` sets `jobs = 1`, `RUST_TEST_THREADS = 1`, and
+- `.cargo/config.toml` sets `jobs = 1`, `RUST_TEST_THREADS = 1`, and
   `[target.aarch64-unknown-linux-gnu] rustflags = ["-C", "target-cpu=oryon-1"]`.
 - There is no `[target.x86_64-unknown-linux-gnu]` entry: x86_64 gets rustc's default baseline, which
   is what the CI stub server builds with.
 
 The setting is already explicit *per target triple*, and it is part of the release identity: the ARM
-job in `../.github/workflows/build.yml` builds the shipped `aarch64` binaries with these flags. A
+job in `.github/workflows/release-build.yml` builds the shipped `aarch64` binaries with these flags. A
 generic-CPU or x86_64 build is not proof of production identity and must not be substituted for it.
 
 The documented per-machine form, **not applied here**, is either the same table with another
@@ -128,7 +128,7 @@ pins rule 1.
 ## 4. Gates before any production change
 
 - **Owner review first** for any change to the default `--oxe-cpus`/placement, to either pool, or to the
-  `target-cpu` value or triple in `../.cargo/config.toml`. This PR changes none of them.
+  `target-cpu` value or triple in `.cargo/config.toml`. This PR changes none of them.
 - **Hard scheduler or numerics changes** additionally need a bit-identity proof and a separately
   pre-registered owner hardware batch. Placement changes are exactly the kind of change that moves
   numerics on a barrier-synchronised pool, so the goldens above are a specification, not a licence.
