@@ -322,13 +322,16 @@ fn health_and_models_list_every_configured_model() {
         .unwrap();
     let value: Value = serde_json::from_str(&models.body_mut().read_to_string().unwrap()).unwrap();
     assert_eq!(value["object"], "list");
-    let ids: Vec<_> = value["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|row| row["id"].as_str().unwrap())
-        .collect();
+    let rows = value["data"].as_array().unwrap();
+    let ids: Vec<_> = rows.iter().map(|row| row["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["other", "tiny"]);
+    for row in rows {
+        // `context_length` is the OpenRouter-style spelling clients like ox and Claude Code read;
+        // without it they assume a 1M window. `context_window` and `max_output` stay as well.
+        assert_eq!(row["context_length"], 4096, "{row}");
+        assert_eq!(row["context_window"], 4096, "{row}");
+        assert_eq!(row["max_output"], 64, "{row}");
+    }
 }
 
 #[test]

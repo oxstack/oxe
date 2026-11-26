@@ -18,9 +18,12 @@ or put your own authenticating proxy in front of it.
 | Route | Meaning |
 | --- | --- |
 | `GET /health` | `{"status":"ok","models":N,"loaded":"<id>","state":"..."}` |
-| `GET /v1/models` | every configured model, OpenAI list shape |
+| `GET /v1/models` | every configured model, OpenAI list shape: `{"id","object":"model","created":0,"owned_by":"local","context_window":N,"context_length":N,"max_output":N}` |
 | `POST /v1/chat/completions` | routed by the request's `model` field |
 | `POST /v1/completions` | same routing, legacy completions path |
+
+`context_length` is the OpenRouter spelling of the same window as `context_window`; clients that
+only read one of the two (`ox`, Claude Code) otherwise assume a 1M context.
 
 One model is resident at a time. A request for another model waits for in-flight requests,
 stops the old child (TERM, then KILL after the grace period) and admits the new one only after

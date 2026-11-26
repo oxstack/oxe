@@ -570,6 +570,9 @@ impl Host {
                     "created": 0,
                     "owned_by": "local",
                     "context_window": model.context_window,
+                    // OpenRouter-style spelling: clients that only know this one (ox, Claude Code)
+                    // otherwise fall back to a 1M context instead of the configured window.
+                    "context_length": model.context_window,
                     "max_output": model.max_output,
                 })
             })
