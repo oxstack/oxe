@@ -165,7 +165,8 @@ jobs:
           start=$(date +%s)
           cargo nextest run --release --locked --no-fail-fast --workspace --exclude qwen4exp \
             --no-tests fail --failure-output immediate-final \
-            --partition hash:${{ matrix.shard }}/3
+            --partition hash:${{ matrix.shard }}/3 \
+            -E 'not (package(oxc-memlat) & binary(differential))'
           echo "nextest run: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Doc tests (nextest does not run them)
         if: matrix.shard == 1
@@ -293,6 +294,14 @@ jobs:
         # The stub never dereferences the null pointers; every entry point must refuse with its
         # documented message on this target instead of returning fabricated results.
         run: cargo test --locked -p int8-gemm --lib -- unsupported_target_refuses_every_entry_point
+      - name: memlat tests (the boot-oracle differential needs bwrap, which a container cannot run)
+        # memlat is target-neutral Rust. Its differential suite runs the real command inside
+        # bubblewrap; Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor.
+        run: |
+          "$GITHUB_WORKSPACE/tools/ci/apt_install.sh" bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / true
+          cargo test --locked -p oxc-memlat
       - name: Build oxe-server (stub engine)
         run: cargo build --release --locked -p server --bin oxe-server
       - name: Smoke (stub engine; the model engine refuses cleanly)

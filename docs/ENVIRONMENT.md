@@ -13,6 +13,8 @@ Classes: `option` (an owner would set it: paths, ports, key file), `tuning` (per
 | Name | Read in | Values and default | What it does | Class |
 |---|---|---|---|---|
 | `OXE_API_KEY_FILE` | server/src/main.rs | path; unset or empty: none | API key file used when `--api-key-file` is not given | option |
+| `OXE_API_KEY` | supervisor/src/native.rs, supervisor/src/configured.rs, oxe-cli/src/serve_cmd.rs | never read as a value | names starting with `OXE_API_KEY` are refused in a model's environment and never inherited by the engine child; `oxe serve` passes its own `OXE_API_KEY_FILE` | option |
+| `OXE_SERVE_FAKE_MEMORY` | oxe-cli/src/serve_cmd.rs | `1` enables; unset: off | test-only: `oxe serve` skips host memory sampling so the serve tests run without a cgroup. Never set it in a real service | experiment |
 | `OXE_WEIGHTS` | server/src/oxe_engine.rs | `file` (default) or `anon` | weight backing: file-backed cache mapping, or a THP-advised anonymous arena (`--oxe-weights`) | option |
 | `OXE_MLOCK` | server/src/oxe_engine.rs | any value (even `0`) enables; unset: off | lock the weights in RAM, or fail to start (`--mlock`) | option |
 | `OXE_STATE_BUDGET_SCOPE` | server/src/state_store.rs | `own` = per-store budget; anything else or unset: global | scope of the state cache byte budget (`--state-budget-scope`) | option |
