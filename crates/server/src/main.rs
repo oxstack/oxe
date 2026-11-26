@@ -816,7 +816,7 @@ fn main() {
     // #23: refuse an absent/unsupported architecture here, from the GGUF header alone, before
     // the tokenizer, the engine or any weight mapping. The stub stays available only when the
     // caller asks for it with --engine stub.
-    if engine != "stub" {
+    if engine == "oxe" {
         match gguf::Gguf::open(&model) {
             Ok(gguf) => {
                 if let Err(error) = model::desc::ModelDesc::from_header(&gguf.header) {
