@@ -360,11 +360,10 @@ fn list(path: PathBuf) -> ! {
         Ok(cfg) => {
             for (id, model) in &cfg.models {
                 println!(
-                    "{id}\t{}\tctx={}\tmax_output={}\t{}",
+                    "{id}\t{}\tctx={}\tmax_output={}",
                     model.model.display(),
                     model.context_window,
-                    model.max_output,
-                    "allocation budget set"
+                    model.max_output
                 );
             }
             std::process::exit(0)
