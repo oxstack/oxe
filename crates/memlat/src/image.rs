@@ -83,6 +83,33 @@ pub fn sections(data: &[u8]) -> Result<Vec<Section>> {
 pub fn payload<'a>(data: &'a [u8], section: &Section) -> &'a [u8] {
     &data[section.raw_offset..section.raw_offset + section.virtual_size]
 }
+/// The installed stock DTB was replaced after this policy's MEMLAT entry was
+/// qualified, and the stock UKI has not been regenerated to embed it yet.
+///
+/// `linux-omarchy-dtbs` unpacks the new DTB before any UKI is regenerated, so a
+/// rebuild attempted in that window cannot satisfy the byte-exact `.dtbauto`
+/// match below. The policy records the DTB hash the selected MEMLAT image was
+/// built against; a different installed hash means that window is open. The
+/// comparison is by content, not mtime: pacman preserves package timestamps, so
+/// a freshly extracted DTB can still look older than the UKI.
+///
+/// A successful rebuild records the new hash, so a mismatch that survives the
+/// UKI regeneration stops qualifying and fails loudly instead of deferring
+/// forever. A UKI that already embeds the installed DTB is never deferred.
+pub fn stock_uki_predates_dtb(p: &Value) -> Result<bool> {
+    let Some(recorded) = p.get("stock_dtb_sha256").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let dtb = path(p, "stock_dtb")?;
+    let bytes = fs::read(&dtb)?;
+    if !bytes.starts_with(b"\xd0\x0d\xfe\xed") || sha256(&dtb)? == recorded {
+        return Ok(false);
+    }
+    let stock = fs::read(path(p, "stock_image")?)?;
+    Ok(!sections(&stock)?
+        .iter()
+        .any(|s| s.name == b".dtbauto" && payload(&stock, s) == bytes))
+}
 pub fn patch_uki(data: &[u8], stock: &[u8], changed: &[u8]) -> Result<Vec<u8>> {
     let sections = sections(data)?;
     let selected: Vec<_> = sections
@@ -215,4 +242,85 @@ pub fn build(p: &Value, output: &Path) -> Result<Value> {
     Ok(
         json!({"kernel":version,"modules":modules,"stock_sha256":sha256(&stock)?,"memlat_sha256":sha256(output)?,"stock_dtb_sha256":sha256(&path(p,"stock_dtb")?)?}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn uki(embedded: &[u8]) -> Vec<u8> {
+        let mut data = vec![0u8; 2048];
+        data[..2].copy_from_slice(b"MZ");
+        data[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        data[0x80..0x84].copy_from_slice(b"PE\0\0");
+        data[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+        data[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+        data[0x98..0x9a].copy_from_slice(&0x20bu16.to_le_bytes());
+        for (i, (name, payload)) in [
+            (b".uname" as &[u8], b"fixture-kernel\0".as_slice()),
+            (b".dtbauto", embedded),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let h = 0x98 + 240 + i * 40;
+            data[h..h + name.len()].copy_from_slice(name);
+            for (k, v) in [
+                payload.len() as u32,
+                4096 * (i as u32 + 1),
+                512,
+                1024 + i as u32 * 512,
+            ]
+            .iter()
+            .enumerate()
+            {
+                data[h + 8 + k * 4..h + 12 + k * 4].copy_from_slice(&v.to_le_bytes());
+            }
+            let at = 1024 + i * 512;
+            data[at..at + payload.len()].copy_from_slice(payload);
+        }
+        data
+    }
+
+    /// `recorded` is the DTB hash the qualified MEMLAT image was built against.
+    fn window(embedded: &[u8], installed: &[u8], recorded: &[u8]) -> (Temporary, Value) {
+        let tmp = Temporary::directory("memlat-window-").unwrap();
+        let stock = tmp.path.join("stock.efi");
+        let dtb = tmp.path.join("stock.dtb");
+        fs::write(&stock, uki(embedded)).unwrap();
+        fs::write(&dtb, installed).unwrap();
+        let qualified = tmp.path.join("qualified.dtb");
+        fs::write(&qualified, recorded).unwrap();
+        let p = json!({
+            "stock_image": stock,
+            "stock_dtb": dtb,
+            "stock_dtb_sha256": sha256(&qualified).unwrap(),
+        });
+        (tmp, p)
+    }
+
+    #[test]
+    fn only_the_replace_before_regeneration_window_is_deferred() {
+        let embedded = b"\xd0\x0d\xfe\xedprevious dtb";
+        let previous = b"\xd0\x0d\xfe\xedold qualified dtb";
+        let installed = b"\xd0\x0d\xfe\xedupdated dtb";
+        // The policy was qualified against a different DTB than the one installed.
+        let (_t, p) = window(embedded, installed, previous);
+        assert!(stock_uki_predates_dtb(&p).unwrap());
+        // Once the policy records the installed hash, a persisting mismatch is a
+        // real failure rather than a deferral.
+        let (_t, p) = window(embedded, installed, installed);
+        assert!(!stock_uki_predates_dtb(&p).unwrap());
+        // A UKI already embedding the installed DTB is never deferred.
+        let (_t, p) = window(installed, installed, previous);
+        assert!(!stock_uki_predates_dtb(&p).unwrap());
+        // Nor is a corrupt installed DTB.
+        let (_t, p) = window(embedded, b"not a dtb", previous);
+        assert!(!stock_uki_predates_dtb(&p).unwrap());
+        // Nor is a policy with no recorded DTB hash (pre-qualification state).
+        let (_t, mut p) = window(embedded, installed, previous);
+        p.as_object_mut().unwrap().remove("stock_dtb_sha256");
+        assert!(!stock_uki_predates_dtb(&p).unwrap());
+    }
 }

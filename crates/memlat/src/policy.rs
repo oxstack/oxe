@@ -212,7 +212,24 @@ pub fn rebuild(policy_path: &Path, p: &Value, dry_run: bool, force: bool, host: 
         }
         let directory = crate::Temporary::directory("memlat-rebuild-")?;
         let image = directory.path.join("candidate.efi");
-        let evidence = host.build(p, &image)?;
+        let evidence = match host.build(p, &image) {
+            Ok(evidence) => evidence,
+            // `linux-omarchy-dtbs` unpacks the new DTB before any UKI is
+            // regenerated. Rebuilding in that window cannot match the stock
+            // UKI's embedded DTB, and the later UKI regeneration pass retries
+            // with the new one. Report a deferral rather than a failure so an
+            // in-flight update neither alerts the owner nor drops the marker.
+            Err(error) if !dry_run && crate::image::stock_uki_predates_dtb(p).unwrap_or(false) => {
+                return Ok(json!({
+                    "action": "rebuild",
+                    "changed": false,
+                    "deferred": true,
+                    "default": string(p, "stock_entry")?,
+                    "reason": format!("stock UKI still embeds the previous DTB; {error}"),
+                }));
+            }
+            Err(error) => return Err(error),
+        };
         if dry_run {
             let mut result = json!({"action":"rebuild-dry-run","changed":false,"passed":true});
             merge(&mut result, &evidence)?;

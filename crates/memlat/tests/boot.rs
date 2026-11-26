@@ -362,3 +362,100 @@ fn pending_marker_failure_still_selects_verified_stock() {
         "Omarchy/linux-omarchy"
     );
 }
+
+/// Point the policy at a real PE32+ UKI whose `.dtbauto` payload is `embedded`,
+/// and an installed stock DTB holding `installed`. Returns their paths.
+fn stock_window(f: &Fixture, embedded: &[u8], installed: &[u8]) -> (PathBuf, PathBuf) {
+    let root = f.policy.parent().unwrap();
+    let mut data = vec![0u8; 2048];
+    data[..2].copy_from_slice(b"MZ");
+    data[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+    data[0x80..0x84].copy_from_slice(b"PE\0\0");
+    data[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+    data[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+    data[0x98..0x9a].copy_from_slice(&0x20bu16.to_le_bytes());
+    for (i, (name, payload)) in [
+        (b".uname" as &[u8], b"fixture-kernel\0".as_slice()),
+        (b".dtbauto", embedded),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let h = 0x98 + 240 + i * 40;
+        data[h..h + name.len()].copy_from_slice(name);
+        let sizes = [
+            payload.len() as u32,
+            4096 * (i as u32 + 1),
+            512,
+            1024 + i as u32 * 512,
+        ];
+        for (k, v) in sizes.iter().enumerate() {
+            data[h + 8 + k * 4..h + 12 + k * 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let at = 1024 + i * 512;
+        data[at..at + payload.len()].copy_from_slice(payload);
+    }
+    let uki = root.join("window-stock.efi");
+    let dtb = root.join("window-stock.dtb");
+    fs::write(&uki, &data).unwrap();
+    fs::write(&dtb, installed).unwrap();
+    (uki, dtb)
+}
+
+/// A DTB replaced before the UKI is regenerated is a deferral, not a failure:
+/// STOCK stays selected, the marker survives for the retry, and no critical
+/// notification fires during the update.
+#[test]
+fn stock_uki_predating_the_installed_dtb_defers_instead_of_failing() {
+    let mut f = Fixture::new();
+    f.apply("enable");
+    let old = b"\xd0\x0d\xfe\xedprevious dtb";
+    let new = b"\xd0\x0d\xfe\xedupdated dtb";
+    let (uki, dtb) = stock_window(&f, old, new);
+    f.p["stock_image"] = json!(uki);
+    f.p["stock_dtb"] = json!(dtb);
+    f.p["stock_sha256"] = json!(sha256(&uki).unwrap());
+    // The policy still records the DTB the entry was qualified against, which
+    // the installed one has since replaced.
+    let qualified = f.policy.with_file_name("window-qualified.dtb");
+    fs::write(&qualified, b"\xd0\x0d\xfe\xedqualified dtb").unwrap();
+    f.p["stock_dtb_sha256"] = json!(sha256(&qualified).unwrap());
+    f.apply("prepare-update");
+    f.host.fail_build.set(true);
+    let result = policy::rebuild(&f.policy, &f.p, false, false, &f.host).unwrap();
+    assert_eq!(result["deferred"], true);
+    assert_eq!(result["changed"], false);
+    let text = f.text();
+    assert_eq!(
+        menu::selected(&text, &menu::entries(&text).unwrap()).unwrap(),
+        "Omarchy/linux-omarchy"
+    );
+    assert!(policy::path(&f.p, "pending").unwrap().exists());
+    assert_eq!(f.host.notifications.get(), 0);
+}
+
+/// Once the UKI has been regenerated the mismatch is real, so it must keep
+/// failing and alerting rather than deferring forever.
+#[test]
+fn a_regenerated_uki_that_still_mismatches_fails_and_notifies() {
+    let mut f = Fixture::new();
+    f.apply("enable");
+    let (uki, dtb) = stock_window(
+        &f,
+        b"\xd0\x0d\xfe\xedembedded dtb",
+        b"\xd0\x0d\xfe\xeddifferent dtb",
+    );
+    f.p["stock_image"] = json!(uki);
+    f.p["stock_dtb"] = json!(dtb);
+    f.p["stock_sha256"] = json!(sha256(&uki).unwrap());
+    // Policy already records the installed hash: no window is open.
+    f.p["stock_dtb_sha256"] = json!(sha256(&dtb).unwrap());
+    f.apply("prepare-update");
+    f.host.fail_build.set(true);
+    assert!(policy::rebuild(&f.policy, &f.p, false, false, &f.host).is_err());
+    assert_eq!(
+        menu::selected(&f.text(), &menu::entries(&f.text()).unwrap()).unwrap(),
+        "Omarchy/linux-omarchy"
+    );
+    assert_eq!(f.host.notifications.get(), 1);
+}
