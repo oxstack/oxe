@@ -760,6 +760,7 @@ dependencies = [
  "async-io",
  "futures-lite",
  "nix",
+ "oxe-supervisor",
  "serde_json",
  "tokio",
  "ureq",

@@ -5,6 +5,7 @@ pub mod admission;
 pub mod child_auth;
 mod configured;
 pub mod engine;
+#[cfg(any(test, feature = "testkit"))]
 pub mod fake;
 pub mod proto;
 pub use configured::{configured_engine, configured_local_engine, LOCAL_SETTING};
