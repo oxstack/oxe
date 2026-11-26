@@ -24,8 +24,8 @@ Two engines run behind `oxe-server`:
   experts streamed from NVMe through a cache, `O_DIRECT` reads on a dedicated IO core, memory
   admission measured before start.
 
-`--engine stub` serves the tokenizer and chat template only, with no weights; the tests and the
-OpenAI contract job use it.
+`--engine stub` serves the tokenizer and chat template only, with no weights; the model-free tests
+and `tools/openai-contract` use it.
 
 ## Requirements
 
@@ -38,9 +38,10 @@ OpenAI contract job use it.
 ## Install from a release tarball
 
 Each [release](https://github.com/oxstack/oxe/releases) has one Linux aarch64 tarball, built by
-GitHub Actions from the tagged source (`.github/workflows/release.yml`). It unpacks to a `usr/bin/`
-tree holding `oxe`, `oxe-server` and `local-ai-memlat-boot`, with the licences and a `README.txt`
-that records the source commit, the workflow run, the toolchain and the minimum glibc.
+GitHub Actions from the tagged source (`.github/workflows/release.yml`). It unpacks to a directory
+named after the tarball, holding `usr/bin/oxe`, `usr/bin/oxe-server` and
+`usr/bin/local-ai-memlat-boot`, the licences and a `README.txt` that records the source commit,
+the workflow run, the toolchain and the minimum glibc.
 
 ```sh
 sha256sum -c SHA256SUMS
@@ -52,7 +53,7 @@ cd oxe-vX.Y.Z-linux-aarch64
 ```
 
 The attestation states that this repository's release workflow built the tarball and from which
-commit and tag; it needs GitHub CLI 2.49 or newer. `SHA256SUMS` also covers the tarball alone, and
+commit and tag; it needs GitHub CLI 2.49 or newer. `SHA256SUMS` lists the tarball's SHA-256, and
 `README.txt` inside it lists the SHA-256 of each binary.
 
 **Rolling dev builds.** Every push to main publishes a `dev` prerelease
